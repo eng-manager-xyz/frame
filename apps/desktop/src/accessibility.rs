@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-pub const ACCESSIBILITY_MODEL_VERSION: u16 = 1;
+pub const ACCESSIBILITY_MODEL_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,9 +52,12 @@ pub enum KeyboardAction {
     StartStopRecording,
     PauseResumeRecording,
     Cancel,
+    OpenProject,
+    ApplySelection,
     SaveProject,
     Export,
     Upload,
+    RetryLastOperation,
     FocusRecorder,
     FocusEditor,
     OpenRecovery,
@@ -104,6 +107,7 @@ impl Modifiers {
 #[serde(rename_all = "snake_case")]
 pub enum Key {
     Character(char),
+    Tab,
     Enter,
     Space,
     Escape,

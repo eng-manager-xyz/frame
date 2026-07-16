@@ -92,6 +92,18 @@ pub enum EditorState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorOperation {
+    Apply,
+    Save,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorOperationFailure {
+    pub operation: EditorOperation,
+    pub code: SafeFailureCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportState {
     Idle,
     Running {
@@ -434,6 +446,7 @@ pub struct DesktopWorkflow {
     devices: DeviceState,
     recovery: RecoveryState,
     editor: EditorState,
+    editor_operation_failure: Option<EditorOperationFailure>,
     export: ExportState,
     upload: UploadState,
 }
@@ -450,6 +463,7 @@ impl fmt::Debug for DesktopWorkflow {
             .field("devices", &self.devices)
             .field("recovery", &self.recovery)
             .field("editor", &self.editor)
+            .field("editor_operation_failure", &self.editor_operation_failure)
             .field("export", &self.export)
             .field("upload", &self.upload)
             .finish()
@@ -468,6 +482,7 @@ impl DesktopWorkflow {
             devices: DeviceState::Unknown,
             recovery: RecoveryState::Hidden,
             editor: EditorState::Closed,
+            editor_operation_failure: None,
             export: ExportState::Idle,
             upload: UploadState::Idle,
         }
@@ -491,6 +506,11 @@ impl DesktopWorkflow {
     #[must_use]
     pub const fn editor(&self) -> EditorState {
         self.editor
+    }
+
+    #[must_use]
+    pub const fn editor_operation_failure(&self) -> Option<EditorOperationFailure> {
+        self.editor_operation_failure
     }
 
     #[must_use]
@@ -522,6 +542,12 @@ impl DesktopWorkflow {
             return Err(WorkflowError::Busy(area));
         }
         self.validate_intent(intent.kind)?;
+        if matches!(
+            intent.kind,
+            IntentKind::EditorOpen | IntentKind::EditorApply { .. } | IntentKind::EditorSave { .. }
+        ) {
+            self.editor_operation_failure = None;
+        }
         self.pending.insert(area, intent);
         Ok(())
     }
@@ -807,6 +833,7 @@ impl DesktopWorkflow {
             BackendEvent::EditorLoading { intent_id } => {
                 self.consume_intent(WorkflowArea::Editor, &intent_id, &[IntentKind::EditorOpen])?;
                 self.editor = EditorState::Loading;
+                self.editor_operation_failure = None;
             }
             BackendEvent::EditorLoaded {
                 revision,
@@ -818,6 +845,7 @@ impl DesktopWorkflow {
                     duration_ms,
                     dirty: false,
                 };
+                self.editor_operation_failure = None;
             }
             BackendEvent::EditorApplied {
                 intent_id,
@@ -842,6 +870,7 @@ impl DesktopWorkflow {
                     duration_ms,
                     dirty: true,
                 };
+                self.editor_operation_failure = None;
             }
             BackendEvent::EditorSaved {
                 intent_id,
@@ -866,10 +895,31 @@ impl DesktopWorkflow {
                     duration_ms,
                     dirty: false,
                 };
+                self.editor_operation_failure = None;
             }
             BackendEvent::EditorFailed { code } => {
+                let operation =
+                    self.pending
+                        .get(&WorkflowArea::Editor)
+                        .and_then(|intent| match intent.kind {
+                            IntentKind::EditorApply { .. } => Some(EditorOperation::Apply),
+                            IntentKind::EditorSave { .. } => Some(EditorOperation::Save),
+                            _ => None,
+                        });
                 self.supersede_area(WorkflowArea::Editor);
-                self.editor = EditorState::Failed { code };
+                if let Some(operation) = operation
+                    && matches!(self.editor, EditorState::Ready { .. })
+                {
+                    // An edit or save operation can fail without invalidating the
+                    // last backend-confirmed project revision. Preserve that
+                    // revision (and its dirty bit) so the user can recover, save
+                    // elsewhere, or retry after resolving the safe failure.
+                    self.editor_operation_failure =
+                        Some(EditorOperationFailure { operation, code });
+                } else {
+                    self.editor = EditorState::Failed { code };
+                    self.editor_operation_failure = None;
+                }
             }
             BackendEvent::ExportStarted {
                 intent_id,

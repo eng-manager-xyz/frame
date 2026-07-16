@@ -7,9 +7,11 @@
 pub mod accessibility;
 pub mod ipc;
 pub mod migration;
+pub mod surface;
 pub mod workflow;
 
 pub use accessibility::*;
 pub use ipc::*;
 pub use migration::*;
+pub use surface::*;
 pub use workflow::*;
