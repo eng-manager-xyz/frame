@@ -274,7 +274,7 @@ impl MediaTransformer for MemoryMediaTransformer {
             content_type: request.content_type.clone(),
         };
         results.insert(
-            request.output.to_string(),
+            request.output.as_str().to_owned(),
             (request.clone(), result.clone()),
         );
         Ok(result)
@@ -736,7 +736,7 @@ impl AdvancedObjectStore for MemoryObjectStore {
             last_modified: self.next_timestamp()?,
         };
         objects.insert(
-            key.to_string(),
+            key.as_str().to_owned(),
             StoredObject {
                 bytes,
                 metadata: metadata.clone(),

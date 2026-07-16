@@ -18,6 +18,7 @@ impl NativeTransport {
     pub fn new() -> Result<Self, ClientError> {
         Client::builder()
             .redirect(Policy::none())
+            .no_proxy()
             .user_agent("frame-client/0.1")
             .build()
             .map(|client| Self { client })
