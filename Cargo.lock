@@ -1270,9 +1270,12 @@ dependencies = [
  "frame-client",
  "leptos",
  "serde",
+ "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wasm-bindgen",
 ]
 
 [[package]]

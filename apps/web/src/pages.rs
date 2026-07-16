@@ -3,12 +3,12 @@ use frame_client::{PublicShareSummary, ShareAvailability};
 use leptos::prelude::*;
 
 use crate::config::{Deployment, RuntimeConfig};
+use crate::hydration::{HydrationBoundary, PLAYER_HELP_ROOT_ID, PlayerKeyboardHelp, ROOT_ID};
 use crate::product::{
     AuthenticatedRoute, AuthenticatedState, RecordingState, ShareView, WorkspaceView,
 };
 
 pub const NO_STORE: &str = "no-store";
-const PUBLIC_HTML_CACHE: &str = "public, max-age=60, s-maxage=300, stale-while-revalidate=60";
 
 pub struct Page {
     pub status: StatusCode,
@@ -80,11 +80,10 @@ pub fn landing(config: &RuntimeConfig) -> Page {
             "index,follow",
             body,
         ),
-        cache_control: if config.deployment() == Deployment::Production {
-            PUBLIC_HTML_CACHE
-        } else {
-            NO_STORE
-        },
+        // This HTML names one exact hydration-asset closure. Keep it out of
+        // intermediary caches until deploys retain old hashed assets or purge
+        // cached documents atomically.
+        cache_control: NO_STORE,
         robots: if config.deployment() == Deployment::Production {
             "index,follow"
         } else {
@@ -246,7 +245,7 @@ pub fn share(config: &RuntimeConfig, video_id: &str, view: ShareView) -> Page {
                 format!("{title} · Frame"),
                 description,
                 canonical,
-                PUBLIC_HTML_CACHE,
+                NO_STORE,
                 "index,follow",
                 content,
                 true,
@@ -340,7 +339,7 @@ pub fn embed(config: &RuntimeConfig, video_id: &str, share: ShareView) -> Page {
             "noindex,follow",
             body,
         ),
-        cache_control: PUBLIC_HTML_CACHE,
+        cache_control: NO_STORE,
         robots: "noindex,follow",
     }
 }
@@ -693,6 +692,9 @@ fn public_player_shell(summary: &PublicShareSummary) -> AnyView {
             <p class="player-help">
                 "Playback and caption paths come from a validated provider-neutral public descriptor. Storage keys and signed provider URLs are never rendered."
             </p>
+            <div id=PLAYER_HELP_ROOT_ID data-frame-hydration-scope="interaction-island">
+                <PlayerKeyboardHelp/>
+            </div>
         </article>
     }
     .into_any()
@@ -756,6 +758,10 @@ fn document_with_head(
         <meta name="viewport" content="width=device-width,initial-scale=1"/>
         <meta name="description" content=description.to_owned()/>
         <meta name="robots" content=robots.to_owned()/>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2032%2032%22%3E%3Crect%20width=%2232%22%20height=%2232%22%20rx=%228%22%20fill=%22%23a7f3d0%22/%3E%3Cpath%20d=%22M9%208h15v5H15v4h8v5h-8v6H9z%22%20fill=%22%23081014%22/%3E%3C/svg%3E"
+        />
         <link rel="canonical" href=canonical.to_owned()/>
         {public_open_graph.then(|| (
             leptos::html::meta().attr("property", "og:type").content("video.other"),
@@ -767,8 +773,14 @@ fn document_with_head(
         <style>{STYLE}</style>
     }
     .to_html();
+    let hydration = view! {
+        <div id=ROOT_ID data-frame-hydration-scope="interaction-island">
+            <HydrationBoundary/>
+        </div>
+    }
+    .to_html();
     format!(
-        "<!doctype html><html lang=\"en\"><head>{head}</head><body><a class=\"skip-link\" href=\"#main\">Skip to content</a>{app}</body></html>"
+        "<!doctype html><html lang=\"en\"><head>{head}<!--FRAME_HYDRATION_HEAD--></head><body><a class=\"skip-link\" href=\"#main\">Skip to content</a>{app}{hydration}<!--FRAME_HYDRATION_SCRIPT--></body></html>"
     )
 }
 
@@ -806,6 +818,7 @@ article p:last-child, .panel p, .player-help { color: #b2bbc8; line-height: 1.6;
 label { font-weight: 750; }
 input { width: 100%; min-height: 44px; padding: 10px 12px; color: #f3f5f7; background: #090b10; border: 1px solid #697386; border-radius: 8px; font: inherit; }
 button { border: 0; font: inherit; cursor: pointer; }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .workspace-page { width: min(1280px, calc(100% - 32px)); padding-bottom: 72px; }
 .workspace-header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #303846; }
 .session-summary { display: flex; align-items: center; gap: 10px; color: #b2bbc8; font-size: 14px; }
@@ -842,6 +855,10 @@ video { display: block; width: 100%; min-height: 280px; max-height: 70vh; backgr
 .player-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 18px; }
 .player-grid section { padding: 0 4px; }
 .player-grid h2 { font-size: 18px; }
+.player-keyboard-help { margin-top: 22px; padding-top: 2px; border-top: 1px solid #303846; }
+.player-keyboard-help-panel { margin-top: 12px; padding: 14px; background: #0d1118; border: 1px solid #394354; border-radius: 10px; }
+.player-keyboard-help:not([data-frame-enhanced="true"]) .hydration-only { display: none; }
+.player-keyboard-help[data-frame-enhanced="true"] .player-keyboard-help-fallback { display: none; }
 .embed-page { display: grid; min-height: 100vh; place-items: center; padding: 16px; }
 @media (max-width: 760px) { .grid, .player-grid { grid-template-columns: 1fr; } .hero { padding-top: 52px; } .workspace-layout { grid-template-columns: 1fr; gap: 24px; } .workspace-nav ul { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 520px) { .actions, .recording-row { align-items: stretch; flex-direction: column; } .nav-links { gap: 10px; font-size: 14px; } .session-summary > span:first-child { display: none; } .workspace-nav ul { grid-template-columns: 1fr; } .search-form > div { grid-template-columns: 1fr; } .detail-list > div { grid-template-columns: 1fr; gap: 4px; } }
@@ -877,6 +894,11 @@ mod tests {
             assert!(page.body.contains("id=\"main\""));
             assert!(page.body.contains("rel=\"canonical\""));
             assert!(page.body.contains("name=\"robots\""));
+            assert!(
+                page.body
+                    .contains("data-frame-hydration-scope=\"interaction-island\"")
+            );
+            assert!(page.body.contains("Server-rendered content ready."));
         }
     }
 
@@ -957,7 +979,7 @@ mod tests {
             local_share_fixture(&config, "fixture-public"),
         );
         assert_eq!(page.status, StatusCode::OK);
-        assert_eq!(page.cache_control, PUBLIC_HTML_CACHE);
+        assert_eq!(page.cache_control, NO_STORE);
         assert!(page.body.contains("<video"));
         assert!(page.body.contains("kind=\"captions\""));
         assert!(page.body.contains("property=\"og:title\""));

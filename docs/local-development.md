@@ -13,6 +13,11 @@ scripts/frame reset
 scripts/frame start
 ```
 
+For web interaction work, install `trunk 0.21.14` with Cargo's `--locked`
+flag and run `python3 -I scripts/ci/build-web-hydration.py` before starting the
+web binary. If the verified bundle is absent or stale, Frame emits no dead
+script links and continues with the server-rendered no-JavaScript experience.
+
 The web service listens on `http://127.0.0.1:3000`; the Worker listens on
 `http://127.0.0.1:8787`; and the persistent native media health service listens
 on `http://127.0.0.1:8790`. `Ctrl-C` stops all three, and `scripts/frame stop` is
@@ -57,6 +62,8 @@ resources, hard cost/time limits, synthetic fixtures, and explicit cleanup.
   plugin sets for the OS, then rerun `scripts/frame doctor`.
 - Missing Worker tooling: install `worker-build 0.8.5` and `cargo-deny 0.20.2`
   with Cargo's `--locked` flag. The doctor rejects other versions.
+- Missing web hydration tooling: install `trunk 0.21.14` with Cargo's
+  `--locked` flag, then rerun `scripts/ci/build-web-hydration.py`.
 - Missing browser tooling: install Chromium/Chrome/Edge, or enable
   `safaridriver` on macOS. Tauri CLI is reported separately because it is only
   required while developing the native shell.

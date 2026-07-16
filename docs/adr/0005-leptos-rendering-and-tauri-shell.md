@@ -11,8 +11,20 @@ assets and does not provide a server runtime inside the desktop application.
 
 ## Decision
 
-- `frame-web` uses Leptos SSR behind Axum. Its Cargo dependency enables only
-  Leptos' `ssr` feature and remains outside browser Wasm.
+- `frame-web` uses Leptos SSR behind Axum plus progressive Leptos hydration
+  islands. Native dependencies select only Leptos' `ssr` feature; the separate
+  `frame-web-hydrate` Wasm binary selects only `hydrate`.
+- Web hydration is deliberately island-scoped. Axum remains authoritative for
+  route, metadata, privacy, session, role, loading, and error state. The browser
+  hydrates only shared, data-free components whose exact initial markup was
+  rendered by the server. Full-body hydration would require the browser to
+  reconstruct server-authorized private state and would risk a mismatch or a
+  flash/leak, so it is prohibited until a typed same-origin bootstrap exists.
+- Trunk produces a clean, locked bundle. A post-build manifest names every
+  asset by its full SHA-256; Axum verifies the manifest, filename, digest,
+  type, and size before injecting any script tag. The verified assets receive
+  immutable caching. A missing or tampered bundle removes both injection
+  points and leaves the useful no-JavaScript page intact.
 - `frame-desktop-ui` uses Leptos CSR compiled to Wasm by Trunk. Tauri 2 embeds
   the fingerprinted `ui/dist` output; no HTTP server ships in the desktop app.
 - The desktop and web targets select their Leptos features in their own
@@ -44,6 +56,12 @@ python3 scripts/ci/build-desktop-ui.py
 python3 scripts/ci/check-desktop-bundle.py
 cargo build --locked --release -p frame-desktop-core --features tauri-app,custom-protocol --bin frame-desktop
 python3 scripts/ci/desktop-shell-smoke.py
+
+cargo test --locked -p frame-web
+cargo clippy --locked -p frame-web --no-default-features --features hydrate --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
+python3 -I scripts/ci/build-web-hydration.py
+python3 -I scripts/ci/check-web-hydration-bundle.py
+python3 -I scripts/ci/web-hydration-smoke.py --origin http://127.0.0.1:3000
 ```
 
 `quality-gates.yml` repeats the command boundary, Wasm bundle, and native
@@ -51,6 +69,19 @@ release build on both supported operating systems and retains the exact binary
 and frontend bundle. The deterministic core tests remain the fake-backend
 evidence for replay, stale revisions, device loss, recovery, paths, and
 accessibility state.
+
+The release handoff copies `web-dist` next to `frame-web`, and Render copies the
+same verified directory next to `target/release/frame-web`. Production and
+preview trust only that executable-adjacent package; only local development may
+use `FRAME_WEB_ASSET_DIR` or fall back to `apps/web/dist` in the checkout. This
+prevents a writable working directory or deployment environment override from
+becoming a same-origin script authority and makes the executable independent of
+its cwd. Nonlocal readiness is degraded until the complete package verifies.
+Public HTML is `no-store` in this phase because it names one exact hashed asset
+closure and a release retains only that closure. Public-document caching can be
+restored only with atomic CDN purge/versioning or retention beyond every HTML
+cache TTL; immutable content-addressed assets themselves remain cacheable for a
+year.
 
 ## Consequences
 

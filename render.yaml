@@ -9,7 +9,11 @@ services:
     runtime: rust
     plan: starter
     region: oregon
-    buildCommand: cargo build --locked --release -p frame-web
+    buildCommand: >-
+      cargo install trunk --version 0.21.14 --locked &&
+      python3 -I scripts/ci/build-web-hydration.py --runtime-dir target/release/web-dist &&
+      python3 -I scripts/ci/check-web-hydration-bundle.py &&
+      cargo build --locked --release -p frame-web
     startCommand: ./target/release/frame-web
     healthCheckPath: /health/ready
     maxShutdownDelaySeconds: 60
@@ -24,6 +28,7 @@ services:
         - Cargo.toml
         - Cargo.lock
         - rust-toolchain.toml
+        - scripts/ci/**
         - render.yaml
     envVars:
       - key: FRAME_DEPLOYMENT

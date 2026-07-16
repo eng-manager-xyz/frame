@@ -73,6 +73,12 @@ def main() -> int:
             "quality-gates.yml: secret and dependency policy must be required", errors)
     require("generate-cyclonedx.py" in quality and "hermetic-journey.py" in quality,
             "quality-gates.yml: SBOM and provider-free walking-slice checks must be required", errors)
+    require("build-web-hydration.py" in quality
+            and "check-web-hydration-bundle.py" in quality
+            and "web-hydration-smoke.py" in quality
+            and "frame-web-hydrate" in quality
+            and "google-chrome --version" in quality,
+            "quality-gates.yml: locked Wasm hydration, bundle closure, and browser smoke must be required", errors)
     require("cross-repo-preview-e2e.py" in quality and "--self-test --timeout 20" in quality,
             "quality-gates.yml: credential-free two-origin preview controls must be required", errors)
     require("macos-15" in quality and "windows-2022" in quality and "macos-14" not in quality,
@@ -123,6 +129,11 @@ def main() -> int:
             "production-gate.yml: release preflight must validate SBOM and hermetic journey", errors)
     require("package-release.sh" in production and "verify-release-bundle.sh" in production,
             "production-gate.yml: release must create and verify the immutable SBOM-bearing handoff", errors)
+    require("build-web-hydration.py" in production
+            and "check-web-hydration-bundle.py" in production
+            and "web-hydration-smoke.py" in production
+            and "target/frame-release/frame-web" in production,
+            "production-gate.yml: the executable-adjacent hydration package must be built and smoked", errors)
 
     smoke = texts.get("production-smoke.yml", "")
     require("schedule:" in smoke and "workflow_dispatch:" in smoke and "workflow_run:" in smoke,

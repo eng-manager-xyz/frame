@@ -53,6 +53,8 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           cache-on-failure: false
+      - name: Install the pinned Leptos web asset bundler
+        run: cargo install trunk --version 0.21.14 --locked
       - name: Install GStreamer build and runtime libraries
         run: >-
           sudo apt-get update && sudo apt-get install -y --no-install-recommends
@@ -80,8 +82,11 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked -p frame-web --no-default-features --features hydrate --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
           cargo test --locked --workspace
           scripts/ci/check-workspace-boundaries.sh
+          python3 -I scripts/ci/build-web-hydration.py
+          python3 -I scripts/ci/check-web-hydration-bundle.py
       - name: Prove lockfile stability
         run: git diff --exit-code -- Cargo.lock
 
@@ -105,10 +110,16 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22.17.0"
+      - name: Install the pinned Leptos web asset bundler
+        run: cargo install trunk --version 0.21.14 --locked
       - name: Install the pinned Worker packager
         run: cargo install worker-build --version 0.8.5 --locked
       - name: Build release targets
         run: |
+          python3 -I scripts/ci/build-web-hydration.py \
+            --runtime-dir target/release/web-dist
+          python3 -I scripts/ci/check-web-hydration-bundle.py \
+            --evidence target/evidence/web-hydration-bundle-release.json
           cargo build --locked --release -p frame-web
           npx --yes wrangler@4.111.0 deploy --dry-run \
             --config apps/control-plane/wrangler.toml \
@@ -117,6 +128,32 @@ jobs:
         env:
           RELEASE_SHA: ${{ github.sha }}
         run: scripts/ci/package-release.sh target/frame-release
+      - name: Verify and smoke the executable-adjacent web package
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          scripts/ci/verify-release-bundle.sh target/frame-release
+          (
+            cd /tmp
+            FRAME_ADDR=127.0.0.1:3811 \
+              FRAME_DEPLOYMENT=local \
+              FRAME_RELEASE_ID=${GITHUB_SHA} \
+              "${GITHUB_WORKSPACE}/target/frame-release/frame-web" \
+              >"${GITHUB_WORKSPACE}/target/frame-web-package-smoke.log" 2>&1 &
+            server_pid=$!
+            trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+            for attempt in $(seq 1 20); do
+              if curl --fail --silent --show-error --max-time 2 \
+                http://127.0.0.1:3811/health/ready >/dev/null; then
+                break
+              fi
+              test "${attempt}" -ne 20
+              sleep 1
+            done
+            python3 -I "${GITHUB_WORKSPACE}/scripts/ci/web-hydration-smoke.py" \
+              --origin http://127.0.0.1:3811 \
+              --evidence "${GITHUB_WORKSPACE}/target/evidence/web-hydration-smoke-package.json"
+          )
       - name: Prove lockfile stability
         run: git diff --exit-code -- Cargo.lock
       - name: Upload the immutable release handoff

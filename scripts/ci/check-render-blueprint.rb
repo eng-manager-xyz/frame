@@ -21,7 +21,7 @@ else
   expected = {
     "type" => "web",
     "runtime" => "rust",
-    "buildCommand" => "cargo build --locked --release -p frame-web",
+    "buildCommand" => "cargo install trunk --version 0.21.14 --locked && python3 -I scripts/ci/build-web-hydration.py --runtime-dir target/release/web-dist && python3 -I scripts/ci/check-web-hydration-bundle.py && cargo build --locked --release -p frame-web",
     "startCommand" => "./target/release/frame-web",
     "healthCheckPath" => "/health/ready",
     "autoDeployTrigger" => "checksPass"
@@ -36,7 +36,7 @@ else
   errors << "frame-web must own only the canonical production domain" unless domains == ["frame.engmanager.xyz"]
 
   paths = web.dig("buildFilter", "paths") || []
-  %w[apps/web/** crates/** Cargo.toml Cargo.lock rust-toolchain.toml render.yaml].each do |required|
+  %w[apps/web/** crates/** Cargo.toml Cargo.lock rust-toolchain.toml scripts/ci/** render.yaml].each do |required|
     errors << "frame-web buildFilter.paths is missing #{required}" unless paths.include?(required)
   end
 

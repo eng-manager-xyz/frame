@@ -35,7 +35,7 @@ infrastructure, browser security, E2E, and launch.
 
 - `apps/control-plane`: Cloudflare Worker configured with D1, R2, and Media Transformations bindings.
 - `apps/media-worker`: native executable that probes GStreamer and can produce a synthetic WebM smoke artifact.
-- `apps/web`: server-rendered Leptos shell served by Axum.
+- `apps/web`: Axum-served Leptos SSR with authority-free hydration islands.
 - `apps/desktop`: typed workflow core plus a Tauri 2 shell embedding Leptos CSR.
 - `crates/domain`: IDs, recording state, object keys, and transition rules.
 - `crates/media`: GStreamer pipeline construction and runtime checks.
@@ -51,10 +51,14 @@ Prerequisites are Rust 1.96.1 and GStreamer with the base/good plugin sets. On m
 cargo test --workspace
 cargo run -p frame-media-worker -- probe
 cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
+python3 -I scripts/ci/build-web-hydration.py
 cargo run -p frame-web
 ```
 
-The web shell listens on `FRAME_ADDR` or `127.0.0.1:3000`. The control-plane Worker is checked separately because it targets `wasm32-unknown-unknown`:
+The web shell listens on `FRAME_ADDR` or `127.0.0.1:3000`. Install the pinned
+`trunk 0.21.14` first; the clean, locked build creates content-addressed browser
+assets while every route remains useful without them. The control-plane Worker
+is checked separately because it targets `wasm32-unknown-unknown`:
 
 ```sh
 cargo check -p frame-control-plane --target wasm32-unknown-unknown

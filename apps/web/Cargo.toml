@@ -6,15 +6,38 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["ssr"]
+ssr = []
+hydrate = []
+
 [dependencies]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow.workspace = true
 axum.workspace = true
 frame-client = { path = "../../crates/frame-client" }
 leptos = { workspace = true, features = ["ssr"] }
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+leptos = { workspace = true, features = ["hydrate"] }
+wasm-bindgen.workspace = true
+
+[[bin]]
+name = "frame-web"
+path = "src/main.rs"
+required-features = ["ssr"]
+
+[[bin]]
+name = "frame-web-hydrate"
+path = "src/bin/hydrate.rs"
+required-features = ["hydrate"]
 
 [lints]
 workspace = true

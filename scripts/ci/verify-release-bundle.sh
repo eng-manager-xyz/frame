@@ -15,6 +15,15 @@ for required in frame-web frame-worker.tar.gz cargo-metadata.json frame.cdx.json
     exit 1
   }
 done
+[[ -d "${bundle}/web-dist" ]] || {
+  echo "release bundle is missing executable-adjacent web-dist" >&2
+  exit 1
+}
+if find "${bundle}/web-dist" -type l -print -quit | grep -q .; then
+  echo "release web-dist may not contain symbolic links" >&2
+  exit 1
+fi
+python3 -I scripts/ci/check-web-hydration-bundle.py --dist "${bundle}/web-dist" >/dev/null
 
 (
   cd "${bundle}"
@@ -32,6 +41,8 @@ jq -e --arg sha "${expected_sha}" '
   .render_authority == "git-checks-pass" and
   (.migration_level | test("^[0-9]{4}_[a-z0-9_]+\\.sql$")) and
   .artifacts.web.path == "frame-web" and
+  .artifacts.web_assets.path == "web-dist/manifest.json" and
+  .artifacts.web_assets.layout == "web-dist" and
   .artifacts.worker.path == "frame-worker.tar.gz" and
   .artifacts.cargo_metadata.path == "cargo-metadata.json" and
   .artifacts.sbom.path == "frame.cdx.json" and
@@ -47,7 +58,7 @@ sha256_file() {
   fi
 }
 
-for artifact in web worker cargo_metadata sbom; do
+for artifact in web web_assets worker cargo_metadata sbom; do
   path="$(jq -r --arg artifact "${artifact}" '.artifacts[$artifact].path' "${bundle}/release-manifest.json")"
   expected="$(jq -r --arg artifact "${artifact}" '.artifacts[$artifact].sha256' "${bundle}/release-manifest.json")"
   actual="$(sha256_file "${bundle}/${path}")"

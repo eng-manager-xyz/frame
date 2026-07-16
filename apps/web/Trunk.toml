@@ -1,0 +1,8 @@
+[build]
+target = "hydrate.html"
+dist = "dist"
+public_url = "/assets/"
+filehash = false
+
+[watch]
+ignore = ["dist"]
