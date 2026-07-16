@@ -21,13 +21,17 @@ jobs:
         with:
           cache-on-failure: false
       - name: Install GStreamer
-        run: >-
-          sudo apt-get update && sudo apt-get install -y
-          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-          gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      - run: scripts/ci/gstreamer-sanitized-exec cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
       - run: cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
       - name: Deterministic ETL and reversible cutover proof
         run: python3 -I scripts/migration/test_local.py
@@ -45,4 +49,4 @@ jobs:
           --config apps/control-plane/wrangler.toml
           --outdir target/wrangler-dry-run
       - name: GStreamer smoke artifact
-        run: cargo run --locked -p frame-media-worker -- smoke target/frame-smoke.webm
+        run: scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- smoke target/frame-smoke.webm

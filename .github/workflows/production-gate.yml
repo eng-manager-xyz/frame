@@ -56,10 +56,14 @@ jobs:
       - name: Install the pinned Leptos web asset bundler
         run: cargo install trunk --version 0.21.14 --locked
       - name: Install GStreamer build and runtime libraries
-        run: >-
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends
-          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-          gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
       - name: Validate release policy and configuration
         run: |
           python3 scripts/ci/check-workflow-policy.py
@@ -81,9 +85,9 @@ jobs:
       - name: Run format, lint, test, and boundary gates
         run: |
           cargo fmt --all -- --check
-          cargo clippy --locked --workspace --all-targets -- -D warnings
+          scripts/ci/gstreamer-sanitized-exec cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo clippy --locked -p frame-web --no-default-features --features hydrate --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
-          cargo test --locked --workspace
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
           scripts/ci/check-workspace-boundaries.sh
           python3 -I scripts/ci/build-web-hydration.py
           python3 -I scripts/ci/check-web-hydration-bundle.py

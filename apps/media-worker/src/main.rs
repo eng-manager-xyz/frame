@@ -16,8 +16,8 @@ mod thumbnail;
 use consumer::{WorkOutcome, run_consumer_loop, work_once};
 use protocol::{WorkerClient, WorkerConfig};
 use thumbnail::{
-    ensure_thumbnail_runtime, run_thumbnail_child, thumbnail_runtime_missing_factories,
-    thumbnail_runtime_ready,
+    ReadyGstreamerRuntime, ensure_thumbnail_runtime, run_thumbnail_child, thumbnail_factory_count,
+    thumbnail_runtime_capability, thumbnail_runtime_missing_factories,
 };
 
 const HEALTH_SCHEMA_VERSION: u16 = 1;
@@ -33,13 +33,23 @@ struct HealthResponse {
 
 fn health_response() -> (StatusCode, Json<HealthResponse>) {
     let diagnostics = diagnose_runtime();
+    health_response_with(diagnostics, thumbnail_runtime_missing_factories)
+}
+
+fn health_response_with(
+    diagnostics: frame_media::RuntimeDiagnostics,
+    thumbnail_probe: impl FnOnce(&ReadyGstreamerRuntime) -> usize,
+) -> (StatusCode, Json<HealthResponse>) {
     let missing = diagnostics
         .factories
         .iter()
         .filter(|factory| factory.requirement == FactoryRequirement::Required && !factory.available)
         .count();
-    let thumbnail_missing = thumbnail_runtime_missing_factories();
-    let ready = diagnostics.is_ready() && thumbnail_runtime_ready();
+    let runtime = thumbnail_runtime_capability(&diagnostics);
+    let thumbnail_missing = runtime
+        .as_ref()
+        .map_or_else(thumbnail_factory_count, thumbnail_probe);
+    let ready = diagnostics.is_ready() && runtime.is_some() && thumbnail_missing == 0;
     (
         if ready {
             StatusCode::OK
@@ -239,6 +249,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use frame_media::{DiagnosticIssue, RuntimeDiagnostics};
 
     #[test]
     fn live_contract_is_versioned_and_value_free() {
@@ -261,5 +272,24 @@ mod tests {
         assert_eq!(response.service, "frame-media-worker");
         assert!(matches!(response.status, "ready" | "degraded"));
         assert!(response.required_factories_unavailable <= 32);
+    }
+
+    #[test]
+    fn hostile_plugin_environment_short_circuits_before_thumbnail_probe() {
+        let diagnostics = RuntimeDiagnostics {
+            manifest_version: frame_media::RUNTIME_MANIFEST_VERSION,
+            runtime_version: None,
+            factories: Vec::new(),
+            issues: vec![DiagnosticIssue::PluginSearchPathOverride("GST_PLUGIN_PATH")],
+        };
+        let (status, Json(response)) = health_response_with(diagnostics, |_| {
+            panic!("thumbnail probing must not run after runtime trust rejection")
+        });
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status, "degraded");
+        assert_eq!(
+            response.required_factories_unavailable,
+            thumbnail_factory_count()
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! Native media primitives shared by Frame's desktop and media-worker runtimes.
 //!
 //! This crate deliberately keeps provider, UI, and database concerns out of the
-//! GStreamer process.  Its public types model deterministic media lifecycle,
+//! GStreamer process. Its public types model bounded media lifecycle,
 //! capture timing, recording recovery, executor routing, and conformance checks.
 
 mod capture;
@@ -11,8 +11,9 @@ mod jobs;
 mod pipeline;
 mod runtime;
 mod studio;
+mod supervisor;
 
-use std::{path::Path, time::Instant};
+use std::path::Path;
 
 use gst::prelude::*;
 use gstreamer as gst;
@@ -25,8 +26,9 @@ pub use jobs::*;
 pub use pipeline::*;
 pub use runtime::*;
 pub use studio::*;
+pub use supervisor::*;
 
-/// Records the existing deterministic VP8/WebM smoke fixture.
+/// Records the existing fixed-profile synthetic VP8/WebM smoke fixture.
 ///
 /// The smoke remains intentionally native-only. Production profiles are chosen
 /// through [`MediaRouter`], not by changing this small runtime diagnostic.
@@ -39,7 +41,16 @@ pub fn record_synthetic_webm_with_cancel(
     path: &Path,
     cancellation: &CancellationToken,
 ) -> Result<(), MediaError> {
-    probe_runtime()?;
+    record_synthetic_av_webm(path, cancellation).map(|_| ())
+}
+
+/// Records a fixed-profile synthetic VP8 + Opus WebM fixture and returns the complete,
+/// privacy-safe supervisor report.
+pub fn record_synthetic_av_webm(
+    path: &Path,
+    cancellation: &CancellationToken,
+) -> Result<PipelineRunReport, MediaError> {
+    let runtime = prepare_runtime()?;
     if cancellation.is_cancelled() {
         return Err(MediaError::Cancelled);
     }
@@ -48,15 +59,23 @@ pub fn record_synthetic_webm_with_cancel(
         std::fs::create_dir_all(parent).map_err(MediaError::Output)?;
     }
 
-    let mut lifecycle = PipelineLifecycle::new();
-    lifecycle
-        .apply(PipelineCommand::Prepare)
-        .map_err(MediaError::Lifecycle)?;
-
-    let element = gst::parse::launch(
-        "videotestsrc num-buffers=60 pattern=ball ! videoconvert ! vp8enc deadline=1 ! webmmux ! filesink name=output",
-    )
-    .map_err(|error| MediaError::Pipeline(redact_gstreamer_error(&error.to_string())))?;
+    let element = gst::parse::launch(concat!(
+        "webmmux name=mux streamable=false ! identity name=progress ",
+        "! filesink name=output ",
+        "videotestsrc num-buffers=60 is-live=false pattern=ball ",
+        "! video/x-raw,width=320,height=180,framerate=30/1 ",
+        "! queue max-size-buffers=64 max-size-bytes=0 max-size-time=0 leaky=no ",
+        "! identity name=video_timing ",
+        "! videoconvert ! vp8enc deadline=1 ",
+        "! queue max-size-buffers=64 max-size-bytes=0 max-size-time=0 leaky=no ! mux. ",
+        "audiotestsrc num-buffers=94 samplesperbuffer=1024 is-live=false wave=sine freq=440 ",
+        "! audio/x-raw,format=F32LE,rate=48000,channels=1 ",
+        "! queue max-size-buffers=128 max-size-bytes=0 max-size-time=0 leaky=no ",
+        "! identity name=audio_timing ",
+        "! audioconvert ! audioresample ! opusenc ",
+        "! queue max-size-buffers=128 max-size-bytes=0 max-size-time=0 leaky=no ! mux."
+    ))
+    .map_err(|_| MediaError::Pipeline("could not construct audited synthetic A/V graph".into()))?;
     let pipeline = element.downcast::<gst::Pipeline>().map_err(|_| {
         MediaError::Pipeline("pipeline description did not create a Pipeline".into())
     })?;
@@ -65,83 +84,44 @@ pub fn record_synthetic_webm_with_cancel(
         .ok_or_else(|| MediaError::Pipeline("filesink was not created".into()))?;
     output.set_property("location", path);
 
-    let bus = pipeline
-        .bus()
-        .ok_or_else(|| MediaError::Pipeline("pipeline has no bus".into()))?;
-    if let Err(error) = pipeline.set_state(gst::State::Playing) {
-        let _ = pipeline.set_state(gst::State::Null);
-        return Err(MediaError::State(error.to_string()));
-    }
-    if let Err(error) = lifecycle.apply(PipelineCommand::Start) {
-        let _ = pipeline.set_state(gst::State::Null);
-        return Err(MediaError::Lifecycle(error));
-    }
-    let started = Instant::now();
-    let timeout = std::time::Duration::from_secs(15);
-    let poll = gst::ClockTime::from_mseconds(50);
-
-    let terminal_result = loop {
-        if cancellation.is_cancelled() {
-            let _ = lifecycle.apply(PipelineCommand::Cancel);
-            break Err(MediaError::Cancelled);
+    let supervisor = PipelineSupervisor::new(
+        &runtime,
+        pipeline,
+        "progress",
+        PipelineCorrelationId::new("synthetic-av-smoke")?,
+        SupervisorPolicy::default(),
+    )?
+    .with_av_timing_probes("audio_timing", "video_timing")?;
+    let report = supervisor.run(cancellation)?;
+    match (report.outcome, report.teardown) {
+        (PipelineTerminalOutcome::Completed, PipelineTeardown::NullReached) => Ok(report),
+        (PipelineTerminalOutcome::Cancelled, _) => {
+            remove_partial_output(path);
+            Err(MediaError::Cancelled)
         }
-        if started.elapsed() >= timeout {
-            let _ = lifecycle.apply(PipelineCommand::Fail(PipelineFault::timeout()));
-            break Err(MediaError::Timeout);
-        }
-
-        let Some(message) =
-            bus.timed_pop_filtered(poll, &[gst::MessageType::Eos, gst::MessageType::Error])
-        else {
-            continue;
-        };
-
-        match message.view() {
-            gst::MessageView::Eos(_) => {
-                if let Err(error) = lifecycle.apply(PipelineCommand::BeginFinalize) {
-                    break Err(MediaError::Lifecycle(error));
-                }
-                if let Err(error) = lifecycle.apply(PipelineCommand::Complete) {
-                    break Err(MediaError::Lifecycle(error));
-                }
-                break Ok(());
+        (PipelineTerminalOutcome::Failed(fault), _) => {
+            remove_partial_output(path);
+            match fault.code {
+                PipelineFaultCode::Timeout => Err(MediaError::Timeout),
+                PipelineFaultCode::SinkBlocked => Err(MediaError::SinkBlocked),
+                _ => Err(MediaError::Pipeline(fault.safe_message.into())),
             }
-            gst::MessageView::Error(error) => {
-                let safe_message = redact_gstreamer_error(&error.error().to_string());
-                let _ = lifecycle.apply(PipelineCommand::Fail(PipelineFault::pipeline()));
-                break Err(MediaError::Pipeline(safe_message));
-            }
-            _ => continue,
         }
-    };
-
-    // Teardown is attempted on every terminal path so devices and files are not
-    // retained after a timeout, cancellation, or bus error.
-    let teardown_result = pipeline
-        .set_state(gst::State::Null)
-        .map_err(|error| MediaError::State(error.to_string()));
-
-    match (terminal_result, teardown_result) {
-        (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(_)) => Ok(()),
+        (PipelineTerminalOutcome::Completed, _) => {
+            remove_partial_output(path);
+            Err(MediaError::State(
+                "pipeline did not confirm the Null state".into(),
+            ))
+        }
     }
 }
 
-fn redact_gstreamer_error(message: &str) -> String {
-    // GStreamer errors can include a local file URI after a colon. Preserve the
-    // useful error class without putting filesystem paths into diagnostics.
-    let trimmed = message.trim();
-    if trimmed.is_empty() {
-        return "unspecified GStreamer error".into();
+fn remove_partial_output(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {}
     }
-    trimmed
-        .split("file://")
-        .next()
-        .unwrap_or("GStreamer pipeline error")
-        .chars()
-        .take(240)
-        .collect()
 }
 
 #[derive(Debug, Error)]
@@ -161,8 +141,12 @@ pub enum MediaError {
     State(String),
     #[error("GStreamer smoke pipeline timed out")]
     Timeout,
+    #[error("GStreamer pipeline stopped making output progress")]
+    SinkBlocked,
     #[error("GStreamer operation was cancelled")]
     Cancelled,
+    #[error("GStreamer supervisor rejected the pipeline: {0}")]
+    Supervisor(#[from] SupervisorError),
     #[error("invalid pipeline lifecycle: {0}")]
     Lifecycle(#[source] LifecycleError),
     #[error("could not prepare output path: {0}")]
@@ -181,15 +165,42 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_pipeline_writes_media() {
+    fn synthetic_pipeline_writes_audio_and_video_media() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let output = directory.path().join("smoke.webm");
-        record_synthetic_webm(&output).expect("record synthetic WebM");
-        let size = std::fs::metadata(output).expect("output metadata").len();
+        let report = record_synthetic_av_webm(&output, &CancellationToken::new())
+            .expect("record synthetic WebM");
+        let bytes = std::fs::read(output).expect("output bytes");
+        let size = bytes.len();
         assert!(
             size > 1_024,
             "expected a non-trivial media artifact, got {size} bytes"
         );
+        assert!(
+            bytes.windows(b"V_VP8".len()).any(|value| value == b"V_VP8"),
+            "WebM is missing its VP8 track"
+        );
+        assert!(
+            bytes
+                .windows(b"A_OPUS".len())
+                .any(|value| value == b"A_OPUS"),
+            "WebM is missing its Opus track"
+        );
+        assert!(report.completed());
+        assert!(
+            report
+                .diagnostics
+                .factories
+                .contains(&"audiotestsrc".into())
+        );
+        assert!(report.diagnostics.factories.contains(&"opusenc".into()));
+        assert_eq!(report.diagnostics.queues.len(), 4);
+        assert!(report.diagnostics.queues.iter().all(|queue| {
+            queue.max_buffers > 0 || queue.max_bytes > 0 || queue.max_time_ns > 0
+        }));
+        let timing = report.diagnostics.av_timing.expect("A/V timing probes");
+        assert!(timing.start_offset_ns.unsigned_abs() <= 1_000_000);
+        assert!(timing.drift_ns.unsigned_abs() <= 25_000_000);
     }
 
     #[test]
@@ -203,12 +214,5 @@ mod tests {
             Err(MediaError::Cancelled)
         ));
         assert!(!output.exists());
-    }
-
-    #[test]
-    fn gstreamer_errors_drop_file_uris() {
-        let redacted = redact_gstreamer_error("failed file:///Users/example/private.mov");
-        assert_eq!(redacted, "failed ");
-        assert!(!redacted.contains("private.mov"));
     }
 }

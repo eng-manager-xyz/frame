@@ -48,9 +48,9 @@ infrastructure, browser security, E2E, and launch.
 Prerequisites are Rust 1.96.1 and GStreamer with the base/good plugin sets. On macOS, `brew install gstreamer` supplies the development runtime. Then run:
 
 ```sh
-cargo test --workspace
-cargo run -p frame-media-worker -- probe
-cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
+scripts/frame test
+scripts/frame doctor
+scripts/frame media-smoke
 python3 -I scripts/ci/build-web-hydration.py
 cargo run -p frame-web
 ```

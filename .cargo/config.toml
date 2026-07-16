@@ -1,0 +1,5 @@
+[target.'cfg(unix)']
+# Cargo injects host loader search paths when it starts test/run artifacts.
+# Re-sanitize at the final native executable boundary, after Cargo has added
+# those variables. Windows bundle/DLL resolution remains a protected gate.
+runner = ["scripts/ci/gstreamer-sanitized-exec"]

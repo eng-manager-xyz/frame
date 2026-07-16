@@ -65,6 +65,51 @@ impl PipelineFault {
             safe_message: "pipeline reported an error",
         }
     }
+
+    #[must_use]
+    pub const fn negotiation() -> Self {
+        Self {
+            code: PipelineFaultCode::Negotiation,
+            retryable: false,
+            safe_message: "pipeline caps negotiation failed",
+        }
+    }
+
+    #[must_use]
+    pub const fn missing_factory() -> Self {
+        Self {
+            code: PipelineFaultCode::MissingFactory,
+            retryable: false,
+            safe_message: "pipeline factory is unavailable",
+        }
+    }
+
+    #[must_use]
+    pub const fn source_lost() -> Self {
+        Self {
+            code: PipelineFaultCode::SourceLost,
+            retryable: true,
+            safe_message: "pipeline source became unavailable",
+        }
+    }
+
+    #[must_use]
+    pub const fn sink_blocked() -> Self {
+        Self {
+            code: PipelineFaultCode::SinkBlocked,
+            retryable: true,
+            safe_message: "pipeline output stopped making progress",
+        }
+    }
+
+    #[must_use]
+    pub const fn resource_limit() -> Self {
+        Self {
+            code: PipelineFaultCode::ResourceLimit,
+            retryable: false,
+            safe_message: "pipeline exceeded a configured resource limit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +374,9 @@ pub struct PipelinePlan {
 
 impl PipelinePlan {
     pub fn validate(&self, runtime: &RuntimeDiagnostics) -> Result<(), PlanError> {
+        if !runtime.is_ready() {
+            return Err(PlanError::RuntimeNotReady);
+        }
         if self.protocol_version != PIPELINE_PROTOCOL_VERSION {
             return Err(PlanError::UnsupportedProtocol(self.protocol_version));
         }
@@ -349,6 +397,9 @@ impl PipelinePlan {
             if !declared.available {
                 return Err(PlanError::MissingFactory(element.factory));
             }
+            if !declared.trusted_provenance {
+                return Err(PlanError::UntrustedFactory(element.factory));
+            }
         }
         Ok(())
     }
@@ -364,10 +415,14 @@ pub enum PlanError {
     UnboundedQueue,
     #[error("pipeline resource limits must all be non-zero")]
     InvalidResourceLimit,
+    #[error("pipeline runtime diagnostics are not ready")]
+    RuntimeNotReady,
     #[error("pipeline has invalid caps")]
     InvalidCaps,
     #[error("required pipeline factory is unavailable: {0}")]
     MissingFactory(&'static str),
+    #[error("pipeline factory is outside the trusted plugin root: {0}")]
+    UntrustedFactory(&'static str),
     #[error("pipeline factory is absent from the audited runtime manifest: {0}")]
     UndeclaredFactory(&'static str),
 }
@@ -375,6 +430,37 @@ pub enum PlanError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        FactoryDiagnostic, FactoryRequirement, PlatformScope, RuntimeCapability, RuntimeDiagnostics,
+    };
+
+    fn one_element_plan() -> PipelinePlan {
+        PipelinePlan {
+            protocol_version: PIPELINE_PROTOCOL_VERSION,
+            elements: vec![PlannedElement {
+                factory: "videotestsrc",
+                role: ElementRole::Source,
+            }],
+            caps: vec![CapsConstraint {
+                media_type: "video/x-raw",
+                width: Some(320),
+                height: Some(180),
+                sample_rate: None,
+                channels: None,
+            }],
+            queue: QueuePolicy {
+                max_buffers: 2,
+                max_bytes: 1_024,
+                max_time_ns: 1_000_000,
+                overflow: OverflowPolicy::Block,
+            },
+            resources: ResourceLimits {
+                memory_bytes: 1_024,
+                deadline_ms: 1_000,
+                max_output_bytes: 1_024,
+            },
+        }
+    }
 
     #[test]
     fn lifecycle_has_one_terminal_result() {
@@ -423,5 +509,33 @@ mod tests {
             overflow: OverflowPolicy::Block,
         };
         assert_eq!(policy.validate(), Err(PlanError::UnboundedQueue));
+    }
+
+    #[test]
+    fn plans_reject_unready_or_outside_root_runtime_diagnostics() {
+        let plan = one_element_plan();
+        let mut diagnostics = RuntimeDiagnostics {
+            manifest_version: 1,
+            runtime_version: None,
+            factories: Vec::new(),
+            issues: Vec::new(),
+        };
+        assert_eq!(plan.validate(&diagnostics), Err(PlanError::RuntimeNotReady));
+
+        diagnostics.runtime_version = Some("GStreamer test".into());
+        diagnostics.factories.push(FactoryDiagnostic {
+            factory: "videotestsrc",
+            capability: RuntimeCapability::SyntheticSmoke,
+            requirement: FactoryRequirement::Required,
+            platform: PlatformScope::All,
+            available: true,
+            trusted_provenance: false,
+            plugin_version: None,
+        });
+        assert_eq!(
+            plan.validate(&diagnostics),
+            Err(PlanError::UntrustedFactory("videotestsrc"))
+        );
+        assert!(!diagnostics.capability_available(RuntimeCapability::SyntheticSmoke));
     }
 }

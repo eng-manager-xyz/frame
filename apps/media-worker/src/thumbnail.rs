@@ -11,7 +11,10 @@ use std::{
     thread,
 };
 
-use frame_media::{CancellationToken, diagnose_runtime};
+use frame_media::{
+    CancellationToken, RuntimeDiagnostics, diagnose_runtime,
+    pipeline_has_trusted_factory_provenance, runtime_manifest,
+};
 use gst::prelude::*;
 use gstreamer as gst;
 use uuid::Uuid;
@@ -89,37 +92,55 @@ impl fmt::Display for ThumbnailError {
 
 impl std::error::Error for ThumbnailError {}
 
-pub(crate) fn ensure_thumbnail_runtime() -> Result<(), ThumbnailError> {
+pub(crate) struct ReadyGstreamerRuntime {
+    thumbnail_factories_missing: usize,
+}
+
+pub(crate) fn thumbnail_runtime_capability(
+    diagnostics: &RuntimeDiagnostics,
+) -> Option<ReadyGstreamerRuntime> {
     #[cfg(not(test))]
     if !thumbnail_sandbox_supported() || !thumbnail_sandbox_ready() {
-        return Err(ThumbnailError::MissingRuntime);
+        return None;
     }
-    if !diagnose_runtime().is_ready() {
-        return Err(ThumbnailError::MissingRuntime);
+    if !diagnostics.is_ready() {
+        return None;
     }
-    gst::init().map_err(|_| ThumbnailError::MissingRuntime)?;
-    if thumbnail_runtime_missing_factories() != 0 {
+    let manifest = runtime_manifest();
+    let thumbnail_factories_missing = THUMBNAIL_FACTORIES
+        .iter()
+        .filter(|required| {
+            !manifest
+                .factories
+                .iter()
+                .any(|declared| declared.factory == **required)
+                || !diagnostics
+                    .factories
+                    .iter()
+                    .any(|factory| factory.factory == **required && factory.available)
+        })
+        .count();
+    Some(ReadyGstreamerRuntime {
+        thumbnail_factories_missing,
+    })
+}
+
+pub(crate) const fn thumbnail_factory_count() -> usize {
+    THUMBNAIL_FACTORIES.len()
+}
+
+pub(crate) fn ensure_thumbnail_runtime() -> Result<(), ThumbnailError> {
+    let diagnostics = diagnose_runtime();
+    let runtime =
+        thumbnail_runtime_capability(&diagnostics).ok_or(ThumbnailError::MissingRuntime)?;
+    if thumbnail_runtime_missing_factories(&runtime) != 0 {
         return Err(ThumbnailError::MissingRuntime);
     }
     Ok(())
 }
 
-pub(crate) fn thumbnail_runtime_ready() -> bool {
-    ensure_thumbnail_runtime().is_ok()
-}
-
-pub(crate) fn thumbnail_runtime_missing_factories() -> usize {
-    #[cfg(not(test))]
-    if !thumbnail_sandbox_supported() || !thumbnail_sandbox_ready() {
-        return THUMBNAIL_FACTORIES.len();
-    }
-    if gst::init().is_err() {
-        return THUMBNAIL_FACTORIES.len();
-    }
-    THUMBNAIL_FACTORIES
-        .iter()
-        .filter(|factory| gst::ElementFactory::find(factory).is_none())
-        .count()
+pub(crate) const fn thumbnail_runtime_missing_factories(runtime: &ReadyGstreamerRuntime) -> usize {
+    runtime.thumbnail_factories_missing
 }
 
 #[cfg(all(not(test), unix))]
@@ -196,16 +217,7 @@ fn run_isolated_pipeline(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    for name in [
-        "DYLD_FALLBACK_LIBRARY_PATH",
-        "DYLD_LIBRARY_PATH",
-        "GST_PLUGIN_PATH",
-        "GST_PLUGIN_SYSTEM_PATH",
-        "GST_REGISTRY",
-        "LD_LIBRARY_PATH",
-        "PATH",
-        "TMPDIR",
-    ] {
+    for name in ["GST_PLUGIN_SYSTEM_PATH_1_0", "PATH", "TMPDIR"] {
         if let Some(value) = env::var_os(name) {
             command.env(name, value);
         }
@@ -396,6 +408,9 @@ fn preflight_source(
         }
     };
     let validated = terminal.and_then(|()| {
+        if !pipeline_has_trusted_factory_provenance(&pipeline) {
+            return Err(ThumbnailError::MissingRuntime);
+        }
         let duration = pipeline
             .query_duration::<gst::ClockTime>()
             .ok_or(ThumbnailError::InvalidInput)?;
@@ -478,6 +493,11 @@ fn run_pipeline(
             _ => continue,
         }
     };
+    let terminal = terminal.and_then(|()| {
+        pipeline_has_trusted_factory_provenance(&pipeline)
+            .then_some(())
+            .ok_or(ThumbnailError::MissingRuntime)
+    });
     let teardown = pipeline.set_state(gst::State::Null);
     match (terminal, teardown) {
         (Err(error), _) => Err(error),
