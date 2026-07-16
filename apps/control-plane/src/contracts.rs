@@ -420,7 +420,6 @@ pub fn normalize_cf_ray(value: Option<&str>, fallback_a: u64, fallback_b: u64) -
 }
 
 #[must_use]
-#[cfg(test)]
 pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut difference = left.len() ^ right.len();
     let length = left.len().max(right.len());

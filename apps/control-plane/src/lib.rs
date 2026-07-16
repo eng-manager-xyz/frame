@@ -1,14 +1,16 @@
 mod commands;
 mod contracts;
+pub mod repository;
+mod repository_conformance;
 mod routing;
 
 use commands::{
     ApiKeyRow, COMMAND_TTL_MS, IntegrationRow, MAX_SINGLE_UPLOAD_BYTES, MediaJobResponse,
-    MediaJobRow, MembershipRow, NativeJobCandidateRow, NativeJobClaimResponse, SourceObjectRow,
-    StoredCommandRow, UploadIntentResponse, UploadRow, UploadStatusResponse, VideoMutationRow,
-    VideoResponse, VideoScopeRow, WorkerJobRow, WorkerOutputDescriptor, WorkerOutputResponse,
-    WorkerSourceDescriptor, derivative_object_key, digest_credential, digest_identifier,
-    parse_sha256, profile_kind, request_digest, source_object_key,
+    MembershipRow, NativeJobCandidateRow, NativeJobClaimResponse, SourceObjectRow,
+    StoredCommandRow, UploadIntentResponse, UploadStatusResponse, VideoResponse, VideoScopeRow,
+    WorkerOutputDescriptor, WorkerOutputResponse, WorkerSourceDescriptor, derivative_object_key,
+    digest_credential, digest_identifier, parse_sha256, profile_kind, request_digest,
+    source_object_key,
 };
 use contracts::{
     API_SCHEMA_VERSION, AuthorityResponse, CapabilitiesResponse, CreateVideoRequest,
@@ -22,8 +24,10 @@ use frame_client::{
     ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
     PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
 };
+use repository::{AggregateRepository, MediaJobRow, UploadRow, VideoMutationRow, WorkerJobRow};
 use routing::{
-    Deployment, HostPolicy, Route, classify_raw_path, parse_raw_request_target, validate_host,
+    Deployment, HostPolicy, Route, classify_raw_path, parse_raw_request_target,
+    valid_repository_conformance_target, validate_host,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -296,6 +300,15 @@ async fn dispatch(
             );
         }
     };
+    let route = classify_raw_path(&target.path);
+    // `main` has already normalized the request ID (which may read `cf-ray`),
+    // and the raw target has been parsed above. This exact reserved path gets a
+    // fixed production 404 before dispatch reads Host or route-specific method,
+    // token, content-type, content-length, or body data. No parity with every
+    // other unknown route is claimed.
+    if local_repository_conformance_hidden(&route, config.production()) {
+        return failure_response(not_found_failure(), request_id, true);
+    }
     let host = request.headers().get("host")?;
     if validate_host(&target, host.as_deref(), &config.host_policy).is_err() {
         return failure_response(
@@ -311,7 +324,7 @@ async fn dispatch(
     }
 
     let canonical_origin = format!("{}://{}", target.scheme, target.authority);
-    let response = match classify_raw_path(&target.path) {
+    let response = match route {
         Route::LegacyRoot => method_guard(&request, &[Method::Get], "GET")?.map_or_else(
             || Response::ok("Frame control plane. See /health."),
             |failure| failure_response(failure, request_id, config.production()),
@@ -942,6 +955,13 @@ async fn dispatch(
                 authority_response(env).await?
             }
         }
+        Route::LocalRepositoryConformance => {
+            if config.production() || !valid_repository_conformance_target(&target) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                repository_conformance::response(request, env).await?
+            }
+        }
         Route::InvalidApiPath => failure_response(
             ApiFailure::new(400, "invalid_api_path", "The API path is invalid.", false),
             request_id,
@@ -962,6 +982,10 @@ async fn dispatch(
         )?,
     };
     secure_response(response, request_id, config.production())
+}
+
+fn local_repository_conformance_hidden(route: &Route, production: bool) -> bool {
+    production && matches!(route, Route::LocalRepositoryConformance)
 }
 
 fn method_guard(
@@ -1208,7 +1232,7 @@ async fn video_privacy_response(
     else {
         return failure_response(not_found_failure(), request_id, config.production());
     };
-    if !existing.actor_can_update(&actor.user_id) {
+    if !existing.actor_can_update() {
         return failure_response(not_found_failure(), request_id, config.production());
     }
     let expected_revision = i64::try_from(body.expected_revision)
@@ -1366,7 +1390,7 @@ async fn video_privacy_response(
         else {
             return failure_response(not_found_failure(), request_id, config.production());
         };
-        if !current.actor_can_update(&actor.user_id) {
+        if !current.actor_can_update() {
             return failure_response(not_found_failure(), request_id, config.production());
         }
         if current.revision != expected_revision {
@@ -4579,29 +4603,10 @@ async fn load_video_mutation(
     video_id: &str,
     actor_id: &str,
 ) -> Result<Option<VideoMutationRow>> {
-    database
-        .prepare(
-            "SELECT v.id, v.owner_id, v.state, v.privacy, v.revision, \
-                    m.role AS actor_role, EXISTS (SELECT 1 FROM space_videos sv \
-                      JOIN spaces s ON s.id = sv.space_id \
-                        AND s.organization_id = v.organization_id AND s.deleted_at_ms IS NULL \
-                      JOIN space_members sm ON sm.space_id = s.id \
-                      WHERE sv.video_id = v.id AND sm.user_id = ?3 AND sm.role = 'manager' \
-                    ) AS actor_manages_space \
-             FROM videos v \
-             JOIN organizations o ON o.id = v.organization_id AND o.status = 'active' \
-             JOIN organization_members m ON m.organization_id = v.organization_id \
-               AND m.user_id = ?3 AND m.state = 'active' \
-             WHERE v.id = ?1 AND v.organization_id = ?2 \
-               AND v.deleted_at_ms IS NULL LIMIT 1",
-        )
-        .bind(&[
-            JsValue::from_str(video_id),
-            JsValue::from_str(tenant_id),
-            JsValue::from_str(actor_id),
-        ])?
-        .first::<VideoMutationRow>(None)
+    AggregateRepository::new(database)
+        .video_for_mutation(tenant_id, video_id, actor_id)
         .await
+        .map_err(repository::RepositoryFailure::into_worker_error)
 }
 
 async fn video_has_shareable_media(
@@ -4642,15 +4647,10 @@ async fn load_upload(
     tenant_id: &str,
     upload_id: &str,
 ) -> Result<Option<UploadRow>> {
-    database
-        .prepare(
-            "SELECT id, organization_id, video_id, state, expected_bytes, received_bytes, \
-                    source_object_key, source_version, content_type, checksum_sha256 \
-             FROM video_uploads WHERE id = ?1 AND organization_id = ?2 LIMIT 1",
-        )
-        .bind(&[JsValue::from_str(upload_id), JsValue::from_str(tenant_id)])?
-        .first::<UploadRow>(None)
+    AggregateRepository::new(database)
+        .upload(tenant_id, upload_id)
         .await
+        .map_err(repository::RepositoryFailure::into_worker_error)
 }
 
 async fn load_source_object(
@@ -4696,16 +4696,10 @@ async fn load_media_job(
     tenant_id: &str,
     job_id: &str,
 ) -> Result<Option<MediaJobRow>> {
-    database
-        .prepare(
-            "SELECT id, state, json_extract(payload_json, '$.profile') AS profile, \
-                    selected_executor, progress_basis_points, attempt, \
-                    cancel_requested, error_class, created_at_ms, updated_at_ms \
-             FROM media_jobs WHERE id = ?1 AND organization_id = ?2 LIMIT 1",
-        )
-        .bind(&[JsValue::from_str(job_id), JsValue::from_str(tenant_id)])?
-        .first::<MediaJobRow>(None)
+    AggregateRepository::new(database)
+        .media_job(tenant_id, job_id)
         .await
+        .map_err(repository::RepositoryFailure::into_worker_error)
 }
 
 async fn load_worker_job(
@@ -4713,18 +4707,10 @@ async fn load_worker_job(
     tenant_id: &str,
     job_id: &str,
 ) -> Result<Option<WorkerJobRow>> {
-    database
-        .prepare(
-            "SELECT id, video_id, state, revision, attempt, \
-                    json_extract(payload_json, '$.profile') AS profile, source_version, \
-                    output_object_key, worker_id, lease_token_digest, lease_expires_at_ms, \
-                    progress_basis_points, cancel_requested FROM media_jobs \
-             WHERE id = ?1 AND organization_id = ?2 AND selected_executor = 'native_gstreamer' \
-             LIMIT 1",
-        )
-        .bind(&[JsValue::from_str(job_id), JsValue::from_str(tenant_id)])?
-        .first::<WorkerJobRow>(None)
+    AggregateRepository::new(database)
+        .native_worker_job(tenant_id, job_id)
         .await
+        .map_err(repository::RepositoryFailure::into_worker_error)
 }
 
 fn worker_identity_matches(
@@ -6035,6 +6021,22 @@ mod tests {
         assert_eq!(classify_atomic_changes(&[0, 0, 0]), Ok(false));
         assert_eq!(classify_atomic_changes(&[1, 0, 1]), Err(()));
         assert_eq!(classify_atomic_changes(&[]), Err(()));
+    }
+
+    #[test]
+    fn production_hides_reserved_repository_route_before_route_specific_processing() {
+        assert!(local_repository_conformance_hidden(
+            &Route::LocalRepositoryConformance,
+            true
+        ));
+        assert!(!local_repository_conformance_hidden(
+            &Route::LocalRepositoryConformance,
+            false
+        ));
+        assert!(!local_repository_conformance_hidden(
+            &Route::ApiHealth,
+            true
+        ));
     }
 
     #[test]

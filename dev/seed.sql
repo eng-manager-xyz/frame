@@ -115,7 +115,7 @@ INSERT OR IGNORE INTO media_jobs (
   revision
 ) VALUES (
   '018f47a6-7b1c-7f55-8f39-8f8a86900107', '018f47a6-7b1c-7f55-8f39-8f8a86900104', 'frame', 'succeeded',
-  'local-seed-thumbnail-v1', 1, '{"synthetic":true}',
+  'local-seed-thumbnail-v1', 1, '{"synthetic":true,"profile":"thumbnail_v1"}',
   1700000000000, 1700000000000, '018f47a6-7b1c-7f55-8f39-8f8a86900102', 'cloudflare_media',
   1, 1,
   'tenants/018f47a6-7b1c-7f55-8f39-8f8a86900102/videos/018f47a6-7b1c-7f55-8f39-8f8a86900104/derivatives/frame/v1/thumbnail.jpg',

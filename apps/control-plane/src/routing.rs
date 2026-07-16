@@ -140,12 +140,16 @@ pub enum Route {
     WorkerMediaJobComplete { job_id: String },
     WorkerMediaJobFail { job_id: String },
     AuthorityStatus,
+    LocalRepositoryConformance,
     InvalidApiPath,
     UnknownApi,
     NotApi,
 }
 
 pub fn classify_raw_path(path: &str) -> Route {
+    if path == "/__frame/local/repository-conformance" {
+        return Route::LocalRepositoryConformance;
+    }
     if path == "/" {
         return Route::LegacyRoot;
     }
@@ -172,6 +176,15 @@ pub fn classify_raw_path(path: &str) -> Route {
         "/api/v1/operations/authority" => Route::AuthorityStatus,
         _ => dynamic_route(path),
     }
+}
+
+pub fn valid_repository_conformance_target(target: &RawRequestTarget) -> bool {
+    target.scheme == "http"
+        && target
+            .authority
+            .strip_prefix("127.0.0.1:")
+            .and_then(|port| port.parse::<u16>().ok())
+            .is_some_and(|port| port != 0)
 }
 
 fn dynamic_route(path: &str) -> Route {
@@ -339,6 +352,33 @@ mod tests {
                 validate_host(&target, Some(&target.authority), &policy),
                 Ok(())
             );
+        }
+    }
+
+    #[test]
+    fn repository_conformance_route_is_exact_and_requires_ipv4_loopback() {
+        assert_eq!(
+            classify_raw_path("/__frame/local/repository-conformance"),
+            Route::LocalRepositoryConformance
+        );
+        for path in [
+            "/__frame/local/repository-conformance/",
+            "/__frame/local/repository-conformance%2f",
+            "/__frame/local/repository-conformance/reads",
+        ] {
+            assert_eq!(classify_raw_path(path), Route::NotApi);
+        }
+        let allowed =
+            parse_raw_request_target("http://127.0.0.1:8787/__frame/local/repository-conformance")
+                .expect("target");
+        assert!(valid_repository_conformance_target(&allowed));
+        for denied in [
+            "http://localhost:8787/__frame/local/repository-conformance",
+            "https://127.0.0.1:8787/__frame/local/repository-conformance",
+            "http://127.0.0.1/__frame/local/repository-conformance",
+        ] {
+            let target = parse_raw_request_target(denied).expect("target");
+            assert!(!valid_repository_conformance_target(&target));
         }
     }
 

@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 frame-client = { path = "../../crates/frame-client" }
+futures = "0.3"
 js-sys.workspace = true
 serde.workspace = true
 serde_json.workspace = true

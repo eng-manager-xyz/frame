@@ -46,7 +46,21 @@ scripts/frame test
 scripts/frame migrate
 scripts/frame seed
 scripts/frame media-smoke
+scripts/frame d1-conformance
 ```
+
+`d1-conformance` creates a fresh temporary Wrangler D1 database, applies the
+complete migration chain, builds and starts the Rust/Wasm Worker on an
+ephemeral IPv4 loopback port, and drives the aggregate repository parity,
+keyset pagination, parameter-boundary, atomicity, contention, and fault suite
+over HTTP. A random per-run token gates the exact local-only route. It writes a
+redacted report with actual Worker telemetry to
+`target/evidence/d1-repository-conformance.json` and removes the temporary
+database when complete. After request-ID normalization (which may inspect
+`cf-ray`) and raw-target parsing, this exact reserved path returns a fixed
+production 404 before route-specific Host, method, token, content-type,
+content-length, or body processing. This does not claim that every unknown
+route is handled identically.
 
 The Media Transformations binding cannot be faithfully emulated. Offline
 development tests the same capability, idempotency, output-key, fallback, and

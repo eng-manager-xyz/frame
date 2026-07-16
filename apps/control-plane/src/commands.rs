@@ -179,69 +179,9 @@ pub struct MembershipRow {
     pub role: String,
 }
 
-#[derive(Clone, Deserialize)]
-pub struct VideoMutationRow {
-    pub id: String,
-    pub owner_id: String,
-    pub state: String,
-    pub privacy: String,
-    pub revision: i64,
-    pub actor_role: String,
-    pub actor_manages_space: i64,
-}
-
-impl VideoMutationRow {
-    pub fn actor_can_update(&self, actor_id: &str) -> bool {
-        matches!(self.actor_role.as_str(), "owner" | "admin")
-            || (self.actor_role == "member"
-                && (self.owner_id == actor_id || self.actor_manages_space == 1))
-    }
-
-    pub fn public_response(&self) -> Option<VideoResponse> {
-        let revision = u64::try_from(self.revision).ok()?;
-        Some(VideoResponse {
-            schema_version: API_SCHEMA_VERSION,
-            video_id: self.id.clone(),
-            state: self.state.clone(),
-            privacy: self.privacy.clone(),
-            revision,
-            upload_intents_path: "/api/v1/uploads/intents".into(),
-            public_share_path: (self.privacy == "public")
-                .then(|| format!("/api/v1/public/shares/{}", self.id)),
-        })
-    }
-}
-
 #[derive(Deserialize)]
 pub struct VideoScopeRow {
     pub id: String,
-}
-
-#[derive(Deserialize)]
-pub struct UploadRow {
-    pub id: String,
-    pub organization_id: String,
-    pub video_id: String,
-    pub state: String,
-    pub expected_bytes: i64,
-    pub received_bytes: i64,
-    pub source_object_key: String,
-    pub source_version: i64,
-    pub content_type: String,
-    pub checksum_sha256: Option<String>,
-}
-
-impl UploadRow {
-    pub fn public_status(&self) -> Option<UploadStatusResponse> {
-        Some(UploadStatusResponse {
-            schema_version: API_SCHEMA_VERSION,
-            upload_id: self.id.clone(),
-            state: self.state.clone(),
-            expected_bytes: u64::try_from(self.expected_bytes).ok()?,
-            received_bytes: u64::try_from(self.received_bytes).ok()?,
-            content_type: self.content_type.clone(),
-        })
-    }
 }
 
 #[derive(Deserialize)]
@@ -263,51 +203,6 @@ pub struct NativeJobCandidateRow {
     pub source_content_type: String,
 }
 
-#[derive(Clone, Deserialize)]
-pub struct WorkerJobRow {
-    pub id: String,
-    pub video_id: String,
-    pub state: String,
-    pub revision: i64,
-    pub attempt: i64,
-    pub profile: String,
-    pub source_version: i64,
-    pub output_object_key: String,
-    pub worker_id: Option<String>,
-    pub lease_token_digest: Option<String>,
-    pub lease_expires_at_ms: Option<i64>,
-    pub progress_basis_points: Option<i64>,
-    pub cancel_requested: i64,
-}
-
-impl WorkerJobRow {
-    pub fn private_response(&self, retry_scheduled: bool) -> Option<WorkerJobResponse> {
-        Some(WorkerJobResponse {
-            schema_version: API_SCHEMA_VERSION,
-            job_id: self.id.clone(),
-            state: self.state.clone(),
-            attempt: u32::try_from(self.attempt).ok()?,
-            revision: u64::try_from(self.revision).ok()?,
-            progress_basis_points: self
-                .progress_basis_points
-                .map(u16::try_from)
-                .transpose()
-                .ok()?,
-            cancel_requested: match self.cancel_requested {
-                0 => false,
-                1 => true,
-                _ => return None,
-            },
-            lease_expires_at_ms: self
-                .lease_expires_at_ms
-                .map(u64::try_from)
-                .transpose()
-                .ok()?,
-            retry_scheduled,
-        })
-    }
-}
-
 #[derive(Deserialize)]
 pub struct IntegrationRow {
     pub id: String,
@@ -320,47 +215,6 @@ impl IntegrationRow {
             .ok()
             .and_then(|value| value.get("conditional_put").and_then(|flag| flag.as_bool()))
             == Some(true)
-    }
-}
-
-#[derive(Deserialize)]
-pub struct MediaJobRow {
-    pub id: String,
-    pub state: String,
-    pub profile: String,
-    pub selected_executor: Option<String>,
-    pub progress_basis_points: Option<i64>,
-    pub attempt: i64,
-    pub cancel_requested: i64,
-    pub error_class: Option<String>,
-    pub created_at_ms: i64,
-    pub updated_at_ms: i64,
-}
-
-impl MediaJobRow {
-    pub fn public_status(&self) -> Option<MediaJobStatusResponse> {
-        let progress_basis_points = self
-            .progress_basis_points
-            .map(u16::try_from)
-            .transpose()
-            .ok()?;
-        Some(MediaJobStatusResponse {
-            schema_version: API_SCHEMA_VERSION,
-            job_id: self.id.clone(),
-            state: self.state.clone(),
-            profile: self.profile.clone(),
-            executor: self.selected_executor.clone(),
-            progress_basis_points,
-            attempt: u32::try_from(self.attempt).ok()?,
-            cancel_requested: match self.cancel_requested {
-                0 => false,
-                1 => true,
-                _ => return None,
-            },
-            error_class: self.error_class.clone(),
-            created_at_ms: u64::try_from(self.created_at_ms).ok()?,
-            updated_at_ms: u64::try_from(self.updated_at_ms).ok()?,
-        })
     }
 }
 
@@ -515,30 +369,6 @@ mod tests {
         assert!(!json.contains("tenants/"));
         assert!(!json.contains("lease_token"));
         assert!(!json.contains("worker_id"));
-    }
-
-    #[test]
-    fn video_update_policy_requires_ownership_or_space_management_for_members() {
-        let actor = "018f47a6-7b1c-7f55-8f39-8f8a86900101";
-        let mut row = VideoMutationRow {
-            id: "018f47a6-7b1c-7f55-8f39-8f8a86900104".into(),
-            owner_id: "018f47a6-7b1c-7f55-8f39-8f8a86900109".into(),
-            state: "ready".into(),
-            privacy: "private".into(),
-            revision: 3,
-            actor_role: "member".into(),
-            actor_manages_space: 0,
-        };
-        assert!(!row.actor_can_update(actor));
-        row.owner_id = actor.into();
-        assert!(row.actor_can_update(actor));
-        row.owner_id = "018f47a6-7b1c-7f55-8f39-8f8a86900109".into();
-        row.actor_manages_space = 1;
-        assert!(row.actor_can_update(actor));
-        row.actor_role = "viewer".into();
-        assert!(!row.actor_can_update(actor));
-        row.actor_role = "admin".into();
-        assert!(row.actor_can_update(actor));
     }
 
     #[test]
