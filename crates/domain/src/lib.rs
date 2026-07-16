@@ -6,9 +6,11 @@ use uuid::Uuid;
 
 mod contracts;
 mod identity;
+mod storage;
 
 pub use contracts::*;
 pub use identity::*;
+pub use storage::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

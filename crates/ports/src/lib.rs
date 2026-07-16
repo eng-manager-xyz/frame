@@ -16,8 +16,10 @@ use frame_domain::{
 use thiserror::Error;
 
 mod identity;
+mod storage;
 
 pub use identity::*;
+pub use storage::*;
 
 #[derive(Error, PartialEq, Eq)]
 pub enum PortError {
