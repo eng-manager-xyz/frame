@@ -8,9 +8,8 @@ attached to the immutable release record rather than fabricated in source.
 The following are required from a clean checkout:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+scripts/frame check
+scripts/frame test
 cargo check -p frame-control-plane --target wasm32-unknown-unknown
 cargo check -p frame-domain --target wasm32-unknown-unknown
 cargo check -p frame-ports --target wasm32-unknown-unknown
@@ -22,9 +21,10 @@ CI additionally performs D1 migration, Worker bundle, production-mode web,
 GStreamer probe/artifact, contract-fixture, forbidden-dependency, supply-chain,
 secret, hermetic journey, and credential-free two-origin cross-repository
 preview checks. See [Cross-repository local preview evidence](cross-repo-preview-local.md)
-for the exact local proof and its deliberately narrow evidence boundary. Test
-output must retain the first failure; retries may establish flakiness but
-cannot replace a failing release result.
+and [D1 aggregate repository conformance](d1-repository-local.md) for the exact
+local proofs and their deliberately narrow evidence boundaries. Test output
+must retain the first failure; retries may establish flakiness but cannot
+replace a failing release result.
 
 ## Protected evidence
 

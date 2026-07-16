@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -36,6 +37,22 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     texts: dict[str, str] = {}
+    gstreamer_launcher = ROOT / "scripts" / "ci" / "gstreamer-sanitized-exec"
+    cargo_config = ROOT / ".cargo" / "config.toml"
+    require(
+        gstreamer_launcher.is_file()
+        and bool(gstreamer_launcher.stat().st_mode & stat.S_IXUSR),
+        "GStreamer sanitized launcher must exist and be executable",
+        errors,
+    )
+    require(
+        cargo_config.is_file()
+        and "[target.'cfg(unix)']" in cargo_config.read_text(encoding="utf-8")
+        and 'runner = ["scripts/ci/gstreamer-sanitized-exec"]'
+        in cargo_config.read_text(encoding="utf-8"),
+        "Unix Cargo run/test artifacts must use the sanitized GStreamer runner",
+        errors,
+    )
 
     for name in sorted(OWNED):
         path = WORKFLOW_DIR / name
@@ -73,6 +90,15 @@ def main() -> int:
             "quality-gates.yml: secret and dependency policy must be required", errors)
     require("generate-cyclonedx.py" in quality and "hermetic-journey.py" in quality,
             "quality-gates.yml: SBOM and provider-free walking-slice checks must be required", errors)
+    require("d1-repository-conformance.py" in quality
+            and "target/evidence/d1-repository-conformance.json" in quality,
+            "quality-gates.yml: isolated local D1 repository conformance and evidence must be required", errors)
+    require("GST_PLUGIN_SYSTEM_PATH_1_0" in quality
+            and "gstreamer-sanitized-exec" in quality
+            and "hostile-gstreamer-readiness.py" in quality
+            and "gstreamer-packages-ci.tsv" in quality
+            and "gstreamer-runtime-hostile-xdg-ci.json" in quality,
+            "quality-gates.yml: trusted-root, package, hostile-env, and hostile-XDG media gates must be required", errors)
     require("build-web-hydration.py" in quality
             and "check-web-hydration-bundle.py" in quality
             and "web-hydration-smoke.py" in quality
@@ -127,6 +153,9 @@ def main() -> int:
             "production-gate.yml: release preflight must enforce secret and dependency policy", errors)
     require("generate-cyclonedx.py" in production_untrusted and "hermetic-journey.py" in production_untrusted,
             "production-gate.yml: release preflight must validate SBOM and hermetic journey", errors)
+    require("GST_PLUGIN_SYSTEM_PATH_1_0" in production_untrusted
+            and "gstreamer-sanitized-exec" in production_untrusted,
+            "production-gate.yml: native preflight must pin the GStreamer root and sanitize loader overrides", errors)
     require("package-release.sh" in production and "verify-release-bundle.sh" in production,
             "production-gate.yml: release must create and verify the immutable SBOM-bearing handoff", errors)
     require("build-web-hydration.py" in production
@@ -141,6 +170,10 @@ def main() -> int:
     require("${{ secrets." not in smoke, "production-smoke.yml: canonical smoke must be secret-free", errors)
     require("https://frame.engmanager.xyz" in smoke and "https://frame-staging.engmanager.xyz" in smoke,
             "production-smoke.yml: smoke origins must be a fixed allowlist", errors)
+
+    ci = texts.get("ci.yml", "")
+    require("GST_PLUGIN_SYSTEM_PATH_1_0" in ci and "gstreamer-sanitized-exec" in ci,
+            "ci.yml: workspace tests and media smoke must pin the GStreamer root and sanitize loader overrides", errors)
     require("github.event.workflow_run.conclusion == 'success'" in smoke and "expected_release_sha" in smoke,
             "production-smoke.yml: paired release verification must follow only a successful production gate", errors)
 

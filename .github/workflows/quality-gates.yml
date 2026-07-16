@@ -69,14 +69,18 @@ jobs:
         with:
           cache-on-failure: false
       - name: Install GStreamer build and runtime libraries
-        run: >-
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends
-          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-          gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
       - name: Check formatting and lints
         run: |
           cargo fmt --all -- --check
-          cargo clippy --locked --workspace --all-targets -- -D warnings
+          scripts/ci/gstreamer-sanitized-exec cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo clippy --locked -p frame-web --no-default-features --features hydrate --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
       - name: Enforce dependency, advisory, license, and source policy
         run: |
@@ -91,7 +95,7 @@ jobs:
           jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' \
             target/evidence/frame.cdx.json >/dev/null
       - name: Test the complete workspace
-        run: cargo test --locked --workspace
+        run: scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
       - name: Enforce dependency and target boundaries
         run: scripts/ci/check-workspace-boundaries.sh
       - name: Build and smoke the production web binary
@@ -162,14 +166,19 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22.17.0"
+      - name: Install the pinned Worker packager
+        run: cargo install worker-build --version 0.8.5 --locked
+      - name: Run aggregate repositories against isolated local D1
+        run: |
+          mkdir -p target/evidence
+          python3 -I scripts/ci/d1-repository-conformance.py \
+            --evidence target/evidence/d1-repository-conformance.json
       - name: Test frame-client feature and target matrix
         run: |
           cargo test --locked -p frame-client --all-features
           cargo check --locked -p frame-client --no-default-features
           cargo check --locked -p frame-client --no-default-features --target wasm32-unknown-unknown
           cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
-      - name: Install the pinned Worker packager
-        run: cargo install worker-build --version 0.8.5 --locked
       - name: Build a provider-free Worker bundle
         run: >-
           npx --yes wrangler@4.111.0 deploy --dry-run
@@ -177,11 +186,13 @@ jobs:
           --outdir target/wrangler-ci
       - name: Prove lockfile stability
         run: git diff --exit-code -- Cargo.lock
-      - name: Retain only the synthetic Worker build
+      - name: Retain the synthetic Worker build and local D1 evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: frame-worker-dry-run-${{ github.sha }}
-          path: target/wrangler-ci
+          path: |
+            target/wrangler-ci
+            target/evidence/d1-repository-conformance.json
           if-no-files-found: error
           retention-days: 5
 
@@ -200,23 +211,75 @@ jobs:
         with:
           cache-on-failure: false
       - name: Install GStreamer build and runtime libraries
-        run: >-
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends
-          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-          gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
       - name: Test media contracts and runtime catalog
         run: |
-          cargo test --locked -p frame-media -p frame-media-worker
-          cargo run --locked -p frame-media-worker -- doctor
-          cargo run --locked -p frame-media-worker -- catalog
-      - name: Record synthetic smoke media
-        run: cargo run --locked -p frame-media-worker -- smoke target/frame-smoke.webm
-      - name: Retain synthetic media only
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media -p frame-media-worker
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- doctor
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- catalog
+          scripts/ci/gstreamer-sanitized-exec cargo build --locked -p frame-media-worker
+          scripts/ci/gstreamer-sanitized-exec python3 -I scripts/ci/hostile-gstreamer-readiness.py \
+            --worker target/debug/frame-media-worker \
+            --evidence target/evidence/gstreamer-worker-hostile-readiness-ci.json
+      - name: Verify the audited runtime and factory contract
+        run: |
+          mkdir -p target/evidence
+          dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Status}\n' \
+            'libgstreamer1.0*' 'libgstreamer-plugins-base1.0*' \
+            'gstreamer1.0-*' \
+            | sort > target/evidence/gstreamer-packages-ci.tsv
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_doctor \
+            > target/evidence/gstreamer-doctor-ci.json
+          python3 -I scripts/ci/check-gstreamer-runtime.py \
+            --doctor target/evidence/gstreamer-doctor-ci.json \
+            --packages target/evidence/gstreamer-packages-ci.tsv \
+            --evidence target/evidence/gstreamer-runtime-contract-ci.json
+          mkdir -p target/hostile-xdg/gstreamer-1.0/plugins
+          mkdir -p target/hostile-xdg/cache
+          cp "${GST_PLUGIN_SYSTEM_PATH_1_0}/libgstvideotestsrc.so" \
+            target/hostile-xdg/gstreamer-1.0/plugins/libgstvideotestsrc.so
+          XDG_DATA_HOME=target/hostile-xdg \
+            XDG_CACHE_HOME=target/hostile-xdg/cache \
+            scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_doctor \
+            > target/evidence/gstreamer-doctor-hostile-xdg-ci.json
+          XDG_DATA_HOME=target/hostile-xdg \
+            XDG_CACHE_HOME=target/hostile-xdg/cache \
+            python3 -I scripts/ci/check-gstreamer-runtime.py \
+            --doctor target/evidence/gstreamer-doctor-hostile-xdg-ci.json \
+            --packages target/evidence/gstreamer-packages-ci.tsv \
+            --evidence target/evidence/gstreamer-runtime-hostile-xdg-ci.json
+      - name: Record and inspect synthetic A/V media
+        run: |
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- smoke target/frame-smoke.webm
+          scripts/ci/gstreamer-sanitized-exec gst-discoverer-1.0 -v target/frame-smoke.webm \
+            > target/gstreamer-discoverer-ci.raw.txt
+          python3 -I scripts/ci/check-gstreamer-discoverer.py \
+            --input target/gstreamer-discoverer-ci.raw.txt \
+            --evidence target/evidence/gstreamer-media-probe-ci.json
+      - name: Gate repeated start-stop and resource trends
+        run: >-
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_soak --
+          --cycles 16
+          --evidence target/evidence/media-runtime-soak-ci.json
+      - name: Retain synthetic media evidence only
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: gstreamer-synthetic-${{ github.sha }}
-          path: target/frame-smoke.webm
-          if-no-files-found: error
+          path: |
+            target/frame-smoke.webm
+            target/evidence/gstreamer-*.json
+            target/evidence/gstreamer-*.tsv
+            target/evidence/media-runtime-soak-ci.json
+          if-no-files-found: warn
           retention-days: 3
 
   portability:
