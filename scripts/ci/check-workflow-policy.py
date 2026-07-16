@@ -71,6 +71,8 @@ def main() -> int:
             "quality-gates.yml: secret and dependency policy must be required", errors)
     require("generate-cyclonedx.py" in quality and "hermetic-journey.py" in quality,
             "quality-gates.yml: SBOM and provider-free walking-slice checks must be required", errors)
+    require("cross-repo-preview-e2e.py" in quality and "--self-test --timeout 20" in quality,
+            "quality-gates.yml: credential-free two-origin preview controls must be required", errors)
     require("macos-14" in quality and "windows-2022" in quality,
             "quality-gates.yml: portable core checks must cover macOS and Windows", errors)
     require(re.search(r"^  quality-gate:\n(?:.|\n)*?if:\s*\$\{\{\s*always\(\)\s*\}\}", quality, re.MULTILINE) is not None,

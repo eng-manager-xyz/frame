@@ -20,8 +20,11 @@ cargo tree -p frame-client
 
 CI additionally performs D1 migration, Worker bundle, production-mode web,
 GStreamer probe/artifact, contract-fixture, forbidden-dependency, supply-chain,
-secret, and hermetic journey checks. Test output must retain the first failure;
-retries may establish flakiness but cannot replace a failing release result.
+secret, hermetic journey, and credential-free two-origin cross-repository
+preview checks. See [Cross-repository local preview evidence](cross-repo-preview-local.md)
+for the exact local proof and its deliberately narrow evidence boundary. Test
+output must retain the first failure; retries may establish flakiness but
+cannot replace a failing release result.
 
 ## Protected evidence
 
