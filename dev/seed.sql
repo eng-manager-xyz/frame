@@ -8,6 +8,19 @@ INSERT OR IGNORE INTO users (
   'active', 0, 1700000000000, '{}'
 );
 
+-- Deterministic local-only credential for the isolated developer database.
+-- Raw value: frame-local-api-key-test-only-0000000001
+INSERT OR IGNORE INTO auth_api_keys (
+  id, user_id, key_digest, name, scopes_json, created_at_ms
+) VALUES (
+  '018f47a6-7b1c-7f55-8f39-8f8a86900109',
+  '018f47a6-7b1c-7f55-8f39-8f8a86900101',
+  '28c551b52823743dbd642b6cc4912ac91d864e46213a20eea5bf318e26799228',
+  'Frame local test-only API key',
+  '["frame:admin"]',
+  1700000000000
+);
+
 INSERT OR IGNORE INTO organizations (
   id, owner_id, name, status, settings_json, created_at_ms, updated_at_ms, revision
 ) VALUES (

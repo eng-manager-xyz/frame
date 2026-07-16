@@ -4,10 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+frame-client = { path = "../../crates/frame-client" }
 leptos.workspace = true
 serde.workspace = true
 tokio.workspace = true

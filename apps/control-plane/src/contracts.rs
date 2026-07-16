@@ -30,7 +30,7 @@ impl ValidationCode {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UploadIntentRequest {
     pub schema_version: u16,
@@ -66,7 +66,7 @@ impl UploadIntentRequest {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaJobRequest {
     pub schema_version: u16,
@@ -137,8 +137,8 @@ impl Default for CapabilitiesResponse {
             schema_version: API_SCHEMA_VERSION,
             api_version: "v1",
             public_share_read: "read_only",
-            upload_intents: "authenticated_contract_stub",
-            media_jobs: "authenticated_contract_stub",
+            upload_intents: "authenticated_d1_r2_single_put",
+            media_jobs: "fail_closed_pending_runtime_selection",
             media_executor_selection: "server_controlled",
             native_capture: "external_native_executor",
             migration_controls: "authenticated_read_only",
@@ -228,6 +228,7 @@ pub fn normalize_cf_ray(value: Option<&str>, fallback_a: u64, fallback_b: u64) -
 }
 
 #[must_use]
+#[cfg(test)]
 pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut difference = left.len() ^ right.len();
     let length = left.len().max(right.len());

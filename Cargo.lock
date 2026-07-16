@@ -552,6 +552,8 @@ dependencies = [
  "async-trait",
  "frame-domain",
  "frame-ports",
+ "futures",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -574,6 +576,8 @@ dependencies = [
  "js-sys",
  "serde",
  "serde_json",
+ "sha2",
+ "uuid",
  "wasm-bindgen",
  "worker",
 ]
@@ -631,6 +635,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "frame-client",
  "leptos",
  "serde",
  "tokio",

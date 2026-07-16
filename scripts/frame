@@ -7,6 +7,7 @@ cd "$ROOT"
 WRANGLER_VERSION=4.111.0
 LOCAL_CONFIG=apps/control-plane/wrangler.local.toml
 LOCAL_DB=frame-local
+LOCAL_STATE=apps/control-plane/.wrangler/state
 PID_FILE=.tmp/frame-local.pids
 
 usage() {
@@ -44,7 +45,7 @@ refuse_production() {
 
 doctor() {
   local failed=0
-  for tool in cargo rustc rustup python3 node npx pkg-config; do
+  for tool in cargo cargo-deny rustc rustup python3 node npx pkg-config; do
     need "$tool" || failed=1
   done
   if [[ $failed -ne 0 ]]; then
@@ -54,12 +55,16 @@ doctor() {
   rustc --version
   cargo --version
   node --version
+  if [[ $(cargo-deny --version) != "cargo-deny 0.20.2" ]]; then
+    printf 'cargo-deny 0.20.2 is required (install with --version 0.20.2 --locked)\n' >&2
+    failed=1
+  fi
   if ! rustup target list --installed | rg -qx 'wasm32-unknown-unknown'; then
     printf 'missing Rust target: rustup target add wasm32-unknown-unknown\n' >&2
     failed=1
   fi
-  if ! pkg-config --atleast-version=1.20 gstreamer-1.0; then
-    printf 'GStreamer 1.20+ development/runtime files are required\n' >&2
+  if ! pkg-config --atleast-version=1.22 gstreamer-1.0; then
+    printf 'GStreamer 1.22+ development/runtime files are required\n' >&2
     failed=1
   fi
   python3 scripts/ci/check-migrations.py || failed=1
@@ -124,7 +129,11 @@ case "$command" in
   check)
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
+    cargo deny check advisories bans licenses sources
     scripts/ci/check-workspace-boundaries.sh
+    python3 scripts/ci/check-secrets.py
+    python3 scripts/ci/generate-cyclonedx.py --self-test
+    python3 -I scripts/ci/hermetic-journey.py --timeout 20
     python3 scripts/ci/check-fixtures.py
     python3 scripts/ci/check-cloudflare-zone-contract.py
     python3 scripts/ci/check-migrations.py
@@ -141,8 +150,8 @@ case "$command" in
     ;;
   reset)
     refuse_production
-    if [[ -d .wrangler/state ]]; then
-      rm -rf .wrangler/state
+    if [[ -d $LOCAL_STATE ]]; then
+      rm -rf "$LOCAL_STATE"
     fi
     migrate
     seed

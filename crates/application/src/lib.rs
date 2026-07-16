@@ -3,11 +3,20 @@
 //! The services in this crate are deliberately runtime-neutral: they compile for native
 //! binaries and `wasm32-unknown-unknown`, while adapters remain in the executable crates.
 
+mod backfill;
 mod cutover;
 mod idempotency;
 mod media_router;
 mod upload;
 
+pub use backfill::{
+    BackfillCheckpoint, BackfillCoordinator, BackfillError, BackfillManifest, BackfillObject,
+    BackfillObjectStore, BackfillPolicy, BackfillRunReport, BackfillScope, BackfillStatus,
+    BasicMediaProbe, CheckpointEntry, DiscrepancyKind, IntegrityExpectation, ManifestEntry,
+    MemoryBackfillObjectStore, ObjectDescriptor, ObjectProbe, ProbeError, ProviderChecksum,
+    PutOutcome, QuarantineDisposition, QuarantineReason, ReconciliationReport, RepairAction,
+    RepairPlan, StorageIdentity, StorageOperation, StorageProvider,
+};
 pub use cutover::CutoverCoordinator;
 pub use idempotency::{CommandClaim, CommandFingerprint, CommandLedger, CommandStatus};
 pub use media_router::{MediaRoute, MediaRouter, MediaRoutingPolicy, RoutedTransform};

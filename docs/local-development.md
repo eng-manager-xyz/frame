@@ -18,10 +18,19 @@ The web service listens on `http://127.0.0.1:3000`; the Worker listens on
 run after an interrupted shell. Logs are kept under ignored `.tmp/` and can be
 tailed with `scripts/frame logs`.
 
-`reset` deletes only `.wrangler/state` inside this checkout, reapplies every
+`reset` deletes only `apps/control-plane/.wrangler/state` inside this checkout, reapplies every
 migration, and loads synthetic `*.invalid` seed identities. It refuses to run
 when `FRAME_DEPLOYMENT=production`, `CLOUDFLARE_API_TOKEN`, or `DATABASE_URL` is
 present. It never contacts or deletes a remote bucket.
+
+The seed installs a hashed API-key record for the synthetic local owner. The
+raw local-only credential is `frame-local-api-key-test-only-0000000001`; send it
+as a Bearer token together with
+`x-frame-tenant-id: 018f47a6-7b1c-7f55-8f39-8f8a86900102`. The Worker hashes the
+credential before D1 lookup and independently requires an active organization
+membership and an allowed `frame:read`, `frame:write`, or `frame:admin` scope.
+This credential exists only in the disposable local seed and is never a
+production fallback.
 
 ## Focused commands
 

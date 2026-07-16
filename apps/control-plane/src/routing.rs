@@ -125,6 +125,8 @@ pub enum Route {
     PublicShare { share_id: String },
     PublicMedia { share_id: String },
     UploadIntent,
+    UploadStatus { upload_id: String },
+    UploadContent { upload_id: String },
     MediaJobCreate,
     MediaJobStatus { job_id: String },
     MediaJobCancel { job_id: String },
@@ -169,6 +171,12 @@ fn dynamic_route(path: &str) -> Route {
         },
         ["", "api", "v1", "public", "shares", share_id, "media"] => Route::PublicMedia {
             share_id: (*share_id).to_owned(),
+        },
+        ["", "api", "v1", "uploads", upload_id] => Route::UploadStatus {
+            upload_id: (*upload_id).to_owned(),
+        },
+        ["", "api", "v1", "uploads", upload_id, "content"] => Route::UploadContent {
+            upload_id: (*upload_id).to_owned(),
         },
         ["", "api", "v1", "media-jobs", job_id] => Route::MediaJobStatus {
             job_id: (*job_id).to_owned(),
@@ -327,5 +335,11 @@ mod tests {
             }
         );
         assert_eq!(classify_raw_path("/api/v2/health"), Route::UnknownApi);
+        assert_eq!(
+            classify_raw_path("/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/content"),
+            Route::UploadContent {
+                upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
     }
 }

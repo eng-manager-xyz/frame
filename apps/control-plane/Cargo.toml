@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -12,11 +13,11 @@ crate-type = ["cdylib", "rlib"]
 frame-client = { path = "../../crates/frame-client" }
 js-sys.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
 wasm-bindgen.workspace = true
 worker.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true
