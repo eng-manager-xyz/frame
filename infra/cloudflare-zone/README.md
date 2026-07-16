@@ -6,6 +6,13 @@ must import and own each zone phase in full before adding Frame rules. Creating
 a second `cloudflare_ruleset` for the same phase can replace unrelated apex,
 shop, Stripe, or portfolio behavior.
 
+`frame-contract.json` is the machine-readable handoff consumed by both
+repositories' contract CI. It is not Terraform state and cannot apply a zone
+mutation. `scripts/ci/check-cloudflare-zone-contract.py` fails if the handoff
+widens the hostname, route, cache eligibility, purge scope, or initial security
+enforcement. The portfolio state must translate it into the already imported
+whole-phase rulesets and prove semantic equivalence there.
+
 That authoritative state owns:
 
 - exact `CNAME frame -> <frame-web>.onrender.com`, initially DNS-only and later

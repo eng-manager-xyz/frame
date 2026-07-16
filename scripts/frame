@@ -123,6 +123,7 @@ case "$command" in
     cargo clippy --workspace --all-targets -- -D warnings
     scripts/ci/check-workspace-boundaries.sh
     python3 scripts/ci/check-fixtures.py
+    python3 scripts/ci/check-cloudflare-zone-contract.py
     python3 scripts/ci/check-migrations.py
     python3 scripts/ci/test-migration.py
     ;;
