@@ -124,6 +124,7 @@ case "$command" in
     scripts/ci/check-workspace-boundaries.sh
     python3 scripts/ci/check-fixtures.py
     python3 scripts/ci/check-migrations.py
+    python3 scripts/ci/test-migration.py
     ;;
   test)
     cargo test --workspace
