@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Define tenant/object authorization, bucket/public-access policy, CORS, custom-domain ownership, cache keys/purge/versioning, malware/untrusted-media handling, encryption/keys, retention, legal hold, tombstone, cascade, erasure verification, quota, and audit.
+Define tenant/object authorization, bucket/public-access policy, CORS, custom-domain ownership, cache keys/purge/versioning, Cloudflare Media input/output isolation, malware/untrusted-media handling, encryption/keys, retention, legal hold, tombstone, cascade, erasure verification, quota, and audit.
 
 ### Out of scope
 
@@ -41,6 +41,7 @@ Application privacy UI is issue 32; organization policy storage is issue 14; pro
 - [ ] Policy-as-code or centralized checks for reads, writes, listing, copy, signing, deletion, and custom domains.
 - [ ] Immutable-key/cache-purge strategy with stale-delete, overwrite, and cached-404 behavior tested.
 - [ ] Lifecycle and deletion workflow covering source, outputs, segments, thumbnails, captions, avatars, manifests, multipart sessions, and backups.
+- [ ] Media Transformations source policy, deterministic derivative cache policy, SSRF/input-origin controls, and managed-provider incident/kill-switch procedure.
 - [ ] Legal-hold, export, restore, erasure-proof, quota, and incident runbooks.
 
 ## Acceptance criteria
@@ -49,6 +50,7 @@ Application privacy UI is issue 32; organization policy storage is issue 14; pro
 - [ ] Deleting or changing privacy makes content inaccessible within the approved cache/SLO window, including prior negative/positive cache entries.
 - [ ] Legal hold prevents lifecycle and user deletion while preserving auditability; release resumes the policy deterministically.
 - [ ] Deletion is idempotent, reconciles all derived objects, and produces a privacy-safe completion record.
+- [ ] Deletion and legal hold discover managed and native outputs from manifests rather than relying on provider listings or guessed prefixes.
 - [ ] CORS, content disposition, sniffing protection, CSP, range responses, and untrusted-media processing pass security review.
 
 ## Required test evidence

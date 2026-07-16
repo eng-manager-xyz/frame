@@ -1,6 +1,6 @@
 # Frame
 
-Frame is a Rust migration scaffold for [Cap](https://github.com/CapSoftware/Cap): native media processing with GStreamer, an edge control plane backed by Cloudflare D1 and object storage, and Leptos user interfaces.
+Frame is a Rust migration scaffold for [Cap](https://github.com/CapSoftware/Cap): native media processing with GStreamer, an edge control plane backed by Cloudflare D1, R2, and Media Transformations, and Leptos user interfaces.
 
 This repository starts with boundaries and executable seams, not copied Cap source. The reference checkout lives in ignored `.tmp/cap` at commit `6ba69561ac86b8efdb17616d6727f9638015546b`. See [docs/upstream-cap.md](docs/upstream-cap.md) and the dependency-ordered [_issues backlog](_issues/README.md).
 
@@ -10,22 +10,24 @@ This repository starts with boundaries and executable seams, not copied Cap sour
 flowchart LR
   UI["Leptos web / desktop UI"] --> EDGE["Rust/Wasm control plane"]
   EDGE --> D1["Cloudflare D1"]
-  EDGE --> STORE["Object-store port (R2/S3; R3 pending ADR)"]
-  EDGE -. "versioned media job" .-> MEDIA["Native Rust media worker"]
-  MEDIA --> GST["GStreamer"]
-  MEDIA --> STORE
+  EDGE --> R2["Cloudflare R2"]
+  EDGE --> CFM["Cloudflare Media Transformations"]
+  CFM --> R2
+  EDGE -. "advanced / fallback job" .-> NATIVE["Native Rust media worker"]
+  NATIVE --> GST["GStreamer"]
+  NATIVE --> R2
 ```
 
-The split is intentional: D1 and Cloudflare object bindings run in Workers/Wasm, while GStreamer requires a native desktop or container runtime. Shared Rust types keep the API, UI, and workers aligned without pretending those environments are interchangeable.
+The split is intentional. D1, R2, and Cloudflare Media Transformations run at the Worker boundary. Media Transformations handles supported R2-native derivatives such as short optimized MP4 clips, still frames, spritesheets, and audio extraction. GStreamer remains the native engine for capture, synchronization, editing/export, long-form or complex processing, unsupported codecs, and fallback. Shared Rust types keep the API, UI, and workers aligned without pretending those environments are interchangeable.
 
 ## Repository layout
 
-- `apps/control-plane`: Cloudflare Worker using real D1 and object-store bindings.
+- `apps/control-plane`: Cloudflare Worker configured with D1, R2, and Media Transformations bindings.
 - `apps/media-worker`: native executable that probes GStreamer and can produce a synthetic WebM smoke artifact.
 - `apps/web`: server-rendered Leptos shell served by Axum.
 - `crates/domain`: IDs, recording state, object keys, and transition rules.
 - `crates/media`: GStreamer pipeline construction and runtime checks.
-- `crates/ports`: repository and object-store contracts with in-memory adapters.
+- `crates/ports`: repository, object-store, and media-transform contracts with deterministic in-memory adapters.
 - `apps/control-plane/migrations`: D1/SQLite migrations.
 - `_issues`: the migration program, ordered by phase and dependency.
 
@@ -46,8 +48,10 @@ The web shell listens on `FRAME_ADDR` or `127.0.0.1:3000`. The control-plane Wor
 cargo check -p frame-control-plane --target wasm32-unknown-unknown
 ```
 
-Before running Wrangler, create the D1 database and object bucket, replace the placeholder IDs in `apps/control-plane/wrangler.toml`, and apply the migrations.
+Before running Wrangler, install `worker-build`, create the D1 database and R2 buckets, replace the placeholder IDs in `apps/control-plane/wrangler.toml`, enable the Media Transformations binding for the account, and apply the migrations. Cloudflare currently requires remote development for the Media binding, so normal local tests use the media port/fake and a dedicated remote lane exercises the real binding.
 
-## About “R3”
+## Cloudflare media split
 
-The requested target says “R3,” but Cloudflare's documented object-storage product is R2. Frame therefore keeps storage behind a provider-neutral port, scaffolds an R2 binding as the working hypothesis, and blocks storage commitment on [_issues/02-p0-resolve-r3-storage-target.md](_issues/02-p0-resolve-r3-storage-target.md). This also prevents accidentally dropping Cap's existing S3-compatible and Google Drive options.
+Cloudflare R2 is the confirmed canonical object store. [ADR 0002](docs/adr/0002-cloudflare-r2-storage.md) records that decision while keeping a provider-neutral port for tests and any approved self-hosted or bring-your-own-storage compatibility. [Issue 02](_issues/02-p0-establish-r2-storage-target.md) owns the remaining compatibility decisions rather than reopening provider selection.
+
+The configured `MEDIA` binding is [Cloudflare Media Transformations](https://developers.cloudflare.com/stream/transform-videos/bindings/), which transforms private R2 inputs and can stream immutable outputs back to R2. It is distinct from the [`STREAM` managed video-library binding](https://developers.cloudflare.com/stream/manage-video-library/bindings/); Frame does not enable `[stream]` upload/library/adaptive-playback semantics without a separate product decision. [ADR 0003](docs/adr/0003-cloudflare-media-transformations.md) and issues [03](_issues/03-p0-runtime-topology.md), [07](_issues/07-p1-control-plane-media-job-protocol.md), [28](_issues/28-p4-media-service.md), and [29](_issues/29-p4-media-conformance-performance.md) define the hybrid Cloudflare Media/GStreamer plan.

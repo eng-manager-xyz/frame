@@ -41,6 +41,7 @@ Binary media objects are issues 18–21; external payment, email, AI, and analyt
 - [ ] Versioned edit and metadata documents with compatibility and size policies.
 - [ ] Durable notification/outbox and usage-ledger patterns with deduplication.
 - [ ] Storage-object manifests that reconcile D1 metadata with provider objects.
+- [ ] Derivative/job metadata records executor, source version, transform profile/version, output role/key/checksum/content type, state, usage/cost units, and redacted failure class.
 - [ ] Retention, export, deletion, and legal/compliance handling for every data class.
 
 ## Acceptance criteria
@@ -50,6 +51,7 @@ Binary media objects are issues 18–21; external payment, email, AI, and analyt
 - [ ] Usage and credit operations are append-only or otherwise auditable, idempotent, and reconcile to source fixtures.
 - [ ] Large JSON/edit documents have enforced limits and forward-compatible versioning.
 - [ ] Async notifications, imports, and storage events tolerate duplicate and out-of-order delivery.
+- [ ] Managed and native results update the same domain lifecycle idempotently without storing private media URLs or binding-specific JavaScript objects.
 
 ## Required test evidence
 

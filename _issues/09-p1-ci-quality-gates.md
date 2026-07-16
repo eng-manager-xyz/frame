@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Create layered CI for fast PR checks, OS-specific native builds, Wasm/Worker builds, Leptos browser tests, D1 migration tests, GStreamer smoke/goldens, Tauri build smoke, security audits, and scheduled soak tests.
+Create layered CI for fast PR checks, OS-specific native builds, Wasm/Worker builds, Leptos browser tests, D1 migration tests, R2/Media adapter tests, GStreamer smoke/goldens, Tauri build smoke, security audits, and scheduled soak tests.
 
 ### Out of scope
 
@@ -40,6 +40,7 @@ Running hardware/permission tests on generic hosted runners is not required; ded
 - [ ] A required-check matrix mapped to runtime and platform ownership.
 - [ ] Cached, reproducible jobs for Linux, macOS, Windows, wasm32, browser, Worker, and Tauri build smoke.
 - [ ] Local D1 migration-from-empty and upgrade-path validation.
+- [ ] Required offline tests for the Media port/fake plus an isolated, opt-in or protected-branch remote binding canary with spend, quota, and artifact limits.
 - [ ] Artifact retention for logs, media probes, screenshots, test reports, and SBOMs with privacy controls.
 - [ ] Flake policy, quarantine rules, timeout budgets, and dedicated-runner plan.
 
@@ -49,6 +50,8 @@ Running hardware/permission tests on generic hosted runners is not required; ded
 - [ ] CI proves native GStreamer and Worker/Wasm dependency separation.
 - [ ] Formatting, warnings-as-errors Clippy, tests, migrations, dependency policy, and secret scanning are required.
 - [ ] A synthetic media artifact is probed and compared to expected stream/container metadata.
+- [ ] The Wasm lane proves the configured `MEDIA` binding detection and adapter compile without importing native GStreamer; the remote lane proves R2 → Media → R2 with a synthetic H.264/AAC fixture.
+- [ ] Fork and untrusted PR jobs receive no Cloudflare credentials and cannot trigger billable remote transforms.
 - [ ] Intermittent failures cannot be silently retried into green without recorded evidence.
 
 ## Required test evidence
@@ -61,6 +64,7 @@ Running hardware/permission tests on generic hosted runners is not required; ded
 
 - A single monolithic workspace job can hide target-specific incompatibility.
 - Untrusted media or secrets in artifacts can create a supply-chain/privacy issue.
+- Remote-only beta tests can be flaky or billable; they need separate required/advisory policy and a bounded retry budget.
 
 ## Rollout and rollback
 

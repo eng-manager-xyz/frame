@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Design segmented/fMP4 or approved output, split points/keyframes, local journal/spool, bounded disk usage, live multipart/part upload, retry/backoff, offline continuation, reconnect, crash restart, cancellation, finalize, stale-session repair, and share-page readiness.
+Design segmented/fMP4 or approved output, split points/keyframes, local journal/spool, bounded disk usage, live multipart/part upload, retry/backoff, offline continuation, reconnect, crash restart, cancellation, finalize, stale-session repair, share-page readiness, and an approved Media-compatible distribution master when capability limits permit.
 
 ### Out of scope
 
@@ -41,6 +41,7 @@ Studio editing/export is issue 27; generic upload authorization is issue 19.
 - [ ] GStreamer segmentation pipeline with deterministic manifest and recoverable segment metadata.
 - [ ] Encrypted/private local spool with quota, cleanup, crash restart, and user-visible recovery.
 - [ ] Idempotent server finalize and reconciliation of D1 job, multipart state, object manifest, and playable result.
+- [ ] Post-finalize derivative policy that can choose Cloudflare Media or native GStreamer without changing the capture/upload state machine.
 - [ ] Progress and error contract consumed by desktop and share UI.
 
 ## Acceptance criteria

@@ -1,14 +1,15 @@
 # Frame migration issue program
 
-This directory is a dependency-ordered set of implementation-ready issue specifications for migrating Cap toward Rust, GStreamer, Cloudflare D1, the clarified object-storage target, and Leptos. The files are written as epics: create child tasks when a deliverable needs independent ownership, but do not discard the epic's acceptance and rollout gates.
+This directory is a dependency-ordered set of implementation-ready issue specifications for migrating Cap toward Rust, GStreamer, Cloudflare D1, R2, Media Transformations, and Leptos. The files are written as epics: create child tasks when a deliverable needs independent ownership, but do not discard the epic's acceptance and rollout gates.
 
 ## Ground truth and assumptions
 
 - Upstream is [CapSoftware/Cap](https://github.com/CapSoftware/Cap), inspected at `6ba69561ac86b8efdb17616d6727f9638015546b` on 2026-07-15.
 - Cap is already substantially Rust/Tauri. The remaining program is replacement and consolidation, not a blind language rewrite.
 - The pinned snapshot also contains a Next/React and TypeScript control plane, MySQL/Drizzle data, S3-compatible/Google Drive storage, and non-Rust media-service orchestration.
-- “R3” is unresolved. Cloudflare documents R2 object storage; issue 02 must approve the intended product and any S3/BYO/Google Drive parity changes.
-- GStreamer is native. D1 and Cloudflare object bindings are Worker/Wasm. Issue 03 must approve the contract between those runtimes.
+- Cloudflare R2 is the confirmed canonical object store. Issue 02 records the remaining S3-compatible, MinIO, BYO, self-hosting, and Google Drive compatibility decisions.
+- Cloudflare Media Transformations handles capability-matched private-R2 derivatives. GStreamer remains native for capture, editing/export, long/complex work, unsupported inputs, and fallback. The separate `[stream]` managed video-library binding is not enabled.
+- D1, R2, and Media bindings are Worker/Wasm capabilities. GStreamer is native. Issue 03 proves the contract and routing between those runtimes.
 - The ignored parity checkout is `.tmp/cap`; no Cap source is vendored by this backlog.
 
 ## Program flow
@@ -18,7 +19,7 @@ flowchart LR
   P0["P0 · discovery and ADRs"] --> P1["P1 · foundations"]
   P1 --> P2["P2 · D1 and metadata"]
   P1 --> P3["P3 · object storage"]
-  P1 --> P4["P4 · GStreamer media"]
+  P1 --> P4["P4 · hybrid media"]
   P2 --> P5["P5 · API and Leptos parity"]
   P3 --> P5
   P4 --> P5
@@ -34,8 +35,8 @@ P2, P3, and P4 can overlap after their explicit dependencies are complete. Issue
 | ID | Phase | Issue | Depends on |
 |---:|:---:|---|---|
 | 01 | P0 | [Migration charter, compatibility matrix, and SLOs](./01-p0-migration-charter-parity-slos.md) | — |
-| 02 | P0 | [Resolve R3 and choose R2/S3 storage](./02-p0-resolve-r3-storage-target.md) | 01 |
-| 03 | P0 | [Split edge and native media runtimes](./03-p0-runtime-topology.md) | 01, 02 |
+| 02 | P0 | [Establish R2 and decide legacy/BYO storage compatibility](./02-p0-establish-r2-storage-target.md) | 01 |
+| 03 | P0 | [Define Worker, Cloudflare Media, and native GStreamer topology](./03-p0-runtime-topology.md) | 01, 02 |
 | 04 | P0 | [Parity fixtures, API snapshots, media goldens, and baselines](./04-p0-parity-fixtures-baselines.md) | 01 |
 | 05 | P1 | [Rust workspace boundaries and dependency policy](./05-p1-workspace-boundaries-policy.md) | 01, 03 |
 | 06 | P1 | [Shared domain types and versioned API contracts](./06-p1-shared-domain-api-contracts.md) | 01, 05 |
@@ -50,7 +51,7 @@ P2, P3, and P4 can overlap after their explicit dependencies are complete. Issue
 | 15 | P2 | [Video, collaboration, storage, billing, and developer metadata](./15-p2-video-collaboration-business-data.md) | 12, 14 |
 | 16 | P2 | [Resumable MySQL-to-D1 ETL and reconciliation](./16-p2-mysql-d1-etl-reconciliation.md) | 04, 11–15 |
 | 17 | P2 | [Shadow reads, change capture, authority, and rollback](./17-p2-shadow-dual-write-cutover.md) | 12–16 |
-| 18 | P3 | [Object key contract and R2/S3 adapter](./18-p3-object-storage-adapter-key-contract.md) | 02, 06, 07 |
+| 18 | P3 | [Object key contract and Cloudflare R2 adapter](./18-p3-object-storage-adapter-key-contract.md) | 02, 06, 07 |
 | 19 | P3 | [Multipart upload, resume, finalize, and range access](./19-p3-multipart-upload-download.md) | 13, 18 |
 | 20 | P3 | [Object backfill, integrity, and reconciliation](./20-p3-object-backfill-reconciliation.md) | 04, 18, 19 |
 | 21 | P3 | [Storage security, cache, lifecycle, hold, and deletion](./21-p3-storage-security-lifecycle.md) | 14, 18, 19 |
@@ -60,8 +61,8 @@ P2, P3, and P4 can overlap after their explicit dependencies are complete. Issue
 | 25 | P4 | [Microphone, system audio, camera, and A/V sync](./25-p4-audio-camera-sync.md) | 22–24 |
 | 26 | P4 | [Instant Mode segmentation and live upload](./26-p4-instant-mode.md) | 18, 19, 23–25 |
 | 27 | P4 | [Studio Mode recording, recovery, editing, and export](./27-p4-studio-mode.md) | 23–25 |
-| 28 | P4 | [Native Rust media service jobs](./28-p4-media-service.md) | 07, 18, 19, 22, 23, 25 |
-| 29 | P4 | [Media conformance, fault, performance, and soak suites](./29-p4-media-conformance-performance.md) | 04, 22–28 |
+| 28 | P4 | [Hybrid Cloudflare Media and native GStreamer jobs](./28-p4-media-service.md) | 07, 18, 19, 22, 23, 25 |
+| 29 | P4 | [Cross-executor media conformance, fault, performance, and soak suites](./29-p4-media-conformance-performance.md) | 04, 22–28 |
 | 30 | P5 | [Rust API and workflow parity](./30-p5-rust-api-workflow-parity.md) | 07, 12–15, 18, 19, 28 |
 | 31 | P5 | [Leptos authenticated web surfaces](./31-p5-leptos-auth-dashboard.md) | 08, 13–15, 30 |
 | 32 | P5 | [Leptos share/embed player surfaces](./32-p5-leptos-share-player.md) | 08, 15, 19, 21, 30 |
@@ -73,7 +74,7 @@ P2, P3, and P4 can overlap after their explicit dependencies are complete. Issue
 
 ### P0 · Discovery and decisions
 
-The capability matrix and SLOs are approved; fixture provenance is safe; “R3” has an explicit storage decision; and the Worker/native topology is proven with failure behavior.
+The capability matrix and SLOs are approved; fixture provenance is safe; R2 and legacy-storage compatibility are explicit; and the Worker/Cloudflare Media/native topology is proven with failure behavior.
 
 ### P1 · Foundations
 
@@ -87,9 +88,9 @@ Every in-scope source field has a target mapping. Fresh and upgrade migrations p
 
 The selected providers pass one adapter contract. Private/range/multipart flows pass abuse and interruption tests. Source and destination logical object counts, bytes, roles, and verified checksums reconcile with zero unexplained differences.
 
-### P4 · GStreamer media
+### P4 · Hybrid media
 
-Golden recordings and jobs pass the declared OS/device/codec matrix within issue 01 budgets. Injected crashes, device/network loss, and cancellation recover as specified. Hardware and software fallback pass, and long soaks remain inside resource budgets.
+Golden recordings and jobs pass the declared OS/device/codec/executor matrix within issue 01 budgets. Cloudflare Media limit, outage, cost, output-drift, and native-fallback tests pass. Injected crashes, device/network loss, and cancellation recover as specified. Hardware and software fallback pass, and long soaks remain inside resource budgets.
 
 ### P5 · API and Leptos parity
 

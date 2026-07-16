@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Implement server-rendered metadata, share authorization, passwords if retained, signed/range playback, player controls, keyboard/screen-reader support, captions/transcript, comments/replies/reactions, analytics consent, embed messaging, custom domains/branding, unavailable/deleted states, and cache/privacy behavior.
+Implement server-rendered metadata, share authorization, passwords if retained, signed/range playback from persisted R2 artifacts, player controls, keyboard/screen-reader support, captions/transcript, comments/replies/reactions, analytics consent, embed messaging, custom domains/branding, unavailable/deleted states, and cache/privacy behavior. Never invoke Media Transformations once per viewer request.
 
 ### Out of scope
 
@@ -47,6 +47,7 @@ Authenticated dashboard/editor surfaces are issues 31/33; media generation is is
 
 - [ ] Existing public links and embeds resolve or redirect correctly; private/deleted/forbidden content never leaks metadata, thumbnails, object URLs, or existence beyond policy.
 - [ ] Seeking and playback work through approved range/signing/cache paths on supported browsers and mobile devices.
+- [ ] The UI consumes provider-neutral playback descriptors and processing states; switching between managed and native derivative executors does not change routes or leak object keys.
 - [ ] Player controls and transcript/comments meet the accessibility target with keyboard and screen-reader testing.
 - [ ] Embed messages validate origin and schema; comments/analytics resist spam, replay, and cross-tenant access.
 - [ ] Privacy change or deletion takes effect within issue 21 cache/SLO limits on default and custom domains.

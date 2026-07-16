@@ -27,5 +27,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo check -p frame-control-plane --target wasm32-unknown-unknown
+      - name: Install Worker packager
+        run: cargo install worker-build --version 0.8.5 --locked
+      - name: Worker bundle dry run
+        run: >-
+          npx --yes wrangler@4.111.0 deploy --dry-run
+          --config apps/control-plane/wrangler.toml
+          --outdir target/wrangler-dry-run
       - name: GStreamer smoke artifact
         run: cargo run -p frame-media-worker -- smoke target/frame-smoke.webm

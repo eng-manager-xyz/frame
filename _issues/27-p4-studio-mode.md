@@ -41,6 +41,7 @@ Complete product UI is issue 33; server media derivatives are issue 28.
 - [ ] Multi-track GStreamer/native recording pipeline and atomic journal/recovery design.
 - [ ] Playback/seek/preview engine with deterministic edit interpretation.
 - [ ] Render/export graph for approved containers/codecs/resolutions/frame rates with progress and cancellation.
+- [ ] A distribution-master export profile compatible with the approved Cloudflare Media input matrix, while preserving editable originals and higher-quality native exports.
 - [ ] Legacy Cap project import strategy and explicit unsupported-effect handling.
 
 ## Acceptance criteria

@@ -28,7 +28,7 @@ None.
 
 ## Scope
 
-Inventory user journeys, APIs, desktop targets, media formats, storage providers, data domains, integrations, self-hosting behavior, and operational promises. Establish platform support, service-level indicators, regression budgets, and provenance rules.
+Inventory user journeys, APIs, desktop targets, media formats, storage providers, media executors, data domains, integrations, self-hosting behavior, and operational promises. Establish platform support, service-level indicators, regression budgets, cost limits, and provenance rules.
 
 ### Out of scope
 
@@ -38,6 +38,7 @@ Selecting detailed implementations for D1, object storage, GStreamer pipelines, 
 
 - [ ] A versioned capability matrix with preserve, replace, change, defer, and retire dispositions.
 - [ ] Supported OS, architecture, browser, codec/container, storage-provider, deployment, and self-hosting matrices.
+- [ ] A per-job Cloudflare Media/GStreamer/legacy capability matrix covering formats, size/duration/resolution limits, quality, progress/cancel semantics, data residency, fallback, maturity, and cost.
 - [ ] Baseline SLIs and approved regression budgets for recording quality, A/V sync, startup, processing latency, upload reliability, API latency, availability, accessibility, and recovery.
 - [ ] A migration glossary, ownership map, decision log, and upstream provenance/license policy.
 - [ ] A prioritized vertical-slice plan beginning with create → upload → process → share.
@@ -48,6 +49,8 @@ Selecting detailed implementations for D1, object storage, GStreamer pipelines, 
 - [ ] The charter states whether existing Rust crates are retained, adapted, replaced, or evaluated individually.
 - [ ] Success and rollback thresholds use measured baselines or an explicitly approved product requirement, not arbitrary numbers.
 - [ ] Storage-provider and self-hosting regressions are explicitly accepted or prohibited.
+- [ ] The charter distinguishes the `[media]` Media Transformations binding from the `[stream]` managed video-library binding and records that `[stream]` is disabled unless separately approved.
+- [ ] Managed-media beta risk, post-beta pricing, remote-test spend, native fallback, and kill-switch thresholds have named owners.
 - [ ] Engineering, product, security, operations, and legal/provenance owners approve the document.
 
 ## Required test evidence

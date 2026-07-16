@@ -10,6 +10,10 @@ pub enum PortError {
     NotFound,
     #[error("resource already exists")]
     Conflict,
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+    #[error("unsupported capability: {0}")]
+    Unsupported(String),
     #[error("adapter failure: {0}")]
     Adapter(String),
 }
@@ -26,6 +30,48 @@ pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &ObjectKey, bytes: Vec<u8>) -> Result<(), PortError>;
     async fn get(&self, key: &ObjectKey) -> Result<Option<Vec<u8>>, PortError>;
     async fn delete(&self, key: &ObjectKey) -> Result<(), PortError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DerivativeKind {
+    OptimizedVideo,
+    Frame,
+    Spritesheet,
+    Audio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaExecutor {
+    CloudflareMedia,
+    NativeGstreamer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaTransformRequest {
+    pub source: ObjectKey,
+    pub output: ObjectKey,
+    pub kind: DerivativeKind,
+    pub profile_version: u16,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaTransformResult {
+    pub output: ObjectKey,
+    pub executor: MediaExecutor,
+    pub profile_version: u16,
+    pub content_type: String,
+}
+
+#[async_trait]
+pub trait MediaTransformer: Send + Sync {
+    fn executor(&self) -> MediaExecutor;
+    fn supports(&self, kind: DerivativeKind) -> bool;
+
+    async fn transform(
+        &self,
+        request: &MediaTransformRequest,
+    ) -> Result<MediaTransformResult, PortError>;
 }
 
 #[derive(Debug, Default)]
@@ -62,6 +108,78 @@ impl VideoRepository for MemoryVideoRepository {
 #[derive(Debug, Default)]
 pub struct MemoryObjectStore {
     objects: RwLock<HashMap<String, Vec<u8>>>,
+}
+
+#[derive(Debug)]
+pub struct MemoryMediaTransformer {
+    executor: MediaExecutor,
+    supported: Vec<DerivativeKind>,
+    results: RwLock<HashMap<String, (MediaTransformRequest, MediaTransformResult)>>,
+}
+
+impl MemoryMediaTransformer {
+    #[must_use]
+    pub fn new(
+        executor: MediaExecutor,
+        supported: impl IntoIterator<Item = DerivativeKind>,
+    ) -> Self {
+        Self {
+            executor,
+            supported: supported.into_iter().collect(),
+            results: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl MediaTransformer for MemoryMediaTransformer {
+    fn executor(&self) -> MediaExecutor {
+        self.executor
+    }
+
+    fn supports(&self, kind: DerivativeKind) -> bool {
+        self.supported.contains(&kind)
+    }
+
+    async fn transform(
+        &self,
+        request: &MediaTransformRequest,
+    ) -> Result<MediaTransformResult, PortError> {
+        if request.profile_version == 0 {
+            return Err(PortError::InvalidRequest(
+                "media transform profile version must be non-zero".into(),
+            ));
+        }
+        if request.content_type.trim().is_empty() {
+            return Err(PortError::InvalidRequest(
+                "media transform content type must be non-empty".into(),
+            ));
+        }
+        if !self.supports(request.kind) {
+            return Err(PortError::Unsupported(format!("{:?}", request.kind)));
+        }
+
+        let mut results = self.results.write().map_err(lock_error)?;
+        if let Some((previous_request, result)) = results.get(request.output.as_str()) {
+            return if previous_request == request {
+                Ok(result.clone())
+            } else {
+                Err(PortError::Conflict)
+            };
+        }
+
+        let result = MediaTransformResult {
+            output: request.output.clone(),
+            executor: self.executor,
+            profile_version: request.profile_version,
+            content_type: request.content_type.clone(),
+        };
+        results.insert(
+            request.output.to_string(),
+            (request.clone(), result.clone()),
+        );
+        Ok(result)
+    }
 }
 
 #[async_trait]
@@ -125,5 +243,32 @@ mod tests {
         );
         objects.delete(&key).await.expect("delete");
         assert_eq!(objects.get(&key).await.expect("get"), None);
+
+        let transformer = MemoryMediaTransformer::new(
+            MediaExecutor::CloudflareMedia,
+            [DerivativeKind::Frame, DerivativeKind::Audio],
+        );
+        let request = MediaTransformRequest {
+            source: ObjectKey::parse("videos/v1/source.mp4").expect("valid source key"),
+            output: ObjectKey::parse("videos/v1/derivatives/thumbnail-v1.jpg")
+                .expect("valid output key"),
+            kind: DerivativeKind::Frame,
+            profile_version: 1,
+            content_type: "image/jpeg".into(),
+        };
+        let first = transformer.transform(&request).await.expect("transform");
+        let replay = transformer.transform(&request).await.expect("replay");
+        assert_eq!(first, replay);
+        assert_eq!(first.executor, MediaExecutor::CloudflareMedia);
+        assert!(!transformer.supports(DerivativeKind::OptimizedVideo));
+
+        let conflicting_request = MediaTransformRequest {
+            profile_version: 2,
+            ..request
+        };
+        assert!(matches!(
+            transformer.transform(&conflicting_request).await,
+            Err(PortError::Conflict)
+        ));
     }
 }

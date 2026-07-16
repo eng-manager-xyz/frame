@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Production build/signing/SBOM/provenance, environments/config/secrets, Worker/D1/object/native/desktop deploys, release channels, SLO dashboards/alerts, tracing correlation, privacy budgets, audit, capacity/cost/load, backups/restores, DR, incident response, on-call, vulnerability handling, self-hosting, and support diagnostics.
+Production build/signing/SBOM/provenance, environments/config/secrets, Worker/D1/R2/Media/native/desktop deploys, release channels, SLO dashboards/alerts, tracing correlation, privacy budgets, audit, capacity/cost/load, backups/restores, DR, incident response, on-call, vulnerability handling, self-hosting, and support diagnostics.
 
 ### Out of scope
 
@@ -42,11 +42,13 @@ Final authority cutover and legacy destruction are issue 35.
 - [ ] Threat model closure, penetration test, secret/key rotation, SBOM/license/vulnerability gates, and incident contacts.
 - [ ] D1 export/backup, object durability/manifest, configuration, signing-key, and project recovery plans with tested restores.
 - [ ] Capacity, cost, data-residency, DR, on-call, incident, rollback, self-hosting, and customer-support runbooks.
+- [ ] Cloudflare Media beta/change watch, usage/cost budget, quota/outage/output-drift alerts, remote-test controls, provider kill switch, and GStreamer fallback capacity plan.
 
 ## Acceptance criteria
 
 - [ ] A release can be reproduced, verified, signed, promoted, rolled back, and traced to source/dependencies.
 - [ ] Operators detect and localize seeded Worker, D1, queue/job, object, media-worker, desktop-update, and client failures within approved targets.
+- [ ] A Media outage/quota/breaking-output game proves per-profile disablement, native/legacy fallback, deterministic R2 reconciliation, and recovery without duplicate billing or artifacts.
 - [ ] Backups restore into an isolated environment and pass referential, object, auth, and playback verification within RPO/RTO.
 - [ ] No telemetry or support bundle contains media, tokens, signed URLs, raw email, captions, or unapproved personal data.
 - [ ] Load/cost/capacity and regional failure rehearsals remain within charter budgets or produce approved scaling actions.

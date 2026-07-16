@@ -9,7 +9,9 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+js-sys.workspace = true
 serde.workspace = true
+wasm-bindgen.workspace = true
 worker.workspace = true
 
 [lints]

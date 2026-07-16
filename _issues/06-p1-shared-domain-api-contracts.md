@@ -28,7 +28,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Inventory and define opaque IDs, tenant context, users, organizations, videos, uploads, objects, edits, jobs, progress, errors, pagination, timestamps, money/quotas, and auth claims. Establish versioning and unknown-field/enum behavior.
+Inventory and define opaque IDs, tenant context, users, organizations, videos, uploads, objects, edits, normalized media transform profiles, executor capabilities, jobs, progress, errors, pagination, timestamps, money/quotas, and auth claims. Establish versioning and unknown-field/enum behavior.
 
 ### Out of scope
 
@@ -38,6 +38,7 @@ Database queries, endpoint implementations, and UI components are implemented in
 
 - [ ] Shared domain and contract crates with strict constructors and Serde wire fixtures.
 - [ ] Documented lifecycle state machines for recordings, uploads, media jobs, invitations, and deletions.
+- [ ] Provider-neutral media request/result types with immutable source/output keys, source checksum/version, transform profile/version, selected executor, capability decision, progress capability, retryability, and redacted provider error codes.
 - [ ] A stable error envelope with public codes, retryability, correlation IDs, and redacted internal causes.
 - [ ] Compatibility policy for additive changes, deprecation, schema versions, and unsupported clients.
 - [ ] Golden JSON fixtures consumed by Rust, TypeScript compatibility tests during transition, and API documentation.
@@ -48,6 +49,8 @@ Database queries, endpoint implementations, and UI components are implemented in
 - [ ] Serialization tests freeze field names, enum values, nullability, and error codes.
 - [ ] Older supported clients safely ignore approved additions and receive a version error for breaking changes.
 - [ ] Types compile in Worker Wasm, native services, and Leptos targets without runtime leakage.
+- [ ] Cloudflare JavaScript/ReadableStream binding types and native GStreamer types remain inside their adapters and cannot appear in shared wire contracts.
+- [ ] Unknown executor/capability/profile values follow an explicit forward-compatibility rule rather than silently selecting work.
 - [ ] Logs and Display implementations do not expose secrets, signed URLs, or sensitive payloads.
 
 ## Required test evidence

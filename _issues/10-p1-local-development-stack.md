@@ -1,5 +1,5 @@
 ---
-title: "Create a reproducible local stack for D1, object storage, GStreamer, and seed data"
+title: "Create a reproducible local stack for D1, R2, Cloudflare Media, GStreamer, and seed data"
 labels:
   - "phase:p1"
   - "area:developer-experience"
@@ -10,7 +10,7 @@ depends_on: [03, 05, 09]
 size: epic
 ---
 
-# 10 · Create a reproducible local stack for D1, object storage, GStreamer, and seed data
+# 10 · Create a reproducible local stack for D1, R2, Cloudflare Media, GStreamer, and seed data
 
 ## Outcome
 
@@ -28,7 +28,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Automate tool checks, local Worker bindings, D1 migrations, object storage, job transport, native media worker, Leptos app, seed/reset, observability, and representative failure toggles.
+Automate tool checks, local Worker bindings, D1 migrations, R2-compatible object storage, an offline Media Transformations fake, job transport, native media worker, Leptos app, seed/reset, observability, and representative failure toggles. Add an explicit opt-in remote lane for the real Media binding because it cannot be simulated locally.
 
 ### Out of scope
 
@@ -39,6 +39,7 @@ Perfect emulation of Cloudflare production or real hardware capture is not expec
 - [ ] A doctor command that validates Rust targets, Wrangler/worker-build, GStreamer version/plugins, browser tooling, ports, and optional Tauri dependencies.
 - [ ] One-command start, stop, reset, migrate, seed, and log-tail workflows.
 - [ ] Deterministic seed tenants, videos, jobs, comments, permissions, and object manifests.
+- [ ] A capability-accurate local `MediaTransformer` fake plus a budgeted remote R2 → `MEDIA` → R2 smoke command.
 - [ ] Local secrets templates with safe defaults and explicit production-secret refusal.
 - [ ] A troubleshooting guide for each supported development OS.
 
@@ -46,7 +47,8 @@ Perfect emulation of Cloudflare production or real hardware capture is not expec
 
 - [ ] A clean checkout reaches healthy web, Worker, D1, object storage, and media worker services using only documented steps.
 - [ ] Reset removes local data and reapplying every migration from empty succeeds.
-- [ ] The synthetic walking slice completes locally and leaves a playable object plus consistent D1 rows.
+- [ ] The synthetic walking slice completes locally with the Media fake and native fallback, leaving playable objects plus consistent D1 rows.
+- [ ] The remote smoke is opt-in, uses isolated prefixes and limits, records cost/usage, and reset never deletes non-test remote assets.
 - [ ] Port collisions, missing GStreamer plugins, stale migrations, and absent bindings produce actionable errors.
 - [ ] No checked-in or generated default can address a production database or bucket.
 
@@ -59,6 +61,7 @@ Perfect emulation of Cloudflare production or real hardware capture is not expec
 ## Risks and open questions
 
 - Local emulators differ from D1/R2 production semantics.
+- The Media binding requires remote development, so a green offline fake does not prove provider compatibility.
 - Cross-platform scripts can become a second build system.
 
 ## Rollout and rollback

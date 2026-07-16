@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Define go/no-go checklist, freezes/catch-up, tenant/cohort canaries, client/version readiness, route/job/storage/data authority flags, support communications, SLO/mismatch monitoring, rollback drills, final reconciliation, observation window, source retention, decommission, credential revocation, cost cleanup, and postmortem.
+Define go/no-go checklist, freezes/catch-up, tenant/cohort canaries, client/version readiness, route/job/storage/data/executor authority flags, support communications, SLO/mismatch/cost monitoring, rollback drills, final reconciliation, observation window, source retention, decommission, credential revocation, cost cleanup, and postmortem.
 
 ### Out of scope
 
@@ -39,6 +39,7 @@ No new feature work is accepted into the cutover unless it closes an approved bl
 
 - [ ] Detailed runbook with owners, timestamps, communication, authority state, checkpoints, stop conditions, and command/evidence links.
 - [ ] Canary cohorts covering internal, representative tenants, storage modes, platforms, media modes, and high-risk workflows.
+- [ ] Per-job/profile Cloudflare Media, GStreamer, and legacy routing flags with deterministic rollback and in-flight work disposition.
 - [ ] Automated go/no-go dashboard combining SLOs, parity, reconciliation, backlog, client adoption, capacity, and rollback readiness.
 - [ ] Final MySQL/D1 and object reconciliation plus immutable migration evidence.
 - [ ] Legacy decommission/retention plan covering services, routes, queues, databases, buckets, secrets, DNS, jobs, clients, dashboards, runbooks, and billing.
@@ -47,6 +48,7 @@ No new feature work is accepted into the cutover unless it closes an approved bl
 
 - [ ] Every P0–P5 phase gate is signed and no unowned critical/high cutover blocker remains.
 - [ ] Canary SLOs, parity comparisons, support volume, data reconciliation, and media quality remain within charter budgets for the approved observation period.
+- [ ] Managed-media usage/cost, limit rejection, provider errors, fallback rate, output drift, and duplicate-artifact metrics remain inside signed thresholds.
 - [ ] A production-scale rollback is successfully rehearsed, timed, and preserves canary writes before the irreversible gate.
 - [ ] Final row/relationship/aggregate/object count/byte/checksum and sampled semantic reconciliation has zero unexplained differences.
 - [ ] Legacy authority is removed only after rollback expiry approval; credentials and scheduled work are revoked, retained data is access-controlled, and post-cutover monitoring remains active.

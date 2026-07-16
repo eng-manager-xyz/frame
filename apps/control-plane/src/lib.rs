@@ -11,7 +11,13 @@ struct Health {
     service: &'static str,
     status: &'static str,
     d1: bool,
-    object_storage: bool,
+    r2: bool,
+    media_transformations: bool,
+}
+
+fn has_binding(env: &Env, name: &str) -> bool {
+    js_sys::Reflect::get(env, &wasm_bindgen::JsValue::from_str(name))
+        .is_ok_and(|binding| !binding.is_undefined())
 }
 
 #[event(fetch, respond_with_errors)]
@@ -25,12 +31,18 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 .await?
                 .is_some_and(|row| row.ready == 1);
             let _recordings = context.env.bucket("RECORDINGS")?;
+            let media_transformations = has_binding(&context.env, "MEDIA");
 
             Response::from_json(&Health {
                 service: "frame-control-plane",
-                status: if ready { "ok" } else { "degraded" },
+                status: if ready && media_transformations {
+                    "ok"
+                } else {
+                    "degraded"
+                },
                 d1: ready,
-                object_storage: true,
+                r2: true,
+                media_transformations,
             })
         })
         .get("/", |_request, _context| {

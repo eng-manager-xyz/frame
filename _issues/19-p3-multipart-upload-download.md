@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Implement upload intent, direct/brokered selection, signed PUT or temporary credentials, multipart create/list/part/complete/abort, local upload journal, checksums, expiry, quota, idempotent finalize, authorized HEAD/GET/range, CORS, and client retry guidance.
+Implement upload intent, direct/brokered selection, signed PUT or temporary credentials, multipart create/list/part/complete/abort, local upload journal, checksums, expiry, quota, idempotent finalize, authorized HEAD/GET/range, CORS, and client retry guidance. Validate or generate a canonical Media-compatible distribution master while retaining original/editable assets.
 
 ### Out of scope
 
@@ -48,6 +48,7 @@ Bulk migration of existing objects is issue 20. Retention and legal-hold policy 
 - [ ] A multi-part recording resumes after client restart without reuploading verified parts and completes to one immutable object.
 - [ ] Duplicate create, part, complete, finalize, and abort requests are safe and return stable outcomes.
 - [ ] Part sizing, count, total size, URL expiry, Worker request, and provider limits are validated before transfer.
+- [ ] Finalize records immutable source identity and media metadata sufficient for issue 28 to preflight Cloudflare Media without trusting client claims.
 - [ ] An expired, altered, cross-tenant, wrong-method, or wrong-key authorization is rejected without disclosing object existence.
 - [ ] Range, HEAD, cache validators, content type/disposition, CORS, and private access pass player and security tests.
 

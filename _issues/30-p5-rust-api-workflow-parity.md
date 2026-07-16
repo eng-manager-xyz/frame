@@ -29,7 +29,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Inventory and port retained routes/actions/workflows: auth/session, videos, upload, storage, folders/spaces/orgs, comments/notifications, share/embed, desktop/mobile/extension, developer APIs, billing, imports, media callbacks, webhooks, scheduled jobs, admin/support, analytics consent, and external integrations.
+Inventory and port retained routes/actions/workflows: auth/session, videos, upload, storage, folders/spaces/orgs, comments/notifications, share/embed, desktop/mobile/extension, developer APIs, billing, imports, capability-routed media jobs/results, callbacks, webhooks, scheduled jobs, admin/support, analytics consent, and external integrations.
 
 ### Out of scope
 
@@ -39,6 +39,7 @@ Pixel/UI parity is issues 31–33. Third-party vendors can remain adapters if co
 
 - [ ] Route/action/workflow matrix with legacy path, clients, auth, policy, contract version, owner, implementation, and disposition.
 - [ ] Rust handlers/services with centralized validation, authorization, rate limits, idempotency, errors, tracing, and audit.
+- [ ] Provider-neutral derivative request/status/playback contracts; callers cannot choose an unsafe executor or depend on Cloudflare binding-specific response shapes.
 - [ ] Signed webhook verification, replay defense, outbound retry/outbox, cron/workflow lease, and secret rotation patterns.
 - [ ] Compatibility layer for supported desktop/mobile/extension/developer clients and deprecation policy.
 - [ ] Generated API documentation and contract/E2E suites.
@@ -49,6 +50,7 @@ Pixel/UI parity is issues 31–33. Third-party vendors can remain adapters if co
 - [ ] Unknown IDs and forbidden cross-tenant resources follow the approved non-disclosure policy.
 - [ ] Webhook signatures, replay windows, rate limits, body limits, SSRF/open-redirect defenses, and secret redaction pass security tests.
 - [ ] Scheduled and durable workflows survive duplicate execution, crash, timeout, and partial provider failure.
+- [ ] Media provider quota/outage, native fallback, indeterminate progress, and managed kill-switch behavior produce stable public status/error contracts.
 - [ ] Supported legacy clients pass compatibility E2E tests before any endpoint is redirected.
 
 ## Required test evidence

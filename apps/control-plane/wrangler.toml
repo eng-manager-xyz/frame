@@ -3,7 +3,7 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2026-07-15"
 
 [build]
-command = "worker-build --release"
+command = "worker-build --release apps/control-plane"
 
 [[d1_databases]]
 binding = "DB"
@@ -11,9 +11,14 @@ database_name = "frame"
 database_id = "replace-with-d1-database-id"
 migrations_dir = "migrations"
 
-# The requested brief says R3. Cloudflare's documented object binding is R2;
-# ADR 0002 and issue 02 must be resolved before this becomes a production choice.
+# Canonical private source and derivative storage; see ADR 0002.
 [[r2_buckets]]
 binding = "RECORDINGS"
 bucket_name = "frame-recordings"
 preview_bucket_name = "frame-recordings-preview"
+
+# R2-native derivative processing; see ADR 0003. The binding currently uses
+# remote Wrangler development because it cannot be simulated locally.
+[media]
+binding = "MEDIA"
+remote = true

@@ -28,7 +28,7 @@ Reference snapshot: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 
 ## Scope
 
-Capture sanitized API request/response contracts, route inventories, schema samples, UI journeys, media input/output goldens, failure cases, and timing/resource measurements across the supported matrix.
+Capture sanitized API request/response contracts, route inventories, schema samples, UI journeys, native and managed media input/output goldens, failure cases, and timing/resource/cost measurements across the supported matrix.
 
 ### Out of scope
 
@@ -39,6 +39,8 @@ Fixing parity gaps belongs to the implementation issue that owns the behavior. P
 - [ ] A machine-readable manifest tied to the Cap SHA, tool versions, OS/hardware, licenses, and checksums.
 - [ ] Sanitized API and workflow snapshots covering success, authorization, validation, retry, and error envelopes.
 - [ ] Golden video/audio/cursor/edit fixtures with objective probe metadata and perceptual comparison guidance.
+- [ ] Small redistributable H.264/AAC MP4 fixtures within Cloudflare Media limits plus exact and just-over limit variants; keep the existing VP8/WebM smoke explicitly native-only.
+- [ ] Cross-executor output manifests that compare metadata, playback, selected frames/audio, perceptual quality, and timing without assuming byte-identical managed encodes.
 - [ ] Baseline reports for resource use, startup, sustained recording, sync, upload, processing, playback, and recovery.
 - [ ] A deterministic runner that produces a human-readable parity diff.
 
@@ -47,6 +49,7 @@ Fixing parity gaps belongs to the implementation issue that owns the behavior. P
 - [ ] Fixture provenance and redistribution rights are recorded; no secret, token, personal data, or customer media is present.
 - [ ] Every charter-critical flow has at least one happy-path and one failure-path fixture.
 - [ ] Media fixtures cover short, long, variable-frame-rate, multi-monitor, high-DPI, device-loss, sleep/wake, and interrupted-recording cases selected by the charter.
+- [ ] Remote managed-media fixtures contain no customer data, use immutable isolated R2 prefixes, and record transform profile, provider date/version context, usage, and cost.
 - [ ] Baseline variance and hardware context are reported so regression budgets are statistically meaningful.
 - [ ] CI can run a documented fast subset while dedicated runners can execute the full matrix.
 
@@ -60,6 +63,7 @@ Fixing parity gaps belongs to the implementation issue that owns the behavior. P
 
 - Golden tests can encode existing bugs as requirements.
 - Media artifacts can be large, copyrighted, or hardware-specific.
+- Managed outputs can drift independently of the repository, so golden evidence must retain provider context and tolerances.
 
 ## Rollout and rollback
 

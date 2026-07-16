@@ -33,7 +33,7 @@ Inventory objects and ownership, create manifests, stream copy with bounded conc
 
 ### Out of scope
 
-Changing the storage target is ADR 02; ongoing lifecycle policy is issue 21; MySQL metadata ETL is issue 16.
+Reconsidering canonical R2 requires a superseding ADR; ongoing lifecycle policy is issue 21; MySQL metadata ETL is issue 16.
 
 ## Deliverables
 

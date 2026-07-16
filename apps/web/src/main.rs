@@ -58,7 +58,7 @@ fn App() -> impl IntoView {
         (
             "Capture & media",
             "Native Rust + GStreamer",
-            "Executable smoke pipeline",
+            "Capture, editing, advanced jobs, fallback",
         ),
         (
             "Control plane",
@@ -66,7 +66,12 @@ fn App() -> impl IntoView {
             "Worker boundary scaffolded",
         ),
         ("Interface", "Leptos", "Server-rendered shell online"),
-        ("Recordings", "Object-store port", "R2/S3 pending R3 ADR"),
+        ("Recordings", "Cloudflare R2", "Canonical object storage"),
+        (
+            "Edge derivatives",
+            "Cloudflare Media",
+            "R2-native clips, frames, sprites, and audio",
+        ),
     ];
 
     view! {
@@ -80,7 +85,7 @@ fn App() -> impl IntoView {
                 <p class="eyebrow">"A Rust port of the Cap recording platform"</p>
                 <h1>"Record locally. Process natively. Share from the edge."</h1>
                 <p class="lede">
-                    "Frame separates native media work from the edge control plane, then joins them with explicit contracts that can be tested, migrated, and rolled back."
+                    "Frame combines Cloudflare Media for supported edge derivatives with native GStreamer for capture and complex processing, joined by explicit contracts that can be tested, migrated, and rolled back."
                 </p>
                 <div class="actions">
                     <a href="/health">"Check web health"</a>
@@ -123,7 +128,7 @@ h1 { margin: 18px 0; font-size: clamp(48px, 8vw, 92px); line-height: .98; letter
 .actions { display: flex; gap: 12px; margin-top: 34px; }
 a { padding: 13px 17px; border-radius: 10px; background: #a7f3d0; color: #081014; font-weight: 750; text-decoration: none; }
 a.secondary { background: #171c25; color: #e6e9ee; border: 1px solid #29313f; }
-.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding-bottom: 60px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; padding-bottom: 60px; }
 article { min-height: 190px; padding: 22px; background: rgba(18, 22, 30, .82); border: 1px solid #29313e; border-radius: 16px; }
 article .card-title { color: #a7f3d0; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 article h2 { margin: 28px 0 8px; font-size: 20px; }
@@ -143,5 +148,7 @@ mod tests {
         assert!(page.starts_with("<!doctype html>"));
         assert!(page.contains("Native Rust + GStreamer"));
         assert!(page.contains("Rust/Wasm + D1"));
+        assert!(page.contains("Cloudflare R2"));
+        assert!(page.contains("Cloudflare Media"));
     }
 }
