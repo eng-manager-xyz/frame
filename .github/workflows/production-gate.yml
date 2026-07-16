@@ -1,0 +1,239 @@
+name: Production gate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frame-production-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  evaluate:
+    name: Evaluate release impact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      worker_changed: ${{ steps.change_plan.outputs.worker_changed }}
+      web_changed: ${{ steps.change_plan.outputs.web_changed }}
+      infra_changed: ${{ steps.change_plan.outputs.infra_changed }}
+      reason: ${{ steps.change_plan.outputs.reason }}
+    steps:
+      - name: Check out the exact revision and its predecessor
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 2
+      - name: Classify the release without filtering the sentinel
+        id: change_plan
+        env:
+          BEFORE_SHA: ${{ github.event.before || '0000000000000000000000000000000000000000' }}
+        run: scripts/ci/release-change-plan.sh "${BEFORE_SHA}" "${GITHUB_SHA}"
+
+  preflight:
+    name: Unprivileged production preflight
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install GStreamer build and runtime libraries
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+          gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+      - name: Validate release policy and configuration
+        run: |
+          python3 scripts/ci/check-workflow-policy.py
+          ruby scripts/ci/check-yaml-syntax.rb
+          ruby scripts/ci/check-render-blueprint.rb
+          python3 scripts/ci/check-fixtures.py
+          python3 scripts/ci/check-migrations.py
+          python3 scripts/ci/check-cloudflare-zone-contract.py
+          python3 scripts/ci/test-migration.py
+          python3 scripts/ci/check-parity-evidence.py --require-full
+      - name: Run format, lint, test, and boundary gates
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace
+          scripts/ci/check-workspace-boundaries.sh
+      - name: Prove lockfile stability
+        run: git diff --exit-code -- Cargo.lock
+
+  build_release:
+    name: Build immutable release handoff
+    needs: [evaluate, preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out the exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --target wasm32-unknown-unknown
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.17.0"
+      - name: Install the pinned Worker packager
+        run: cargo install worker-build --version 0.8.5 --locked
+      - name: Build release targets
+        run: |
+          cargo build --locked --release -p frame-web
+          npx --yes wrangler@4.111.0 deploy --dry-run \
+            --config apps/control-plane/wrangler.toml \
+            --outdir target/wrangler-release
+      - name: Create checksummed release manifest and dependency inventory
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: scripts/ci/package-release.sh target/frame-release
+      - name: Prove lockfile stability
+        run: git diff --exit-code -- Cargo.lock
+      - name: Upload the immutable release handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frame-release-${{ github.sha }}
+          path: target/frame-release
+          if-no-files-found: error
+          retention-days: 30
+
+  provider_release:
+    name: Protected Worker deploy or compatibility verify
+    needs: [evaluate, preflight, build_release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+    steps:
+      - name: Check out the exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+      - name: Download the built release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: frame-release-${{ github.sha }}
+          path: target/downloaded-release
+      - name: Verify artifact integrity and source identity
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: scripts/ci/verify-release-bundle.sh target/downloaded-release
+      - name: Validate protected provider credentials without logging them
+        run: |
+          test -n "${CLOUDFLARE_API_TOKEN}"
+          test "${#CLOUDFLARE_ACCOUNT_ID}" -eq 32
+      - name: Install pinned Node.js for provider commands
+        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.17.0"
+      - name: Materialize the protected production binding configuration
+        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
+        run: >-
+          python3 scripts/ci/prepare-wrangler-config.py
+          apps/control-plane/wrangler.toml
+          apps/control-plane/wrangler.production.ci.toml
+      - name: Extract the verified Worker handoff
+        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
+        run: |
+          mkdir -p target/provider-worker
+          tar --extract --gzip \
+            --file=target/downloaded-release/frame-worker.tar.gz \
+            --directory=target/provider-worker \
+            --no-same-owner --no-same-permissions
+          test -f target/provider-worker/wrangler-release/index.js
+      - name: Apply expand-only D1 migrations before Worker code
+        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
+        run: >-
+          npx --yes wrangler@4.111.0 d1 migrations apply frame --remote
+          --config apps/control-plane/wrangler.production.ci.toml
+      - name: Deploy the exact verified Worker bundle
+        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
+        run: >-
+          npx --yes wrangler@4.111.0 deploy
+          target/provider-worker/wrangler-release/index.js --no-bundle
+          --strict --message "GitHub release ${GITHUB_SHA}"
+          --config apps/control-plane/wrangler.production.ci.toml
+      - name: Verify the deployed or current compatible service
+        env:
+          RELEASE_REASON: ${{ needs.evaluate.outputs.reason }}
+        run: |
+          echo "Release classification: ${RELEASE_REASON}"
+          scripts/ci/smoke-canonical-domain.sh https://frame.engmanager.xyz target/provider-smoke.json
+      - name: Create redacted rollback metadata
+        env:
+          PREVIOUS_SHA: ${{ github.event.before || '0000000000000000000000000000000000000000' }}
+          WORKER_CHANGED: ${{ needs.evaluate.outputs.worker_changed }}
+          WEB_CHANGED: ${{ needs.evaluate.outputs.web_changed }}
+        run: |
+          jq -n \
+            --arg release_sha "${GITHUB_SHA}" \
+            --arg previous_sha "${PREVIOUS_SHA}" \
+            --arg worker_changed "${WORKER_CHANGED}" \
+            --arg web_changed "${WEB_CHANGED}" \
+            '{
+              schema_version: 1,
+              release_sha: $release_sha,
+              previous_sha: $previous_sha,
+              worker_deployed: ($worker_changed == "true"),
+              render_authority: "git-checks-pass",
+              render_expected: ($web_changed == "true"),
+              rollback: {worker_source_sha: $previous_sha, d1: "expand-only-no-revert"}
+            }' > target/provider-release-record.json
+      - name: Retain redacted provider evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: provider-release-${{ github.sha }}
+          path: |
+            target/downloaded-release/release-manifest.json
+            target/provider-smoke.json
+            target/provider-release-record.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove the ephemeral production binding configuration
+        if: ${{ always() }}
+        run: rm -f apps/control-plane/wrangler.production.ci.toml
+
+  production-gate:
+    name: production-gate
+    if: ${{ always() }}
+    needs: [evaluate, preflight, build_release, provider_release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Resolve every release phase to a binary result
+        env:
+          EVALUATE_RESULT: ${{ needs.evaluate.result }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          BUILD_RESULT: ${{ needs.build_release.result }}
+          PROVIDER_RESULT: ${{ needs.provider_release.result }}
+        run: |
+          test "${EVALUATE_RESULT}" = success
+          test "${PREFLIGHT_RESULT}" = success
+          test "${BUILD_RESULT}" = success
+          test "${PROVIDER_RESULT}" = success

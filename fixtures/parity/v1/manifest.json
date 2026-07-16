@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "manifest_kind": "immutable_parity_fixture_manifest",
+  "immutable": true,
+  "created_on": "2026-07-16",
+  "cap_reference": {
+    "repository": "CapSoftware/Cap",
+    "commit_sha": "6ba69561ac86b8efdb17616d6727f9638015546b",
+    "reference_purpose": "declared migration oracle identity only",
+    "artifacts_copied": false
+  },
+  "provenance": {
+    "origin": "deterministic_generated_metadata",
+    "generator": "hand-authored fixed JSON values reviewed by the parity checker",
+    "contains_upstream_media": false,
+    "contains_customer_media": false,
+    "media_input_plan": "generated color bars and tone metadata only"
+  },
+  "redistribution": {
+    "allowed": true,
+    "scope": "generated_json_metadata_only",
+    "basis": "created for this repository without copied third-party artifacts",
+    "third_party_assets": false
+  },
+  "privacy": {
+    "review_status": "synthetic_metadata_only",
+    "contains_customer_data": false,
+    "contains_personal_data": false,
+    "contains_secrets": false,
+    "contains_media_bytes": false
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "encoding": "lowercase_hex",
+    "policy": "listed artifacts are immutable; supersede with a new corpus version"
+  },
+  "tool_context": {
+    "checker": "scripts/ci/check-parity-evidence.py",
+    "runtime": "python3_standard_library",
+    "host_measurement_claimed": false
+  },
+  "lanes": {
+    "fast": {
+      "evidence_scope": "local_simulated_only",
+      "promotion_claim": "local_contract_gate_only",
+      "scenario_ids": [
+        "auth-failure-session-absent",
+        "auth-happy-session-accepted",
+        "cutover-failure-stale-epoch",
+        "cutover-happy-single-authority",
+        "media-failure-unsupported-profile",
+        "media-happy-supported-profile",
+        "share-failure-private-nondisclosure",
+        "share-happy-public-summary",
+        "tenant-failure-cross-scope",
+        "tenant-happy-owned-resource",
+        "upload-failure-size-bound",
+        "upload-happy-idempotent-intent"
+      ],
+      "required_artifacts": [
+        "baselines/local-simulated.json",
+        "diffs/cap-frame-intentional-mismatch.json",
+        "diffs/cap-frame-match.json",
+        "scenarios.json"
+      ]
+    },
+    "full": {
+      "extends": "fast",
+      "evidence_scope": "protected_provider_and_hardware_required",
+      "promotion_claim": "blocked_until_protected_records_are_collected",
+      "scenario_ids": [
+        "media-full-device-loss",
+        "media-full-managed-limit",
+        "media-full-native-capture",
+        "media-full-provider-outage"
+      ],
+      "protected_record_ids": [
+        "cross-executor-generated-media-conformance",
+        "managed-cloudflare-media-remote",
+        "native-linux-x86-64-capture-and-soak",
+        "native-macos-arm64-capture-and-soak",
+        "native-windows-x86-64-capture-and-soak"
+      ]
+    }
+  },
+  "files": [
+    {
+      "path": "baselines/local-simulated.json",
+      "media_type": "application/json",
+      "evidence_class": "local_simulated",
+      "bytes": 1629,
+      "sha256": "8a28b6d3c6c90e73b96bc7cf4a942738e8ee3330457c3e53673beee30d4d6edb"
+    },
+    {
+      "path": "diffs/cap-frame-intentional-mismatch.json",
+      "media_type": "application/json",
+      "evidence_class": "local_simulated",
+      "bytes": 858,
+      "sha256": "67a7c97919477cb7c87ede459d518b37b350f0fb9d276992b29a8dec79b40f40"
+    },
+    {
+      "path": "diffs/cap-frame-match.json",
+      "media_type": "application/json",
+      "evidence_class": "local_simulated",
+      "bytes": 729,
+      "sha256": "14e1c443c91dece6f548af9fce19ab9686effb0a0526a7505d213ca98ea17e80"
+    },
+    {
+      "path": "protected-context-placeholders.json",
+      "media_type": "application/json",
+      "evidence_class": "protected_placeholder",
+      "bytes": 2930,
+      "sha256": "7ab4e8470c46a82ee5beccd6f86540812f834add7dd4ee0d503d10019988e90d"
+    },
+    {
+      "path": "scenarios.json",
+      "media_type": "application/json",
+      "evidence_class": "test_definition",
+      "bytes": 7667,
+      "sha256": "72f3fa0ed7117074663c4fd24c2b3c07dca14a1547322602b63d7e6e8e91ee3d"
+    }
+  ]
+}

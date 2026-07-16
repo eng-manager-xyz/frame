@@ -1,6 +1,11 @@
 /target/
 /.tmp/
 /.wrangler/
+/.terraform/
+**/.terraform/
+*.tfplan
+backend.ci.tf.json
+wrangler.production.ci.toml
 /.dev.vars
 *.log
 __pycache__/

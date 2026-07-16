@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "evidence_class": "local_simulated",
+  "status": "deterministic_sample_not_release_measurement",
+  "generator": {
+    "name": "frame-parity-fixed-sequence",
+    "version": 1,
+    "seed": "frame-parity-v1-seed-20260716",
+    "warmup_count": 1
+  },
+  "baselines": [
+    {
+      "metric": "api_round_trip",
+      "unit": "milliseconds",
+      "repeat_count": 5,
+      "samples": [10, 11, 9, 10, 10],
+      "mean": 10,
+      "population_variance": 0.4,
+      "minimum": 9,
+      "maximum": 11,
+      "comparison_budget": { "maximum_mean": 12, "maximum_population_variance": 1 }
+    },
+    {
+      "metric": "media_job_simulation",
+      "unit": "milliseconds",
+      "repeat_count": 5,
+      "samples": [100, 102, 98, 101, 99],
+      "mean": 100,
+      "population_variance": 2,
+      "minimum": 98,
+      "maximum": 102,
+      "comparison_budget": { "maximum_mean": 105, "maximum_population_variance": 4 }
+    },
+    {
+      "metric": "estimated_peak_memory",
+      "unit": "mebibytes",
+      "repeat_count": 5,
+      "samples": [64, 64, 65, 63, 64],
+      "mean": 64,
+      "population_variance": 0.4,
+      "minimum": 63,
+      "maximum": 65,
+      "comparison_budget": { "maximum_mean": 68, "maximum_population_variance": 1 }
+    },
+    {
+      "metric": "generated_av_sync_offset",
+      "unit": "milliseconds",
+      "repeat_count": 5,
+      "samples": [0, 1, -1, 0, 0],
+      "mean": 0,
+      "population_variance": 0.4,
+      "minimum": -1,
+      "maximum": 1,
+      "comparison_budget": { "maximum_absolute_mean": 2, "maximum_population_variance": 1 }
+    }
+  ]
+}

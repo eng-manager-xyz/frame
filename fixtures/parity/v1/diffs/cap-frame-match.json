@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "evidence_class": "local_simulated",
+  "oracle_status": "declared_expected_behavior_not_observed_output",
+  "fixture_purpose": "positive_comparator_control",
+  "expected_gate": "pass",
+  "comparisons": [
+    {
+      "path": "auth.response.status",
+      "strategy": "exact",
+      "cap_value": 401,
+      "frame_value": 401
+    },
+    {
+      "path": "auth.response.code",
+      "strategy": "exact",
+      "cap_value": "unauthenticated",
+      "frame_value": "unauthenticated"
+    },
+    {
+      "path": "auth.response.cache_policy",
+      "strategy": "exact",
+      "cap_value": "no_store",
+      "frame_value": "no_store"
+    }
+  ],
+  "expected_mismatch_paths": []
+}

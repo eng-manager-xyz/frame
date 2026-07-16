@@ -1,0 +1,134 @@
+name: Cloudflare account infrastructure
+
+on:
+  pull_request:
+    paths:
+      - infra/cloudflare-account/**
+      - .github/workflows/cloudflare-account.yml
+      - scripts/ci/install-terraform.sh
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Isolated Frame account state
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - production
+      operation:
+        description: Protected remote-state operation
+        required: true
+        type: choice
+        default: plan
+        options:
+          - plan
+          - apply
+      confirm_sha:
+        description: Full workflow SHA required for apply
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frame-cloudflare-account-${{ inputs.environment || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Unprivileged Terraform validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install checksum-pinned Terraform
+        run: scripts/ci/install-terraform.sh
+      - name: Check formatting and account-only ownership
+        run: |
+          terraform -chdir=infra/cloudflare-account fmt -check -recursive
+          if rg -n 'cloudflare_(record|ruleset|zone|zone_setting)' infra/cloudflare-account --glob '*.tf'; then
+            echo "Frame account state may not manage shared zone resources" >&2
+            exit 1
+          fi
+      - name: Initialize without credentials or remote state
+        run: >-
+          terraform -chdir=infra/cloudflare-account init
+          -backend=false -input=false -lockfile=readonly
+      - name: Validate provider schema and configuration
+        run: terraform -chdir=infra/cloudflare-account validate
+
+  terraform:
+    name: Protected remote plan or apply
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment:
+      name: cloudflare-${{ inputs.environment }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
+      TF_BACKEND_TYPE: ${{ secrets.TF_BACKEND_TYPE }}
+      TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_bucket_name: ${{ vars.FRAME_R2_BUCKET_NAME }}
+      TF_VAR_location: ${{ vars.FRAME_R2_LOCATION }}
+      TF_VAR_allowed_browser_origins: ${{ vars.FRAME_R2_ALLOWED_ORIGINS }}
+    steps:
+      - name: Check out the exact reviewed revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate manual apply confirmation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CONFIRM_SHA: ${{ inputs.confirm_sha }}
+        run: |
+          if [[ "${OPERATION}" == apply && "${CONFIRM_SHA}" != "${GITHUB_SHA}" ]]; then
+            echo "apply requires confirm_sha to equal the full workflow commit SHA" >&2
+            exit 1
+          fi
+      - name: Validate protected inputs without logging values
+        run: |
+          test -n "${CLOUDFLARE_API_TOKEN}"
+          test "${#TF_VAR_cloudflare_account_id}" -eq 32
+          test -n "${TF_BACKEND_CONFIG}"
+          case "${TF_BACKEND_TYPE}" in
+            s3 | gcs | azurerm | http | remote) ;;
+            *) echo "TF_BACKEND_TYPE is not an approved remote backend" >&2; exit 1 ;;
+          esac
+          test -n "${TF_VAR_bucket_name}"
+          test -n "${TF_VAR_allowed_browser_origins}"
+      - name: Install checksum-pinned Terraform
+        run: scripts/ci/install-terraform.sh
+      - name: Initialize isolated locked remote state
+        run: |
+          umask 077
+          printf '%s' "${TF_BACKEND_CONFIG}" > "${RUNNER_TEMP}/backend.hcl"
+          jq -n --arg backend "${TF_BACKEND_TYPE}" \
+            '{terraform: {backend: {($backend): {}}}}' \
+            > infra/cloudflare-account/backend.ci.tf.json
+          terraform -chdir=infra/cloudflare-account init \
+            -input=false \
+            -lockfile=readonly \
+            -backend-config="${RUNNER_TEMP}/backend.hcl"
+      - name: Create a serialized reviewed plan
+        run: >-
+          terraform -chdir=infra/cloudflare-account plan
+          -input=false -lock-timeout=5m
+          -out="${RUNNER_TEMP}/frame.tfplan"
+      - name: Apply only the saved plan
+        if: ${{ inputs.operation == 'apply' }}
+        run: >-
+          terraform -chdir=infra/cloudflare-account apply
+          -input=false -lock-timeout=5m
+          "${RUNNER_TEMP}/frame.tfplan"
+      - name: Require zero post-apply drift
+        if: ${{ inputs.operation == 'apply' }}
+        run: >-
+          terraform -chdir=infra/cloudflare-account plan
+          -input=false -lock-timeout=5m
+          -detailed-exitcode

@@ -10,23 +10,25 @@ permissions:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          components: clippy,rustfmt
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+          cache-on-failure: false
       - name: Install GStreamer
         run: >-
           sudo apt-get update && sudo apt-get install -y
           libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
           gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo check -p frame-control-plane --target wasm32-unknown-unknown
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
       - name: Install Worker packager
         run: cargo install worker-build --version 0.8.5 --locked
       - name: Worker bundle dry run
@@ -35,4 +37,4 @@ jobs:
           --config apps/control-plane/wrangler.toml
           --outdir target/wrangler-dry-run
       - name: GStreamer smoke artifact
-        run: cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
+        run: cargo run --locked -p frame-media-worker -- smoke target/frame-smoke.webm
