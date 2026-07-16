@@ -99,6 +99,9 @@ start_local() {
   stop_local >/dev/null
   : > "$PID_FILE"
 
+  migrate
+  seed
+
   cargo run -p frame-web > .tmp/frame-web.log 2>&1 &
   printf '%s\n' "$!" >> "$PID_FILE"
   npx --yes "wrangler@${WRANGLER_VERSION}" dev --config "$LOCAL_CONFIG" \

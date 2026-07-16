@@ -77,6 +77,13 @@ struct AuthorityRow {
 #[derive(Debug)]
 struct RuntimeConfig {
     host_policy: HostPolicy,
+    media_mode: MediaMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaMode {
+    Remote,
+    Fake,
 }
 
 impl RuntimeConfig {
@@ -99,8 +106,19 @@ impl RuntimeConfig {
             .var("FRAME_PUBLIC_HOST")
             .map(|value| value.to_string())
             .unwrap_or_else(|_| default_host.into());
+        let media_mode = env
+            .var("FRAME_MEDIA_MODE")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "remote".into());
+        let media_mode = match (deployment, media_mode.as_str()) {
+            (Deployment::Production, "remote") => MediaMode::Remote,
+            (Deployment::Local, "fake") => MediaMode::Fake,
+            (Deployment::Local, "remote") => MediaMode::Remote,
+            _ => return None,
+        };
         Some(Self {
             host_policy: HostPolicy::new(deployment, public_host)?,
+            media_mode,
         })
     }
 
@@ -221,7 +239,7 @@ async fn dispatch(
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
                 failure_response(failure, request_id, config.production())?
             } else {
-                health_response(env).await?
+                health_response(env, config).await?
             }
         }
         Route::Discovery => {
@@ -406,7 +424,7 @@ fn method_guard(
     }))
 }
 
-async fn health_response(env: &Env) -> Result<Response> {
+async fn health_response(env: &Env, config: &RuntimeConfig) -> Result<Response> {
     let database = env.d1("DB")?;
     let ready = database
         .prepare("SELECT 1 AS ready")
@@ -414,7 +432,7 @@ async fn health_response(env: &Env) -> Result<Response> {
         .await?
         .is_some_and(|row| row.ready == 1);
     let _recordings = env.bucket("RECORDINGS")?;
-    let media_transformations = has_binding(env, "MEDIA");
+    let media_transformations = config.media_mode == MediaMode::Fake || has_binding(env, "MEDIA");
 
     let status = if ready && media_transformations {
         ServiceStatus::Ok
