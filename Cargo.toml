@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "apps/control-plane",
+    "apps/desktop",
     "apps/media-worker",
     "apps/web",
     "crates/application",
@@ -11,6 +12,7 @@ members = [
     "crates/ports",
 ]
 default-members = [
+    "apps/desktop",
     "apps/media-worker",
     "apps/web",
     "crates/application",
