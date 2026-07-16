@@ -5,8 +5,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod contracts;
+mod identity;
 
 pub use contracts::*;
+pub use identity::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

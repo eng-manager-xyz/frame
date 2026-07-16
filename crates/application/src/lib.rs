@@ -6,6 +6,7 @@
 mod backfill;
 mod cutover;
 mod idempotency;
+mod identity;
 mod media_router;
 mod upload;
 
@@ -19,6 +20,13 @@ pub use backfill::{
 };
 pub use cutover::CutoverCoordinator;
 pub use idempotency::{CommandClaim, CommandFingerprint, CommandLedger, CommandStatus};
+pub use identity::{
+    AbuseContext, AuthFailure, AuthHashKey, AuthHashKeyRing, AuthPolicy, AuthService,
+    AuthenticatedIdentity, BrowserMutationRequest, IssuedApiKey, IssuedSession, LogoutAllReceipt,
+    OAuthCompletionOutcome, OAuthProviderPolicy, OAuthStart, PkceChallengeMethod,
+    PrincipalAssurance, ValidatedBrowserMutationProof, VerificationConsumeOutcome,
+    VerificationIssueReceipt, VerifiedIdentityProvisioning, VerifiedPrincipal,
+};
 pub use media_router::{MediaRoute, MediaRouter, MediaRoutingPolicy, RoutedTransform};
 pub use upload::{BeginUpload, MultipartUploadCoordinator, UploadPartReceipt, UploadSession};
 

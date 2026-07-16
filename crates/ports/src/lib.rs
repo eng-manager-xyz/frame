@@ -15,6 +15,10 @@ use frame_domain::{
 };
 use thiserror::Error;
 
+mod identity;
+
+pub use identity::*;
+
 #[derive(Error, PartialEq, Eq)]
 pub enum PortError {
     #[error("resource not found")]
