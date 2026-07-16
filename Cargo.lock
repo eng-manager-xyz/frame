@@ -614,7 +614,10 @@ name = "frame-media-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "frame-media",
+ "serde",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

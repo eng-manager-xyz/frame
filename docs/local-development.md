@@ -14,9 +14,10 @@ scripts/frame start
 ```
 
 The web service listens on `http://127.0.0.1:3000`; the Worker listens on
-`http://127.0.0.1:8787`. `Ctrl-C` stops both, and `scripts/frame stop` is safe to
-run after an interrupted shell. Logs are kept under ignored `.tmp/` and can be
-tailed with `scripts/frame logs`.
+`http://127.0.0.1:8787`; and the persistent native media health service listens
+on `http://127.0.0.1:8790`. `Ctrl-C` stops all three, and `scripts/frame stop` is
+safe to run after an interrupted shell. Logs are kept under ignored `.tmp/` and
+can be tailed with `scripts/frame logs`.
 
 `reset` deletes only `apps/control-plane/.wrangler/state` inside this checkout, reapplies every
 migration, and loads synthetic `*.invalid` seed identities. It refuses to run
@@ -54,8 +55,14 @@ resources, hard cost/time limits, synthetic fixtures, and explicit cleanup.
   `rustup target add wasm32-unknown-unknown`.
 - Missing GStreamer: install the runtime, development headers, and base/good
   plugin sets for the OS, then rerun `scripts/frame doctor`.
+- Missing Worker tooling: install `worker-build 0.8.5` and `cargo-deny 0.20.2`
+  with Cargo's `--locked` flag. The doctor rejects other versions.
+- Missing browser tooling: install Chromium/Chrome/Edge, or enable
+  `safaridriver` on macOS. Tauri CLI is reported separately because it is only
+  required while developing the native shell.
 - Port collision: set `FRAME_ADDR=127.0.0.1:<port>` for the web service or pass
-  a different Wrangler port while running the components separately.
+  a different Wrangler port while running the components separately. Set
+  `FRAME_MEDIA_ADDR=127.0.0.1:<port>` for the native media health service.
 - Stale or broken local schema: run `scripts/frame reset`. This is intentionally
   unavailable for remote resources.
 - Worker bundle failure: install `worker-build` at the version used by CI and
@@ -63,3 +70,7 @@ resources, hard cost/time limits, synthetic fixtures, and explicit cleanup.
 - macOS/Windows/Linux capture, permission, camera, audio, and hardware-codec
   evidence belongs to the representative-device lanes; a local synthetic
   smoke does not claim those gates.
+
+`dev/local.env.example` contains only safe local defaults and is never sourced
+implicitly. `scripts/frame` refuses local mutation whenever production/provider
+credentials are present.

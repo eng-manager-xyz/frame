@@ -9,6 +9,7 @@ LOCAL_CONFIG=apps/control-plane/wrangler.local.toml
 LOCAL_DB=frame-local
 LOCAL_STATE=apps/control-plane/.wrangler/state
 PID_FILE=.tmp/frame-local.pids
+MEDIA_ADDR=${FRAME_MEDIA_ADDR:-127.0.0.1:8790}
 
 usage() {
   cat <<'EOF'
@@ -45,7 +46,7 @@ refuse_production() {
 
 doctor() {
   local failed=0
-  for tool in cargo cargo-deny rustc rustup python3 node npx pkg-config; do
+  for tool in cargo cargo-deny worker-build rustc rustup python3 node npx pkg-config; do
     need "$tool" || failed=1
   done
   if [[ $failed -ne 0 ]]; then
@@ -59,6 +60,10 @@ doctor() {
     printf 'cargo-deny 0.20.2 is required (install with --version 0.20.2 --locked)\n' >&2
     failed=1
   fi
+  if [[ $(worker-build --version) != "0.8.5" ]]; then
+    printf 'worker-build 0.8.5 is required (install with --version 0.8.5 --locked)\n' >&2
+    failed=1
+  fi
   if ! rustup target list --installed | rg -qx 'wasm32-unknown-unknown'; then
     printf 'missing Rust target: rustup target add wasm32-unknown-unknown\n' >&2
     failed=1
@@ -69,6 +74,7 @@ doctor() {
   fi
   python3 scripts/ci/check-migrations.py || failed=1
   cargo run --quiet -p frame-media-worker -- doctor || failed=1
+  python3 scripts/ci/check-local-prerequisites.py --ports 3000 8787 8790 || failed=1
   npx --yes "wrangler@${WRANGLER_VERSION}" --version || failed=1
   return "$failed"
 }
@@ -113,10 +119,14 @@ start_local() {
     --port 8787 > .tmp/frame-worker.log 2>&1 &
   printf '%s\n' "$!" >> "$PID_FILE"
 
+  FRAME_MEDIA_ADDR="$MEDIA_ADDR" cargo run -p frame-media-worker -- serve \
+    > .tmp/frame-media-worker.log 2>&1 &
+  printf '%s\n' "$!" >> "$PID_FILE"
+
   trap 'stop_local' EXIT INT TERM
-  cargo run --quiet -p frame-media-worker -- doctor
   printf 'Frame local web: http://127.0.0.1:3000\n'
   printf 'Frame local API: http://127.0.0.1:8787/api/v1/health\n'
+  printf 'Frame native media: http://%s/health/ready\n' "$MEDIA_ADDR"
   printf 'Press Ctrl-C to stop.\n'
   wait
 }
@@ -165,8 +175,8 @@ case "$command" in
     ;;
   logs)
     mkdir -p .tmp
-    touch .tmp/frame-web.log .tmp/frame-worker.log
-    tail -n 100 -f .tmp/frame-web.log .tmp/frame-worker.log
+    touch .tmp/frame-web.log .tmp/frame-worker.log .tmp/frame-media-worker.log
+    tail -n 100 -f .tmp/frame-web.log .tmp/frame-worker.log .tmp/frame-media-worker.log
     ;;
   media-smoke)
     cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
