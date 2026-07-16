@@ -124,7 +124,7 @@ pub struct MembershipRow {
     pub role: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct VideoMutationRow {
     pub id: String,
     pub owner_id: String,

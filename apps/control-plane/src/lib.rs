@@ -739,9 +739,9 @@ async fn video_create_response(
     body: CreateVideoRequest,
     request_id: &str,
 ) -> Result<Response> {
-    if !mutation_authority_enabled(env, config).await? {
+    let Some(authority_fence) = mutation_authority_fence(env, config).await? else {
         return failure_response(mutation_disabled_failure(), request_id, config.production());
-    }
+    };
     let database = env.d1("DB")?;
     let Some(tenant_id) =
         authorized_tenant(&database, request, actor, RequiredAccess::Write).await?
@@ -793,7 +793,16 @@ async fn video_create_response(
                 "INSERT INTO videos(\
                    id, owner_id, title, state, source_object_key, playback_object_key, duration_ms, \
                    created_at_ms, updated_at_ms, organization_id, privacy, metadata_json, revision\
-                 ) VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL, ?4, ?4, ?5, 'private', '{}', 0)",
+                 ) SELECT ?1, ?2, ?3, 'pending', NULL, NULL, NULL, ?4, ?4, ?5, \
+                          'private', '{}', 0 \
+                   FROM organization_members m \
+                   JOIN organizations o ON o.id = m.organization_id \
+                   WHERE m.organization_id = ?5 AND m.user_id = ?2 \
+                     AND m.state = 'active' AND m.role IN ('owner', 'admin', 'member') \
+                     AND o.status = 'active' \
+                     AND (?6 = -1 OR EXISTS (SELECT 1 FROM authority_state a \
+                       WHERE a.singleton = 1 AND a.epoch = ?6 AND a.authority = 'd1' \
+                         AND a.phase IN ('d1_authoritative', 'finalized')))",
             )
             .bind(&[
                 JsValue::from_str(&video_id),
@@ -801,13 +810,17 @@ async fn video_create_response(
                 JsValue::from_str(&body.title),
                 JsValue::from_f64(now as f64),
                 JsValue::from_str(&tenant_id),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
             ])?,
         database
             .prepare(
                 "INSERT INTO command_idempotency(\
                    organization_id, idempotency_key, command_type, request_digest, \
                    response_status, response_json, created_at_ms, expires_at_ms\
-                 ) VALUES (?1, ?2, 'video_create', ?3, 201, ?4, ?5, ?6)",
+                 ) SELECT ?1, ?2, 'video_create', ?3, 201, ?4, ?5, ?6 \
+                   WHERE EXISTS (SELECT 1 FROM videos v \
+                     WHERE v.id = ?7 AND v.organization_id = ?1 AND v.owner_id = ?8 \
+                       AND v.deleted_at_ms IS NULL)",
             )
             .bind(&[
                 JsValue::from_str(&tenant_id),
@@ -816,13 +829,18 @@ async fn video_create_response(
                 JsValue::from_str(&response_json),
                 JsValue::from_f64(now as f64),
                 JsValue::from_f64((now + COMMAND_TTL_MS) as f64),
+                JsValue::from_str(&video_id),
+                JsValue::from_str(&actor.user_id),
             ])?,
         database
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
                    deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
-                 ) VALUES (?1, ?2, 'video', ?3, 'video.created', ?4, ?5, 'pending', 0, ?6, ?6)",
+                 ) SELECT ?1, ?2, 'video', ?3, 'video.created', ?4, ?5, \
+                          'pending', 0, ?6, ?6 FROM videos v \
+                   WHERE v.id = ?3 AND v.organization_id = ?2 \
+                     AND v.owner_id = ?7 AND v.deleted_at_ms IS NULL",
             )
             .bind(&[
                 JsValue::from_str(&outbox_id),
@@ -831,9 +849,19 @@ async fn video_create_response(
                 JsValue::from_str(&format!("video-created:{video_id}")),
                 JsValue::from_str(&outbox_payload),
                 JsValue::from_f64(now as f64),
+                JsValue::from_str(&actor.user_id),
             ])?,
     ];
-    require_batch_success(database.batch(statements).await?)?;
+    if !atomic_batch_applied(database.batch(statements).await?)? {
+        if authorized_tenant(&database, request, actor, RequiredAccess::Write)
+            .await?
+            .as_deref()
+            != Some(tenant_id.as_str())
+        {
+            return failure_response(not_found_failure(), request_id, config.production());
+        }
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    }
     json_response(&response, 201, None)
 }
 
@@ -846,9 +874,9 @@ async fn video_privacy_response(
     body: UpdatePrivacyRequest,
     request_id: &str,
 ) -> Result<Response> {
-    if !mutation_authority_enabled(env, config).await? {
+    let Some(authority_fence) = mutation_authority_fence(env, config).await? else {
         return failure_response(mutation_disabled_failure(), request_id, config.production());
-    }
+    };
     let database = env.d1("DB")?;
     let Some(tenant_id) =
         authorized_tenant(&database, request, actor, RequiredAccess::Write).await?
@@ -880,8 +908,25 @@ async fn video_privacy_response(
         }
         CommandReplay::New => {}
     }
-    let Some(existing) = load_video_mutation(&database, &tenant_id, video_id).await? else {
+    let Some(existing) =
+        load_video_mutation(&database, &tenant_id, video_id, &actor.user_id).await?
+    else {
         return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if !existing.actor_can_update(&actor.user_id) {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let expected_revision = i64::try_from(body.expected_revision)
+        .map_err(|_| Error::RustError("privacy revision is invalid".into()))?;
+    if existing.revision != expected_revision {
+        return failure_response(revision_conflict_failure(), request_id, config.production());
+    }
+    let Some(next_revision) = existing
+        .revision
+        .checked_add(1)
+        .filter(|revision| *revision <= i64::try_from(MAX_SAFE_INTEGER).unwrap_or(i64::MAX))
+    else {
+        return failure_response(revision_conflict_failure(), request_id, config.production());
     };
     if body.privacy == "public"
         && (existing.state != "ready"
@@ -898,44 +943,9 @@ async fn video_privacy_response(
             config.production(),
         );
     }
-    let expected_revision = i64::try_from(body.expected_revision)
-        .map_err(|_| Error::RustError("privacy revision is invalid".into()))?;
-    let updated = if existing.revision == expected_revision {
-        database
-            .prepare(
-                "UPDATE videos SET privacy = ?3, updated_at_ms = ?5, revision = revision + 1 \
-                 WHERE id = ?1 AND organization_id = ?2 AND revision = ?4 \
-                   AND deleted_at_ms IS NULL \
-                 RETURNING id, state, privacy, revision",
-            )
-            .bind(&[
-                JsValue::from_str(video_id),
-                JsValue::from_str(&tenant_id),
-                JsValue::from_str(&body.privacy),
-                JsValue::from_f64(expected_revision as f64),
-                JsValue::from_f64(current_time_ms()? as f64),
-            ])?
-            .first::<VideoMutationRow>(None)
-            .await?
-    } else if existing.revision == expected_revision.saturating_add(1)
-        && existing.privacy == body.privacy
-    {
-        Some(existing)
-    } else {
-        None
-    };
-    let Some(updated) = updated else {
-        return failure_response(
-            ApiFailure::new(
-                409,
-                "revision_conflict",
-                "The video changed before the privacy update was applied.",
-                true,
-            ),
-            request_id,
-            config.production(),
-        );
-    };
+    let mut updated = existing.clone();
+    updated.privacy.clone_from(&body.privacy);
+    updated.revision = next_revision;
     let response = updated
         .public_response()
         .ok_or_else(|| Error::RustError("privacy response is invalid".into()))?;
@@ -956,7 +966,41 @@ async fn video_privacy_response(
                 "INSERT INTO command_idempotency(\
                    organization_id, idempotency_key, command_type, request_digest, \
                    response_status, response_json, created_at_ms, expires_at_ms\
-                 ) VALUES (?1, ?2, 'video_privacy', ?3, 200, ?4, ?5, ?6)",
+                 ) SELECT ?1, ?2, 'video_privacy', ?3, 200, ?4, ?5, ?6 \
+                   FROM videos v \
+                   JOIN organizations o ON o.id = v.organization_id AND o.status = 'active' \
+                   JOIN organization_members m ON m.organization_id = v.organization_id \
+                     AND m.user_id = ?8 AND m.state = 'active' \
+                   WHERE v.id = ?7 AND v.organization_id = ?1 \
+                     AND v.deleted_at_ms IS NULL AND v.revision = ?9 \
+                     AND (m.role IN ('owner', 'admin') OR (m.role = 'member' AND (\
+                       v.owner_id = ?8 OR EXISTS (SELECT 1 FROM space_videos sv \
+                         JOIN spaces s ON s.id = sv.space_id \
+                           AND s.organization_id = v.organization_id AND s.deleted_at_ms IS NULL \
+                         JOIN space_members sm ON sm.space_id = s.id \
+                         WHERE sv.video_id = v.id AND sm.user_id = ?8 AND sm.role = 'manager')))) \
+                     AND (?10 = 'private' OR (v.state = 'ready' AND EXISTS (\
+                       SELECT 1 FROM object_manifests om \
+                       WHERE om.object_key = v.playback_object_key AND om.video_id = v.id \
+                         AND om.organization_id = v.organization_id AND om.role = 'preview' \
+                         AND om.object_version > 0 AND om.state = 'available' \
+                         AND om.bytes BETWEEN 1 AND 9007199254740991 \
+                         AND om.content_type LIKE 'video/%' \
+                         AND length(om.checksum_sha256) = 64 \
+                         AND lower(om.checksum_sha256) = om.checksum_sha256 \
+                         AND om.checksum_sha256 NOT GLOB '*[^0-9a-f]*' \
+                         AND om.provider_etag IS NOT NULL AND om.provider_etag <> '' \
+                         AND substr(om.object_key, 1, length('tenants/' || v.organization_id || \
+                           '/videos/' || v.id || '/derivatives/')) = \
+                           'tenants/' || v.organization_id || '/videos/' || v.id || '/derivatives/' \
+                         AND instr(om.object_key, '..') = 0 \
+                         AND instr(om.object_key, char(92)) = 0 \
+                         AND instr(om.object_key, '?') = 0 \
+                         AND instr(om.object_key, '#') = 0 \
+                         AND instr(om.object_key, '%') = 0))) \
+                     AND (?11 = -1 OR EXISTS (SELECT 1 FROM authority_state a \
+                       WHERE a.singleton = 1 AND a.epoch = ?11 AND a.authority = 'd1' \
+                         AND a.phase IN ('d1_authoritative', 'finalized')))",
             )
             .bind(&[
                 JsValue::from_str(&tenant_id),
@@ -965,15 +1009,43 @@ async fn video_privacy_response(
                 JsValue::from_str(&response_json),
                 JsValue::from_f64(now as f64),
                 JsValue::from_f64((now + COMMAND_TTL_MS) as f64),
+                JsValue::from_str(video_id),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_f64(expected_revision as f64),
+                JsValue::from_str(&body.privacy),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
+            ])?,
+        database
+            .prepare(
+                "UPDATE videos SET privacy = ?3, updated_at_ms = ?5, revision = revision + 1 \
+                 WHERE id = ?1 AND organization_id = ?2 AND revision = ?4 \
+                   AND deleted_at_ms IS NULL AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?6 \
+                       AND c.command_type = 'video_privacy' AND c.request_digest = ?7 \
+                       AND c.response_status = 200 AND c.response_json = ?8)",
+            )
+            .bind(&[
+                JsValue::from_str(video_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&body.privacy),
+                JsValue::from_f64(expected_revision as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&response_json),
             ])?,
         database
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
                    deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
-                 ) VALUES (?1, ?2, 'video', ?3, 'video.privacy.changed', ?4, ?5, \
-                           'pending', 0, ?6, ?6) \
-                 ON CONFLICT(deduplication_key) DO NOTHING",
+                 ) SELECT ?1, ?2, 'video', ?3, 'video.privacy.changed', ?4, ?5, \
+                          'pending', 0, ?6, ?6 FROM videos v \
+                   JOIN command_idempotency c ON c.organization_id = v.organization_id \
+                     AND c.idempotency_key = ?7 AND c.command_type = 'video_privacy' \
+                     AND c.request_digest = ?8 AND c.response_json = ?11 \
+                   WHERE v.id = ?3 AND v.organization_id = ?2 \
+                     AND v.revision = ?9 AND v.privacy = ?10 AND v.deleted_at_ms IS NULL",
             )
             .bind(&[
                 JsValue::from_str(&outbox_id),
@@ -982,9 +1054,48 @@ async fn video_privacy_response(
                 JsValue::from_str(&format!("video-privacy:{video_id}:{}", response.revision)),
                 JsValue::from_str(&payload),
                 JsValue::from_f64(now as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&body.privacy),
+                JsValue::from_str(&response_json),
             ])?,
     ];
-    require_batch_success(database.batch(statements).await?)?;
+    if !atomic_batch_applied(database.batch(statements).await?)? {
+        let current_fence = mutation_authority_fence(env, config).await?;
+        if current_fence != Some(authority_fence) {
+            return failure_response(mutation_disabled_failure(), request_id, config.production());
+        }
+        let Some(current) =
+            load_video_mutation(&database, &tenant_id, video_id, &actor.user_id).await?
+        else {
+            return failure_response(not_found_failure(), request_id, config.production());
+        };
+        if !current.actor_can_update(&actor.user_id) {
+            return failure_response(not_found_failure(), request_id, config.production());
+        }
+        if current.revision != expected_revision {
+            return failure_response(revision_conflict_failure(), request_id, config.production());
+        }
+        if body.privacy == "public"
+            && (current.state != "ready"
+                || !video_has_shareable_media(&database, &tenant_id, video_id).await?)
+        {
+            return failure_response(
+                ApiFailure::new(
+                    409,
+                    "video_not_shareable",
+                    "The video is not ready to be shared.",
+                    true,
+                ),
+                request_id,
+                config.production(),
+            );
+        }
+        return Err(Error::RustError(
+            "privacy command made no progress despite valid fences".into(),
+        ));
+    }
     json_response(&response, 200, response.public_share_path.as_deref())
 }
 
@@ -2217,13 +2328,29 @@ async fn load_video_mutation(
     database: &D1Database,
     tenant_id: &str,
     video_id: &str,
+    actor_id: &str,
 ) -> Result<Option<VideoMutationRow>> {
     database
         .prepare(
-            "SELECT id, state, privacy, revision FROM videos \
-             WHERE id = ?1 AND organization_id = ?2 AND deleted_at_ms IS NULL LIMIT 1",
+            "SELECT v.id, v.owner_id, v.state, v.privacy, v.revision, \
+                    m.role AS actor_role, EXISTS (SELECT 1 FROM space_videos sv \
+                      JOIN spaces s ON s.id = sv.space_id \
+                        AND s.organization_id = v.organization_id AND s.deleted_at_ms IS NULL \
+                      JOIN space_members sm ON sm.space_id = s.id \
+                      WHERE sv.video_id = v.id AND sm.user_id = ?3 AND sm.role = 'manager' \
+                    ) AS actor_manages_space \
+             FROM videos v \
+             JOIN organizations o ON o.id = v.organization_id AND o.status = 'active' \
+             JOIN organization_members m ON m.organization_id = v.organization_id \
+               AND m.user_id = ?3 AND m.state = 'active' \
+             WHERE v.id = ?1 AND v.organization_id = ?2 \
+               AND v.deleted_at_ms IS NULL LIMIT 1",
         )
-        .bind(&[JsValue::from_str(video_id), JsValue::from_str(tenant_id)])?
+        .bind(&[
+            JsValue::from_str(video_id),
+            JsValue::from_str(tenant_id),
+            JsValue::from_str(actor_id),
+        ])?
         .first::<VideoMutationRow>(None)
         .await
 }
@@ -2237,10 +2364,23 @@ async fn video_has_shareable_media(
         .prepare(
             "SELECT 1 AS ready FROM videos v \
              JOIN object_manifests m ON m.object_key = v.playback_object_key \
+               AND m.video_id = v.id AND m.organization_id = v.organization_id \
              WHERE v.id = ?1 AND v.organization_id = ?2 AND v.state = 'ready' \
-               AND v.deleted_at_ms IS NULL AND m.organization_id = ?2 \
-               AND m.state = 'available' AND m.bytes > 0 \
-               AND m.content_type LIKE 'video/%' LIMIT 1",
+               AND v.deleted_at_ms IS NULL AND m.role = 'preview' \
+               AND m.object_version > 0 AND m.state = 'available' \
+               AND m.bytes BETWEEN 1 AND 9007199254740991 \
+               AND m.content_type LIKE 'video/%' \
+               AND length(m.checksum_sha256) = 64 \
+               AND lower(m.checksum_sha256) = m.checksum_sha256 \
+               AND m.checksum_sha256 NOT GLOB '*[^0-9a-f]*' \
+               AND m.provider_etag IS NOT NULL AND m.provider_etag <> '' \
+               AND substr(m.object_key, 1, length('tenants/' || v.organization_id || \
+                 '/videos/' || v.id || '/derivatives/')) = \
+                 'tenants/' || v.organization_id || '/videos/' || v.id || '/derivatives/' \
+               AND instr(m.object_key, '..') = 0 \
+               AND instr(m.object_key, char(92)) = 0 \
+               AND instr(m.object_key, '?') = 0 AND instr(m.object_key, '#') = 0 \
+               AND instr(m.object_key, '%') = 0 LIMIT 1",
         )
         .bind(&[JsValue::from_str(video_id), JsValue::from_str(tenant_id)])?
         .first::<ReadyRow>(None)
@@ -2351,6 +2491,25 @@ async fn mutation_authority_enabled(env: &Env, config: &RuntimeConfig) -> Result
     Ok(row.is_some_and(|row| d1_mutation_pair(&row) && row.epoch >= 0))
 }
 
+async fn mutation_authority_fence(
+    env: &Env,
+    config: &RuntimeConfig,
+) -> Result<Option<MutationAuthorityFence>> {
+    if !config.production() {
+        return Ok(Some(MutationAuthorityFence::local()));
+    }
+    let row = env
+        .d1("DB")?
+        .prepare("SELECT phase, authority, epoch FROM authority_state WHERE singleton = 1")
+        .first::<AuthorityRow>(None)
+        .await?;
+    Ok(row.and_then(|row| {
+        (d1_mutation_pair(&row)
+            && (0..=i64::try_from(MAX_SAFE_INTEGER).unwrap_or(i64::MAX)).contains(&row.epoch))
+        .then(|| MutationAuthorityFence::production(row.epoch))
+    }))
+}
+
 fn d1_mutation_pair(row: &AuthorityRow) -> bool {
     matches!(
         (row.phase.as_str(), row.authority.as_str()),
@@ -2399,6 +2558,36 @@ fn require_batch_success(results: Vec<D1Result>) -> Result<()> {
     Ok(())
 }
 
+fn classify_atomic_changes(changes: &[usize]) -> std::result::Result<bool, ()> {
+    if changes.is_empty() {
+        return Err(());
+    }
+    if changes.iter().all(|changes| *changes == 1) {
+        return Ok(true);
+    }
+    if changes.iter().all(|changes| *changes == 0) {
+        return Ok(false);
+    }
+    Err(())
+}
+
+fn atomic_batch_applied(results: Vec<D1Result>) -> Result<bool> {
+    if results.len() != 3 || results.iter().any(|result| !result.success()) {
+        return Err(Error::RustError("atomic database command failed".into()));
+    }
+    let changes = results
+        .iter()
+        .map(|result| {
+            result
+                .meta()?
+                .and_then(|meta| meta.changes)
+                .ok_or_else(|| Error::RustError("database change metadata is unavailable".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    classify_atomic_changes(&changes)
+        .map_err(|()| Error::RustError("atomic database command was partially applied".into()))
+}
+
 fn json_response<T: Serialize>(value: &T, status: u16, location: Option<&str>) -> Result<Response> {
     let mut response = Response::from_json(value)?.with_status(status);
     if let Some(location) = location {
@@ -2433,6 +2622,15 @@ const fn idempotency_conflict_failure() -> ApiFailure {
         "idempotency_conflict",
         "The idempotency key was already used for a different command.",
         false,
+    )
+}
+
+const fn revision_conflict_failure() -> ApiFailure {
+    ApiFailure::new(
+        409,
+        "revision_conflict",
+        "The video changed before the privacy update was applied.",
+        true,
     )
 }
 
@@ -3169,6 +3367,14 @@ mod tests {
         assert!(!d1_mutation_pair(&row("dual_write", "dual_write")));
         assert!(!d1_mutation_pair(&row("dual_write", "d1")));
         assert!(!d1_mutation_pair(&row("finalized", "dual_write")));
+    }
+
+    #[test]
+    fn atomic_command_batches_accept_only_all_or_nothing_effects() {
+        assert_eq!(classify_atomic_changes(&[1, 1, 1]), Ok(true));
+        assert_eq!(classify_atomic_changes(&[0, 0, 0]), Ok(false));
+        assert_eq!(classify_atomic_changes(&[1, 0, 1]), Err(()));
+        assert_eq!(classify_atomic_changes(&[]), Err(()));
     }
 
     #[test]
