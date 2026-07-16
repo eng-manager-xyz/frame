@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+previews:
+  generation: manual
+  expireAfterDays: 3
+
+services:
+  - type: web
+    name: frame-web
+    runtime: rust
+    plan: starter
+    region: oregon
+    buildCommand: cargo build --locked --release -p frame-web
+    startCommand: ./target/release/frame-web
+    healthCheckPath: /health/ready
+    maxShutdownDelaySeconds: 60
+    autoDeployTrigger: checksPass
+    renderSubdomainPolicy: enabled
+    domains:
+      - frame.engmanager.xyz
+    buildFilter:
+      paths:
+        - apps/web/**
+        - crates/**
+        - Cargo.toml
+        - Cargo.lock
+        - rust-toolchain.toml
+        - render.yaml
+    envVars:
+      - key: FRAME_DEPLOYMENT
+        value: production
+        previewValue: preview
+      - key: FRAME_PUBLIC_ORIGIN
+        value: https://frame.engmanager.xyz
+        # Preview runtime ignores this sentinel and validates
+        # RENDER_EXTERNAL_URL as the canonical preview origin.
+        previewValue: https://frame-preview.invalid
+      - key: FRAME_API_ORIGIN
+        value: https://frame.engmanager.xyz
+        previewValue: https://frame-staging.engmanager.xyz
+      - key: FRAME_ENABLE_PUBLIC_EMBED
+        value: "false"
+        previewValue: "false"
+      - key: RUST_LOG
+        value: info
+        previewValue: info
+      - key: FRAME_DIAGNOSTIC_TOKEN
+        sync: false

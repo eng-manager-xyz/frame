@@ -1,0 +1,10 @@
+{
+  "api_version": { "major": 1 },
+  "service": "frame",
+  "status": "ok",
+  "release": "fixture-release-2",
+  "capabilities": ["public_share_summary", "range_playback", "future_safe_capability"],
+  "future_additive_field": {
+    "ignored_by_older_consumers": true
+  }
+}
