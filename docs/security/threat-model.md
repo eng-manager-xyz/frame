@@ -27,6 +27,9 @@ pass.
 
 ### Browser and identity
 
+The detailed client flows, capability boundaries, abuse controls, and legacy-session migration
+rules are defined in [Authentication protocol and threat model](authentication-protocol.md).
+
 - Session cookies are host-only, `Secure`, `HttpOnly`, and `SameSite=Lax` or
   stricter. No `Domain=engmanager.xyz` cookie is permitted.
 - Every mutation requires an unguessable CSRF token, exact expected `Origin`,
