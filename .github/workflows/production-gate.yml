@@ -67,6 +67,7 @@ jobs:
           python3 scripts/ci/check-migrations.py
           python3 scripts/ci/check-cloudflare-zone-contract.py
           python3 scripts/ci/test-migration.py
+          python3 -I scripts/migration/test_local.py
           python3 scripts/ci/check-parity-evidence.py --require-full
           python3 scripts/ci/check-secrets.py
           python3 scripts/ci/generate-cyclonedx.py --self-test

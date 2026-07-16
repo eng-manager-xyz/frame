@@ -1,0 +1,10 @@
+{
+  "query_class": "account_list",
+  "tenant": "tenant-fixture-a",
+  "legacy": [
+    {"id": "account-a-owner", "email_normalized": "owner.a@example.invalid", "created_at_ms": 1735689600000, "trace_id": "legacy-trace"}
+  ],
+  "d1": [
+    {"id": "account-a-owner", "email_normalized": "divergent@example.invalid", "created_at_ms": 1735689600000, "trace_id": "d1-trace"}
+  ]
+}

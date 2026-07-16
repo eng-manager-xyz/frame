@@ -29,6 +29,8 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
       - run: cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
+      - name: Deterministic ETL and reversible cutover proof
+        run: python3 -I scripts/migration/test_local.py
       - name: Supply-chain and credential policy
         run: |
           cargo install cargo-deny --version 0.20.2 --locked

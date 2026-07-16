@@ -1,0 +1,12 @@
+{
+  "query_class": "account_list",
+  "tenant": "tenant-fixture-a",
+  "legacy": [
+    {"id": "account-a-owner", "email_normalized": "OWNER.A@EXAMPLE.INVALID", "created_at_ms": 1735689600123, "trace_id": "legacy-trace-a"},
+    {"id": "account-a-member", "email_normalized": "MEMBER.A@EXAMPLE.INVALID", "created_at_ms": 1735689601456, "trace_id": "legacy-trace-b"}
+  ],
+  "d1": [
+    {"id": "account-a-member", "email_normalized": "member.a@example.invalid", "created_at_ms": 1735689601999, "trace_id": "d1-trace-b"},
+    {"id": "account-a-owner", "email_normalized": "owner.a@example.invalid", "created_at_ms": 1735689600999, "trace_id": "d1-trace-a"}
+  ]
+}

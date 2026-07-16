@@ -38,6 +38,8 @@ jobs:
           python3 scripts/ci/check-migrations.py
           python3 scripts/ci/check-cloudflare-zone-contract.py
           python3 scripts/ci/test-migration.py
+          python3 scripts/migration/test_local.py
+          python3 -I scripts/migration/test_local.py
       - name: Validate pinned Terraform installer metadata
         run: scripts/ci/install-terraform.sh --check
       - name: Reject checked-in credentials and validate the SBOM generator

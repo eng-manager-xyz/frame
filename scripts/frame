@@ -138,6 +138,7 @@ case "$command" in
     python3 scripts/ci/check-cloudflare-zone-contract.py
     python3 scripts/ci/check-migrations.py
     python3 scripts/ci/test-migration.py
+    python3 -I scripts/migration/test_local.py
     ;;
   test)
     cargo test --workspace
