@@ -1,8 +1,8 @@
 # Frame
 
-Frame is a Rust migration scaffold for [Cap](https://github.com/CapSoftware/Cap): native media processing with GStreamer, an edge control plane backed by Cloudflare D1, R2, and Media Transformations, and Leptos user interfaces.
+Frame is a Rust migration scaffold for [Cap](https://github.com/CapSoftware/Cap): native media processing with GStreamer, an edge control plane backed by Cloudflare D1, R2, and Media Transformations, and Leptos user interfaces. Its public distribution target is `frame.engmanager.xyz`, with the Leptos web origin on Render and `/api/*` routed by Cloudflare to the Worker control plane.
 
-This repository starts with boundaries and executable seams, not copied Cap source. The reference checkout lives in ignored `.tmp/cap` at commit `6ba69561ac86b8efdb17616d6727f9638015546b`. See [docs/upstream-cap.md](docs/upstream-cap.md) and the dependency-ordered [_issues backlog](_issues/README.md).
+This repository starts with boundaries and executable seams, not copied upstream source. The Cap reference checkout lives in ignored `.tmp/cap` at commit `6ba69561ac86b8efdb17616d6727f9638015546b`; the EngManager portfolio reference lives in ignored `.tmp/engmanager.xyz` at commit `1de52bc8f25793dea3697e67765d53785c05cdfa`. See [the Cap inventory](docs/upstream-cap.md), [the portfolio integration inventory](docs/upstream-engmanager.md), and the dependency-ordered [_issues backlog](_issues/README.md).
 
 ## Architecture
 
@@ -19,6 +19,17 @@ flowchart LR
 ```
 
 The split is intentional. D1, R2, and Cloudflare Media Transformations run at the Worker boundary. Media Transformations handles supported R2-native derivatives such as short optimized MP4 clips, still frames, spritesheets, and audio extraction. GStreamer remains the native engine for capture, synchronization, editing/export, long-form or complex processing, unsupported codecs, and fallback. Shared Rust types keep the API, UI, and workers aligned without pretending those environments are interchangeable.
+
+The public-host split is equally explicit: Cloudflare proxies normal
+`frame.engmanager.xyz` page/asset traffic to a dedicated Render `frame-web`
+service and uses a query-safe broad Worker Route with strict path validation to
+intercept `/api` plus `/api/*`. Frame does not run inside the existing
+`engmanager.xyz` portfolio process. The portfolio first
+integrates through top-level navigation, not shared cookies or an embedded
+recorder. [ADR 0004](docs/adr/0004-engmanager-render-cloudflare-topology.md)
+records the decision; issues [36–44](_issues/README.md#issue-index) specify the
+client crate, portfolio work, Render Blueprint, GitHub Actions, Cloudflare
+infrastructure, browser security, E2E, and launch.
 
 ## Repository layout
 
