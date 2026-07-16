@@ -1,0 +1,7 @@
+cloudflare_account_id = "00000000000000000000000000000000"
+environment           = "staging"
+bucket_name           = "frame-recordings-staging"
+location              = "wnam"
+allowed_browser_origins = [
+  "https://frame-staging.engmanager.xyz",
+]
