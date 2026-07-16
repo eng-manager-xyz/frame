@@ -80,6 +80,61 @@ pub struct MediaJobStatusResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerSourceDescriptor {
+    pub path: String,
+    pub bytes: u64,
+    pub checksum_sha256: String,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerOutputDescriptor {
+    pub path: String,
+    pub content_type: String,
+    pub max_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeJobClaimResponse {
+    pub schema_version: u16,
+    pub job_id: String,
+    pub state: String,
+    pub profile: String,
+    pub attempt: u32,
+    pub revision: u64,
+    pub lease_expires_at_ms: u64,
+    pub source: WorkerSourceDescriptor,
+    pub output: WorkerOutputDescriptor,
+    pub heartbeat_path: String,
+    pub progress_path: String,
+    pub complete_path: String,
+    pub fail_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerJobResponse {
+    pub schema_version: u16,
+    pub job_id: String,
+    pub state: String,
+    pub attempt: u32,
+    pub revision: u64,
+    pub progress_basis_points: Option<u16>,
+    pub cancel_requested: bool,
+    pub lease_expires_at_ms: Option<u64>,
+    pub retry_scheduled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerOutputResponse {
+    pub schema_version: u16,
+    pub job_id: String,
+    pub accepted: bool,
+    pub bytes: u64,
+    pub checksum_sha256: String,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VideoResponse {
     pub schema_version: u16,
     pub video_id: String,
@@ -195,6 +250,62 @@ pub struct SourceObjectRow {
     pub bytes: i64,
     pub checksum_sha256: Option<String>,
     pub content_type: String,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct NativeJobCandidateRow {
+    pub id: String,
+    pub revision: i64,
+    pub attempt: i64,
+    pub profile: String,
+    pub source_bytes: i64,
+    pub source_checksum_sha256: String,
+    pub source_content_type: String,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct WorkerJobRow {
+    pub id: String,
+    pub video_id: String,
+    pub state: String,
+    pub revision: i64,
+    pub attempt: i64,
+    pub profile: String,
+    pub source_version: i64,
+    pub output_object_key: String,
+    pub worker_id: Option<String>,
+    pub lease_token_digest: Option<String>,
+    pub lease_expires_at_ms: Option<i64>,
+    pub progress_basis_points: Option<i64>,
+    pub cancel_requested: i64,
+}
+
+impl WorkerJobRow {
+    pub fn private_response(&self, retry_scheduled: bool) -> Option<WorkerJobResponse> {
+        Some(WorkerJobResponse {
+            schema_version: API_SCHEMA_VERSION,
+            job_id: self.id.clone(),
+            state: self.state.clone(),
+            attempt: u32::try_from(self.attempt).ok()?,
+            revision: u64::try_from(self.revision).ok()?,
+            progress_basis_points: self
+                .progress_basis_points
+                .map(u16::try_from)
+                .transpose()
+                .ok()?,
+            cancel_requested: match self.cancel_requested {
+                0 => false,
+                1 => true,
+                _ => return None,
+            },
+            lease_expires_at_ms: self
+                .lease_expires_at_ms
+                .map(u64::try_from)
+                .transpose()
+                .ok()?,
+            retry_scheduled,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -369,6 +480,41 @@ mod tests {
         assert!(!json.contains("object_key"));
         assert!(!json.contains("tenants/"));
         assert!(json.contains("x-content-sha256"));
+
+        let claim = NativeJobClaimResponse {
+            schema_version: API_SCHEMA_VERSION,
+            job_id: "018f47a6-7b1c-7f55-8f39-8f8a86900112".into(),
+            state: "leased".into(),
+            profile: "thumbnail_v1".into(),
+            attempt: 1,
+            revision: 1,
+            lease_expires_at_ms: 100,
+            source: WorkerSourceDescriptor {
+                path: "/api/v1/worker/media-jobs/018f47a6-7b1c-7f55-8f39-8f8a86900112/source"
+                    .into(),
+                bytes: 10,
+                checksum_sha256: "a".repeat(64),
+                content_type: "video/webm".into(),
+            },
+            output: WorkerOutputDescriptor {
+                path: "/api/v1/worker/media-jobs/018f47a6-7b1c-7f55-8f39-8f8a86900112/output"
+                    .into(),
+                content_type: "image/png".into(),
+                max_bytes: 1_024,
+            },
+            heartbeat_path:
+                "/api/v1/worker/media-jobs/018f47a6-7b1c-7f55-8f39-8f8a86900112/heartbeat".into(),
+            progress_path:
+                "/api/v1/worker/media-jobs/018f47a6-7b1c-7f55-8f39-8f8a86900112/progress".into(),
+            complete_path:
+                "/api/v1/worker/media-jobs/018f47a6-7b1c-7f55-8f39-8f8a86900112/complete".into(),
+            fail_path: "/api/v1/worker/media-jobs/018f47a6-7b1c-7f55-8f39-8f8a86900112/fail".into(),
+        };
+        let json = serde_json::to_string(&claim).expect("claim json");
+        assert!(!json.contains("object_key"));
+        assert!(!json.contains("tenants/"));
+        assert!(!json.contains("lease_token"));
+        assert!(!json.contains("worker_id"));
     }
 
     #[test]

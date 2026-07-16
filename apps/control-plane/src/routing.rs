@@ -132,6 +132,13 @@ pub enum Route {
     MediaJobCreate,
     MediaJobStatus { job_id: String },
     MediaJobCancel { job_id: String },
+    WorkerMediaJobClaim,
+    WorkerMediaJobSource { job_id: String },
+    WorkerMediaJobOutput { job_id: String },
+    WorkerMediaJobHeartbeat { job_id: String },
+    WorkerMediaJobProgress { job_id: String },
+    WorkerMediaJobComplete { job_id: String },
+    WorkerMediaJobFail { job_id: String },
     AuthorityStatus,
     InvalidApiPath,
     UnknownApi,
@@ -161,6 +168,7 @@ pub fn classify_raw_path(path: &str) -> Route {
         "/api/v1/videos" => Route::VideoCreate,
         "/api/v1/uploads/intents" => Route::UploadIntent,
         "/api/v1/media-jobs" => Route::MediaJobCreate,
+        "/api/v1/worker/media-jobs/claim" => Route::WorkerMediaJobClaim,
         "/api/v1/operations/authority" => Route::AuthorityStatus,
         _ => dynamic_route(path),
     }
@@ -188,6 +196,34 @@ fn dynamic_route(path: &str) -> Route {
             job_id: (*job_id).to_owned(),
         },
         ["", "api", "v1", "media-jobs", job_id, "cancel"] => Route::MediaJobCancel {
+            job_id: (*job_id).to_owned(),
+        },
+        ["", "api", "v1", "worker", "media-jobs", job_id, "source"] => {
+            Route::WorkerMediaJobSource {
+                job_id: (*job_id).to_owned(),
+            }
+        }
+        ["", "api", "v1", "worker", "media-jobs", job_id, "output"] => {
+            Route::WorkerMediaJobOutput {
+                job_id: (*job_id).to_owned(),
+            }
+        }
+        ["", "api", "v1", "worker", "media-jobs", job_id, "heartbeat"] => {
+            Route::WorkerMediaJobHeartbeat {
+                job_id: (*job_id).to_owned(),
+            }
+        }
+        ["", "api", "v1", "worker", "media-jobs", job_id, "progress"] => {
+            Route::WorkerMediaJobProgress {
+                job_id: (*job_id).to_owned(),
+            }
+        }
+        ["", "api", "v1", "worker", "media-jobs", job_id, "complete"] => {
+            Route::WorkerMediaJobComplete {
+                job_id: (*job_id).to_owned(),
+            }
+        }
+        ["", "api", "v1", "worker", "media-jobs", job_id, "fail"] => Route::WorkerMediaJobFail {
             job_id: (*job_id).to_owned(),
         },
         _ => Route::UnknownApi,
@@ -352,6 +388,37 @@ mod tests {
             classify_raw_path("/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/content"),
             Route::UploadContent {
                 upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
+    }
+
+    #[test]
+    fn worker_protocol_routes_are_explicit_and_segment_bounded() {
+        let job_id = "018f47a6-7b1c-7f55-8f39-8f8a86900112";
+        assert_eq!(
+            classify_raw_path("/api/v1/worker/media-jobs/claim"),
+            Route::WorkerMediaJobClaim
+        );
+        assert_eq!(
+            classify_raw_path(&format!("/api/v1/worker/media-jobs/{job_id}/source")),
+            Route::WorkerMediaJobSource {
+                job_id: job_id.into()
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!("/api/v1/worker/media-jobs/{job_id}/complete")),
+            Route::WorkerMediaJobComplete {
+                job_id: job_id.into()
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!("/api/v1/worker/media-jobs/{job_id}/secret")),
+            Route::UnknownApi
+        );
+        assert_eq!(
+            classify_raw_path("/api/v1/worker/media-jobs/claim/source"),
+            Route::WorkerMediaJobSource {
+                job_id: "claim".into()
             }
         );
     }

@@ -9,6 +9,17 @@ use serde::Serialize;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod consumer;
+mod protocol;
+mod thumbnail;
+
+use consumer::{WorkOutcome, run_consumer_loop, work_once};
+use protocol::{WorkerClient, WorkerConfig};
+use thumbnail::{
+    ensure_thumbnail_runtime, run_thumbnail_child, thumbnail_runtime_missing_factories,
+    thumbnail_runtime_ready,
+};
+
 const HEALTH_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Debug, Serialize)]
@@ -27,7 +38,8 @@ fn health_response() -> (StatusCode, Json<HealthResponse>) {
         .iter()
         .filter(|factory| factory.requirement == FactoryRequirement::Required && !factory.available)
         .count();
-    let ready = diagnostics.is_ready();
+    let thumbnail_missing = thumbnail_runtime_missing_factories();
+    let ready = diagnostics.is_ready() && thumbnail_runtime_ready();
     (
         if ready {
             StatusCode::OK
@@ -39,7 +51,7 @@ fn health_response() -> (StatusCode, Json<HealthResponse>) {
             service: "frame-media-worker",
             status: if ready { "ready" } else { "degraded" },
             catalog_version: media_job_catalog().version,
-            required_factories_unavailable: missing,
+            required_factories_unavailable: missing.max(thumbnail_missing),
         }),
     )
 }
@@ -59,6 +71,12 @@ async fn ready() -> (StatusCode, Json<HealthResponse>) {
 }
 
 async fn serve() -> Result<()> {
+    let worker_client = WorkerConfig::from_env_optional()?
+        .map(WorkerClient::new)
+        .transpose()?;
+    if worker_client.is_some() {
+        ensure_thumbnail_runtime()?;
+    }
     let address = env::var("FRAME_MEDIA_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8790".into())
         .parse::<SocketAddr>()
@@ -70,14 +88,31 @@ async fn serve() -> Result<()> {
     let app = Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready));
+    let (shutdown_sender, shutdown_receiver) = tokio::sync::watch::channel(false);
+    let mut consumer = worker_client.map(|client| {
+        info!("native media protocol consumer enabled");
+        tokio::spawn(run_consumer_loop(client, shutdown_receiver))
+    });
+    let graceful_sender = shutdown_sender.clone();
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             if let Err(error) = tokio::signal::ctrl_c().await {
                 warn!(%error, "failed to install shutdown signal handler");
             }
+            let _ = graceful_sender.send(true);
         })
         .await
-        .context("native media health service failed")
+        .context("native media health service failed")?;
+    let _ = shutdown_sender.send(true);
+    if let Some(handle) = consumer.as_mut()
+        && tokio::time::timeout(std::time::Duration::from_secs(50), &mut *handle)
+            .await
+            .is_err()
+    {
+        handle.abort();
+        let _ = handle.await;
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -163,10 +198,37 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        "work-once" => {
+            let client = WorkerClient::new(WorkerConfig::from_env_required()?)?;
+            match work_once(&client).await? {
+                WorkOutcome::Idle => info!("no eligible native media job was available"),
+                WorkOutcome::Completed { job_id } => {
+                    info!(%job_id, "one native media job completed")
+                }
+            }
+        }
+        "thumbnail-child" => {
+            let mut arguments = env::args_os().skip(2);
+            let source = arguments
+                .next()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("thumbnail child arguments are invalid"))?;
+            let output = arguments
+                .next()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("thumbnail child arguments are invalid"))?;
+            let output_limit = arguments
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|_| arguments.next().is_none())
+                .ok_or_else(|| anyhow::anyhow!("thumbnail child arguments are invalid"))?;
+            run_thumbnail_child(&source, &output, output_limit)?;
+        }
         "serve" => serve().await?,
         command => {
             bail!(
-                "unknown command '{command}'; expected 'doctor', 'probe', 'catalog', 'serve', or 'smoke [output.webm]'"
+                "unknown command '{command}'; expected 'doctor', 'probe', 'catalog', 'work-once', 'serve', or 'smoke [output.webm]'"
             )
         }
     }

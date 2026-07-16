@@ -16,6 +16,10 @@ pub enum ValidationCode {
     Title,
     Privacy,
     Revision,
+    LeaseToken,
+    Checksum,
+    Progress,
+    FailureClass,
 }
 
 impl ValidationCode {
@@ -32,6 +36,10 @@ impl ValidationCode {
             Self::Title => "invalid_title",
             Self::Privacy => "invalid_privacy",
             Self::Revision => "invalid_revision",
+            Self::LeaseToken => "invalid_lease_token",
+            Self::Checksum => "invalid_checksum",
+            Self::Progress => "invalid_progress",
+            Self::FailureClass => "invalid_failure_class",
         }
     }
 }
@@ -134,6 +142,128 @@ pub struct MediaJobRequest {
     pub video_id: String,
     pub source_version: u32,
     pub profile: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerClaimRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+}
+
+impl WorkerClaimRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        validate_worker_tenant(self.schema_version, &self.tenant_id)
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerHeartbeatRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+}
+
+impl WorkerHeartbeatRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        validate_worker_tenant(self.schema_version, &self.tenant_id)
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerProgressRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+    pub progress_basis_points: u16,
+}
+
+impl WorkerProgressRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        validate_worker_tenant(self.schema_version, &self.tenant_id)?;
+        if self.progress_basis_points >= 10_000 {
+            return Err(ValidationCode::Progress);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerCompleteRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+    pub bytes: u64,
+    pub checksum_sha256: String,
+    pub content_type: String,
+}
+
+impl WorkerCompleteRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        validate_worker_tenant(self.schema_version, &self.tenant_id)?;
+        if self.bytes == 0 || self.bytes > MAX_SAFE_INTEGER {
+            return Err(ValidationCode::Size);
+        }
+        if !valid_sha256(&self.checksum_sha256) {
+            return Err(ValidationCode::Checksum);
+        }
+        if !valid_content_type(&self.content_type) {
+            return Err(ValidationCode::ContentType);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerFailRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+    pub error_class: String,
+    pub retryable: bool,
+}
+
+impl WorkerFailRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        validate_worker_tenant(self.schema_version, &self.tenant_id)?;
+        if !matches!(
+            self.error_class.as_str(),
+            "input_invalid"
+                | "unsupported_media"
+                | "pipeline_timeout"
+                | "pipeline_failure"
+                | "resource_limit"
+                | "output_invalid"
+                | "cancelled"
+                | "transport_failure"
+        ) {
+            return Err(ValidationCode::FailureClass);
+        }
+        Ok(())
+    }
+}
+
+fn validate_worker_tenant(schema_version: u16, tenant_id: &str) -> Result<(), ValidationCode> {
+    if schema_version != API_SCHEMA_VERSION {
+        return Err(ValidationCode::SchemaVersion);
+    }
+    if !valid_uuid(tenant_id) {
+        return Err(ValidationCode::Identifier);
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn valid_lease_token(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+#[must_use]
+pub fn valid_sha256(value: &str) -> bool {
+    valid_lease_token(value)
 }
 
 impl MediaJobRequest {
@@ -323,6 +453,64 @@ pub fn origin_allowed(origin: &str, expected_host: &str, local: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WORKER_TENANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a86900102";
+
+    #[test]
+    fn native_worker_contracts_are_bounded_and_fail_closed() {
+        assert!(valid_lease_token(&"a".repeat(64)));
+        assert!(!valid_lease_token(&"A".repeat(64)));
+        assert!(!valid_lease_token("short"));
+
+        assert!(
+            WorkerClaimRequest {
+                schema_version: API_SCHEMA_VERSION,
+                tenant_id: WORKER_TENANT.into(),
+            }
+            .validate()
+            .is_ok()
+        );
+        assert_eq!(
+            WorkerProgressRequest {
+                schema_version: API_SCHEMA_VERSION,
+                tenant_id: WORKER_TENANT.into(),
+                progress_basis_points: 10_000,
+            }
+            .validate(),
+            Err(ValidationCode::Progress)
+        );
+        assert_eq!(
+            WorkerCompleteRequest {
+                schema_version: API_SCHEMA_VERSION,
+                tenant_id: WORKER_TENANT.into(),
+                bytes: 1,
+                checksum_sha256: "A".repeat(64),
+                content_type: "image/png".into(),
+            }
+            .validate(),
+            Err(ValidationCode::Checksum)
+        );
+        assert_eq!(
+            WorkerFailRequest {
+                schema_version: API_SCHEMA_VERSION,
+                tenant_id: WORKER_TENANT.into(),
+                error_class: "internal stack trace".into(),
+                retryable: false,
+            }
+            .validate(),
+            Err(ValidationCode::FailureClass)
+        );
+        assert!(
+            WorkerFailRequest {
+                schema_version: API_SCHEMA_VERSION,
+                tenant_id: WORKER_TENANT.into(),
+                error_class: "pipeline_failure".into(),
+                retryable: true,
+            }
+            .validate()
+            .is_ok()
+        );
+    }
 
     const TENANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690f123";
     const VIDEO: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690f124";

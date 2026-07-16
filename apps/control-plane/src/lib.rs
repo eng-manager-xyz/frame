@@ -4,16 +4,19 @@ mod routing;
 
 use commands::{
     ApiKeyRow, COMMAND_TTL_MS, IntegrationRow, MAX_SINGLE_UPLOAD_BYTES, MediaJobResponse,
-    MediaJobRow, MembershipRow, SourceObjectRow, StoredCommandRow, UploadIntentResponse, UploadRow,
-    UploadStatusResponse, VideoMutationRow, VideoResponse, VideoScopeRow, derivative_object_key,
-    digest_credential, digest_identifier, parse_sha256, profile_kind, request_digest,
-    source_object_key,
+    MediaJobRow, MembershipRow, NativeJobCandidateRow, NativeJobClaimResponse, SourceObjectRow,
+    StoredCommandRow, UploadIntentResponse, UploadRow, UploadStatusResponse, VideoMutationRow,
+    VideoResponse, VideoScopeRow, WorkerJobRow, WorkerOutputDescriptor, WorkerOutputResponse,
+    WorkerSourceDescriptor, derivative_object_key, digest_credential, digest_identifier,
+    parse_sha256, profile_kind, request_digest, source_object_key,
 };
 use contracts::{
     API_SCHEMA_VERSION, AuthorityResponse, CapabilitiesResponse, CreateVideoRequest,
     DiscoveryResponse, MAX_COMMAND_BODY_BYTES, MAX_SAFE_INTEGER, MediaJobRequest,
-    UpdatePrivacyRequest, UploadIntentRequest, normalize_cf_ray, origin_allowed,
-    sanitized_public_title, valid_content_type, valid_idempotency_key, valid_uuid,
+    UpdatePrivacyRequest, UploadIntentRequest, WorkerClaimRequest, WorkerCompleteRequest,
+    WorkerFailRequest, WorkerHeartbeatRequest, WorkerProgressRequest, normalize_cf_ray,
+    origin_allowed, sanitized_public_title, valid_content_type, valid_idempotency_key,
+    valid_lease_token, valid_uuid,
 };
 use frame_client::{
     ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
@@ -28,6 +31,9 @@ use wasm_bindgen::JsValue;
 use worker::*;
 
 const PRODUCTION_HOST: &str = "frame.engmanager.xyz";
+const NATIVE_LEASE_MS: i64 = 60_000;
+const NATIVE_MAX_OUTPUT_BYTES: u64 = 32 * 1_024 * 1_024;
+const NATIVE_MAX_ATTEMPTS: i64 = 3;
 #[derive(Debug, Deserialize)]
 struct ReadyRow {
     ready: i32,
@@ -113,15 +119,20 @@ enum RequiredAccess {
     Read,
     Write,
     Admin,
+    Worker,
 }
 
 impl AuthenticatedActor {
     fn allows(&self, required: RequiredAccess) -> bool {
         self.scopes.iter().any(|scope| {
-            scope == "frame:admin"
-                || (scope == "frame:write"
-                    && matches!(required, RequiredAccess::Read | RequiredAccess::Write))
-                || (scope == "frame:read" && required == RequiredAccess::Read)
+            if required == RequiredAccess::Worker {
+                scope == "frame:worker"
+            } else {
+                scope == "frame:admin"
+                    || (scope == "frame:write"
+                        && matches!(required, RequiredAccess::Read | RequiredAccess::Write))
+                    || (scope == "frame:read" && required == RequiredAccess::Read)
+            }
         })
     }
 }
@@ -151,6 +162,7 @@ struct RuntimeConfig {
 enum MediaMode {
     Remote,
     Fake,
+    Native,
 }
 
 impl RuntimeConfig {
@@ -179,8 +191,10 @@ impl RuntimeConfig {
             .unwrap_or_else(|_| "remote".into());
         let media_mode = match (deployment, media_mode.as_str()) {
             (Deployment::Production, "remote") => MediaMode::Remote,
+            (Deployment::Production, "native") => MediaMode::Native,
             (Deployment::Local, "fake") => MediaMode::Fake,
             (Deployment::Local, "remote") => MediaMode::Remote,
+            (Deployment::Local, "native") => MediaMode::Native,
             _ => return None,
         };
         Some(Self {
@@ -324,6 +338,7 @@ async fn dispatch(
                     media_jobs: match config.media_mode {
                         MediaMode::Fake => "authenticated_local_fake_preview",
                         MediaMode::Remote => "fail_closed_pending_provider_consumer",
+                        MediaMode::Native => "service_authenticated_native_worker",
                     },
                     ..CapabilitiesResponse::default()
                 };
@@ -634,6 +649,286 @@ async fn dispatch(
                     .await?
             }
         }
+        Route::WorkerMediaJobClaim => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_json_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<WorkerClaimRequest>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                if let Err(code) = body.validate() {
+                    return failure_response(
+                        invalid_body_failure(code.as_str()),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                native_job_claim_response(env, config, &request, &actor, body, request_id).await?
+            }
+        }
+        Route::WorkerMediaJobSource { job_id } => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Head], "GET, HEAD")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&job_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_lease_header(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                native_job_source_response(
+                    env,
+                    config,
+                    &request,
+                    &actor,
+                    &job_id,
+                    request.method() == Method::Head,
+                    request_id,
+                )
+                .await?
+            }
+        }
+        Route::WorkerMediaJobOutput { job_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Put], "PUT")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&job_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_output_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                native_job_output_response(env, config, &mut request, &actor, &job_id, request_id)
+                    .await?
+            }
+        }
+        Route::WorkerMediaJobHeartbeat { job_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&job_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_json_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<WorkerHeartbeatRequest>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                if let Err(code) = body.validate() {
+                    return failure_response(
+                        invalid_body_failure(code.as_str()),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                native_job_heartbeat_response(
+                    env, config, &request, &actor, &job_id, body, request_id,
+                )
+                .await?
+            }
+        }
+        Route::WorkerMediaJobProgress { job_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&job_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_json_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<WorkerProgressRequest>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                if let Err(code) = body.validate() {
+                    return failure_response(
+                        invalid_body_failure(code.as_str()),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                native_job_progress_response(
+                    env, config, &request, &actor, &job_id, body, request_id,
+                )
+                .await?
+            }
+        }
+        Route::WorkerMediaJobComplete { job_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&job_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_json_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<WorkerCompleteRequest>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                if let Err(code) = body.validate() {
+                    return failure_response(
+                        invalid_body_failure(code.as_str()),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                native_job_complete_response(
+                    env, config, &request, &actor, &job_id, body, request_id,
+                )
+                .await?
+            }
+        }
+        Route::WorkerMediaJobFail { job_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&job_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_json_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<WorkerFailRequest>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                if let Err(code) = body.validate() {
+                    return failure_response(
+                        invalid_body_failure(code.as_str()),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                native_job_fail_response(env, config, &request, &actor, &job_id, body, request_id)
+                    .await?
+            }
+        }
         Route::AuthorityStatus => {
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
                 failure_response(failure, request_id, config.production())?
@@ -696,7 +991,7 @@ async fn health_response(env: &Env, config: &RuntimeConfig) -> Result<Response> 
     let _recordings = env.bucket("RECORDINGS")?;
     // Merely having a provider binding is not an executable consumer contract.
     // Remote readiness stays red until the callback/lease implementation exists.
-    let media_transformations = config.media_mode == MediaMode::Fake;
+    let media_transformations = matches!(config.media_mode, MediaMode::Fake | MediaMode::Native);
 
     let status = if ready && media_transformations {
         ServiceStatus::Ok
@@ -1684,11 +1979,23 @@ async fn media_job_create_response(
             config.production(),
         );
     }
+    if config.media_mode == MediaMode::Native && body.profile != "thumbnail_v1" {
+        return failure_response(
+            ApiFailure::new(
+                422,
+                "profile_unavailable",
+                "The selected media profile is unavailable in this runtime.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
     let kind = profile_kind(&body.profile)
         .ok_or_else(|| Error::RustError("validated profile is unsupported".into()))?;
     let executor = match config.media_mode {
         MediaMode::Remote => "cloudflare_media",
-        MediaMode::Fake => "native_gstreamer",
+        MediaMode::Fake | MediaMode::Native => "native_gstreamer",
     };
     let job_id = new_id();
     let output_key = derivative_object_key(
@@ -1813,6 +2120,1948 @@ async fn media_job_create_response(
             .await?;
     }
     json_response(&response, 202, Some(&response.status_path))
+}
+
+async fn native_job_claim_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    body: WorkerClaimRequest,
+    request_id: &str,
+) -> Result<Response> {
+    if config.media_mode != MediaMode::Native {
+        return failure_response(
+            native_worker_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let Some(authority_fence) = mutation_authority_fence(env, config).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Worker).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let lease_token = worker_lease_token_header(request)?;
+    let lease_digest = digest_credential(&lease_token);
+    let idempotency_key = idempotency_header(request)?;
+    let digest_value = serde_json::json!({
+        "body": body,
+        "lease_token_digest": lease_digest,
+    });
+    let digest = request_digest("native_job_claim", &digest_value)
+        .map_err(|()| Error::RustError("worker claim could not be digested".into()))?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_claim",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+
+    let now = current_time_ms()?;
+    reap_exhausted_native_jobs(&database, &tenant_id, now, authority_fence).await?;
+    for _ in 0..2 {
+        let candidate = database
+            .prepare(
+                "SELECT j.id, j.revision, j.attempt, \
+                        json_extract(j.payload_json, '$.profile') AS profile, \
+                        m.bytes AS source_bytes, m.checksum_sha256 AS source_checksum_sha256, \
+                        m.content_type AS source_content_type \
+                 FROM media_jobs j \
+                 JOIN object_manifests m ON m.object_key = ( \
+                   SELECT m2.object_key FROM object_manifests m2 \
+                   WHERE m2.organization_id = j.organization_id AND m2.video_id = j.video_id \
+                     AND m2.object_version = j.source_version \
+                     AND m2.role IN ('source', 'import') AND m2.state = 'available' \
+                   ORDER BY CASE m2.role WHEN 'source' THEN 0 ELSE 1 END LIMIT 1) \
+                 WHERE j.organization_id = ?1 AND j.selected_executor = 'native_gstreamer' \
+                   AND json_extract(j.payload_json, '$.profile') = 'thumbnail_v1' \
+                   AND j.source_version IS NOT NULL AND j.output_object_key IS NOT NULL \
+                   AND j.cancel_requested = 0 AND j.attempt < ?2 \
+                   AND (j.state = 'queued' OR (j.state IN ('leased', 'running') \
+                     AND j.lease_expires_at_ms IS NOT NULL AND j.lease_expires_at_ms <= ?3)) \
+                   AND m.bytes BETWEEN 1 AND ?4 AND m.checksum_sha256 IS NOT NULL \
+                   AND length(m.checksum_sha256) = 64 AND lower(m.checksum_sha256) = m.checksum_sha256 \
+                   AND m.checksum_sha256 NOT GLOB '*[^0-9a-f]*' \
+                   AND m.content_type IN ('video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska') \
+                   AND substr(m.object_key, 1, length('tenants/' || j.organization_id || \
+                     '/videos/' || j.video_id || '/')) = \
+                     'tenants/' || j.organization_id || '/videos/' || j.video_id || '/' \
+                   AND instr(m.object_key, '..') = 0 AND instr(m.object_key, char(92)) = 0 \
+                   AND instr(m.object_key, '?') = 0 AND instr(m.object_key, '#') = 0 \
+                   AND instr(m.object_key, '%') = 0 \
+                   AND j.output_object_key = 'tenants/' || j.organization_id || '/videos/' || \
+                     j.video_id || '/derivatives/thumbnail_v1/v' || j.source_version || '/output' \
+                 ORDER BY j.created_at_ms, j.id LIMIT 1",
+            )
+            .bind(&[
+                JsValue::from_str(&tenant_id),
+                JsValue::from_f64(NATIVE_MAX_ATTEMPTS as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(MAX_SINGLE_UPLOAD_BYTES as f64),
+            ])?
+            .first::<NativeJobCandidateRow>(None)
+            .await?;
+        let Some(candidate) = candidate else {
+            return Ok(Response::empty()?.with_status(204));
+        };
+        let next_attempt = candidate
+            .attempt
+            .checked_add(1)
+            .filter(|attempt| *attempt <= NATIVE_MAX_ATTEMPTS)
+            .ok_or_else(|| Error::RustError("worker claim attempt is invalid".into()))?;
+        let next_revision = candidate
+            .revision
+            .checked_add(1)
+            .filter(|revision| *revision <= i64::try_from(MAX_SAFE_INTEGER).unwrap_or(i64::MAX))
+            .ok_or_else(|| Error::RustError("worker claim revision is invalid".into()))?;
+        let lease_expires_at_ms = now
+            .checked_add(NATIVE_LEASE_MS)
+            .ok_or_else(|| Error::RustError("worker lease expiry overflowed".into()))?;
+        let response = NativeJobClaimResponse {
+            schema_version: API_SCHEMA_VERSION,
+            job_id: candidate.id.clone(),
+            state: "leased".into(),
+            profile: candidate.profile.clone(),
+            attempt: u32::try_from(next_attempt)
+                .map_err(|_| Error::RustError("worker attempt is invalid".into()))?,
+            revision: u64::try_from(next_revision)
+                .map_err(|_| Error::RustError("worker revision is invalid".into()))?,
+            lease_expires_at_ms: u64::try_from(lease_expires_at_ms)
+                .map_err(|_| Error::RustError("worker lease expiry is invalid".into()))?,
+            source: WorkerSourceDescriptor {
+                path: format!("/api/v1/worker/media-jobs/{}/source", candidate.id),
+                bytes: u64::try_from(candidate.source_bytes)
+                    .map_err(|_| Error::RustError("worker source size is invalid".into()))?,
+                checksum_sha256: candidate.source_checksum_sha256.clone(),
+                content_type: candidate.source_content_type.clone(),
+            },
+            output: WorkerOutputDescriptor {
+                path: format!("/api/v1/worker/media-jobs/{}/output", candidate.id),
+                content_type: "image/png".into(),
+                max_bytes: NATIVE_MAX_OUTPUT_BYTES,
+            },
+            heartbeat_path: format!("/api/v1/worker/media-jobs/{}/heartbeat", candidate.id),
+            progress_path: format!("/api/v1/worker/media-jobs/{}/progress", candidate.id),
+            complete_path: format!("/api/v1/worker/media-jobs/{}/complete", candidate.id),
+            fail_path: format!("/api/v1/worker/media-jobs/{}/fail", candidate.id),
+        };
+        let response_json = serde_json::to_string(&response).map_err(|_| {
+            Error::RustError("worker claim response could not be serialized".into())
+        })?;
+        let outbox_id = new_id();
+        let outbox_payload = serde_json::json!({
+            "schema_version": API_SCHEMA_VERSION,
+            "job_id": candidate.id,
+            "attempt": next_attempt,
+            "state": "leased",
+        })
+        .to_string();
+        let reservation_id = new_id();
+        let statements = vec![
+            worker_command_reservation(
+                &database,
+                &tenant_id,
+                &idempotency_key,
+                "native_job_claim",
+                &digest,
+                &reservation_id,
+                now,
+            )?,
+            database
+                .prepare(
+                    "UPDATE media_jobs SET state = 'leased', attempt = attempt + 1, \
+                       worker_id = ?4, lease_token_digest = ?5, lease_expires_at_ms = ?6, \
+                       heartbeat_at_ms = ?3, progress_basis_points = 0, error_code = NULL, \
+                       error_class = NULL, updated_at_ms = ?3, revision = revision + 1 \
+                     WHERE id = ?1 AND organization_id = ?2 AND revision = ?7 \
+                       AND selected_executor = 'native_gstreamer' AND cancel_requested = 0 \
+                       AND attempt < ?8 AND (state = 'queued' OR (state IN ('leased', 'running') \
+                         AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms <= ?3)) \
+                       AND (?9 = -1 OR EXISTS (SELECT 1 FROM authority_state a \
+                         WHERE a.singleton = 1 AND a.epoch = ?9 AND a.authority = 'd1' \
+                           AND a.phase IN ('d1_authoritative', 'finalized'))) \
+                       AND EXISTS (SELECT 1 FROM command_idempotency c \
+                         WHERE c.organization_id = ?2 AND c.idempotency_key = ?10 \
+                           AND c.command_type = 'native_job_claim' AND c.request_digest = ?11 \
+                           AND c.reservation_id = ?12 AND c.response_status IS NULL)",
+                )
+                .bind(&[
+                    JsValue::from_str(&candidate.id),
+                    JsValue::from_str(&tenant_id),
+                    JsValue::from_f64(now as f64),
+                    JsValue::from_str(&actor.user_id),
+                    JsValue::from_str(&lease_digest),
+                    JsValue::from_f64(lease_expires_at_ms as f64),
+                    JsValue::from_f64(candidate.revision as f64),
+                    JsValue::from_f64(NATIVE_MAX_ATTEMPTS as f64),
+                    JsValue::from_f64(authority_fence.sql_epoch as f64),
+                    JsValue::from_str(&idempotency_key),
+                    JsValue::from_str(&digest),
+                    JsValue::from_str(&reservation_id),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE media_job_attempts SET finished_at_ms = ?3, outcome = 'lost_lease', \
+                       error_class = 'lease_expired' WHERE job_id = ?1 AND attempt = ?2 - 1 \
+                       AND outcome IS NULL AND EXISTS (SELECT 1 FROM media_jobs j \
+                         WHERE j.id = ?1 AND j.organization_id = ?4 AND j.attempt = ?2 \
+                           AND j.worker_id = ?5 AND j.lease_token_digest = ?6) \
+                       AND EXISTS (SELECT 1 FROM command_idempotency c \
+                         WHERE c.organization_id = ?4 AND c.idempotency_key = ?7 \
+                           AND c.command_type = 'native_job_claim' AND c.request_digest = ?8 \
+                           AND c.reservation_id = ?9 AND c.response_status IS NULL)",
+                )
+                .bind(&[
+                    JsValue::from_str(&candidate.id),
+                    JsValue::from_f64(next_attempt as f64),
+                    JsValue::from_f64(now as f64),
+                    JsValue::from_str(&tenant_id),
+                    JsValue::from_str(&actor.user_id),
+                    JsValue::from_str(&lease_digest),
+                    JsValue::from_str(&idempotency_key),
+                    JsValue::from_str(&digest),
+                    JsValue::from_str(&reservation_id),
+                ])?,
+            database
+                .prepare(
+                    "INSERT INTO media_job_attempts(job_id, attempt, executor, worker_id, started_at_ms) \
+                     SELECT ?1, ?2, 'native_gstreamer', ?3, ?4 FROM media_jobs j \
+                     WHERE j.id = ?1 AND j.organization_id = ?5 AND j.state = 'leased' \
+                       AND j.attempt = ?2 AND j.worker_id = ?3 AND j.lease_token_digest = ?6 \
+                       AND EXISTS (SELECT 1 FROM command_idempotency c \
+                         WHERE c.organization_id = ?5 AND c.idempotency_key = ?7 \
+                           AND c.command_type = 'native_job_claim' AND c.request_digest = ?8 \
+                           AND c.reservation_id = ?9 AND c.response_status IS NULL) \
+                     ON CONFLICT(job_id, attempt) DO NOTHING",
+                )
+                .bind(&[
+                    JsValue::from_str(&candidate.id),
+                    JsValue::from_f64(next_attempt as f64),
+                    JsValue::from_str(&actor.user_id),
+                    JsValue::from_f64(now as f64),
+                    JsValue::from_str(&tenant_id),
+                    JsValue::from_str(&lease_digest),
+                    JsValue::from_str(&idempotency_key),
+                    JsValue::from_str(&digest),
+                    JsValue::from_str(&reservation_id),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE command_idempotency SET response_status = 200, response_json = ?4 \
+                     WHERE organization_id = ?1 AND idempotency_key = ?2 \
+                       AND command_type = 'native_job_claim' AND request_digest = ?3 \
+                       AND reservation_id = ?5 AND response_status IS NULL \
+                       AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?6 \
+                         AND j.organization_id = ?1 AND j.state = 'leased' AND j.attempt = ?7 \
+                         AND j.worker_id = ?8 AND j.lease_token_digest = ?9)",
+                )
+                .bind(&[
+                    JsValue::from_str(&tenant_id),
+                    JsValue::from_str(&idempotency_key),
+                    JsValue::from_str(&digest),
+                    JsValue::from_str(&response_json),
+                    JsValue::from_str(&reservation_id),
+                    JsValue::from_str(&candidate.id),
+                    JsValue::from_f64(next_attempt as f64),
+                    JsValue::from_str(&actor.user_id),
+                    JsValue::from_str(&lease_digest),
+                ])?,
+            database
+                .prepare(
+                    "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
+                       event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
+                     SELECT ?1, ?2, 'media_job', ?3, 'media.job.leased', ?4, ?5, 'pending', 0, ?6, ?6 \
+                     FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
+                       AND j.state = 'leased' AND j.attempt = ?7 AND j.worker_id = ?8 \
+                       AND j.lease_token_digest = ?9 \
+                       AND EXISTS (SELECT 1 FROM command_idempotency c \
+                         WHERE c.organization_id = ?2 AND c.idempotency_key = ?10 \
+                           AND c.command_type = 'native_job_claim' AND c.request_digest = ?11 \
+                           AND c.reservation_id = ?12 AND c.response_status = 200) \
+                     ON CONFLICT(deduplication_key) DO NOTHING",
+                )
+                .bind(&[
+                    JsValue::from_str(&outbox_id),
+                    JsValue::from_str(&tenant_id),
+                    JsValue::from_str(&candidate.id),
+                    JsValue::from_str(&format!("media-leased:{}:{next_attempt}", candidate.id)),
+                    JsValue::from_str(&outbox_payload),
+                    JsValue::from_f64(now as f64),
+                    JsValue::from_f64(next_attempt as f64),
+                    JsValue::from_str(&actor.user_id),
+                    JsValue::from_str(&lease_digest),
+                    JsValue::from_str(&idempotency_key),
+                    JsValue::from_str(&digest),
+                    JsValue::from_str(&reservation_id),
+                ])?,
+            worker_command_reservation_cleanup(
+                &database,
+                &tenant_id,
+                &idempotency_key,
+                &reservation_id,
+            )?,
+        ];
+        require_batch_success(database.batch(statements).await?)?;
+        let claimed = load_worker_job(&database, &tenant_id, &candidate.id).await?;
+        if claimed.as_ref().is_some_and(|job| {
+            job.state == "leased"
+                && job.attempt == next_attempt
+                && job.worker_id.as_deref() == Some(actor.user_id.as_str())
+                && job.lease_token_digest.as_deref() == Some(lease_digest.as_str())
+                && job.lease_expires_at_ms == Some(lease_expires_at_ms)
+        }) {
+            match command_replay(
+                &database,
+                &tenant_id,
+                &idempotency_key,
+                "native_job_claim",
+                &digest,
+            )
+            .await?
+            {
+                CommandReplay::Stored { status, json } => {
+                    return stored_json_response(status, &json);
+                }
+                CommandReplay::Conflict | CommandReplay::New => {
+                    return Err(Error::RustError(
+                        "worker claim lost its idempotency reservation".into(),
+                    ));
+                }
+            }
+        }
+        match command_replay(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            "native_job_claim",
+            &digest,
+        )
+        .await?
+        {
+            CommandReplay::Stored { status, json } => {
+                return stored_json_response(status, &json);
+            }
+            CommandReplay::Conflict => {
+                return failure_response(
+                    idempotency_conflict_failure(),
+                    request_id,
+                    config.production(),
+                );
+            }
+            CommandReplay::New => {}
+        }
+    }
+    failure_response(
+        ApiFailure::new(
+            409,
+            "claim_conflict",
+            "The media job was claimed concurrently.",
+            true,
+        ),
+        request_id,
+        config.production(),
+    )
+}
+
+async fn native_job_source_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    job_id: &str,
+    head_only: bool,
+    request_id: &str,
+) -> Result<Response> {
+    if config.media_mode != MediaMode::Native {
+        return failure_response(
+            native_worker_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Worker).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    let lease_digest = digest_credential(&worker_lease_token_header(request)?);
+    let now = current_time_ms()?;
+    let Some(job) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if !active_worker_lease(&job, actor, &lease_digest, now) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    if job.cancel_requested != 0 {
+        return failure_response(worker_cancelled_failure(), request_id, config.production());
+    }
+    let source_version = u32::try_from(job.source_version)
+        .map_err(|_| Error::RustError("worker source version is invalid".into()))?;
+    let Some(source) =
+        load_source_object(&database, &tenant_id, &job.video_id, source_version).await?
+    else {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "source_not_ready",
+                "The source object is unavailable.",
+                true,
+            ),
+            request_id,
+            config.production(),
+        );
+    };
+    let source_bytes = u64::try_from(source.bytes)
+        .ok()
+        .filter(|bytes| (1..=MAX_SINGLE_UPLOAD_BYTES).contains(bytes))
+        .ok_or_else(|| Error::RustError("worker source size is invalid".into()))?;
+    let checksum_text = source
+        .checksum_sha256
+        .as_deref()
+        .filter(|checksum| contracts::valid_sha256(checksum))
+        .ok_or_else(|| Error::RustError("worker source checksum is invalid".into()))?;
+    let checksum = parse_sha256(checksum_text)
+        .ok_or_else(|| Error::RustError("worker source checksum is invalid".into()))?;
+    if !supported_source_content_type(&source.content_type) {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "source_invalid",
+                "The source manifest is invalid.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    if !valid_private_object_key(&source.object_key, &tenant_id, &job.video_id) {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "source_invalid",
+                "The source manifest is invalid.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let bucket = env.bucket("RECORDINGS")?;
+    let Some(head) = bucket.head(&source.object_key).await? else {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "source_not_ready",
+                "The source object is unavailable.",
+                true,
+            ),
+            request_id,
+            config.production(),
+        );
+    };
+    let metadata = head.http_metadata();
+    if head.size() != source_bytes
+        || head.checksum().sha256.as_deref() != Some(checksum.as_slice())
+        || metadata.content_type.as_deref() != Some(source.content_type.as_str())
+        || metadata.content_encoding.is_some()
+    {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "source_invalid",
+                "The source object failed verification.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let response = if head_only {
+        Response::empty()?
+    } else {
+        let object = bucket
+            .get(&source.object_key)
+            .execute()
+            .await?
+            .filter(|object| {
+                object.size() == source_bytes
+                    && object.checksum().sha256.as_deref() == Some(checksum.as_slice())
+            })
+            .ok_or_else(|| Error::RustError("worker source changed during transport".into()))?;
+        let body = object
+            .body()
+            .ok_or_else(|| Error::RustError("worker source body is unavailable".into()))?
+            .response_body()?;
+        Response::from_body(body)?
+    };
+    let mut response = response.with_status(200);
+    let headers = response.headers_mut();
+    headers.set("content-length", &source_bytes.to_string())?;
+    headers.set("content-type", &source.content_type)?;
+    headers.set("content-disposition", "attachment")?;
+    headers.set("x-content-sha256", checksum_text)?;
+    Ok(response)
+}
+
+async fn native_job_output_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &mut Request,
+    actor: &AuthenticatedActor,
+    job_id: &str,
+    request_id: &str,
+) -> Result<Response> {
+    if config.media_mode != MediaMode::Native {
+        return failure_response(
+            native_worker_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let Some(_authority_fence) = mutation_authority_fence(env, config).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Worker).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    let lease_digest = digest_credential(&worker_lease_token_header(request)?);
+    let now = current_time_ms()?;
+    let Some(job) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if !active_worker_lease(&job, actor, &lease_digest, now) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    if job.cancel_requested != 0 {
+        return failure_response(worker_cancelled_failure(), request_id, config.production());
+    }
+    if job.profile != "thumbnail_v1" {
+        return failure_response(
+            ApiFailure::new(
+                422,
+                "profile_unavailable",
+                "The media profile is unavailable.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    if !valid_worker_output_key(&job, &tenant_id) {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "output_invalid",
+                "The output manifest is invalid.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let content_length = request
+        .headers()
+        .get("content-length")?
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|bytes| (1..=NATIVE_MAX_OUTPUT_BYTES).contains(bytes))
+        .ok_or_else(|| Error::RustError("validated worker output length is unavailable".into()))?;
+    let content_type = request
+        .headers()
+        .get("content-type")?
+        .filter(|value| value == "image/png")
+        .ok_or_else(|| Error::RustError("validated worker output type is unavailable".into()))?;
+    let checksum_text = request
+        .headers()
+        .get("x-content-sha256")?
+        .filter(|value| contracts::valid_sha256(value))
+        .ok_or_else(|| Error::RustError("validated worker checksum is unavailable".into()))?;
+    let checksum = parse_sha256(&checksum_text)
+        .ok_or_else(|| Error::RustError("validated worker checksum is invalid".into()))?;
+    let Some(integration) = active_r2_integration(&database, &tenant_id).await? else {
+        return failure_response(
+            storage_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    };
+    if !integration.supports_single_put() {
+        return failure_response(
+            storage_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let bucket = env.bucket("RECORDINGS")?;
+    let candidate_key = native_output_candidate_key(&job, &tenant_id, &checksum_text)
+        .ok_or_else(|| Error::RustError("worker output candidate is invalid".into()))?;
+    let object = if let Some(existing) = bucket.head(&candidate_key).await? {
+        existing
+    } else {
+        let stream = FixedLengthStream::wrap(request.stream()?, content_length);
+        match bucket
+            .put(&candidate_key, stream)
+            .http_metadata(HttpMetadata {
+                content_type: Some(content_type.clone()),
+                content_disposition: Some("inline".into()),
+                cache_control: Some("private, no-store".into()),
+                ..HttpMetadata::default()
+            })
+            .sha256(checksum.to_vec())
+            .only_if(Conditional {
+                etag_does_not_match: Some("*".into()),
+                ..Conditional::default()
+            })
+            .execute()
+            .await?
+        {
+            Some(created) => created,
+            None => bucket
+                .head(&candidate_key)
+                .await?
+                .ok_or_else(|| Error::RustError("worker output write conflicted".into()))?,
+        }
+    };
+    let metadata = object.http_metadata();
+    if object.size() != content_length
+        || object.checksum().sha256.as_deref() != Some(checksum.as_slice())
+        || metadata.content_type.as_deref() != Some(content_type.as_str())
+        || metadata.content_encoding.is_some()
+    {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "output_conflict",
+                "The immutable output object does not match this attempt.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let response = WorkerOutputResponse {
+        schema_version: API_SCHEMA_VERSION,
+        job_id: job_id.into(),
+        accepted: true,
+        bytes: content_length,
+        checksum_sha256: checksum_text,
+        content_type,
+    };
+    json_response(&response, 200, None)
+}
+
+async fn native_job_heartbeat_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    job_id: &str,
+    body: WorkerHeartbeatRequest,
+    request_id: &str,
+) -> Result<Response> {
+    if config.media_mode != MediaMode::Native {
+        return failure_response(
+            native_worker_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let Some(authority_fence) = mutation_authority_fence(env, config).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Worker).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let lease_digest = digest_credential(&worker_lease_token_header(request)?);
+    let idempotency_key = idempotency_header(request)?;
+    let digest = request_digest(
+        "native_job_heartbeat",
+        &serde_json::json!({
+            "job_id": job_id,
+            "body": &body,
+            "lease_token_digest": lease_digest,
+        }),
+    )
+    .map_err(|()| Error::RustError("worker heartbeat could not be digested".into()))?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_heartbeat",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let now = current_time_ms()?;
+    let Some(existing) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if !worker_identity_matches(&existing, actor, &lease_digest) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    if existing.cancel_requested != 0 || existing.state == "cancelled" {
+        let response = existing
+            .private_response(false)
+            .ok_or_else(|| Error::RustError("worker job response is invalid".into()))?;
+        return json_response(&response, 200, None);
+    }
+    if !active_worker_lease(&existing, actor, &lease_digest, now) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let next_revision = existing
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| Error::RustError("worker heartbeat revision overflowed".into()))?;
+    let lease_expires_at_ms = now
+        .checked_add(NATIVE_LEASE_MS)
+        .ok_or_else(|| Error::RustError("worker heartbeat expiry overflowed".into()))?;
+    let mut next = existing.clone();
+    next.state = "running".into();
+    next.revision = next_revision;
+    next.lease_expires_at_ms = Some(lease_expires_at_ms);
+    let response = next
+        .private_response(false)
+        .ok_or_else(|| Error::RustError("worker heartbeat response is invalid".into()))?;
+    let response_json = serde_json::to_string(&response).map_err(|_| {
+        Error::RustError("worker heartbeat response could not be serialized".into())
+    })?;
+    let outbox_id = new_id();
+    let payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "job_id": job_id,
+        "attempt": existing.attempt,
+        "state": "running",
+    })
+    .to_string();
+    let reservation_id = new_id();
+    let statements = vec![
+        worker_command_reservation(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            "native_job_heartbeat",
+            &digest,
+            &reservation_id,
+            now,
+        )?,
+        database
+            .prepare(
+                "UPDATE media_jobs SET state = 'running', heartbeat_at_ms = ?5, \
+                   lease_expires_at_ms = ?6, updated_at_ms = ?5, revision = revision + 1 \
+                 WHERE id = ?1 AND organization_id = ?2 AND revision = ?3 AND attempt = ?4 \
+                   AND state IN ('leased', 'running') AND cancel_requested = 0 \
+                   AND worker_id = ?7 AND lease_token_digest = ?8 \
+                   AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms > ?5 \
+                   AND (?9 = -1 OR EXISTS (SELECT 1 FROM authority_state a WHERE a.singleton = 1 \
+                     AND a.epoch = ?9 AND a.authority = 'd1' \
+                     AND a.phase IN ('d1_authoritative', 'finalized'))) \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?10 \
+                       AND c.command_type = 'native_job_heartbeat' AND c.request_digest = ?11 \
+                       AND c.reservation_id = ?12 AND c.response_status IS NULL)",
+            )
+            .bind(&[
+                JsValue::from_str(job_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_f64(existing.revision as f64),
+                JsValue::from_f64(existing.attempt as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(lease_expires_at_ms as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "UPDATE command_idempotency SET response_status = 200, response_json = ?4 \
+                 WHERE organization_id = ?1 AND idempotency_key = ?2 \
+                   AND command_type = 'native_job_heartbeat' AND request_digest = ?3 \
+                   AND reservation_id = ?5 AND response_status IS NULL \
+                   AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?6 \
+                     AND j.organization_id = ?1 AND j.revision = ?7 \
+                     AND j.worker_id = ?8 AND j.lease_token_digest = ?9)",
+            )
+            .bind(&[
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&response_json),
+                JsValue::from_str(&reservation_id),
+                JsValue::from_str(job_id),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
+                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.heartbeat', ?4, ?5, 'pending', 0, ?6, ?6 \
+                 FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 AND j.revision = ?7 \
+                   AND j.worker_id = ?8 AND j.lease_token_digest = ?9 \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?10 \
+                       AND c.command_type = 'native_job_heartbeat' AND c.request_digest = ?11 \
+                       AND c.reservation_id = ?12 AND c.response_status = 200) \
+                 ON CONFLICT(deduplication_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(job_id),
+                JsValue::from_str(&format!("media-heartbeat:{job_id}:{next_revision}")),
+                JsValue::from_str(&payload),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        worker_command_reservation_cleanup(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            &reservation_id,
+        )?,
+    ];
+    require_batch_success(database.batch(statements).await?)?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_heartbeat",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let Some(current) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if current.revision != next_revision
+        || current.lease_expires_at_ms != Some(lease_expires_at_ms)
+        || !worker_identity_matches(&current, actor, &lease_digest)
+    {
+        if current.cancel_requested != 0 {
+            let response = current
+                .private_response(false)
+                .ok_or_else(|| Error::RustError("worker job response is invalid".into()))?;
+            return json_response(&response, 200, None);
+        }
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    json_response(&response, 200, None)
+}
+
+async fn native_job_progress_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    job_id: &str,
+    body: WorkerProgressRequest,
+    request_id: &str,
+) -> Result<Response> {
+    if config.media_mode != MediaMode::Native {
+        return failure_response(
+            native_worker_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let Some(authority_fence) = mutation_authority_fence(env, config).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Worker).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let lease_digest = digest_credential(&worker_lease_token_header(request)?);
+    let idempotency_key = idempotency_header(request)?;
+    let digest = request_digest(
+        "native_job_progress",
+        &serde_json::json!({
+            "job_id": job_id,
+            "body": &body,
+            "lease_token_digest": lease_digest,
+        }),
+    )
+    .map_err(|()| Error::RustError("worker progress could not be digested".into()))?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_progress",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let now = current_time_ms()?;
+    let Some(existing) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if !worker_identity_matches(&existing, actor, &lease_digest) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    if existing.cancel_requested != 0 {
+        let response = existing
+            .private_response(false)
+            .ok_or_else(|| Error::RustError("worker job response is invalid".into()))?;
+        return json_response(&response, 200, None);
+    }
+    if !active_worker_lease(&existing, actor, &lease_digest, now) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let progress = i64::from(body.progress_basis_points);
+    if existing
+        .progress_basis_points
+        .is_some_and(|current| current > progress)
+    {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "progress_regression",
+                "Media job progress cannot move backwards.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let next_revision = existing
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| Error::RustError("worker progress revision overflowed".into()))?;
+    let lease_expires_at_ms = now
+        .checked_add(NATIVE_LEASE_MS)
+        .ok_or_else(|| Error::RustError("worker progress expiry overflowed".into()))?;
+    let mut next = existing.clone();
+    next.state = "running".into();
+    next.revision = next_revision;
+    next.progress_basis_points = Some(progress);
+    next.lease_expires_at_ms = Some(lease_expires_at_ms);
+    let response = next
+        .private_response(false)
+        .ok_or_else(|| Error::RustError("worker progress response is invalid".into()))?;
+    let response_json = serde_json::to_string(&response)
+        .map_err(|_| Error::RustError("worker progress response could not be serialized".into()))?;
+    let outbox_id = new_id();
+    let payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "job_id": job_id,
+        "attempt": existing.attempt,
+        "progress_basis_points": progress,
+    })
+    .to_string();
+    let reservation_id = new_id();
+    let statements = vec![
+        worker_command_reservation(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            "native_job_progress",
+            &digest,
+            &reservation_id,
+            now,
+        )?,
+        database
+            .prepare(
+                "UPDATE media_jobs SET state = 'running', progress_basis_points = ?5, \
+                   heartbeat_at_ms = ?6, lease_expires_at_ms = ?7, updated_at_ms = ?6, \
+                   revision = revision + 1 WHERE id = ?1 AND organization_id = ?2 \
+                   AND revision = ?3 AND attempt = ?4 AND state IN ('leased', 'running') \
+                   AND cancel_requested = 0 AND worker_id = ?8 AND lease_token_digest = ?9 \
+                   AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms > ?6 \
+                   AND (progress_basis_points IS NULL OR progress_basis_points <= ?5) \
+                   AND (?10 = -1 OR EXISTS (SELECT 1 FROM authority_state a WHERE a.singleton = 1 \
+                     AND a.epoch = ?10 AND a.authority = 'd1' \
+                     AND a.phase IN ('d1_authoritative', 'finalized'))) \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?11 \
+                       AND c.command_type = 'native_job_progress' AND c.request_digest = ?12 \
+                       AND c.reservation_id = ?13 AND c.response_status IS NULL)",
+            )
+            .bind(&[
+                JsValue::from_str(job_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_f64(existing.revision as f64),
+                JsValue::from_f64(existing.attempt as f64),
+                JsValue::from_f64(progress as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(lease_expires_at_ms as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "UPDATE command_idempotency SET response_status = 200, response_json = ?4 \
+                 WHERE organization_id = ?1 AND idempotency_key = ?2 \
+                   AND command_type = 'native_job_progress' AND request_digest = ?3 \
+                   AND reservation_id = ?5 AND response_status IS NULL \
+                   AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?6 \
+                     AND j.organization_id = ?1 AND j.revision = ?7 \
+                     AND j.progress_basis_points = ?8 AND j.worker_id = ?9 \
+                     AND j.lease_token_digest = ?10)",
+            )
+            .bind(&[
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&response_json),
+                JsValue::from_str(&reservation_id),
+                JsValue::from_str(job_id),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_f64(progress as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
+                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.progressed', ?4, ?5, 'pending', 0, ?6, ?6 \
+                 FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 AND j.revision = ?7 \
+                   AND j.progress_basis_points = ?8 AND j.worker_id = ?9 AND j.lease_token_digest = ?10 \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?11 \
+                       AND c.command_type = 'native_job_progress' AND c.request_digest = ?12 \
+                       AND c.reservation_id = ?13 AND c.response_status = 200) \
+                 ON CONFLICT(deduplication_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(job_id),
+                JsValue::from_str(&format!("media-progress:{job_id}:{next_revision}")),
+                JsValue::from_str(&payload),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_f64(progress as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        worker_command_reservation_cleanup(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            &reservation_id,
+        )?,
+    ];
+    require_batch_success(database.batch(statements).await?)?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_progress",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let Some(current) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if current.revision != next_revision
+        || current.progress_basis_points != Some(progress)
+        || !worker_identity_matches(&current, actor, &lease_digest)
+    {
+        if current.cancel_requested != 0 {
+            let response = current
+                .private_response(false)
+                .ok_or_else(|| Error::RustError("worker job response is invalid".into()))?;
+            return json_response(&response, 200, None);
+        }
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    json_response(&response, 200, None)
+}
+
+async fn native_job_complete_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    job_id: &str,
+    body: WorkerCompleteRequest,
+    request_id: &str,
+) -> Result<Response> {
+    if config.media_mode != MediaMode::Native {
+        return failure_response(
+            native_worker_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let Some(authority_fence) = mutation_authority_fence(env, config).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Worker).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    if body.bytes > NATIVE_MAX_OUTPUT_BYTES || body.content_type != "image/png" {
+        return failure_response(
+            invalid_body_failure("invalid_output_manifest"),
+            request_id,
+            config.production(),
+        );
+    }
+    let lease_digest = digest_credential(&worker_lease_token_header(request)?);
+    let idempotency_key = idempotency_header(request)?;
+    let digest = request_digest(
+        "native_job_complete",
+        &serde_json::json!({
+            "job_id": job_id,
+            "body": &body,
+            "lease_token_digest": lease_digest,
+        }),
+    )
+    .map_err(|()| Error::RustError("worker completion could not be digested".into()))?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_complete",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let now = current_time_ms()?;
+    let Some(existing) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if !worker_identity_matches(&existing, actor, &lease_digest) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    if existing.state == "succeeded" {
+        if worker_manifest_matches(&database, &tenant_id, &existing, &body).await? {
+            let response = existing
+                .private_response(false)
+                .ok_or_else(|| Error::RustError("worker job response is invalid".into()))?;
+            return json_response(&response, 200, None);
+        }
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "output_conflict",
+                "The completed output is immutable.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    if existing.cancel_requested != 0 || existing.state == "cancelled" {
+        return failure_response(worker_cancelled_failure(), request_id, config.production());
+    }
+    if matches!(existing.state.as_str(), "failed")
+        || !active_worker_lease(&existing, actor, &lease_digest, now)
+    {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    if existing.profile != "thumbnail_v1" {
+        return failure_response(
+            ApiFailure::new(
+                422,
+                "profile_unavailable",
+                "The media profile is unavailable.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    if !valid_worker_output_key(&existing, &tenant_id) {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "output_invalid",
+                "The output manifest is invalid.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let checksum = parse_sha256(&body.checksum_sha256)
+        .ok_or_else(|| Error::RustError("validated completion checksum is invalid".into()))?;
+    let bucket = env.bucket("RECORDINGS")?;
+    let candidate_key =
+        native_output_candidate_key(&existing, &tenant_id, &body.checksum_sha256)
+            .ok_or_else(|| Error::RustError("worker output candidate is invalid".into()))?;
+    let Some(output) = bucket.head(&candidate_key).await? else {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "output_not_ready",
+                "The output object is unavailable.",
+                true,
+            ),
+            request_id,
+            config.production(),
+        );
+    };
+    let metadata = output.http_metadata();
+    if output.size() != body.bytes
+        || output.checksum().sha256.as_deref() != Some(checksum.as_slice())
+        || metadata.content_type.as_deref() != Some(body.content_type.as_str())
+        || metadata.content_encoding.is_some()
+    {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "output_invalid",
+                "The output object failed verification.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let Some(integration) = active_r2_integration(&database, &tenant_id).await? else {
+        return failure_response(
+            storage_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    };
+    let output_etag = output.etag();
+    let next_revision = existing
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| Error::RustError("worker completion revision overflowed".into()))?;
+    let mut next = existing.clone();
+    next.state = "succeeded".into();
+    next.revision = next_revision;
+    next.progress_basis_points = Some(10_000);
+    next.lease_expires_at_ms = None;
+    next.output_object_key.clone_from(&candidate_key);
+    let response = next
+        .private_response(false)
+        .ok_or_else(|| Error::RustError("worker completion response is invalid".into()))?;
+    let response_json = serde_json::to_string(&response).map_err(|_| {
+        Error::RustError("worker completion response could not be serialized".into())
+    })?;
+    let storage_object_id = new_id();
+    let outbox_id = new_id();
+    let payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "job_id": job_id,
+        "video_id": existing.video_id,
+        "attempt": existing.attempt,
+        "role": "thumbnail",
+        "state": "succeeded",
+    })
+    .to_string();
+    let reservation_id = new_id();
+    let statements = vec![
+        worker_command_reservation(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            "native_job_complete",
+            &digest,
+            &reservation_id,
+            now,
+        )?,
+        database
+            .prepare(
+                "UPDATE media_jobs SET state = 'succeeded', progress_basis_points = 10000, \
+                   error_code = NULL, error_class = NULL, lease_expires_at_ms = NULL, \
+                   heartbeat_at_ms = ?5, output_object_key = ?8, updated_at_ms = ?5, \
+                   revision = revision + 1 \
+                 WHERE id = ?1 AND organization_id = ?2 AND revision = ?3 AND attempt = ?4 \
+                   AND state IN ('leased', 'running') AND cancel_requested = 0 \
+                   AND worker_id = ?6 AND lease_token_digest = ?7 \
+                   AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms > ?5 \
+                   AND NOT EXISTS (SELECT 1 FROM object_manifests m WHERE m.object_key = ?8 \
+                     AND (m.organization_id <> ?2 OR m.video_id <> ?9 OR m.role <> 'thumbnail' \
+                       OR m.object_version <> ?10 OR m.bytes <> ?11 \
+                       OR COALESCE(m.checksum_sha256, '') <> ?12 OR m.content_type <> ?13 \
+                       OR COALESCE(m.provider_etag, '') <> ?14 OR m.state <> 'available')) \
+                   AND NOT EXISTS (SELECT 1 FROM storage_objects s \
+                     WHERE s.integration_id = ?15 AND s.object_key = ?8 \
+                       AND (s.organization_id <> ?2 OR COALESCE(s.video_id, '') <> ?9 \
+                         OR s.role <> 'thumbnail' OR s.object_version <> ?10 \
+                         OR s.bytes <> ?11 OR COALESCE(s.checksum_sha256, '') <> ?12 \
+                         OR s.content_type <> ?13 OR COALESCE(s.provider_etag, '') <> ?14 \
+                         OR s.state <> 'available')) \
+                   AND (?16 = -1 OR EXISTS (SELECT 1 FROM authority_state a WHERE a.singleton = 1 \
+                     AND a.epoch = ?16 AND a.authority = 'd1' \
+                     AND a.phase IN ('d1_authoritative', 'finalized'))) \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?17 \
+                       AND c.command_type = 'native_job_complete' AND c.request_digest = ?18 \
+                       AND c.reservation_id = ?19 AND c.response_status IS NULL)",
+            )
+            .bind(&[
+                JsValue::from_str(job_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_f64(existing.revision as f64),
+                JsValue::from_f64(existing.attempt as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_str(&candidate_key),
+                JsValue::from_str(&existing.video_id),
+                JsValue::from_f64(existing.source_version as f64),
+                JsValue::from_f64(body.bytes as f64),
+                JsValue::from_str(&body.checksum_sha256),
+                JsValue::from_str(&body.content_type),
+                JsValue::from_str(&output_etag),
+                JsValue::from_str(&integration.id),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "UPDATE media_job_attempts SET finished_at_ms = ?3, outcome = 'succeeded', \
+                   error_class = NULL WHERE job_id = ?1 AND attempt = ?2 AND outcome IS NULL \
+                   AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?1 \
+                     AND j.organization_id = ?4 AND j.state = 'succeeded' \
+                     AND j.worker_id = ?5 AND j.lease_token_digest = ?6 \
+                     AND j.revision = ?7 AND j.output_object_key = ?8) \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?4 AND c.idempotency_key = ?9 \
+                       AND c.command_type = 'native_job_complete' AND c.request_digest = ?10 \
+                       AND c.reservation_id = ?11 AND c.response_status IS NULL)",
+            )
+            .bind(&[
+                JsValue::from_str(job_id),
+                JsValue::from_f64(existing.attempt as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&candidate_key),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO object_manifests(object_key, video_id, role, bytes, checksum_sha256, \
+                   content_type, created_at_ms, organization_id, object_version, provider_etag, state, updated_at_ms) \
+                 SELECT ?1, ?2, 'thumbnail', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'available', ?6 \
+                 FROM media_jobs j WHERE j.id = ?10 AND j.organization_id = ?7 \
+                   AND j.state = 'succeeded' AND j.worker_id = ?11 AND j.lease_token_digest = ?12 \
+                   AND j.revision = ?13 AND j.output_object_key = ?1 \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?7 AND c.idempotency_key = ?14 \
+                       AND c.command_type = 'native_job_complete' AND c.request_digest = ?15 \
+                       AND c.reservation_id = ?16 AND c.response_status IS NULL) \
+                 ON CONFLICT(object_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&candidate_key),
+                JsValue::from_str(&existing.video_id),
+                JsValue::from_f64(body.bytes as f64),
+                JsValue::from_str(&body.checksum_sha256),
+                JsValue::from_str(&body.content_type),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_f64(existing.source_version as f64),
+                JsValue::from_str(&output_etag),
+                JsValue::from_str(job_id),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO storage_objects(id, organization_id, integration_id, video_id, object_key, \
+                   role, object_version, state, bytes, content_type, checksum_sha256, provider_etag, created_at_ms) \
+                 SELECT ?1, ?2, ?3, ?4, ?5, 'thumbnail', ?6, 'available', ?7, ?8, ?9, ?10, ?11 \
+                 FROM media_jobs j WHERE j.id = ?12 AND j.organization_id = ?2 \
+                   AND j.state = 'succeeded' AND j.worker_id = ?13 AND j.lease_token_digest = ?14 \
+                   AND j.revision = ?15 AND j.output_object_key = ?5 \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?16 \
+                       AND c.command_type = 'native_job_complete' AND c.request_digest = ?17 \
+                       AND c.reservation_id = ?18 AND c.response_status IS NULL) \
+                 ON CONFLICT(integration_id, object_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&storage_object_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&integration.id),
+                JsValue::from_str(&existing.video_id),
+                JsValue::from_str(&candidate_key),
+                JsValue::from_f64(existing.source_version as f64),
+                JsValue::from_f64(body.bytes as f64),
+                JsValue::from_str(&body.content_type),
+                JsValue::from_str(&body.checksum_sha256),
+                JsValue::from_str(&output_etag),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(job_id),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "UPDATE command_idempotency SET response_status = 200, response_json = ?4 \
+                 WHERE organization_id = ?1 AND idempotency_key = ?2 \
+                   AND command_type = 'native_job_complete' AND request_digest = ?3 \
+                   AND reservation_id = ?5 AND response_status IS NULL \
+                   AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?6 \
+                     AND j.organization_id = ?1 AND j.state = 'succeeded' \
+                     AND j.revision = ?7 AND j.worker_id = ?8 AND j.lease_token_digest = ?9 \
+                     AND j.output_object_key = ?10)",
+            )
+            .bind(&[
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&response_json),
+                JsValue::from_str(&reservation_id),
+                JsValue::from_str(job_id),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_str(&candidate_key),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
+                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.succeeded', ?4, ?5, 'pending', 0, ?6, ?6 \
+                 FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
+                   AND j.state = 'succeeded' AND j.revision = ?7 AND j.worker_id = ?8 \
+                   AND j.lease_token_digest = ?9 AND j.output_object_key = ?10 \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?11 \
+                       AND c.command_type = 'native_job_complete' AND c.request_digest = ?12 \
+                       AND c.reservation_id = ?13 AND c.response_status = 200) \
+                 ON CONFLICT(deduplication_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(job_id),
+                JsValue::from_str(&format!("media-succeeded:{job_id}")),
+                JsValue::from_str(&payload),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_str(&candidate_key),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        worker_command_reservation_cleanup(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            &reservation_id,
+        )?,
+    ];
+    require_batch_success(database.batch(statements).await?)?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_complete",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let Some(current) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if current.state != "succeeded"
+        || current.revision != next_revision
+        || !worker_identity_matches(&current, actor, &lease_digest)
+        || !worker_manifest_matches(&database, &tenant_id, &current, &body).await?
+    {
+        if current.cancel_requested != 0 || current.state == "cancelled" {
+            return failure_response(worker_cancelled_failure(), request_id, config.production());
+        }
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    json_response(&response, 200, None)
+}
+
+async fn native_job_fail_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    job_id: &str,
+    body: WorkerFailRequest,
+    request_id: &str,
+) -> Result<Response> {
+    if config.media_mode != MediaMode::Native {
+        return failure_response(
+            native_worker_unavailable_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let Some(authority_fence) = mutation_authority_fence(env, config).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Worker).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let lease_digest = digest_credential(&worker_lease_token_header(request)?);
+    let idempotency_key = idempotency_header(request)?;
+    let digest = request_digest(
+        "native_job_fail",
+        &serde_json::json!({
+            "job_id": job_id,
+            "body": &body,
+            "lease_token_digest": lease_digest,
+        }),
+    )
+    .map_err(|()| Error::RustError("worker failure could not be digested".into()))?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_fail",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let now = current_time_ms()?;
+    let Some(existing) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if !worker_identity_matches(&existing, actor, &lease_digest) {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    if matches!(
+        existing.state.as_str(),
+        "succeeded" | "failed" | "cancelled"
+    ) {
+        let response = existing
+            .private_response(false)
+            .ok_or_else(|| Error::RustError("worker terminal response is invalid".into()))?;
+        return json_response(&response, 200, None);
+    }
+    if existing.cancel_requested == 0 && !active_worker_lease(&existing, actor, &lease_digest, now)
+    {
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    let retry_scheduled =
+        body.retryable && existing.cancel_requested == 0 && existing.attempt < NATIVE_MAX_ATTEMPTS;
+    let target_state = if existing.cancel_requested != 0 || body.error_class == "cancelled" {
+        "cancelled"
+    } else if retry_scheduled {
+        "queued"
+    } else {
+        "failed"
+    };
+    let outcome = match target_state {
+        "queued" => "retryable_failure",
+        "cancelled" => "cancelled",
+        _ => "terminal_failure",
+    };
+    let next_revision = existing
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| Error::RustError("worker failure revision overflowed".into()))?;
+    let mut next = existing.clone();
+    next.state = target_state.into();
+    next.revision = next_revision;
+    next.lease_expires_at_ms = None;
+    if retry_scheduled {
+        next.worker_id = None;
+        next.lease_token_digest = None;
+    }
+    let response = next
+        .private_response(retry_scheduled)
+        .ok_or_else(|| Error::RustError("worker failure response is invalid".into()))?;
+    let response_json = serde_json::to_string(&response)
+        .map_err(|_| Error::RustError("worker failure response could not be serialized".into()))?;
+    let dead_letter_required = target_state == "failed";
+    let outbox_id = new_id();
+    let payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "job_id": job_id,
+        "attempt": existing.attempt,
+        "state": target_state,
+        "error_class": body.error_class,
+        "retry_scheduled": retry_scheduled,
+    })
+    .to_string();
+    let event_type = match target_state {
+        "queued" => "media.job.retry_scheduled",
+        "cancelled" => "media.job.cancelled",
+        _ => "media.job.failed",
+    };
+    let reservation_id = new_id();
+    let statements = vec![
+        worker_command_reservation(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            "native_job_fail",
+            &digest,
+            &reservation_id,
+            now,
+        )?,
+        database
+            .prepare(
+                "UPDATE media_jobs SET state = ?5, error_code = 'native_worker_failure', \
+                   error_class = ?6, lease_expires_at_ms = NULL, heartbeat_at_ms = ?7, \
+                   worker_id = CASE WHEN ?8 = 1 THEN NULL ELSE worker_id END, \
+                   lease_token_digest = CASE WHEN ?8 = 1 THEN NULL ELSE lease_token_digest END, \
+                   updated_at_ms = ?7, revision = revision + 1 \
+                 WHERE id = ?1 AND organization_id = ?2 AND revision = ?3 AND attempt = ?4 \
+                   AND state IN ('leased', 'running') AND worker_id = ?9 AND lease_token_digest = ?10 \
+                   AND (cancel_requested = 1 OR (lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms > ?7)) \
+                   AND (?11 = -1 OR EXISTS (SELECT 1 FROM authority_state a WHERE a.singleton = 1 \
+                     AND a.epoch = ?11 AND a.authority = 'd1' \
+                     AND a.phase IN ('d1_authoritative', 'finalized'))) \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?12 \
+                       AND c.command_type = 'native_job_fail' AND c.request_digest = ?13 \
+                       AND c.reservation_id = ?14 AND c.response_status IS NULL)",
+            )
+            .bind(&[
+                JsValue::from_str(job_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_f64(existing.revision as f64),
+                JsValue::from_f64(existing.attempt as f64),
+                JsValue::from_str(target_state),
+                JsValue::from_str(&body.error_class),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(if retry_scheduled { 1.0 } else { 0.0 }),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&lease_digest),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "UPDATE media_job_attempts SET finished_at_ms = ?3, outcome = ?4, error_class = ?5 \
+                 WHERE job_id = ?1 AND attempt = ?2 AND outcome IS NULL \
+                   AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?1 \
+                     AND j.organization_id = ?6 AND j.state = ?7 AND j.revision = ?8) \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?6 AND c.idempotency_key = ?9 \
+                       AND c.command_type = 'native_job_fail' AND c.request_digest = ?10 \
+                       AND c.reservation_id = ?11 AND c.response_status IS NULL)",
+            )
+            .bind(&[
+                JsValue::from_str(job_id),
+                JsValue::from_f64(existing.attempt as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(outcome),
+                JsValue::from_str(&body.error_class),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(target_state),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO media_job_dead_letters(job_id, attempt, error_class, diagnostic_code, created_at_ms) \
+                 SELECT ?1, ?2, ?3, 'native_worker_exhausted', ?4 FROM media_jobs j \
+                 WHERE ?5 = 1 AND j.id = ?1 AND j.organization_id = ?6 AND j.state = 'failed' \
+                   AND j.revision = ?7 \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?6 AND c.idempotency_key = ?8 \
+                       AND c.command_type = 'native_job_fail' AND c.request_digest = ?9 \
+                       AND c.reservation_id = ?10 AND c.response_status IS NULL) \
+                 ON CONFLICT(job_id) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(job_id),
+                JsValue::from_f64(existing.attempt as f64),
+                JsValue::from_str(&body.error_class),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(if dead_letter_required { 1.0 } else { 0.0 }),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        database
+            .prepare(
+                "UPDATE command_idempotency SET response_status = 200, response_json = ?4 \
+                 WHERE organization_id = ?1 AND idempotency_key = ?2 \
+                   AND command_type = 'native_job_fail' AND request_digest = ?3 \
+                   AND reservation_id = ?5 AND response_status IS NULL \
+                   AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?6 \
+                     AND j.organization_id = ?1 AND j.state = ?7 AND j.revision = ?8)",
+            )
+            .bind(&[
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&response_json),
+                JsValue::from_str(&reservation_id),
+                JsValue::from_str(job_id),
+                JsValue::from_str(target_state),
+                JsValue::from_f64(next_revision as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
+                 SELECT ?1, ?2, 'media_job', ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7 \
+                 FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
+                   AND j.state = ?8 AND j.revision = ?9 \
+                   AND EXISTS (SELECT 1 FROM command_idempotency c \
+                     WHERE c.organization_id = ?2 AND c.idempotency_key = ?10 \
+                       AND c.command_type = 'native_job_fail' AND c.request_digest = ?11 \
+                       AND c.reservation_id = ?12 AND c.response_status = 200) \
+                 ON CONFLICT(deduplication_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(job_id),
+                JsValue::from_str(event_type),
+                JsValue::from_str(&format!("media-{target_state}:{job_id}:{}", existing.attempt)),
+                JsValue::from_str(&payload),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(target_state),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&reservation_id),
+            ])?,
+        worker_command_reservation_cleanup(
+            &database,
+            &tenant_id,
+            &idempotency_key,
+            &reservation_id,
+        )?,
+    ];
+    require_batch_success(database.batch(statements).await?)?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "native_job_fail",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let Some(current) = load_worker_job(&database, &tenant_id, job_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if current.state != target_state || current.revision != next_revision {
+        if current.cancel_requested != 0 || current.state == "cancelled" {
+            let response = current
+                .private_response(false)
+                .ok_or_else(|| Error::RustError("worker job response is invalid".into()))?;
+            return json_response(&response, 200, None);
+        }
+        return failure_response(
+            worker_lease_conflict_failure(),
+            request_id,
+            config.production(),
+        );
+    }
+    json_response(&response, 200, None)
 }
 
 async fn media_job_status_response(
@@ -2459,6 +4708,204 @@ async fn load_media_job(
         .await
 }
 
+async fn load_worker_job(
+    database: &D1Database,
+    tenant_id: &str,
+    job_id: &str,
+) -> Result<Option<WorkerJobRow>> {
+    database
+        .prepare(
+            "SELECT id, video_id, state, revision, attempt, \
+                    json_extract(payload_json, '$.profile') AS profile, source_version, \
+                    output_object_key, worker_id, lease_token_digest, lease_expires_at_ms, \
+                    progress_basis_points, cancel_requested FROM media_jobs \
+             WHERE id = ?1 AND organization_id = ?2 AND selected_executor = 'native_gstreamer' \
+             LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(job_id), JsValue::from_str(tenant_id)])?
+        .first::<WorkerJobRow>(None)
+        .await
+}
+
+fn worker_identity_matches(
+    job: &WorkerJobRow,
+    actor: &AuthenticatedActor,
+    lease_digest: &str,
+) -> bool {
+    job.worker_id.as_deref() == Some(actor.user_id.as_str())
+        && job.lease_token_digest.as_deref() == Some(lease_digest)
+}
+
+fn active_worker_lease(
+    job: &WorkerJobRow,
+    actor: &AuthenticatedActor,
+    lease_digest: &str,
+    now: i64,
+) -> bool {
+    matches!(job.state.as_str(), "leased" | "running")
+        && worker_identity_matches(job, actor, lease_digest)
+        && job.lease_expires_at_ms.is_some_and(|expiry| expiry > now)
+}
+
+async fn worker_manifest_matches(
+    database: &D1Database,
+    tenant_id: &str,
+    job: &WorkerJobRow,
+    body: &WorkerCompleteRequest,
+) -> Result<bool> {
+    Ok(database
+        .prepare(
+            "SELECT 1 AS ready FROM object_manifests WHERE object_key = ?1 \
+               AND organization_id = ?2 AND video_id = ?3 AND role = 'thumbnail' \
+               AND object_version = ?4 AND bytes = ?5 AND checksum_sha256 = ?6 \
+               AND content_type = ?7 AND provider_etag IS NOT NULL AND provider_etag <> '' \
+               AND state = 'available' LIMIT 1",
+        )
+        .bind(&[
+            JsValue::from_str(&job.output_object_key),
+            JsValue::from_str(tenant_id),
+            JsValue::from_str(&job.video_id),
+            JsValue::from_f64(job.source_version as f64),
+            JsValue::from_f64(body.bytes as f64),
+            JsValue::from_str(&body.checksum_sha256),
+            JsValue::from_str(&body.content_type),
+        ])?
+        .first::<ReadyRow>(None)
+        .await?
+        .is_some_and(|row| row.ready == 1))
+}
+
+async fn reap_exhausted_native_jobs(
+    database: &D1Database,
+    tenant_id: &str,
+    now: i64,
+    authority_fence: MutationAuthorityFence,
+) -> Result<()> {
+    let expired = database
+        .prepare(
+            "SELECT id, video_id, state, revision, attempt, \
+                    json_extract(payload_json, '$.profile') AS profile, source_version, \
+                    output_object_key, worker_id, lease_token_digest, lease_expires_at_ms, \
+                    progress_basis_points, cancel_requested FROM media_jobs \
+             WHERE organization_id = ?1 AND selected_executor = 'native_gstreamer' \
+               AND state IN ('leased', 'running') AND lease_expires_at_ms IS NOT NULL \
+               AND lease_expires_at_ms <= ?2 AND (cancel_requested = 1 OR attempt >= ?3) \
+             ORDER BY updated_at_ms, id LIMIT 1",
+        )
+        .bind(&[
+            JsValue::from_str(tenant_id),
+            JsValue::from_f64(now as f64),
+            JsValue::from_f64(NATIVE_MAX_ATTEMPTS as f64),
+        ])?
+        .first::<WorkerJobRow>(None)
+        .await?;
+    let Some(expired) = expired else {
+        return Ok(());
+    };
+    let target_state = if expired.cancel_requested != 0 {
+        "cancelled"
+    } else {
+        "failed"
+    };
+    let outcome = if target_state == "cancelled" {
+        "cancelled"
+    } else {
+        "lost_lease"
+    };
+    let next_revision = expired
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| Error::RustError("expired job revision overflowed".into()))?;
+    let outbox_id = new_id();
+    let payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "job_id": expired.id,
+        "attempt": expired.attempt,
+        "state": target_state,
+        "error_class": "lease_expired",
+    })
+    .to_string();
+    let statements = vec![
+        database
+            .prepare(
+                "UPDATE media_jobs SET state = ?5, error_code = 'native_lease_expired', \
+                   error_class = 'lease_expired', lease_expires_at_ms = NULL, updated_at_ms = ?4, \
+                   revision = revision + 1 WHERE id = ?1 AND organization_id = ?2 \
+                   AND revision = ?3 AND state IN ('leased', 'running') \
+                   AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms <= ?4 \
+                   AND (cancel_requested = 1 OR attempt >= ?6) \
+                   AND (?7 = -1 OR EXISTS (SELECT 1 FROM authority_state a WHERE a.singleton = 1 \
+                     AND a.epoch = ?7 AND a.authority = 'd1' \
+                     AND a.phase IN ('d1_authoritative', 'finalized')))",
+            )
+            .bind(&[
+                JsValue::from_str(&expired.id),
+                JsValue::from_str(tenant_id),
+                JsValue::from_f64(expired.revision as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(target_state),
+                JsValue::from_f64(NATIVE_MAX_ATTEMPTS as f64),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
+            ])?,
+        database
+            .prepare(
+                "UPDATE media_job_attempts SET finished_at_ms = ?3, outcome = ?4, \
+                   error_class = 'lease_expired' WHERE job_id = ?1 AND attempt = ?2 \
+                   AND outcome IS NULL AND EXISTS (SELECT 1 FROM media_jobs j \
+                     WHERE j.id = ?1 AND j.organization_id = ?5 AND j.state = ?6 \
+                       AND j.revision = ?7)",
+            )
+            .bind(&[
+                JsValue::from_str(&expired.id),
+                JsValue::from_f64(expired.attempt as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(outcome),
+                JsValue::from_str(tenant_id),
+                JsValue::from_str(target_state),
+                JsValue::from_f64(next_revision as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO media_job_dead_letters(job_id, attempt, error_class, diagnostic_code, created_at_ms) \
+                 SELECT ?1, ?2, 'lease_expired', 'native_worker_lease_exhausted', ?3 FROM media_jobs j \
+                 WHERE ?4 = 'failed' AND j.id = ?1 AND j.organization_id = ?5 \
+                   AND j.state = 'failed' AND j.revision = ?6 ON CONFLICT(job_id) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&expired.id),
+                JsValue::from_f64(expired.attempt as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(target_state),
+                JsValue::from_str(tenant_id),
+                JsValue::from_f64(next_revision as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
+                 SELECT ?1, ?2, 'media_job', ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7 \
+                 FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
+                   AND j.state = ?8 AND j.revision = ?9 ON CONFLICT(deduplication_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(tenant_id),
+                JsValue::from_str(&expired.id),
+                JsValue::from_str(if target_state == "cancelled" {
+                    "media.job.cancelled"
+                } else {
+                    "media.job.failed"
+                }),
+                JsValue::from_str(&format!("media-expired:{}:{}", expired.id, expired.attempt)),
+                JsValue::from_str(&payload),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(target_state),
+                JsValue::from_f64(next_revision as f64),
+            ])?,
+    ];
+    require_batch_success(database.batch(statements).await?)
+}
+
 async fn completed_upload_matches(env: &Env, upload: &UploadRow) -> Result<bool> {
     let Some(expected_checksum) = upload.checksum_sha256.as_deref().and_then(parse_sha256) else {
         return Ok(false);
@@ -2531,12 +4978,97 @@ fn supported_source_content_type(content_type: &str) -> bool {
     )
 }
 
+fn valid_private_object_key(key: &str, tenant_id: &str, video_id: &str) -> bool {
+    key.starts_with(&format!("tenants/{tenant_id}/videos/{video_id}/"))
+        && !key.contains("..")
+        && !key.contains(['\\', '?', '#', '%'])
+}
+
+fn valid_worker_output_key(job: &WorkerJobRow, tenant_id: &str) -> bool {
+    let Ok(source_version) = u32::try_from(job.source_version) else {
+        return false;
+    };
+    job.output_object_key
+        == derivative_object_key(tenant_id, &job.video_id, &job.profile, source_version)
+}
+
+fn native_output_candidate_key(
+    job: &WorkerJobRow,
+    tenant_id: &str,
+    checksum_sha256: &str,
+) -> Option<String> {
+    if !valid_worker_output_key(job, tenant_id) || !contracts::valid_sha256(checksum_sha256) {
+        return None;
+    }
+    Some(format!(
+        "{}/candidates/sha256/{checksum_sha256}",
+        job.output_object_key
+    ))
+}
+
 fn idempotency_header(request: &Request) -> Result<String> {
     request
         .headers()
         .get("idempotency-key")?
         .filter(|value| valid_idempotency_key(value))
         .ok_or_else(|| Error::RustError("validated idempotency key is unavailable".into()))
+}
+
+fn worker_lease_token_header(request: &Request) -> Result<String> {
+    request
+        .headers()
+        .get("x-frame-lease-token")?
+        .filter(|value| valid_lease_token(value))
+        .ok_or_else(|| Error::RustError("validated worker lease token is unavailable".into()))
+}
+
+fn worker_command_reservation(
+    database: &D1Database,
+    tenant_id: &str,
+    idempotency_key: &str,
+    command_type: &str,
+    request_digest: &str,
+    reservation_id: &str,
+    now: i64,
+) -> Result<D1PreparedStatement> {
+    let expires_at_ms = now
+        .checked_add(COMMAND_TTL_MS)
+        .ok_or_else(|| Error::RustError("worker command expiry overflowed".into()))?;
+    database
+        .prepare(
+            "INSERT INTO command_idempotency(organization_id, idempotency_key, command_type, \
+               request_digest, response_status, response_json, created_at_ms, expires_at_ms, \
+               reservation_id) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7) \
+             ON CONFLICT(organization_id, idempotency_key) DO NOTHING",
+        )
+        .bind(&[
+            JsValue::from_str(tenant_id),
+            JsValue::from_str(idempotency_key),
+            JsValue::from_str(command_type),
+            JsValue::from_str(request_digest),
+            JsValue::from_f64(now as f64),
+            JsValue::from_f64(expires_at_ms as f64),
+            JsValue::from_str(reservation_id),
+        ])
+}
+
+fn worker_command_reservation_cleanup(
+    database: &D1Database,
+    tenant_id: &str,
+    idempotency_key: &str,
+    reservation_id: &str,
+) -> Result<D1PreparedStatement> {
+    database
+        .prepare(
+            "DELETE FROM command_idempotency WHERE organization_id = ?1 \
+               AND idempotency_key = ?2 AND reservation_id = ?3 \
+               AND response_status IS NULL AND response_json IS NULL",
+        )
+        .bind(&[
+            JsValue::from_str(tenant_id),
+            JsValue::from_str(idempotency_key),
+            JsValue::from_str(reservation_id),
+        ])
 }
 
 fn current_time_ms() -> Result<i64> {
@@ -2640,6 +5172,33 @@ const fn storage_unavailable_failure() -> ApiFailure {
         "storage_unavailable",
         "Storage is temporarily unavailable.",
         true,
+    )
+}
+
+const fn native_worker_unavailable_failure() -> ApiFailure {
+    ApiFailure::new(
+        503,
+        "native_worker_unavailable",
+        "The native media worker protocol is unavailable in this runtime.",
+        true,
+    )
+}
+
+const fn worker_lease_conflict_failure() -> ApiFailure {
+    ApiFailure::new(
+        409,
+        "lease_conflict",
+        "The media job lease is unavailable or expired.",
+        true,
+    )
+}
+
+const fn worker_cancelled_failure() -> ApiFailure {
+    ApiFailure::new(
+        409,
+        "cancellation_requested",
+        "Cancellation was requested for this media job.",
+        false,
     )
 }
 
@@ -3129,6 +5688,10 @@ async fn authorized_tenant(
         ),
         RequiredAccess::Write => matches!(membership.role.as_str(), "owner" | "admin" | "member"),
         RequiredAccess::Admin => matches!(membership.role.as_str(), "owner" | "admin"),
+        RequiredAccess::Worker => matches!(
+            membership.role.as_str(),
+            "owner" | "admin" | "member" | "viewer"
+        ),
     };
     Ok(permitted.then_some(tenant_id))
 }
@@ -3191,6 +5754,82 @@ fn validate_idempotency_header(request: &Request) -> std::result::Result<(), Api
         .ok_or_else(|| invalid_body_failure("missing_idempotency_key"))?;
     if !valid_idempotency_key(&key) {
         return Err(invalid_body_failure("invalid_idempotency_key"));
+    }
+    Ok(())
+}
+
+fn validate_worker_lease_header(request: &Request) -> std::result::Result<(), ApiFailure> {
+    let token = request
+        .headers()
+        .get("x-frame-lease-token")
+        .ok()
+        .flatten()
+        .ok_or_else(|| invalid_body_failure("missing_lease_token"))?;
+    if !valid_lease_token(&token) {
+        return Err(invalid_body_failure(
+            contracts::ValidationCode::LeaseToken.as_str(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_worker_json_headers(request: &Request) -> std::result::Result<(), ApiFailure> {
+    validate_json_command_headers(request)?;
+    validate_worker_lease_header(request)
+}
+
+fn validate_worker_output_headers(request: &Request) -> std::result::Result<(), ApiFailure> {
+    validate_idempotency_header(request)?;
+    validate_worker_lease_header(request)?;
+    let content_type = request
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .ok_or_else(|| invalid_body_failure("unsupported_content_type"))?;
+    if content_type != "image/png" {
+        return Err(invalid_body_failure("unsupported_content_type"));
+    }
+    if request
+        .headers()
+        .get("content-encoding")
+        .ok()
+        .flatten()
+        .is_some_and(|encoding| encoding != "identity")
+    {
+        return Err(invalid_body_failure("unsupported_content_encoding"));
+    }
+    let content_length = request
+        .headers()
+        .get("content-length")
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            ApiFailure::new(
+                411,
+                "content_length_required",
+                "A bounded content length is required.",
+                false,
+            )
+        })?
+        .parse::<u64>()
+        .map_err(|_| invalid_body_failure("invalid_content_length"))?;
+    if content_length == 0 || content_length > NATIVE_MAX_OUTPUT_BYTES {
+        return Err(ApiFailure::new(
+            413,
+            "payload_too_large",
+            "The output exceeds the allowed size.",
+            false,
+        ));
+    }
+    let checksum = request
+        .headers()
+        .get("x-content-sha256")
+        .ok()
+        .flatten()
+        .ok_or_else(|| invalid_body_failure("missing_checksum"))?;
+    if !contracts::valid_sha256(&checksum) {
+        return Err(invalid_body_failure("invalid_checksum"));
     }
     Ok(())
 }
@@ -3329,6 +5968,10 @@ mod tests {
             ValidationCode::Title,
             ValidationCode::Privacy,
             ValidationCode::Revision,
+            ValidationCode::LeaseToken,
+            ValidationCode::Checksum,
+            ValidationCode::Progress,
+            ValidationCode::FailureClass,
         ] {
             let failure = invalid_body_failure(code.as_str());
             assert_eq!(failure.status, 400);
@@ -3338,6 +5981,23 @@ mod tests {
             invalid_body_failure(ValidationCode::SchemaVersion.as_str()).status,
             422
         );
+    }
+
+    #[test]
+    fn worker_scope_is_explicit_and_not_implied_by_global_admin() {
+        let worker = AuthenticatedActor {
+            user_id: "018f47a6-7b1c-7f55-8f39-8f8a86900101".into(),
+            scopes: vec!["frame:worker".into()],
+        };
+        assert!(worker.allows(RequiredAccess::Worker));
+        assert!(!worker.allows(RequiredAccess::Read));
+
+        let admin = AuthenticatedActor {
+            user_id: "018f47a6-7b1c-7f55-8f39-8f8a86900101".into(),
+            scopes: vec!["frame:admin".into()],
+        };
+        assert!(!admin.allows(RequiredAccess::Worker));
+        assert!(admin.allows(RequiredAccess::Admin));
     }
 
     #[test]

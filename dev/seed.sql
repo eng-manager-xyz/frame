@@ -21,6 +21,19 @@ INSERT OR IGNORE INTO auth_api_keys (
   1700000000000
 );
 
+-- Deterministic local-only native worker credential.
+-- Raw value: frame-local-worker-key-test-only-0000000001
+INSERT OR IGNORE INTO auth_api_keys (
+  id, user_id, key_digest, name, scopes_json, created_at_ms
+) VALUES (
+  '018f47a6-7b1c-7f55-8f39-8f8a86900110',
+  '018f47a6-7b1c-7f55-8f39-8f8a86900101',
+  'a707facbf0682c8de98c85ed2f8a1fc931c75d693b29c588e4392ab8943958c4',
+  'Frame local native worker test-only API key',
+  '["frame:worker"]',
+  1700000000000
+);
+
 INSERT OR IGNORE INTO organizations (
   id, owner_id, name, status, settings_json, created_at_ms, updated_at_ms, revision
 ) VALUES (

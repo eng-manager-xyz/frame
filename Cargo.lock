@@ -1239,10 +1239,16 @@ dependencies = [
  "anyhow",
  "axum",
  "frame-media",
+ "gstreamer",
+ "reqwest",
  "serde",
+ "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
+ "uuid",
 ]
 
 [[package]]
