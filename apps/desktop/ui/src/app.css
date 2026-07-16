@@ -1,0 +1,91 @@
+:root {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: #eef1f6;
+  background: #101318;
+  line-height: 1.5;
+}
+
+body {
+  box-sizing: border-box;
+  min-width: 20rem;
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: clamp(1rem, 4vw, 3rem);
+}
+
+.app-header,
+main,
+nav,
+.status {
+  margin-block-end: 1.5rem;
+}
+
+.eyebrow {
+  color: #8fb8ff;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+nav {
+  display: flex;
+  gap: 0.75rem;
+}
+
+button {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid #526071;
+  border-radius: 0.55rem;
+  color: inherit;
+  background: #1b222c;
+}
+
+button:focus-visible {
+  outline: 0.2rem solid #8fb8ff;
+  outline-offset: 0.15rem;
+}
+
+button:disabled {
+  opacity: 0.58;
+}
+
+.status {
+  padding: 0.8rem 1rem;
+  border-left: 0.25rem solid #8fb8ff;
+  background: #171d25;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #151a21;
+    background: #f7f8fa;
+  }
+
+  button,
+  .status {
+    background: #ffffff;
+  }
+
+  .eyebrow {
+    color: #245ea8;
+  }
+
+  button:focus-visible {
+    outline-color: #245ea8;
+  }
+
+  .status {
+    border-left-color: #245ea8;
+  }
+}

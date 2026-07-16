@@ -10,6 +10,53 @@ use thiserror::Error;
 pub const IPC_PROTOCOL_VERSION: u16 = 1;
 const MAX_PATH_BYTES: usize = 4_096;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopShell {
+    Tauri2LeptosCsr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecorderAdapterState {
+    NotSelected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditorAdapterState {
+    RevisionFencedCore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellCapabilities {
+    pub protocol_version: u16,
+    pub shell: DesktopShell,
+    pub backend_truth: bool,
+    pub recorder_adapter: RecorderAdapterState,
+    pub editor_adapter: EditorAdapterState,
+}
+
+impl ShellCapabilities {
+    #[must_use]
+    pub const fn current() -> Self {
+        Self {
+            protocol_version: IPC_PROTOCOL_VERSION,
+            shell: DesktopShell::Tauri2LeptosCsr,
+            backend_truth: true,
+            recorder_adapter: RecorderAdapterState::NotSelected,
+            editor_adapter: EditorAdapterState::RevisionFencedCore,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_current_backend_truth(self) -> bool {
+        self.protocol_version == IPC_PROTOCOL_VERSION
+            && matches!(self.shell, DesktopShell::Tauri2LeptosCsr)
+            && self.backend_truth
+    }
+}
+
 macro_rules! opaque_id {
     ($name:ident) => {
         #[derive(Clone, PartialEq, Eq, Hash)]

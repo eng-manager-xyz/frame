@@ -212,7 +212,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022]
+        os: [macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -230,10 +230,69 @@ jobs:
           -p frame-domain -p frame-ports -p frame-application
           -p frame-client -p frame-desktop-core
 
+  desktop_shell:
+    name: Tauri desktop shell on ${{ matrix.os }}
+    needs: policy
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.14.5"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component clippy --target wasm32-unknown-unknown
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install the pinned Leptos asset bundler
+        run: cargo install trunk --version 0.21.14 --locked
+      - name: Lint and test the native Tauri command boundary
+        run: |
+          cargo test --locked -p frame-desktop-core --features tauri-app --bin frame-desktop
+          cargo clippy --locked -p frame-desktop-core --features tauri-app --bin frame-desktop -- -D warnings
+      - name: Lint and bundle the wasm shell
+        working-directory: apps/desktop
+        run: |
+          cargo clippy --locked -p frame-desktop-ui --no-default-features --features csr --target wasm32-unknown-unknown -- -D warnings
+          python ../../scripts/ci/build-desktop-ui.py
+      - name: Verify the closed frontend bundle and advisory boundary
+        run: |
+          python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-${{ runner.os }}.json
+          python scripts/ci/check-desktop-advisory-exception.py
+      - name: Build the native desktop executable
+        run: >-
+          cargo build --locked --release -p frame-desktop-core
+          --features tauri-app,custom-protocol --bin frame-desktop
+      - name: Exercise the production-CSP WebView command boundary
+        run: >-
+          python scripts/ci/desktop-shell-smoke.py
+          --evidence target/evidence/desktop-smoke-${{ runner.os }}.json
+      - name: Prove lockfile stability
+        run: git diff --exit-code -- Cargo.lock
+      - name: Retain the exact desktop shell outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frame-desktop-shell-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            apps/desktop/ui/dist
+            target/release/frame-desktop
+            target/release/frame-desktop.exe
+            target/evidence/desktop-*.json
+          if-no-files-found: error
+          retention-days: 5
+
   quality-gate:
     name: quality-gate
     if: ${{ always() }}
-    needs: [policy, native, contract_worker, media, portability]
+    needs: [policy, native, contract_worker, media, portability, desktop_shell]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -244,9 +303,11 @@ jobs:
           CONTRACT_WORKER_RESULT: ${{ needs.contract_worker.result }}
           MEDIA_RESULT: ${{ needs.media.result }}
           PORTABILITY_RESULT: ${{ needs.portability.result }}
+          DESKTOP_SHELL_RESULT: ${{ needs.desktop_shell.result }}
         run: |
           test "${POLICY_RESULT}" = success
           test "${NATIVE_RESULT}" = success
           test "${CONTRACT_WORKER_RESULT}" = success
           test "${MEDIA_RESULT}" = success
           test "${PORTABILITY_RESULT}" = success
+          test "${DESKTOP_SHELL_RESULT}" = success

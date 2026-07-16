@@ -10,7 +10,7 @@ publish.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 frame-client = { path = "../../crates/frame-client" }
-leptos.workspace = true
+leptos = { workspace = true, features = ["ssr"] }
 serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true

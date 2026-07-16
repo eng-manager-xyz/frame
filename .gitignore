@@ -11,3 +11,5 @@ wrangler.production.ci.toml
 __pycache__/
 *.py[cod]
 .DS_Store
+/apps/desktop/gen/
+/apps/desktop/ui/dist/

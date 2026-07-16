@@ -36,6 +36,7 @@ infrastructure, browser security, E2E, and launch.
 - `apps/control-plane`: Cloudflare Worker configured with D1, R2, and Media Transformations bindings.
 - `apps/media-worker`: native executable that probes GStreamer and can produce a synthetic WebM smoke artifact.
 - `apps/web`: server-rendered Leptos shell served by Axum.
+- `apps/desktop`: typed workflow core plus a Tauri 2 shell embedding Leptos CSR.
 - `crates/domain`: IDs, recording state, object keys, and transition rules.
 - `crates/media`: GStreamer pipeline construction and runtime checks.
 - `crates/ports`: repository, object-store, and media-transform contracts with deterministic in-memory adapters.

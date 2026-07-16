@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ ACTION_PINS = {
     "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
     "Swatinem/rust-cache": "e18b497796c12c097a38f9edb9d0641fb99eee32",
     "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+    "actions/setup-python": "a309ff8b426b58ec0e2a45f0f869d46889d02405",
 }
 
 
@@ -73,8 +75,20 @@ def main() -> int:
             "quality-gates.yml: SBOM and provider-free walking-slice checks must be required", errors)
     require("cross-repo-preview-e2e.py" in quality and "--self-test --timeout 20" in quality,
             "quality-gates.yml: credential-free two-origin preview controls must be required", errors)
-    require("macos-14" in quality and "windows-2022" in quality,
+    require("macos-15" in quality and "windows-2022" in quality and "macos-14" not in quality,
             "quality-gates.yml: portable core checks must cover macOS and Windows", errors)
+    require("desktop_shell:" in quality and "trunk --version 0.21.14 --locked" in quality
+            and "build-desktop-ui.py" in quality
+            and "--no-color=false" not in quality
+            and "--features tauri-app --bin frame-desktop" in quality
+            and "--features tauri-app,custom-protocol --bin frame-desktop" in quality
+            and "desktop-shell-smoke.py" in quality
+            and "check-desktop-bundle.py" in quality
+            and "check-desktop-advisory-exception.py" in quality,
+            "quality-gates.yml: the native Tauri shell and pinned Leptos bundle must be required", errors)
+    exception_expiry = dt.date(2026, 10, 15)
+    require(dt.datetime.now(dt.timezone.utc).date() < exception_expiry,
+            "FRAME-DEP-2026-01 has expired; remove or re-review the advisory exception", errors)
     require(re.search(r"^  quality-gate:\n(?:.|\n)*?if:\s*\$\{\{\s*always\(\)\s*\}\}", quality, re.MULTILINE) is not None,
             "quality-gates.yml: quality-gate must be an always-present final result", errors)
 

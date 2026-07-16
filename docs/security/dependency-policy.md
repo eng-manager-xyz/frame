@@ -33,8 +33,8 @@ only the path, line, rule identifier, and a truncated SHA-256 fingerprint.
 The RustSec advisory database is the configured vulnerability authority.
 Vulnerabilities and security notices use cargo-deny's fail-closed behavior;
 unsound advisories fail at every dependency depth, yanked versions fail, and
-unmaintained advisories fail when they affect a direct workspace dependency.
-There are no ignored advisories.
+unmaintained advisories fail when they affect a direct workspace dependency,
+except for the exact, time-bounded record below.
 
 The advisory check requires network access to fetch or refresh the external
 database. A successful license/bans/sources run does not imply that advisories
@@ -62,6 +62,12 @@ a notice bundle. Every release handoff includes the deterministic CycloneDX
 1.6 `frame.cdx.json`; package verification checks its digest and required
 shape. The SBOM is a dependency inventory, not a legal approval or
 vulnerability scan.
+
+The five exact Tauri-transitive crates listed under `licenses.exceptions` use
+MPL-2.0. The exception does not allow MPL-2.0 for any other crate or version.
+They are unmodified upstream dependencies; desktop release notices must retain
+their license and corresponding-source obligations. An unused or version-
+drifted exception fails the gate.
 
 ## Ban and source gate
 
@@ -110,12 +116,31 @@ fixtures are detected and all benign reference/redaction fixtures are clean.
 
 ## Exceptions and response
 
-There are no dependency or advisory exceptions at baseline. A proposed
-exception must be narrow to an exact crate/advisory/source, include a plain-
+Exceptions must be narrow to an exact crate/advisory/source, include a plain-
 language reason in `deny.toml`, and link to a tracked owner, approval date,
 expiry date, exposure analysis, and removal issue. Expired, unused, or
 unreasoned exceptions fail review. Broad organization, registry, license, or
 version-range exemptions are not acceptable.
+
+### FRAME-DEP-2026-01 · Tauri Linux-only GLib advisory
+
+- Owner: Frame desktop maintainers
+- Approved: 2026-07-16
+- Expires: 2026-10-15
+- Tracking and removal gate: issues [08](../../_issues/08-p1-leptos-web-desktop-shells.md)
+  and [33](../../_issues/33-p5-leptos-desktop-editor-a11y.md); remove this record before
+  Linux becomes a supported desktop target, or when Tauri's Linux runtime uses
+  `glib >= 0.20.0`, whichever happens first.
+- Exposure: `RUSTSEC-2024-0429` applies to `glib 0.18.5` through Tauri's
+  Linux-only GTK/WebKit graph. Frame declares the Tauri runtime dependency only
+  for macOS and Windows and CI produces the desktop executable on both. The
+  vulnerable GLib crate remains visible only because cargo-deny's configured
+  multi-target graph is a union that follows Tauri's Linux edges after Tauri is
+  selected for a different target; it is not linked into either supported
+  desktop binary.
+- Verification: the required macOS and Windows Tauri build matrix stays
+  release-blocking. Adding a Linux desktop build is prohibited until this
+  exception is removed and the advisory gate passes without it.
 
 If a secret is found, stop distribution, revoke/rotate it at the authority,
 inspect use and audit logs, remove it from the working tree, and determine

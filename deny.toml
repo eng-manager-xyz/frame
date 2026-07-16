@@ -1,8 +1,7 @@
 # Supply-chain policy for cargo-deny 0.20.2.
 #
 # Keep every exception narrow, versioned, and accompanied by an owner, expiry,
-# and removal plan in docs/security/dependency-policy.md. There are currently no
-# exceptions.
+# and removal plan in docs/security/dependency-policy.md.
 
 [graph]
 all-features = true
@@ -20,7 +19,9 @@ unmaintained = "workspace"
 unsound = "all"
 maximum-db-staleness = "P7D"
 unused-ignored-advisory = "deny"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2024-0429", reason = "Tauri's Linux-only GTK 0.18 graph is evaluated by cargo-deny's multi-target union, but Frame's Tauri dependency and shipped desktop binary are restricted to macOS and Windows; FRAME-DEP-2026-01 expires 2026-10-15." },
+]
 
 [licenses]
 include-dev = true
@@ -42,7 +43,13 @@ allow = [
     "Unlicense",
     "Zlib",
 ]
-exceptions = []
+exceptions = [
+    { crate = "cssparser@0.36.0", allow = ["MPL-2.0"] },
+    { crate = "cssparser-macros@0.6.1", allow = ["MPL-2.0"] },
+    { crate = "dtoa-short@0.3.5", allow = ["MPL-2.0"] },
+    { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
+    { crate = "selectors@0.36.1", allow = ["MPL-2.0"] },
+]
 
 # Workspace packages explicitly marked `publish = false` are private
 # application components. Third-party crates, including development and build

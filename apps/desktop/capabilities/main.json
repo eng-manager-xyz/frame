@@ -1,23 +1,8 @@
 {
   "identifier": "frame-desktop-windows",
-  "description": "Minimal core event and window controls for Frame desktop surfaces.",
+  "description": "Allow only the typed Frame bootstrap command in the main window.",
   "local": true,
-  "windows": [
-    "main",
-    "recorder-*",
-    "recovery-*",
-    "editor-*",
-    "export-*"
-  ],
-  "permissions": [
-    "core:event:allow-listen",
-    "core:event:allow-unlisten",
-    "core:window:allow-close",
-    "core:window:allow-set-focus"
-  ],
-  "platforms": [
-    "linux",
-    "macOS",
-    "windows"
-  ]
+  "windows": ["main"],
+  "permissions": ["allow-bootstrap-main"],
+  "platforms": ["macOS", "windows"]
 }
