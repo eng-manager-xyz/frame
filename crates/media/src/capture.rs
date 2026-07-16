@@ -186,20 +186,28 @@ impl VideoFrameSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CursorSample {
-    pub visible: bool,
-    pub x: u32,
-    pub y: u32,
-    pub image_revision: u64,
-    pub primary_click: bool,
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CursorSample {
+    visible: bool,
+    x: u32,
+    y: u32,
+    image_revision: u64,
+    primary_click: bool,
+}
+
+impl fmt::Debug for CursorSample {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CursorSample(<redacted>)")
+    }
 }
 
 /// Converts desktop cursor coordinates to target-local coordinates. A cursor
 /// outside the selected geometry is represented as hidden, preventing metadata
 /// from leaking activity elsewhere on the desktop.
 #[must_use]
-pub fn normalize_cursor(
+#[allow(dead_code)]
+pub(crate) fn normalize_cursor(
     target: &CaptureTarget,
     desktop_x: i32,
     desktop_y: i32,
@@ -212,7 +220,7 @@ pub fn normalize_cursor(
             visible: false,
             x: 0,
             y: 0,
-            image_revision,
+            image_revision: 0,
             primary_click: false,
         };
     }
@@ -497,12 +505,14 @@ mod tests {
         let outside = normalize_cursor(&target(), 101, 70, 2, true);
         assert!(!outside.visible);
         assert!(!outside.primary_click);
+        assert_eq!(outside.image_revision, 0);
 
         let inside = normalize_cursor(&target(), -50, 75, 3, true);
         assert_eq!(inside.x, 50);
         assert_eq!(inside.y, 25);
         assert!(inside.visible);
         assert!(inside.primary_click);
+        assert_eq!(format!("{inside:?}"), "CursorSample(<redacted>)");
     }
 
     #[test]

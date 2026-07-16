@@ -10,6 +10,7 @@ mod instant;
 mod jobs;
 mod pipeline;
 mod runtime;
+mod screen_capture;
 mod studio;
 mod supervisor;
 
@@ -25,6 +26,7 @@ pub use instant::*;
 pub use jobs::*;
 pub use pipeline::*;
 pub use runtime::*;
+pub use screen_capture::*;
 pub use studio::*;
 pub use supervisor::*;
 
