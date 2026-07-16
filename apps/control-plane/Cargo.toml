@@ -1,0 +1,16 @@
+[package]
+name = "frame-control-plane"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+worker.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+name = "frame-control-plane"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-07-15"
+
+[build]
+command = "worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "frame"
+database_id = "replace-with-d1-database-id"
+migrations_dir = "migrations"
+
+# The requested brief says R3. Cloudflare's documented object binding is R2;
+# ADR 0002 and issue 02 must be resolved before this becomes a production choice.
+[[r2_buckets]]
+binding = "RECORDINGS"
+bucket_name = "frame-recordings"
+preview_bucket_name = "frame-recordings-preview"

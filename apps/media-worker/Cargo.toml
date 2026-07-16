@@ -1,0 +1,15 @@
+[package]
+name = "frame-media-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+frame-media = { path = "../../crates/media" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

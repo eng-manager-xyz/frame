@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/control-plane",
+    "apps/media-worker",
+    "apps/web",
+    "crates/domain",
+    "crates/media",
+    "crates/ports",
+]
+default-members = [
+    "apps/media-worker",
+    "apps/web",
+    "crates/domain",
+    "crates/media",
+    "crates/ports",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+repository = "https://github.com/eng-manager-xyz/frame"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8.9"
+gstreamer = "0.25.3"
+leptos = { version = "0.8.20", default-features = false, features = ["ssr"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.24.0", features = ["js", "serde", "v7"] }
+worker = { version = "0.8.5", features = ["d1"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
