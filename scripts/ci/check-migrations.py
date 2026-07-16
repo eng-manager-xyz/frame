@@ -18,15 +18,31 @@ DESTRUCTIVE = re.compile(
 )
 REQUIRED_TABLES = {
     "auth_api_keys",
+    "api_webhook_replay_claims_v1",
     "authority_state",
     "comments",
     "command_idempotency",
+    "cutover_authority_audit",
+    "cutover_authority_scopes",
+    "cutover_change_events",
+    "cutover_maintenance_windows",
+    "cutover_operational_signal_events",
+    "cutover_operational_signals",
+    "cutover_repository_assertions_v1",
+    "cutover_shadow_query_requirements",
+    "cutover_shadow_observations",
+    "cutover_slo_config",
     "developer_apps",
     "developer_credit_transactions",
     "etl_checkpoints",
     "folders",
     "identity_accounts",
     "media_jobs",
+    "media_execution_events_v1",
+    "media_job_execution_v1",
+    "media_output_manifests_v1",
+    "media_profile_policies_v1",
+    "media_source_probes_v1",
     "multipart_upload_parts",
     "multipart_uploads",
     "object_deletion_jobs",
@@ -35,6 +51,12 @@ REQUIRED_TABLES = {
     "organizations",
     "organization_members",
     "outbox_events",
+    "public_analytics_consents_v1",
+    "public_analytics_events_v1",
+    "public_collaboration_grants_v1",
+    "public_collaboration_policies_v1",
+    "public_comment_operations_v1",
+    "public_transcripts_v1",
     "sessions",
     "shared_videos",
     "spaces",
@@ -79,6 +101,396 @@ def apply(files: list[pathlib.Path]) -> sqlite3.Connection:
     return database
 
 
+def expect_integrity_error(
+    database: sqlite3.Connection, sql: str, parameters: tuple[object, ...]
+) -> None:
+    try:
+        database.execute(sql, parameters)
+    except sqlite3.IntegrityError:
+        return
+    raise ValueError("scoped cutover schema accepted an invalid authority mutation")
+
+
+def verify_scoped_cutover_invariants(database: sqlite3.Connection) -> None:
+    zero = "0" * 64
+    database.execute(
+        """INSERT INTO cutover_authority_scopes(
+             tenant_id, domain, phase, writer, mirror_enabled, replay_paused,
+             epoch, audit_head, rollback_ready, phase_started_at_ms, updated_at_ms
+           ) VALUES ('migration-check', 'metadata', 'legacy_authoritative',
+                     'legacy', 0, 0, 0, ?, 0, 0, 0)""",
+        (zero,),
+    )
+    database.execute(
+        """INSERT INTO cutover_authority_scopes(
+             tenant_id, domain, phase, writer, mirror_enabled, replay_paused,
+             epoch, audit_head, rollback_ready, phase_started_at_ms, updated_at_ms
+           ) VALUES ('deletion-check', 'metadata', 'legacy_authoritative',
+                     'legacy', 0, 0, 0, ?, 0, 0, 0)""",
+        (zero,),
+    )
+    expect_integrity_error(
+        database,
+        "DELETE FROM cutover_authority_scopes WHERE tenant_id = 'deletion-check'",
+        (),
+    )
+    expect_integrity_error(
+        database,
+        """INSERT INTO cutover_authority_scopes(
+             tenant_id, domain, phase, writer, mirror_enabled, replay_paused,
+             epoch, audit_head, rollback_ready, phase_started_at_ms, updated_at_ms
+           ) VALUES ('invalid-two-writer', 'metadata', 'dual_write',
+                     'd1', 1, 0, 0, ?, 0, 0, 0)""",
+        (zero,),
+    )
+    expect_integrity_error(
+        database,
+        """UPDATE cutover_authority_scopes
+           SET phase = 'shadow_read', epoch = 1, updated_at_ms = 1
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'""",
+        (),
+    )
+    audit_hash = "1" * 64
+    database.execute(
+        """INSERT INTO cutover_authority_audit(
+             audit_hash, previous_hash, tenant_id, domain, action,
+             from_phase, to_phase, from_epoch, to_epoch,
+             operator_digest, evidence_digest, occurred_at_ms
+           ) VALUES (?, ?, 'migration-check', 'metadata', 'transition',
+                     'legacy_authoritative', 'shadow_read', 0, 1, ?, ?, 1)""",
+        (audit_hash, zero, "2" * 64, "3" * 64),
+    )
+    database.execute(
+        """UPDATE cutover_authority_scopes
+           SET phase = 'shadow_read', epoch = 1, phase_epoch = 1, audit_head = ?,
+               phase_started_at_ms = 1, updated_at_ms = 1
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'""",
+        (audit_hash,),
+    )
+    expect_integrity_error(
+        database,
+        """UPDATE cutover_authority_scopes
+           SET tenant_id = 'moved-scope', epoch = 2
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'""",
+        (),
+    )
+    database.execute(
+        """INSERT INTO cutover_slo_config(
+             tenant_id, domain, shadow_window_ms, minimum_shadow_observations,
+             max_pending_lag_ms, max_shadow_mismatches, max_dead_letter_events,
+             max_contention_events, approved_by_digest, updated_at_ms
+           ) VALUES ('migration-check', 'metadata', 1000, 1, 1000, 0, 0, 0, ?, 1)""",
+        ("2" * 64,),
+    )
+    database.execute(
+        """INSERT INTO cutover_shadow_query_requirements(
+             tenant_id, domain, query_class, normalization_digest,
+             approved_by_digest, created_at_ms
+           ) VALUES ('migration-check', 'metadata', 'video_list', ?, ?, 1)""",
+        ("4" * 64, "2" * 64),
+    )
+    expect_integrity_error(
+        database,
+        """INSERT INTO cutover_shadow_query_requirements(
+             tenant_id, domain, query_class, normalization_digest,
+             approved_by_digest, created_at_ms
+           ) VALUES ('migration-check', 'metadata', 'unsafe_query', ?, ?, 1)""",
+        ("G" * 64, "2" * 64),
+    )
+    shadow_insert = """INSERT INTO cutover_shadow_observations(
+         observation_digest, tenant_id, domain, phase_epoch, query_class, normalization_digest,
+         legacy_result_digest, d1_result_digest, classification, observed_at_ms
+       ) VALUES (?, 'migration-check', 'metadata', ?, 'video_list', ?, ?, ?, 'match', ?)"""
+    expect_integrity_error(
+        database,
+        shadow_insert,
+        ("5" * 64, 1, "4" * 64, "6" * 64, "6" * 64, 0),
+    )
+    database.execute(
+        shadow_insert,
+        ("5" * 64, 1, "4" * 64, "6" * 64, "6" * 64, 1),
+    )
+    database.execute(
+        shadow_insert.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1),
+        ("5" * 64, 1, "4" * 64, "6" * 64, "6" * 64, 1),
+    )
+    expect_integrity_error(
+        database,
+        shadow_insert.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1),
+        ("5" * 64, 1, "4" * 64, "7" * 64, "6" * 64, 1),
+    )
+    expect_integrity_error(
+        database,
+        shadow_insert,
+        ("a" * 64, 0, "4" * 64, "6" * 64, "6" * 64, 1),
+    )
+    expect_integrity_error(
+        database,
+        "UPDATE cutover_shadow_observations SET classification = 'error'",
+        (),
+    )
+    expect_integrity_error(
+        database,
+        "DELETE FROM cutover_shadow_query_requirements",
+        (),
+    )
+    signal_insert = """INSERT INTO cutover_operational_signal_events(
+         tenant_id, domain, phase_epoch, kind, occurred_at_ms
+       ) VALUES ('migration-check', 'metadata', ?, 'authority_contention', ?)"""
+    expect_integrity_error(database, signal_insert, (1, 0))
+    expect_integrity_error(database, signal_insert, (0, 1))
+    database.execute(signal_insert, (1, 1))
+    if database.execute(
+        """SELECT count, last_at_ms FROM cutover_operational_signals
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'
+             AND kind = 'authority_contention'"""
+    ).fetchone() != (1, 1):
+        raise ValueError("scoped cutover signal rollup did not follow its event")
+    expect_integrity_error(
+        database,
+        """UPDATE cutover_operational_signals SET count = 2
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'
+             AND kind = 'authority_contention'""",
+        (),
+    )
+    expect_integrity_error(
+        database,
+        "UPDATE cutover_operational_signal_events SET occurred_at_ms = 2",
+        (),
+    )
+    expect_integrity_error(
+        database,
+        "DELETE FROM authority_state WHERE singleton = 1",
+        (),
+    )
+    expect_integrity_error(
+        database,
+        """UPDATE authority_state
+           SET phase = 'd1_authoritative', authority = 'legacy', epoch = 1,
+               updated_at_ms = 1 WHERE singleton = 1""",
+        (),
+    )
+    expect_integrity_error(
+        database,
+        """INSERT INTO cutover_authority_scopes(
+             tenant_id, domain, phase, writer, mirror_enabled, replay_paused,
+             epoch, audit_head, rollback_ready, phase_started_at_ms, updated_at_ms
+           ) VALUES ('invalid-initial-phase', 'metadata', 'd1_authoritative',
+                     'd1', 1, 0, 0, ?, 1, 0, 0)""",
+        (zero,),
+    )
+    dual_audit_hash = "7" * 64
+    database.execute(
+        """INSERT INTO cutover_authority_audit(
+             audit_hash, previous_hash, tenant_id, domain, action,
+             from_phase, to_phase, from_epoch, to_epoch,
+             operator_digest, evidence_digest, occurred_at_ms
+           ) VALUES (?, ?, 'migration-check', 'metadata', 'transition',
+                     'shadow_read', 'dual_write', 1, 2, ?, ?, 2)""",
+        (dual_audit_hash, audit_hash, "2" * 64, "3" * 64),
+    )
+    database.execute(
+        """UPDATE cutover_authority_scopes
+           SET phase = 'dual_write', mirror_enabled = 1, epoch = 2, phase_epoch = 2,
+               audit_head = ?,
+               phase_started_at_ms = 2, updated_at_ms = 2
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'""",
+        (dual_audit_hash,),
+    )
+    change_insert = """INSERT INTO cutover_change_events(
+         event_id, tenant_id, domain, sequence, authority_epoch, source_authority,
+         event_digest, payload_ciphertext, state, occurred_at_ms, captured_at_ms
+       ) VALUES (?, 'migration-check', 'metadata', ?, 2, ?, ?, 'fixture-ciphertext',
+                 'pending', 2, 2)"""
+    expect_integrity_error(
+        database,
+        change_insert,
+        ("wrong-writer", 1, "d1", "8" * 64),
+    )
+    database.execute(change_insert, ("event-one", 1, "legacy", "8" * 64))
+    database.execute(
+        change_insert.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1),
+        ("event-one", 1, "legacy", "8" * 64),
+    )
+    expect_integrity_error(
+        database,
+        change_insert.replace("fixture-ciphertext", "changed-ciphertext").replace(
+            "INSERT INTO", "INSERT OR IGNORE INTO", 1
+        ),
+        ("event-one", 1, "legacy", "8" * 64),
+    )
+    expect_integrity_error(
+        database,
+        change_insert,
+        ("event-gap", 3, "legacy", "9" * 64),
+    )
+    database.execute(change_insert, ("event-two", 2, "legacy", "9" * 64))
+    expect_integrity_error(
+        database,
+        """UPDATE cutover_change_events SET event_digest = ?
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'
+             AND event_id = 'event-one'""",
+        ("a" * 64,),
+    )
+    database.execute(
+        """UPDATE cutover_change_events
+           SET state = 'applied', applied_at_ms = 3
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'
+             AND event_id = 'event-one'"""
+    )
+    expect_integrity_error(
+        database,
+        """UPDATE cutover_change_events SET state = 'pending', applied_at_ms = NULL
+           WHERE tenant_id = 'migration-check' AND domain = 'metadata'
+             AND event_id = 'event-one'""",
+        (),
+    )
+    expect_integrity_error(
+        database,
+        "UPDATE cutover_authority_audit SET evidence_digest = ? WHERE audit_hash = ?",
+        ("4" * 64, audit_hash),
+    )
+    expect_integrity_error(
+        database,
+        """INSERT INTO cutover_authority_audit(
+             audit_hash, previous_hash, tenant_id, domain, action,
+             from_phase, to_phase, from_epoch, to_epoch,
+             operator_digest, evidence_digest, occurred_at_ms
+           ) VALUES (?, ?, 'migration-check', 'metadata', 'transition',
+                     'shadow_read', 'finalized', 1, 2, ?, ?, 2)""",
+        ("5" * 64, audit_hash, "2" * 64, "3" * 64),
+    )
+    expect_integrity_error(
+        database,
+        """INSERT INTO cutover_authority_audit(
+             audit_hash, previous_hash, tenant_id, domain, action,
+             from_phase, to_phase, from_epoch, to_epoch,
+             operator_digest, evidence_digest, occurred_at_ms
+           ) VALUES (?, ?, 'migration-check', 'metadata', 'transition',
+                     'shadow_read', 'dual_write', 1, 2, ?, ?, 2)""",
+        ("6" * 64, zero, "2" * 64, "3" * 64),
+    )
+    database.execute(
+        """INSERT INTO cutover_maintenance_windows(
+             tenant_id, domain, starts_at_ms, ends_at_ms, approved_by_digest
+           ) VALUES ('migration-check', 'metadata', 10, 20, ?)""",
+        ("2" * 64,),
+    )
+    expect_integrity_error(
+        database,
+        """INSERT INTO cutover_maintenance_windows(
+             tenant_id, domain, starts_at_ms, ends_at_ms, approved_by_digest
+           ) VALUES ('migration-check', 'metadata', 20, 30, ?)""",
+        ("2" * 64,),
+    )
+    database.rollback()
+
+
+def verify_media_service_invariants(database: sqlite3.Connection) -> None:
+    if database.execute("SELECT count(*) FROM media_profile_policies_v1").fetchone() != (16,):
+        raise ValueError("media profile policy catalog does not contain exactly 16 rows")
+    user = "018f47a6-7b1c-7f55-8f39-8f8a8690a001"
+    tenant = "018f47a6-7b1c-7f55-8f39-8f8a8690a002"
+    video = "018f47a6-7b1c-7f55-8f39-8f8a8690a003"
+    job = "018f47a6-7b1c-7f55-8f39-8f8a8690a004"
+    zero = "0" * 64
+    one = "1" * 64
+    two = "2" * 64
+    source_key = f"tenants/{tenant}/videos/{video}/source/v1/payload"
+    output_key = f"tenants/{tenant}/videos/{video}/derivatives/thumbnail_v1/{two}"
+    database.execute(
+        "INSERT INTO users(id,email,created_at_ms,updated_at_ms) VALUES (?,?,0,0)",
+        (user, "media-migration@example.invalid"),
+    )
+    database.execute(
+        "INSERT INTO organizations(id,owner_id,name,created_at_ms,updated_at_ms) VALUES (?,?,?,0,0)",
+        (tenant, user, "Media migration check"),
+    )
+    database.execute(
+        """INSERT INTO videos(
+             id,owner_id,title,state,created_at_ms,updated_at_ms,organization_id
+           ) VALUES (?,?,?,'ready',0,0,?)""",
+        (video, user, "Synthetic media migration", tenant),
+    )
+    database.execute(
+        """INSERT INTO object_manifests(
+             object_key,video_id,role,bytes,checksum_sha256,content_type,created_at_ms,
+             organization_id,object_version,state,updated_at_ms
+           ) VALUES (?,?,'source',1024,?,'video/mp4',0,?,1,'available',0)""",
+        (source_key, video, zero, tenant),
+    )
+    probe_insert = """INSERT INTO media_source_probes_v1(
+         organization_id,video_id,source_version,source_object_key,source_checksum_sha256,
+         source_bytes,source_content_type,container,video_codec,audio_codec,duration_ms,
+         width,height,frame_rate_numerator,frame_rate_denominator,decoded_bytes_upper_bound,
+         frame_count_upper_bound,track_count,probe_contract_version,probe_digest,trust,state,
+         verified_at_ms,updated_at_ms
+       ) VALUES (?,?,1,?,?,1024,'video/mp4','mp4','h264','aac',2000,640,360,30,1,
+                 1000000,60,2,1,?,'verified_native_probe','verified',0,0)"""
+    expect_integrity_error(
+        database,
+        probe_insert,
+        (tenant, video, source_key, one, two),
+    )
+    database.execute(probe_insert, (tenant, video, source_key, zero, one))
+    payload = (
+        '{"schema_version":1,"tenant_id":"'
+        + tenant
+        + '","video_id":"'
+        + video
+        + '","source_version":1,"profile":"thumbnail_v1",'
+          '"transform":{"schema_version":1,"profile_version":1,"mode":"frame",'
+          '"start_ms":0,"duration_ms":null,"width":640,"height":360,"fit":"contain",'
+          '"image_count":null,"include_audio":false,"format":"jpeg",'
+          '"max_output_bytes":8000000}}'
+    )
+    database.execute(
+        """INSERT INTO media_jobs(
+             id,video_id,kind,state,idempotency_key,attempt,payload_json,created_at_ms,
+             updated_at_ms,organization_id,selected_executor,source_version,
+             profile_version,output_object_key,cancel_requested,revision
+           ) VALUES (?,?,'frame','queued','media-migration-job',0,?,0,0,?,
+                     'cloudflare_media',1,1,?,0,0)""",
+        (job, video, payload, tenant, output_key),
+    )
+    execution_insert = """INSERT INTO media_job_execution_v1(
+         job_id,organization_id,video_id,source_version,catalog_version,profile_id,
+         profile_version,normalized_profile_sha256,route_reason,selected_executor,
+         fallback_executor,state,attempt,lease_epoch,final_object_key,output_content_type,
+         max_output_bytes,created_at_ms,updated_at_ms
+       ) VALUES (?,?,?,1,1,'thumbnail_v1',1,?,'managed_preferred','cloudflare_media',
+                 'native_gstreamer','queued',0,0,?,'image/jpeg',8000000,0,0)"""
+    expect_integrity_error(
+        database,
+        execution_insert,
+        (job, tenant, video, two, output_key + "-mismatch"),
+    )
+    database.execute(execution_insert, (job, tenant, video, two, output_key))
+    manifest_json = (
+        '{"schema_version":1,"job_id":"'
+        + job
+        + '","executor":"cloudflare_media","source_checksum_sha256":"'
+        + zero
+        + '","normalized_profile_sha256":"'
+        + two
+        + '","object_key":"'
+        + output_key
+        + '","object_checksum_sha256":"'
+        + one
+        + '","bytes":10,"content_type":"image/jpeg"}'
+    )
+    expect_integrity_error(
+        database,
+        """INSERT INTO media_output_manifests_v1(
+             manifest_digest,job_id,organization_id,video_id,executor,
+             source_checksum_sha256,normalized_profile_sha256,object_key,
+             object_checksum_sha256,bytes,content_type,manifest_json,created_at_ms
+           ) VALUES (?,?,?,?,'cloudflare_media',?,?,?,?,10,'image/jpeg',?,0)""",
+        ("3" * 64, job, tenant, video, zero, two, output_key, one, manifest_json),
+    )
+    database.rollback()
+
+
 def main() -> int:
     try:
         files = discover()
@@ -92,6 +504,8 @@ def main() -> int:
         missing = sorted(REQUIRED_TABLES - tables)
         if missing:
             raise ValueError(f"required tables missing after migration: {', '.join(missing)}")
+        verify_scoped_cutover_invariants(database)
+        verify_media_service_invariants(database)
 
         # The only released baseline before this change is migration 0001. Apply
         # it independently, then prove the complete ordered upgrade path.

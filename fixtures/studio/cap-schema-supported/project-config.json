@@ -1,0 +1,33 @@
+{
+  "timeline": {
+    "segments": [
+      {
+        "recordingSegment": 0,
+        "timescale": 1.0,
+        "start": 1.0,
+        "end": 5.0
+      },
+      {
+        "recordingSegment": 1,
+        "timescale": 1.0,
+        "start": 0.0,
+        "end": 4.0
+      }
+    ],
+    "zoomSegments": []
+  },
+  "background": {
+    "source": {
+      "type": "color",
+      "value": [18, 18, 18]
+    }
+  },
+  "camera": {
+    "hide": false,
+    "mirror": false
+  },
+  "audio": {},
+  "cursor": {},
+  "clips": [],
+  "annotations": []
+}

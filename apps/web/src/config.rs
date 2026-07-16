@@ -15,6 +15,27 @@ pub enum Deployment {
     Production,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyTrust {
+    /// Direct loopback development. Forwarding metadata is rejected so a
+    /// local reverse proxy cannot silently become an identity authority.
+    Direct,
+    /// Render terminates TLS, but Frame still derives neither host nor client
+    /// identity from forwarding headers. Only the exact HTTPS scheme marker
+    /// is admitted when Render supplies it.
+    RenderEdge,
+}
+
+impl ProxyTrust {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::RenderEdge => "render",
+        }
+    }
+}
+
 impl Deployment {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -59,6 +80,10 @@ impl Origin {
         if host.is_empty()
             || host.split('.').any(|label| label.starts_with("xn--"))
             || authority.port_u16().is_some() && !is_loopback_host(&host)
+            || !allow_loopback_http
+                && (host.parse::<IpAddr>().is_ok()
+                    || !host.contains('.')
+                    || host.split('.').any(str::is_empty))
         {
             return Err(ConfigError::InvalidOrigin);
         }
@@ -122,8 +147,47 @@ pub struct RuntimeConfig {
     api_origin: Origin,
     allowed_hosts: Vec<String>,
     release_id: String,
+    release_join: Option<ReleaseJoin>,
+    proxy_trust: ProxyTrust,
     diagnostic_token: Option<String>,
     embed: EmbedPolicy,
+    runtime_test_mode: bool,
+}
+
+#[derive(Clone)]
+pub struct ReleaseJoin {
+    source_git_sha: String,
+    worker_release: String,
+    render_deploy: String,
+    migration_level: String,
+    portfolio_consumer: String,
+}
+
+impl ReleaseJoin {
+    #[must_use]
+    pub fn source_git_sha(&self) -> &str {
+        &self.source_git_sha
+    }
+
+    #[must_use]
+    pub fn worker_release(&self) -> &str {
+        &self.worker_release
+    }
+
+    #[must_use]
+    pub fn render_deploy(&self) -> &str {
+        &self.render_deploy
+    }
+
+    #[must_use]
+    pub fn migration_level(&self) -> &str {
+        &self.migration_level
+    }
+
+    #[must_use]
+    pub fn portfolio_consumer(&self) -> &str {
+        &self.portfolio_consumer
+    }
 }
 
 impl RuntimeConfig {
@@ -139,9 +203,15 @@ impl RuntimeConfig {
             release_id: env::var("FRAME_RELEASE_ID")
                 .ok()
                 .or_else(|| env::var("RENDER_GIT_COMMIT").ok()),
+            proxy_trust: env::var("FRAME_PROXY_TRUST").ok(),
             diagnostic_token: env::var("FRAME_DIAGNOSTIC_TOKEN").ok(),
+            worker_release: env::var("FRAME_WORKER_RELEASE").ok(),
+            render_deploy: env::var("FRAME_RENDER_DEPLOY").ok(),
+            migration_level: env::var("FRAME_MIGRATION_LEVEL").ok(),
+            portfolio_consumer: env::var("FRAME_PORTFOLIO_CONSUMER").ok(),
             public_embed_enabled: env::var("FRAME_ENABLE_PUBLIC_EMBED").ok(),
             embed_ancestors: env::var("FRAME_EMBED_ANCESTORS").ok(),
+            runtime_test_mode: env::var("FRAME_RUNTIME_TEST_MODE").ok(),
         })
     }
 
@@ -155,6 +225,20 @@ impl RuntimeConfig {
         };
 
         let bind = resolve_bind(values.frame_addr.as_deref(), values.port.as_deref())?;
+        let proxy_trust = match (deployment, values.proxy_trust.as_deref()) {
+            (Deployment::Local, None | Some("direct")) => ProxyTrust::Direct,
+            (Deployment::Preview | Deployment::Production, Some("render")) => {
+                ProxyTrust::RenderEdge
+            }
+            _ => return Err(ConfigError::InvalidProxyTrust),
+        };
+        let runtime_test_mode = parse_bool(
+            values.runtime_test_mode.as_deref(),
+            "FRAME_RUNTIME_TEST_MODE",
+        )?;
+        if runtime_test_mode && deployment != Deployment::Local {
+            return Err(ConfigError::RuntimeTestModeNonLocal);
+        }
         let render_origin = values
             .render_external_url
             .as_deref()
@@ -228,6 +312,14 @@ impl RuntimeConfig {
             return Err(ConfigError::InvalidReleaseId);
         }
 
+        let release_join = parse_release_join(
+            &release_id,
+            values.worker_release,
+            values.render_deploy,
+            values.migration_level,
+            values.portfolio_consumer,
+        )?;
+
         let diagnostic_token = values
             .diagnostic_token
             .filter(|value| !value.trim().is_empty());
@@ -276,11 +368,14 @@ impl RuntimeConfig {
             api_origin,
             allowed_hosts,
             release_id,
+            release_join,
+            proxy_trust,
             diagnostic_token,
             embed: EmbedPolicy {
                 enabled: embed_enabled,
                 ancestors,
             },
+            runtime_test_mode,
         })
     }
 
@@ -310,6 +405,16 @@ impl RuntimeConfig {
     }
 
     #[must_use]
+    pub fn release_join(&self) -> Option<&ReleaseJoin> {
+        self.release_join.as_ref()
+    }
+
+    #[must_use]
+    pub const fn proxy_trust(&self) -> ProxyTrust {
+        self.proxy_trust
+    }
+
+    #[must_use]
     pub fn diagnostic_token(&self) -> Option<&str> {
         self.diagnostic_token.as_deref()
     }
@@ -317,6 +422,11 @@ impl RuntimeConfig {
     #[must_use]
     pub fn embed_policy(&self) -> &EmbedPolicy {
         &self.embed
+    }
+
+    #[must_use]
+    pub const fn runtime_test_mode(&self) -> bool {
+        self.runtime_test_mode
     }
 
     #[must_use]
@@ -339,6 +449,7 @@ impl fmt::Debug for RuntimeConfig {
             .field("public_origin", &self.public_origin)
             .field("api_origin", &self.api_origin)
             .field("release_id", &self.release_id)
+            .field("proxy_trust", &self.proxy_trust)
             .field(
                 "diagnostic_token",
                 &self.diagnostic_token.as_ref().map(|_| "<redacted>"),
@@ -358,9 +469,15 @@ pub struct ConfigValues {
     pub api_origin: Option<String>,
     pub render_external_url: Option<String>,
     pub release_id: Option<String>,
+    pub proxy_trust: Option<String>,
     pub diagnostic_token: Option<String>,
+    pub worker_release: Option<String>,
+    pub render_deploy: Option<String>,
+    pub migration_level: Option<String>,
+    pub portfolio_consumer: Option<String>,
     pub public_embed_enabled: Option<String>,
     pub embed_ancestors: Option<String>,
+    pub runtime_test_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,8 +493,12 @@ pub enum ConfigError {
     CrossOriginProductionApi,
     PreviewUsesProduction,
     InvalidReleaseId,
+    IncompleteReleaseJoin,
+    InvalidReleaseJoin,
+    InvalidProxyTrust,
     WeakDiagnosticToken,
     EmbedWithoutAncestors,
+    RuntimeTestModeNonLocal,
 }
 
 impl fmt::Display for ConfigError {
@@ -396,13 +517,96 @@ impl fmt::Display for ConfigError {
             Self::CrossOriginProductionApi => formatter.write_str("production web and API origins must be identical"),
             Self::PreviewUsesProduction => formatter.write_str("preview configuration cannot use a production origin"),
             Self::InvalidReleaseId => formatter.write_str("release identifier contains unsupported data"),
+            Self::IncompleteReleaseJoin => formatter.write_str(
+                "release join requires Worker, Render, migration, and portfolio identifiers together",
+            ),
+            Self::InvalidReleaseJoin => formatter.write_str(
+                "release join identifiers are not bounded safe deployment metadata",
+            ),
+            Self::InvalidProxyTrust => formatter.write_str(
+                "FRAME_PROXY_TRUST must be direct for local or render for preview/production",
+            ),
             Self::WeakDiagnosticToken => formatter.write_str("diagnostic token does not meet the production minimum"),
             Self::EmbedWithoutAncestors => formatter.write_str("public embed requires at least one exact ancestor origin"),
+            Self::RuntimeTestModeNonLocal => formatter.write_str(
+                "runtime test mode is allowed only for loopback local deployment",
+            ),
         }
     }
 }
 
 impl std::error::Error for ConfigError {}
+
+fn parse_release_join(
+    source_git_sha: &str,
+    worker_release: Option<String>,
+    render_deploy: Option<String>,
+    migration_level: Option<String>,
+    portfolio_consumer: Option<String>,
+) -> Result<Option<ReleaseJoin>, ConfigError> {
+    let configured = [
+        worker_release.is_some(),
+        render_deploy.is_some(),
+        migration_level.is_some(),
+        portfolio_consumer.is_some(),
+    ];
+    if configured.iter().all(|present| !present) {
+        return Ok(None);
+    }
+    if !configured.iter().all(|present| *present) {
+        return Err(ConfigError::IncompleteReleaseJoin);
+    }
+    let worker_release = worker_release.ok_or(ConfigError::IncompleteReleaseJoin)?;
+    let render_deploy = render_deploy.ok_or(ConfigError::IncompleteReleaseJoin)?;
+    let migration_level = migration_level.ok_or(ConfigError::IncompleteReleaseJoin)?;
+    let portfolio_consumer = portfolio_consumer.ok_or(ConfigError::IncompleteReleaseJoin)?;
+    if !is_git_sha(source_git_sha)
+        || !is_safe_release_identifier(&worker_release)
+        || !is_safe_release_identifier(&render_deploy)
+        || !is_migration_level(&migration_level)
+        || !is_safe_release_identifier(&portfolio_consumer)
+    {
+        return Err(ConfigError::InvalidReleaseJoin);
+    }
+    Ok(Some(ReleaseJoin {
+        source_git_sha: source_git_sha.into(),
+        worker_release,
+        render_deploy,
+        migration_level,
+        portfolio_consumer,
+    }))
+}
+
+fn is_git_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn is_safe_release_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_migration_level(value: &str) -> bool {
+    let Some((number, name)) = value.split_once('_') else {
+        return false;
+    };
+    number.len() == 4
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && name.ends_with(".sql")
+        && name.strip_suffix(".sql").is_some_and(|stem| {
+            !stem.is_empty()
+                && stem
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+        && value.len() <= 64
+}
 
 fn resolve_bind(frame_addr: Option<&str>, port: Option<&str>) -> Result<SocketAddr, ConfigError> {
     if let Some(frame_addr) = frame_addr {
@@ -469,6 +673,7 @@ mod tests {
             public_origin: Some(PRODUCTION_ORIGIN.into()),
             api_origin: Some(PRODUCTION_ORIGIN.into()),
             release_id: Some("abc123".into()),
+            proxy_trust: Some("render".into()),
             ..ConfigValues::default()
         }
     }
@@ -518,6 +723,45 @@ mod tests {
     }
 
     #[test]
+    fn release_join_is_all_or_nothing_and_bounded() {
+        let mut incomplete = production_values();
+        incomplete.release_id = Some("1".repeat(40));
+        incomplete.worker_release = Some("worker-release".into());
+        assert_eq!(
+            RuntimeConfig::from_values(incomplete).expect_err("incomplete release join"),
+            ConfigError::IncompleteReleaseJoin
+        );
+
+        let mut complete = production_values();
+        complete.release_id = Some("1".repeat(40));
+        complete.worker_release = Some("worker-1111111".into());
+        complete.render_deploy = Some("render-deploy-1".into());
+        complete.migration_level = Some("0023_auth_oauth_direct_upload.sql".into());
+        complete.portfolio_consumer = Some("portfolio-aaaaaaa".into());
+        let config = RuntimeConfig::from_values(complete).expect("complete safe release join");
+        let release = config.release_join().expect("configured release join");
+        assert_eq!(release.source_git_sha(), "1".repeat(40));
+        assert_eq!(release.worker_release(), "worker-1111111");
+        assert_eq!(release.render_deploy(), "render-deploy-1");
+        assert_eq!(
+            release.migration_level(),
+            "0023_auth_oauth_direct_upload.sql"
+        );
+        assert_eq!(release.portfolio_consumer(), "portfolio-aaaaaaa");
+
+        let mut unsafe_value = production_values();
+        unsafe_value.release_id = Some("1".repeat(40));
+        unsafe_value.worker_release = Some("worker?secret".into());
+        unsafe_value.render_deploy = Some("render-deploy-1".into());
+        unsafe_value.migration_level = Some("0023_auth_oauth_direct_upload.sql".into());
+        unsafe_value.portfolio_consumer = Some("portfolio-aaaaaaa".into());
+        assert_eq!(
+            RuntimeConfig::from_values(unsafe_value).expect_err("unsafe release join"),
+            ConfigError::InvalidReleaseJoin
+        );
+    }
+
+    #[test]
     fn preview_derives_public_origin_and_rejects_production_api() {
         let preview = RuntimeConfig::from_values(ConfigValues {
             deployment: Some("preview".into()),
@@ -525,6 +769,7 @@ mod tests {
             public_origin: Some("https://frame-preview.invalid".into()),
             render_external_url: Some("https://frame-pr-7.onrender.com".into()),
             api_origin: Some("https://frame-staging.engmanager.xyz".into()),
+            proxy_trust: Some("render".into()),
             ..ConfigValues::default()
         })
         .expect("preview config");
@@ -538,6 +783,7 @@ mod tests {
             is_pull_request: Some("true".into()),
             render_external_url: Some("https://frame-pr-7.onrender.com".into()),
             api_origin: Some(PRODUCTION_ORIGIN.into()),
+            proxy_trust: Some("render".into()),
             ..ConfigValues::default()
         })
         .expect_err("preview production API");
@@ -578,5 +824,29 @@ mod tests {
         })
         .expect("explicit embed policy");
         assert!(config.embed_policy().enabled());
+    }
+
+    #[test]
+    fn proxy_trust_and_runtime_test_mode_fail_closed() {
+        let mut production = production_values();
+        production.proxy_trust = None;
+        assert_eq!(
+            RuntimeConfig::from_values(production).expect_err("missing production proxy mode"),
+            ConfigError::InvalidProxyTrust
+        );
+
+        let local_test = RuntimeConfig::from_values(ConfigValues {
+            runtime_test_mode: Some("true".into()),
+            ..ConfigValues::default()
+        })
+        .expect("local runtime test mode");
+        assert!(local_test.runtime_test_mode());
+
+        let mut production_test = production_values();
+        production_test.runtime_test_mode = Some("true".into());
+        assert_eq!(
+            RuntimeConfig::from_values(production_test).expect_err("nonlocal runtime test mode"),
+            ConfigError::RuntimeTestModeNonLocal
+        );
     }
 }

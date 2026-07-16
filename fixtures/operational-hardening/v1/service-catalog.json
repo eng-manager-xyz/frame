@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "catalog_id": "frame-operational-service-catalog-v1",
+  "authority": "docs/migration/charter.md",
+  "ownership_model": {
+    "directory": "protected_incident_contact_registry",
+    "repository_contains_personal_contacts": false,
+    "required_roles": [
+      "incident_commander",
+      "release_operator",
+      "security_responder",
+      "data_recovery_operator",
+      "media_provider_operator",
+      "customer_support_lead"
+    ],
+    "escalation_test_status": "protected_not_collected"
+  },
+  "services": [
+    {
+      "id": "control_plane_worker",
+      "owner_role": "release_operator",
+      "source": "apps/control-plane",
+      "deployable": "cloudflare_worker",
+      "failure_boundary": "worker",
+      "dependencies": ["d1_metadata", "r2_objects", "media_execution"],
+      "slo_ids": ["api_availability", "api_latency", "upload_finalize_success"],
+      "runbook": "docs/operations/service-reliability-and-incidents.md#worker-or-api",
+      "safe_operations": ["request", "auth", "upload_intent", "finalize", "job_dispatch"]
+    },
+    {
+      "id": "d1_metadata",
+      "owner_role": "data_recovery_operator",
+      "source": "apps/control-plane/migrations",
+      "deployable": null,
+      "failure_boundary": "d1",
+      "dependencies": [],
+      "slo_ids": ["durable_state_rpo", "service_rto", "reconciliation"],
+      "runbook": "docs/operations/backup-restore-dr.md#d1-export-and-restore",
+      "safe_operations": ["query", "transaction", "migration", "replay"]
+    },
+    {
+      "id": "r2_objects",
+      "owner_role": "data_recovery_operator",
+      "source": "crates/application/src/storage.rs",
+      "deployable": null,
+      "failure_boundary": "object",
+      "dependencies": [],
+      "slo_ids": ["upload_finalize_success", "playback_start", "reconciliation"],
+      "runbook": "docs/operations/backup-restore-dr.md#object-manifest-and-durability",
+      "safe_operations": ["head", "range", "publish", "reconcile", "delete"]
+    },
+    {
+      "id": "media_execution",
+      "owner_role": "media_provider_operator",
+      "source": "crates/media/src/jobs/service.rs",
+      "deployable": null,
+      "failure_boundary": "queue_job",
+      "dependencies": ["r2_objects", "native_media_worker", "managed_media_provider"],
+      "slo_ids": ["time_to_share", "reconciliation"],
+      "runbook": "docs/operations/media-provider-game-day.md",
+      "safe_operations": ["admit", "claim", "heartbeat", "fallback", "publish", "cancel"]
+    },
+    {
+      "id": "native_media_worker",
+      "owner_role": "media_provider_operator",
+      "source": "apps/media-worker",
+      "deployable": "linux_native_worker",
+      "failure_boundary": "media_worker",
+      "dependencies": ["r2_objects"],
+      "slo_ids": ["time_to_share", "reconciliation"],
+      "runbook": "docs/operations/media-provider-game-day.md#native-capacity-and-fallback",
+      "safe_operations": ["claim", "probe", "transform", "stage", "publish", "cleanup"]
+    },
+    {
+      "id": "managed_media_provider",
+      "owner_role": "media_provider_operator",
+      "source": "apps/control-plane/src/cloudflare_media.rs",
+      "deployable": null,
+      "failure_boundary": "managed_media",
+      "dependencies": ["r2_objects"],
+      "slo_ids": ["time_to_share", "reconciliation"],
+      "runbook": "docs/operations/media-provider-game-day.md#managed-media-response",
+      "safe_operations": ["preflight", "invoke", "probe", "fallback", "reconcile"]
+    },
+    {
+      "id": "web_service",
+      "owner_role": "release_operator",
+      "source": "apps/web",
+      "deployable": "render_web_service",
+      "failure_boundary": "web",
+      "dependencies": ["control_plane_worker"],
+      "slo_ids": ["landing_availability", "landing_latency", "playback_start"],
+      "runbook": "docs/operations/service-reliability-and-incidents.md#web-or-render",
+      "safe_operations": ["landing", "dashboard", "share", "asset"]
+    },
+    {
+      "id": "desktop_client",
+      "owner_role": "release_operator",
+      "source": "apps/desktop",
+      "deployable": "signed_desktop_channels",
+      "failure_boundary": "desktop_update",
+      "dependencies": ["control_plane_worker"],
+      "slo_ids": ["desktop_update_success", "client_failure_rate"],
+      "runbook": "docs/operations/service-reliability-and-incidents.md#desktop-update",
+      "safe_operations": ["bootstrap", "update_check", "download", "install", "rollback"]
+    },
+    {
+      "id": "frame_client",
+      "owner_role": "release_operator",
+      "source": "crates/frame-client",
+      "deployable": "rust_client_package",
+      "failure_boundary": "client",
+      "dependencies": ["control_plane_worker"],
+      "slo_ids": ["client_failure_rate", "api_availability"],
+      "runbook": "docs/operations/service-reliability-and-incidents.md#client-contract",
+      "safe_operations": ["request", "decode", "compatibility", "retry"]
+    }
+  ],
+  "slos": [
+    {
+      "id": "landing_availability",
+      "service": "web_service",
+      "indicator": "successful_edge_probe_ratio",
+      "objective": 0.999,
+      "window_seconds": 2592000,
+      "alert": {"fast_burn": {"factor": 14.4, "lookback_seconds": 3600}, "slow_burn": {"factor": 6.0, "lookback_seconds": 21600}}
+    },
+    {
+      "id": "api_availability",
+      "service": "control_plane_worker",
+      "indicator": "successful_non_rate_limited_request_ratio",
+      "objective": 0.999,
+      "window_seconds": 2592000,
+      "alert": {"fast_burn": {"factor": 14.4, "lookback_seconds": 3600}, "slow_burn": {"factor": 6.0, "lookback_seconds": 21600}}
+    },
+    {
+      "id": "landing_latency",
+      "service": "web_service",
+      "indicator": "edge_to_browser_latency_p95_ms",
+      "maximum": 750,
+      "window_seconds": 3600,
+      "alert": {"threshold_windows": 3}
+    },
+    {
+      "id": "api_latency",
+      "service": "control_plane_worker",
+      "indicator": "synchronous_request_latency_p95_ms",
+      "maximum": 500,
+      "window_seconds": 3600,
+      "alert": {"threshold_windows": 3}
+    },
+    {
+      "id": "upload_finalize_success",
+      "service": "control_plane_worker",
+      "indicator": "synthetic_upload_intent_finalize_success_ratio",
+      "objective": 0.999,
+      "window_seconds": 86400,
+      "alert": {"threshold_windows": 1}
+    },
+    {
+      "id": "playback_start",
+      "service": "web_service",
+      "indicator": "warm_supported_playback_start_p95_ms",
+      "maximum": 2000,
+      "window_seconds": 3600,
+      "alert": {"threshold_windows": 3}
+    },
+    {
+      "id": "time_to_share",
+      "service": "media_execution",
+      "indicator": "accepted_60s_1080p_time_to_share_p95_ms",
+      "maximum": 30000,
+      "window_seconds": 3600,
+      "alert": {"threshold_windows": 2}
+    },
+    {
+      "id": "reconciliation",
+      "service": "d1_metadata",
+      "indicator": "unexplained_data_or_object_differences",
+      "maximum": 0,
+      "window_seconds": 300,
+      "alert": {"threshold_windows": 1}
+    },
+    {
+      "id": "durable_state_rpo",
+      "service": "d1_metadata",
+      "indicator": "oldest_unrecoverable_acknowledged_write_ms",
+      "maximum": 300000,
+      "window_seconds": 300,
+      "alert": {"threshold_windows": 1}
+    },
+    {
+      "id": "service_rto",
+      "service": "d1_metadata",
+      "indicator": "isolated_restore_to_ready_ms",
+      "maximum": 3600000,
+      "window_seconds": 3600,
+      "alert": {"threshold_windows": 1}
+    },
+    {
+      "id": "desktop_update_success",
+      "service": "desktop_client",
+      "indicator": "synthetic_update_install_success_ratio",
+      "objective": 0.999,
+      "window_seconds": 86400,
+      "alert": {"threshold_windows": 1}
+    },
+    {
+      "id": "client_failure_rate",
+      "service": "frame_client",
+      "indicator": "safe_client_error_ratio",
+      "maximum": 0.001,
+      "window_seconds": 3600,
+      "alert": {"threshold_windows": 2}
+    }
+  ],
+  "dashboard_contract": {
+    "required_dimensions": ["service", "release", "environment", "operation", "result_class"],
+    "forbidden_dimensions": ["tenant", "user", "email", "object_key", "signed_url", "caption", "title"],
+    "required_panels": ["availability", "latency", "error_budget", "dependency", "queue_age", "reconciliation", "cost", "capacity"],
+    "screenshot_status": "protected_not_collected"
+  }
+}

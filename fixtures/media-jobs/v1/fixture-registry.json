@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "media-input-fixtures-v1",
+  "fixtures": [
+    {
+      "fixture_id": "frame-synthetic-h264-aac-v1",
+      "kind": "licensed_media_manifest",
+      "artifact_file": "synthetic-h264-aac.json",
+      "artifact_sha256": "6869e0c3f5da7f3c6c199bfad59cfe45e687e9e21331bf74069922a8e5c9c2d9",
+      "jobs": [
+        "optimized_clip",
+        "frame",
+        "spritesheet",
+        "audio_extract",
+        "probe",
+        "audio_presence",
+        "distribution_master",
+        "animated_preview",
+        "audio_normalize",
+        "remux_repair",
+        "waveform",
+        "normalize"
+      ]
+    },
+    {
+      "fixture_id": "synthetic_segment_set_v1",
+      "kind": "ordered_media_set",
+      "artifact_file": "synthetic-segment-set.json",
+      "artifact_sha256": "6d4700cacb23d1b898debf37cdc5712652c0e9f72fca7bb4804fb0ab054221d2",
+      "jobs": [
+        "segment_mux"
+      ]
+    },
+    {
+      "fixture_id": "synthetic_edit_timeline_v1",
+      "kind": "edit_timeline",
+      "artifact_file": "synthetic-edit-timeline.json",
+      "artifact_sha256": "dace606143378c88d0ea6834df3f2e6e886047bb1171fede1c2e72c71c276cfc",
+      "jobs": [
+        "composition"
+      ]
+    },
+    {
+      "fixture_id": "synthetic_transcription_input_v1",
+      "kind": "external_audio_adapter_input",
+      "artifact_file": "synthetic-transcription-input.json",
+      "artifact_sha256": "cc40514c71ae9c0d1b6af8abbd747539fd3cde83b9580d5467e0a35586a206b4",
+      "jobs": [
+        "transcription"
+      ]
+    },
+    {
+      "fixture_id": "synthetic_caption_document_v1",
+      "kind": "caption_document",
+      "artifact_file": "synthetic-caption-document.json",
+      "artifact_sha256": "140fb76b5f70b5c9856937c91f0fc066553e54e41ec1db95b3f6c215355e34d1",
+      "jobs": [
+        "ai_cleanup"
+      ]
+    }
+  ]
+}

@@ -18,6 +18,7 @@ pub enum ValidationCode {
     Revision,
     LeaseToken,
     Checksum,
+    TransferMode,
     Progress,
     FailureClass,
 }
@@ -38,6 +39,7 @@ impl ValidationCode {
             Self::Revision => "invalid_revision",
             Self::LeaseToken => "invalid_lease_token",
             Self::Checksum => "invalid_checksum",
+            Self::TransferMode => "invalid_transfer_mode",
             Self::Progress => "invalid_progress",
             Self::FailureClass => "invalid_failure_class",
         }
@@ -108,6 +110,13 @@ pub struct UploadIntentRequest {
     pub object_version: u32,
     pub expected_bytes: u64,
     pub content_type: String,
+    #[serde(
+        default = "default_upload_transfer_mode",
+        skip_serializing_if = "upload_transfer_is_brokered"
+    )]
+    pub transfer_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum_sha256: Option<String>,
 }
 
 impl UploadIntentRequest {
@@ -130,6 +139,44 @@ impl UploadIntentRequest {
         if !valid_content_type(&self.content_type) {
             return Err(ValidationCode::ContentType);
         }
+        match self.transfer_mode.as_str() {
+            "brokered" if self.checksum_sha256.is_none() => {}
+            "direct" if self.checksum_sha256.as_deref().is_some_and(valid_sha256) => {}
+            "direct" => return Err(ValidationCode::Checksum),
+            "brokered" => return Err(ValidationCode::Checksum),
+            _ => return Err(ValidationCode::TransferMode),
+        }
+        Ok(())
+    }
+}
+
+fn default_upload_transfer_mode() -> String {
+    "brokered".into()
+}
+
+fn upload_transfer_is_brokered(value: &String) -> bool {
+    value == "brokered"
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectUploadFinalizeRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+    pub checksum_sha256: String,
+}
+
+impl DirectUploadFinalizeRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        if self.schema_version != API_SCHEMA_VERSION {
+            return Err(ValidationCode::SchemaVersion);
+        }
+        if !valid_uuid(&self.tenant_id) {
+            return Err(ValidationCode::Identifier);
+        }
+        if !valid_sha256(&self.checksum_sha256) {
+            return Err(ValidationCode::Checksum);
+        }
         Ok(())
     }
 }
@@ -142,6 +189,53 @@ pub struct MediaJobRequest {
     pub video_id: String,
     pub source_version: u32,
     pub profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<MediaTransformRequest>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedMediaMode {
+    Video,
+    Frame,
+    Spritesheet,
+    Audio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaResizeFit {
+    Contain,
+    Cover,
+    ScaleDown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedMediaFormat {
+    Mp4H264Aac,
+    Jpeg,
+    Png,
+    M4aAac,
+}
+
+/// A normalized derivative profile. Clients describe the requested output;
+/// they never select an executor, source URL, output key, or provider option.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaTransformRequest {
+    pub schema_version: u16,
+    pub profile_version: u16,
+    pub mode: ManagedMediaMode,
+    pub start_ms: u64,
+    pub duration_ms: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fit: MediaResizeFit,
+    pub image_count: Option<u16>,
+    pub include_audio: bool,
+    pub format: ManagedMediaFormat,
+    pub max_output_bytes: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -193,6 +287,13 @@ impl WorkerProgressRequest {
 pub struct WorkerCompleteRequest {
     pub schema_version: u16,
     pub tenant_id: String,
+    pub outputs: Vec<WorkerCompletedOutput>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerCompletedOutput {
+    pub ordinal: u16,
     pub bytes: u64,
     pub checksum_sha256: String,
     pub content_type: String,
@@ -201,16 +302,27 @@ pub struct WorkerCompleteRequest {
 impl WorkerCompleteRequest {
     pub fn validate(&self) -> Result<(), ValidationCode> {
         validate_worker_tenant(self.schema_version, &self.tenant_id)?;
-        if self.bytes == 0 || self.bytes > MAX_SAFE_INTEGER {
+        let [output] = self.outputs.as_slice() else {
+            return Err(ValidationCode::Profile);
+        };
+        if output.ordinal != 0 || output.bytes == 0 || output.bytes > MAX_SAFE_INTEGER {
             return Err(ValidationCode::Size);
         }
-        if !valid_sha256(&self.checksum_sha256) {
+        if !valid_sha256(&output.checksum_sha256) {
             return Err(ValidationCode::Checksum);
         }
-        if !valid_content_type(&self.content_type) {
+        if !valid_content_type(&output.content_type) {
             return Err(ValidationCode::ContentType);
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn output(&self) -> Option<&WorkerCompletedOutput> {
+        let [output] = self.outputs.as_slice() else {
+            return None;
+        };
+        (output.ordinal == 0).then_some(output)
     }
 }
 
@@ -277,14 +389,109 @@ impl MediaJobRequest {
         if self.source_version == 0 {
             return Err(ValidationCode::ObjectVersion);
         }
-        if !matches!(
-            self.profile.as_str(),
-            "thumbnail_v1" | "preview_v1" | "spritesheet_v1" | "audio_v1"
-        ) {
+        if !media_profile_supported(&self.profile) {
+            return Err(ValidationCode::Profile);
+        }
+        match (managed_profile(&self.profile), self.transform.as_ref()) {
+            (true, Some(transform)) => transform.validate_for(&self.profile)?,
+            (true, None) => return Err(ValidationCode::Profile),
+            (false, Some(_)) => return Err(ValidationCode::Profile),
+            (false, None) => {}
+        }
+        Ok(())
+    }
+}
+
+impl MediaTransformRequest {
+    pub fn validate_for(&self, profile: &str) -> Result<(), ValidationCode> {
+        if self.schema_version != 1
+            || self.profile_version == 0
+            || self.max_output_bytes == 0
+            || self.max_output_bytes > MAX_SAFE_INTEGER
+            || self.start_ms > MAX_SAFE_INTEGER
+            || self
+                .duration_ms
+                .is_some_and(|value| value == 0 || value > MAX_SAFE_INTEGER)
+            || self.width.is_some() != self.height.is_some()
+            || self.width.is_some_and(|value| value == 0)
+            || self.height.is_some_and(|value| value == 0)
+        {
+            return Err(ValidationCode::Profile);
+        }
+        let shape_matches = match profile {
+            "optimized_clip_v1" => {
+                self.mode == ManagedMediaMode::Video
+                    && self.format == ManagedMediaFormat::Mp4H264Aac
+                    && self.duration_ms.is_some()
+                    && self.image_count.is_none()
+            }
+            "thumbnail_v1" => {
+                self.mode == ManagedMediaMode::Frame
+                    && matches!(
+                        self.format,
+                        ManagedMediaFormat::Jpeg | ManagedMediaFormat::Png
+                    )
+                    && self.duration_ms.is_none()
+                    && self.image_count.is_none()
+                    && !self.include_audio
+            }
+            "spritesheet_v1" => {
+                self.mode == ManagedMediaMode::Spritesheet
+                    && self.format == ManagedMediaFormat::Jpeg
+                    && self.duration_ms.is_some()
+                    && self.image_count.is_some_and(|count| count > 0)
+                    && !self.include_audio
+            }
+            "audio_extract_v1" => {
+                self.mode == ManagedMediaMode::Audio
+                    && self.format == ManagedMediaFormat::M4aAac
+                    && self.duration_ms.is_some()
+                    && self.width.is_none()
+                    && self.image_count.is_none()
+                    && !self.include_audio
+            }
+            _ => false,
+        };
+        if !shape_matches {
             return Err(ValidationCode::Profile);
         }
         Ok(())
     }
+}
+
+#[must_use]
+pub fn managed_profile(profile: &str) -> bool {
+    matches!(
+        profile,
+        "optimized_clip_v1" | "thumbnail_v1" | "spritesheet_v1" | "audio_extract_v1"
+    )
+}
+
+#[must_use]
+pub fn media_profile_supported(profile: &str) -> bool {
+    matches!(
+        profile,
+        "optimized_clip_v1"
+            | "thumbnail_v1"
+            | "spritesheet_v1"
+            | "audio_extract_v1"
+            | "probe_v1"
+            | "audio_presence_v1"
+            | "distribution_master_v1"
+            | "animated_preview_v1"
+            | "audio_normalize_v1"
+            | "remux_repair_v1"
+            | "segment_mux_v1"
+            | "waveform_v1"
+            | "composition_v1"
+            | "normalize_v1"
+            | "transcription_v1"
+            | "ai_cleanup_v1"
+            // Compatibility aliases are local-fake only and are rejected by
+            // the production router before persistence.
+            | "preview_v1"
+            | "audio_v1"
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -313,6 +520,8 @@ pub struct CapabilitiesResponse {
     pub public_share_read: &'static str,
     pub video_lifecycle: &'static str,
     pub upload_intents: &'static str,
+    pub upload_transfer_modes: [&'static str; 2],
+    pub direct_upload_finalize: &'static str,
     pub media_jobs: &'static str,
     pub media_executor_selection: &'static str,
     pub native_capture: &'static str,
@@ -330,6 +539,8 @@ impl Default for CapabilitiesResponse {
             public_share_read: "read_only",
             video_lifecycle: "authenticated_d1_revision_fenced",
             upload_intents: "authenticated_d1_r2_single_put",
+            upload_transfer_modes: ["brokered", "direct"],
+            direct_upload_finalize: "/api/v1/uploads/{upload_id}/finalize",
             media_jobs: "fail_closed_pending_runtime_selection",
             media_executor_selection: "server_controlled",
             native_capture: "external_native_executor",
@@ -482,9 +693,12 @@ mod tests {
             WorkerCompleteRequest {
                 schema_version: API_SCHEMA_VERSION,
                 tenant_id: WORKER_TENANT.into(),
-                bytes: 1,
-                checksum_sha256: "A".repeat(64),
-                content_type: "image/png".into(),
+                outputs: vec![WorkerCompletedOutput {
+                    ordinal: 0,
+                    bytes: 1,
+                    checksum_sha256: "A".repeat(64),
+                    content_type: "image/png".into(),
+                }],
             }
             .validate(),
             Err(ValidationCode::Checksum)
@@ -535,13 +749,38 @@ mod tests {
             object_version: 1,
             expected_bytes: 1_024,
             content_type: "video/mp4".into(),
+            transfer_mode: "brokered".into(),
+            checksum_sha256: None,
         };
         assert_eq!(request.validate(), Ok(()));
+        let brokered_json = serde_json::to_value(&request).expect("brokered json");
+        assert!(brokered_json.get("transfer_mode").is_none());
+        assert!(brokered_json.get("checksum_sha256").is_none());
         request.expected_bytes = MAX_SAFE_INTEGER + 1;
         assert_eq!(request.validate(), Err(ValidationCode::Size));
         request.expected_bytes = 1_024;
         request.role = "../../private".into();
         assert_eq!(request.validate(), Err(ValidationCode::ObjectRole));
+
+        request.role = "source".into();
+        request.transfer_mode = "direct".into();
+        assert_eq!(request.validate(), Err(ValidationCode::Checksum));
+        request.checksum_sha256 = Some("ab".repeat(32));
+        assert_eq!(request.validate(), Ok(()));
+        request.transfer_mode = "brokered".into();
+        assert_eq!(request.validate(), Err(ValidationCode::Checksum));
+    }
+
+    #[test]
+    fn direct_finalize_contract_is_tenant_and_checksum_bound() {
+        let mut request = DirectUploadFinalizeRequest {
+            schema_version: API_SCHEMA_VERSION,
+            tenant_id: TENANT.into(),
+            checksum_sha256: "ab".repeat(32),
+        };
+        assert_eq!(request.validate(), Ok(()));
+        request.checksum_sha256 = "AB".repeat(32);
+        assert_eq!(request.validate(), Err(ValidationCode::Checksum));
     }
 
     #[test]
@@ -552,10 +791,52 @@ mod tests {
             video_id: VIDEO.into(),
             source_version: 1,
             profile: "thumbnail_v1".into(),
+            transform: Some(MediaTransformRequest {
+                schema_version: 1,
+                profile_version: 1,
+                mode: ManagedMediaMode::Frame,
+                start_ms: 0,
+                duration_ms: None,
+                width: Some(640),
+                height: Some(360),
+                fit: MediaResizeFit::Contain,
+                image_count: None,
+                include_audio: false,
+                format: ManagedMediaFormat::Jpeg,
+                max_output_bytes: 8_000_000,
+            }),
         };
         assert_eq!(request.validate(), Ok(()));
         request.profile = "cloudflare_media".into();
         assert_eq!(request.validate(), Err(ValidationCode::Profile));
+    }
+
+    #[test]
+    fn managed_transform_shapes_are_exact_and_executor_free() {
+        let mut transform = MediaTransformRequest {
+            schema_version: 1,
+            profile_version: 1,
+            mode: ManagedMediaMode::Video,
+            start_ms: 0,
+            duration_ms: Some(5_000),
+            width: Some(640),
+            height: Some(360),
+            fit: MediaResizeFit::Cover,
+            image_count: None,
+            include_audio: true,
+            format: ManagedMediaFormat::Mp4H264Aac,
+            max_output_bytes: 16_000_000,
+        };
+        assert_eq!(transform.validate_for("optimized_clip_v1"), Ok(()));
+        transform.image_count = Some(1);
+        assert_eq!(
+            transform.validate_for("optimized_clip_v1"),
+            Err(ValidationCode::Profile)
+        );
+        let json = serde_json::to_string(&transform).expect("serialize");
+        assert!(!json.contains("executor"));
+        assert!(!json.contains("source"));
+        assert!(!json.contains("object_key"));
     }
 
     #[test]

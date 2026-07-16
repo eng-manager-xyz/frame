@@ -4,6 +4,9 @@ use serde::de::DeserializeOwned;
 
 use crate::{ClientError, ClientErrorCode, FrameOrigin, Health, PublicShareSummary};
 
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +144,7 @@ pub trait Transport {
 
 pub struct FrameClient<T> {
     origin: FrameOrigin,
+    api_origin: FrameOrigin,
     transport: T,
     policy: TransportPolicy,
 }
@@ -149,10 +153,20 @@ impl<T> FrameClient<T> {
     #[must_use]
     pub fn new(origin: FrameOrigin, transport: T) -> Self {
         Self {
+            api_origin: origin.clone(),
             origin,
             transport,
             policy: TransportPolicy::default(),
         }
+    }
+
+    /// Select a separately validated API origin while retaining `origin` as
+    /// the public contract/canonical authority. This is intended for isolated
+    /// preview SSR, where the preview UI reads anonymous data from staging.
+    #[must_use]
+    pub fn with_api_origin(mut self, api_origin: FrameOrigin) -> Self {
+        self.api_origin = api_origin;
+        self
     }
 
     #[must_use]
@@ -164,6 +178,11 @@ impl<T> FrameClient<T> {
     #[must_use]
     pub fn origin(&self) -> &FrameOrigin {
         &self.origin
+    }
+
+    #[must_use]
+    pub fn api_origin(&self) -> &FrameOrigin {
+        &self.api_origin
     }
 }
 
@@ -184,12 +203,17 @@ impl<T: Transport> FrameClient<T> {
     }
 
     async fn get_json<R: DeserializeOwned>(&self, resource: &str) -> Result<R, ClientError> {
-        let request = TransportRequest::api_get(&self.origin, resource)?;
+        let request = TransportRequest::api_get(&self.api_origin, resource)?;
         let mut attempt = 0_u8;
         loop {
             attempt += 1;
-            match self.transport.send(request.clone(), &self.policy).await {
-                Ok(response) => return decode_json(response, &self.policy),
+            let result = self
+                .transport
+                .send(request.clone(), &self.policy)
+                .await
+                .and_then(|response| decode_json(response, &self.policy));
+            match result {
+                Ok(value) => return Ok(value),
                 Err(error)
                     if request.method().is_idempotent()
                         && error.retryable()
@@ -206,6 +230,9 @@ fn decode_json<R: DeserializeOwned>(
 ) -> Result<R, ClientError> {
     if (300..400).contains(&response.status) {
         return Err(ClientError::new(ClientErrorCode::RedirectRejected));
+    }
+    if response.status == 429 || (500..600).contains(&response.status) {
+        return Err(ClientError::new(ClientErrorCode::TransportUnavailable));
     }
     if !(200..300).contains(&response.status) {
         return Err(ClientError::new(ClientErrorCode::ApiRejected));
@@ -252,6 +279,7 @@ mod tests {
     struct FakeTransport {
         responses: Mutex<VecDeque<Result<TransportResponse, ClientError>>>,
         attempts: Mutex<usize>,
+        request_urls: Mutex<Vec<String>>,
     }
 
     impl FakeTransport {
@@ -261,6 +289,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
                 attempts: Mutex::new(0),
+                request_urls: Mutex::new(Vec::new()),
             }
         }
     }
@@ -268,11 +297,15 @@ mod tests {
     impl Transport for FakeTransport {
         fn send<'a>(
             &'a self,
-            _request: TransportRequest,
+            request: TransportRequest,
             _policy: &'a TransportPolicy,
         ) -> BoxFuture<'a, Result<TransportResponse, ClientError>> {
             Box::pin(async move {
                 *self.attempts.lock().expect("attempt lock") += 1;
+                self.request_urls
+                    .lock()
+                    .expect("request URL lock")
+                    .push(request.url().to_owned());
                 self.responses
                     .lock()
                     .expect("response lock")
@@ -324,6 +357,51 @@ mod tests {
         );
         run(client.health()).expect("retried health");
         assert_eq!(*client.transport.attempts.lock().expect("attempt lock"), 2);
+    }
+
+    #[test]
+    fn idempotent_get_retries_bounded_transient_http_failures() {
+        let transient = TransportResponse {
+            status: 503,
+            content_type: Some("application/json".into()),
+            body: Vec::new(),
+        };
+        let transport = FakeTransport::new([Ok(transient), Ok(response(HEALTH))]);
+        let client = FrameClient::new(
+            FrameOrigin::parse_https("https://frame.engmanager.xyz").expect("origin"),
+            transport,
+        );
+        run(client.health()).expect("retried transient HTTP failure");
+        assert_eq!(*client.transport.attempts.lock().expect("attempt lock"), 2);
+    }
+
+    #[test]
+    fn preview_client_separates_public_contract_from_staging_transport() {
+        let transport = FakeTransport::new([Ok(response(HEALTH))]);
+        let client = FrameClient::new(
+            FrameOrigin::parse_https("https://frame-pr-38.onrender.com").expect("public origin"),
+            transport,
+        )
+        .with_api_origin(
+            FrameOrigin::parse_https("https://frame-staging.engmanager.xyz")
+                .expect("staging API origin"),
+        );
+
+        run(client.health()).expect("staging health response");
+        assert_eq!(client.origin().as_str(), "https://frame-pr-38.onrender.com");
+        assert_eq!(
+            client.api_origin().as_str(),
+            "https://frame-staging.engmanager.xyz"
+        );
+        assert_eq!(
+            client
+                .transport
+                .request_urls
+                .lock()
+                .expect("request URL lock")
+                .as_slice(),
+            ["https://frame-staging.engmanager.xyz/api/v1/health"]
+        );
     }
 
     #[test]

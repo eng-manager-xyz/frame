@@ -3,23 +3,22 @@
 //! The services in this crate are deliberately runtime-neutral: they compile for native
 //! binaries and `wasm32-unknown-unknown`, while adapters remain in the executable crates.
 
+mod api_workflow;
 mod backfill;
+mod business;
 mod cutover;
 mod idempotency;
 mod identity;
 mod media_router;
 mod multipart;
+mod organization;
 mod storage;
+mod storage_governance;
 mod upload;
 
-pub use backfill::{
-    BackfillCheckpoint, BackfillCoordinator, BackfillError, BackfillManifest, BackfillObject,
-    BackfillObjectStore, BackfillPolicy, BackfillRunReport, BackfillScope, BackfillStatus,
-    BasicMediaProbe, CheckpointEntry, DiscrepancyKind, IntegrityExpectation, ManifestEntry,
-    MemoryBackfillObjectStore, ObjectDescriptor, ObjectProbe, ProbeError, ProviderChecksum,
-    PutOutcome, QuarantineDisposition, QuarantineReason, ReconciliationReport, RepairAction,
-    RepairPlan, StorageIdentity, StorageOperation, StorageProvider,
-};
+pub use api_workflow::*;
+pub use backfill::{BackfillProcessOutcomeV1, ObjectBackfillCoordinatorV1, ObjectBackfillErrorV1};
+pub use business::{BusinessDataService, BusinessServiceError};
 pub use cutover::CutoverCoordinator;
 pub use idempotency::{CommandClaim, CommandFingerprint, CommandLedger, CommandStatus};
 pub use identity::{
@@ -31,7 +30,9 @@ pub use identity::{
 };
 pub use media_router::{MediaRoute, MediaRouter, MediaRoutingPolicy, RoutedTransform};
 pub use multipart::*;
+pub use organization::*;
 pub use storage::{ImmutableStorageService, ImmutableWriteOutcome};
+pub use storage_governance::*;
 pub use upload::{BeginUpload, MultipartUploadCoordinator, UploadPartReceipt, UploadSession};
 
 use std::fmt;

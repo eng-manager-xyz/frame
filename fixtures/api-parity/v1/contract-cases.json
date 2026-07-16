@@ -1,0 +1,136 @@
+{
+  "schema_version": "frame.api-contract-cases.v1",
+  "errors": [
+    {
+      "schema_version": "frame.api.v1",
+      "code": "invalid_request",
+      "correlation_id": "fixture-invalid",
+      "retryable": false
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "code": "not_found",
+      "correlation_id": "fixture-nondisclosure",
+      "retryable": false
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "code": "rate_limited",
+      "correlation_id": "fixture-rate",
+      "retryable": true,
+      "retry_after_ms": 1000
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "code": "indeterminate",
+      "correlation_id": "fixture-indeterminate",
+      "retryable": true,
+      "retry_after_ms": 5000
+    }
+  ],
+  "media_statuses": [
+    {
+      "schema_version": "frame.api.v1",
+      "state": "queued",
+      "progress_basis_points": null,
+      "outputs": [],
+      "failure": null,
+      "retryable": false
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "state": "running",
+      "progress_basis_points": 2500,
+      "outputs": [],
+      "failure": null,
+      "retryable": false
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "state": "indeterminate",
+      "progress_basis_points": null,
+      "outputs": [],
+      "failure": null,
+      "retryable": true
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "state": "succeeded",
+      "progress_basis_points": 10000,
+      "outputs": [
+        {
+          "role": "thumbnail",
+          "path": "/api/v1/media/jobs/fixture-job/outputs/0",
+          "content_type": "image/jpeg",
+          "bytes": 128,
+          "checksum_sha256": "abababababababababababababababababababababababababababababababab"
+        }
+      ],
+      "failure": null,
+      "retryable": false
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "state": "failed",
+      "progress_basis_points": null,
+      "outputs": [],
+      "failure": "provider_unavailable",
+      "retryable": true
+    },
+    {
+      "schema_version": "frame.api.v1",
+      "state": "cancelled",
+      "progress_basis_points": null,
+      "outputs": [],
+      "failure": "cancelled",
+      "retryable": false
+    }
+  ],
+  "compatibility": [
+    {
+      "policy": {
+        "api_major": 1,
+        "current_release": 42,
+        "previous_release": 41,
+        "deprecated_after_ms": 1900000000000,
+        "retired": false
+      },
+      "release": {
+        "surface": "desktop",
+        "api_major": 1,
+        "release": 42
+      },
+      "expected": "current"
+    },
+    {
+      "policy": {
+        "api_major": 1,
+        "current_release": 42,
+        "previous_release": 41,
+        "deprecated_after_ms": 1900000000000,
+        "retired": false
+      },
+      "release": {
+        "surface": "mobile",
+        "api_major": 1,
+        "release": 41
+      },
+      "expected": "previous"
+    },
+    {
+      "policy": {
+        "api_major": 1,
+        "current_release": 42,
+        "previous_release": 41,
+        "deprecated_after_ms": 1900000000000,
+        "retired": false
+      },
+      "release": {
+        "surface": "extension",
+        "api_major": 1,
+        "release": 40
+      },
+      "expected": "upgrade_required"
+    }
+  ]
+}

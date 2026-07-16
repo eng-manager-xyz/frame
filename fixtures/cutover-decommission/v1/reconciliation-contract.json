@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "contract_id": "frame-final-reconciliation-v1",
+  "immutable_manifest": {
+    "required_fields": [
+      "schema_version",
+      "manifest_id",
+      "release_sha",
+      "source_snapshot_digest",
+      "source_checkpoint",
+      "target_migration_level",
+      "window_start_ms",
+      "window_end_ms",
+      "cohort_stage",
+      "tool_versions",
+      "input_digests",
+      "report_digests",
+      "generated_at_ms",
+      "approver_digests"
+    ],
+    "canonical_encoding": "utf8_json_sorted_keys_no_insignificant_whitespace",
+    "digest": "sha256",
+    "append_only_evidence_store_required": true,
+    "mutable_latest_pointer_is_evidence": false
+  },
+  "mysql_d1": {
+    "source_contract": "fixtures/etl/v1/plan.json",
+    "runbook": "docs/operations/business-data-reconciliation.md",
+    "required_dimensions": [
+      "row_count",
+      "primary_key_set",
+      "foreign_key_relationship",
+      "field_hash",
+      "aggregate",
+      "policy_semantic",
+      "sampled_api_behavior",
+      "replay_checkpoint"
+    ],
+    "required_scopes": ["global", "tenant", "table", "relationship", "charter_critical_query"],
+    "maximum_unexplained_differences": 0,
+    "rejects_require_owner_disposition": true,
+    "pii_in_report_forbidden": true,
+    "production_status": "not_collected"
+  },
+  "objects": {
+    "architecture": "docs/architecture/object-backfill-v1.md",
+    "runbook": "docs/operations/object-backfill-reconciliation.md",
+    "required_dimensions": [
+      "object_count",
+      "logical_bytes",
+      "role_count",
+      "full_sha256",
+      "required_media_probe",
+      "missing_source",
+      "missing_target",
+      "duplicate_source",
+      "duplicate_target",
+      "orphan_source",
+      "orphan_target",
+      "ownership_mismatch",
+      "corrupt_or_unplayable",
+      "checkpoint_and_publication_provenance"
+    ],
+    "provider_classes": ["cap_managed_s3", "minio", "byo_s3_compatible", "google_drive", "cloudflare_r2"],
+    "independent_complete_inventory_passes_per_side": 2,
+    "maximum_unexplained_differences": 0,
+    "provider_etag_is_content_hash": false,
+    "source_release_is_deletion": false,
+    "production_status": "not_collected"
+  },
+  "final_gate": {
+    "metadata_and_objects_same_checkpoint_window": true,
+    "replay_drained_and_fenced": true,
+    "all_quarantine_dispositions_attached": true,
+    "sampled_semantic_playback_and_range_probes_required": true,
+    "report_age_within_signed_stage_budget": true,
+    "independent_approver_required": true,
+    "zero_unexplained_differences": true,
+    "automatic_cleanup_on_success": false
+  },
+  "local_proofs": [
+    "python3 -I scripts/migration/test_local.py",
+    "python3 scripts/ci/cutover-authority-conformance.py",
+    "cargo test -p frame-application object_backfill",
+    "cargo test -p frame-domain object_backfill"
+  ],
+  "protected_records": [
+    "final_mysql_d1_manifest_and_report",
+    "final_object_manifest_and_report",
+    "provider_inventory_exports",
+    "quarantine_owner_dispositions",
+    "sampled_real_media_probe_report",
+    "immutable_evidence_store_receipt",
+    "independent_approval"
+  ]
+}

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     fmt,
     path::{Component, Path, PathBuf},
 };
@@ -124,6 +124,8 @@ pub enum WindowRole {
     Recovery,
     Editor,
     Export,
+    Settings,
+    Overlay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -150,6 +152,49 @@ pub enum CommandKind {
     UploadPause,
     UploadResume,
     UploadCancel,
+    RecorderConfigure,
+    CaptureTargetSelect,
+    SettingsApply,
+    PresetApply,
+    Lifecycle,
+    Update,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecorderMode {
+    Instant,
+    Studio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureTargetKind {
+    Display,
+    Window,
+    Region,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleAction {
+    RegisterHotkeys,
+    ShowMainWindow,
+    HideMainWindow,
+    ShowOverlay,
+    HideOverlay,
+    ShowTargetPicker,
+    HideTargetPicker,
+    CloseWindow,
+    ReopenWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateAction {
+    Check,
+    Install,
+    Relaunch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +350,35 @@ pub enum IpcCommand {
     UploadCancel {
         intent_id: String,
     },
+    RecorderConfigure {
+        mode: RecorderMode,
+        countdown_seconds: u8,
+        exclude_frame_windows: bool,
+    },
+    CaptureTargetSelect {
+        kind: CaptureTargetKind,
+        target_token: String,
+    },
+    SettingsApply {
+        expected_revision: u64,
+        mode: RecorderMode,
+        frame_rate: u16,
+        microphone_enabled: bool,
+        system_audio_enabled: bool,
+        camera_enabled: bool,
+        reduced_motion: bool,
+    },
+    PresetApply {
+        preset_token: String,
+        expected_settings_revision: u64,
+    },
+    Lifecycle {
+        action: LifecycleAction,
+    },
+    Update {
+        action: UpdateAction,
+        expected_revision: u64,
+    },
 }
 
 impl fmt::Debug for IpcCommand {
@@ -342,6 +416,12 @@ impl IpcCommand {
             Self::UploadPause { .. } => CommandKind::UploadPause,
             Self::UploadResume { .. } => CommandKind::UploadResume,
             Self::UploadCancel { .. } => CommandKind::UploadCancel,
+            Self::RecorderConfigure { .. } => CommandKind::RecorderConfigure,
+            Self::CaptureTargetSelect { .. } => CommandKind::CaptureTargetSelect,
+            Self::SettingsApply { .. } => CommandKind::SettingsApply,
+            Self::PresetApply { .. } => CommandKind::PresetApply,
+            Self::Lifecycle { .. } => CommandKind::Lifecycle,
+            Self::Update { .. } => CommandKind::Update,
         }
     }
 
@@ -370,6 +450,7 @@ impl IpcCommand {
             | Self::UploadResume { intent_id }
             | Self::UploadCancel { intent_id } => validate_token(intent_id),
             Self::DeviceSelect { device_token, .. } => validate_token(device_token),
+            Self::CaptureTargetSelect { target_token, .. } => validate_token(target_token),
             Self::RecoveryInspect { project_path }
             | Self::RecoveryOpen { project_path }
             | Self::RecoveryDiscard { project_path }
@@ -403,6 +484,31 @@ impl IpcCommand {
                 validate_path_text(source_path)?;
                 validate_token(upload_intent)
             }
+            Self::RecorderConfigure {
+                countdown_seconds, ..
+            } if *countdown_seconds > 10 => Err(IpcError::InvalidPayload),
+            Self::SettingsApply {
+                expected_revision,
+                frame_rate,
+                ..
+            } => {
+                if *expected_revision == 0 || !matches!(frame_rate, 24 | 25 | 30 | 50 | 60) {
+                    return Err(IpcError::InvalidPayload);
+                }
+                Ok(())
+            }
+            Self::PresetApply {
+                preset_token,
+                expected_settings_revision,
+            } => {
+                if *expected_settings_revision == 0 {
+                    return Err(IpcError::InvalidPayload);
+                }
+                validate_token(preset_token)
+            }
+            Self::Update {
+                expected_revision, ..
+            } if *expected_revision == 0 => Err(IpcError::InvalidPayload),
             _ => Ok(()),
         }
     }
@@ -472,6 +578,12 @@ const KNOWN_COMMANDS: &[&str] = &[
     "upload_pause",
     "upload_resume",
     "upload_cancel",
+    "recorder_configure",
+    "capture_target_select",
+    "settings_apply",
+    "preset_apply",
+    "lifecycle",
+    "update",
 ];
 
 /// Decodes untrusted JSON without reflecting parser details or payload content
@@ -684,7 +796,11 @@ struct PendingRequest {
 pub struct ScopeRegistry {
     windows: HashMap<WindowId, WindowSession>,
     pending: HashMap<RequestId, PendingRequest>,
+    completed: HashSet<RequestId>,
+    completed_order: VecDeque<RequestId>,
 }
+
+const COMPLETED_REQUEST_WINDOW: usize = 4_096;
 
 impl fmt::Debug for ScopeRegistry {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -692,6 +808,7 @@ impl fmt::Debug for ScopeRegistry {
             .debug_struct("ScopeRegistry")
             .field("window_count", &self.windows.len())
             .field("pending_count", &self.pending.len())
+            .field("completed_count", &self.completed.len())
             .finish()
     }
 }
@@ -752,7 +869,9 @@ impl ScopeRegistry {
         if request.sequence > expected_sequence {
             return Err(IpcError::SequenceGap);
         }
-        if self.pending.contains_key(&request.request_id) {
+        if self.pending.contains_key(&request.request_id)
+            || self.completed.contains(&request.request_id)
+        {
             return Err(IpcError::DuplicateRequestId);
         }
         let validated_path = request
@@ -801,6 +920,13 @@ impl ScopeRegistry {
         }
         let command = pending.command;
         self.pending.remove(&response.request_id);
+        self.completed.insert(response.request_id.clone());
+        self.completed_order.push_back(response.request_id.clone());
+        if self.completed_order.len() > COMPLETED_REQUEST_WINDOW
+            && let Some(expired) = self.completed_order.pop_front()
+        {
+            self.completed.remove(&expired);
+        }
         Ok(AcceptedResponse { response, command })
     }
 }
@@ -865,7 +991,11 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
     match role {
         WindowRole::Main => matches!(
             command,
-            CommandKind::WindowOpen | CommandKind::DeviceEnumerate | CommandKind::RecoveryScan
+            CommandKind::WindowOpen
+                | CommandKind::DeviceEnumerate
+                | CommandKind::RecoveryScan
+                | CommandKind::Lifecycle
+                | CommandKind::Update
         ),
         WindowRole::Recorder => matches!(
             command,
@@ -881,6 +1011,8 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
                 | CommandKind::UploadPause
                 | CommandKind::UploadResume
                 | CommandKind::UploadCancel
+                | CommandKind::RecorderConfigure
+                | CommandKind::CaptureTargetSelect
         ),
         WindowRole::Recovery => matches!(
             command,
@@ -907,6 +1039,20 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
                 CommandKind::ExportStart | CommandKind::ExportCancel
             )
         }
+        WindowRole::Settings => {
+            matches!(
+                command,
+                CommandKind::SettingsApply | CommandKind::PresetApply
+            )
+        }
+        WindowRole::Overlay => matches!(
+            command,
+            CommandKind::RecorderPause
+                | CommandKind::RecorderResume
+                | CommandKind::RecorderStop
+                | CommandKind::RecorderCancel
+                | CommandKind::Lifecycle
+        ),
     }
 }
 

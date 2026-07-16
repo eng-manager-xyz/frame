@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "ledger_id": "frame-subdomain-launch-protected-evidence-v1",
+  "production_authority_changed": false,
+  "local_evidence_may_replace_protected_records": false,
+  "records": [
+    {
+      "id": "p7-dependency-and-defect-signoff",
+      "status": "not_collected",
+      "owner_role": "release_commander_role",
+      "collection_command": "python3 -I scripts/ci/launch-go-no-go.py --snapshot /protected/frame-launch/snapshot.json --output /protected/frame-launch/decision.json",
+      "requires": "signed closure records for issues 34, 35, and 37 through 43 at the exact release plus zero open critical or high defects",
+      "blocks": ["launch_go", "portfolio_link_enable"]
+    },
+    {
+      "id": "dashboard-alert-and-on-call-evidence",
+      "status": "not_collected",
+      "owner_role": "incident_commander_role",
+      "collection_command": "python3 -I scripts/ci/launch-go-no-go.py --snapshot /protected/frame-launch/snapshot.json --output /protected/frame-launch/decision.json",
+      "requires": "privacy-safe Cloudflare Worker Render client dashboard exports, every seeded boundary alert, runbook routing, pager acknowledgement, and protected contact resolution",
+      "blocks": ["operator_detection_acceptance", "launch_go"]
+    },
+    {
+      "id": "provider-synthetic-history",
+      "status": "not_collected",
+      "owner_role": "worker_operator_role",
+      "collection_command": "scripts/ci/smoke-canonical-domain.sh https://frame.engmanager.xyz /protected/frame-launch/canonical-smoke.json $RELEASE_SHA",
+      "requires": "bounded generated-media landing API auth upload direct-R2 finalize process public playback Range cache and cleanup history against the protected production topology",
+      "blocks": ["synthetic_acceptance", "launch_go"]
+    },
+    {
+      "id": "release-version-join-and-n-minus-1",
+      "status": "not_collected",
+      "owner_role": "release_commander_role",
+      "collection_command": "python3 -I scripts/ci/release-join-conformance.py --origin https://frame.engmanager.xyz --token-file /protected/frame-launch/diagnostic-token --expected-source-git-sha $RELEASE_SHA --expected-worker-release $WORKER_RELEASE --expected-render-deploy $RENDER_DEPLOY --expected-migration-level $MIGRATION_LEVEL --expected-portfolio-consumer $PORTFOLIO_CONSUMER --evidence /protected/frame-launch/release-join.json",
+      "requires": "safe endpoint or header export joining exact Git SHA contract major Worker release Render deploy migration level and current plus N-1 portfolio consumer",
+      "blocks": ["paired_release_acceptance", "launch_go"]
+    },
+    {
+      "id": "capacity-cost-and-quota-approval",
+      "status": "not_collected",
+      "owner_role": "cost_approver_role",
+      "collection_command": "python3 -I scripts/ci/launch-go-no-go.py --snapshot /protected/frame-launch/snapshot.json --output /protected/frame-launch/decision.json",
+      "requires": "production-shaped startup SSR request upload queue playback load report with thirty percent headroom plus named numeric Render Cloudflare D1 R2 Media and native cost and quota approvals",
+      "blocks": ["capacity_cost_acceptance", "launch_go"]
+    },
+    {
+      "id": "cache-privacy-and-telemetry-audit",
+      "status": "not_collected",
+      "owner_role": "security_approver_role",
+      "collection_command": "python3 -I scripts/ci/same-origin-live-conformance.py --origin https://frame.engmanager.xyz --require-full --evidence /protected/frame-launch/same-origin.json",
+      "requires": "seeded private HIT stale deletion and cookie variance incidents, exact cache traces, log dashboard trace support and synthetic artifact scan, and zero forbidden data",
+      "blocks": ["privacy_acceptance", "launch_go"]
+    },
+    {
+      "id": "dns-tls-route-and-zone-nonregression",
+      "status": "not_collected",
+      "owner_role": "edge_operator_role",
+      "collection_command": "python3 -I scripts/ci/same-origin-live-conformance.py --origin https://frame.engmanager.xyz --require-full --evidence /protected/frame-launch/same-origin.json",
+      "requires": "DNS-only certificate wait Full strict proxy broad API route raw normalization and unchanged apex www shop portfolio and unrelated zone resource evidence",
+      "blocks": ["edge_launch_acceptance", "launch_go"]
+    },
+    {
+      "id": "portfolio-outage-baseline",
+      "status": "not_collected",
+      "owner_role": "portfolio_owner_role",
+      "collection_command": "python3 -I scripts/ci/launch-go-no-go.py --snapshot /protected/frame-launch/snapshot.json --output /protected/frame-launch/decision.json",
+      "requires": "portfolio availability and latency baseline compared while Frame DNS Render Worker D1 R2 managed Media and native processing are each unavailable",
+      "blocks": ["portfolio_independence_acceptance", "launch_go"]
+    },
+    {
+      "id": "timed-full-rollback-game-day",
+      "status": "not_collected",
+      "owner_role": "incident_commander_role",
+      "collection_command": "python3 -I scripts/ci/launch-go-no-go.py --snapshot /protected/frame-launch/snapshot.json --output /protected/frame-launch/decision.json",
+      "requires": "timestamped DNS-only proxy Worker Route Render portfolio cache purge Media fallback secret rotation and D1 forward-fix rehearsals with unrelated zone resources and durable data preserved",
+      "blocks": ["rollback_acceptance", "launch_go"]
+    },
+    {
+      "id": "signed-launch-observation-and-post-launch-review",
+      "status": "not_collected",
+      "owner_role": "repository_owner_role",
+      "collection_command": "python3 -I scripts/ci/launch-go-no-go.py --snapshot /protected/frame-launch/snapshot.json --output /protected/frame-launch/decision.json",
+      "requires": "signed staged launch checklist go-no-go observation report remaining-risk owners and explicit decisions for default Render hostname optional integrations and legacy paths",
+      "blocks": ["launch_signature", "program_closure"]
+    }
+  ]
+}

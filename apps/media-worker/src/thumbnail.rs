@@ -1,14 +1,13 @@
 use std::{
-    env, fmt,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    path::{Path, PathBuf},
+    env, fmt, fs,
+    path::Path,
     time::{Duration, Instant},
 };
-#[cfg(all(not(test), unix))]
+#[cfg(test)]
 use std::{
-    process::{Command, Stdio},
-    thread,
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    path::PathBuf,
 };
 
 use frame_media::{
@@ -17,6 +16,7 @@ use frame_media::{
 };
 use gst::prelude::*;
 use gstreamer as gst;
+#[cfg(test)]
 use uuid::Uuid;
 
 use crate::protocol::{MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES};
@@ -24,12 +24,6 @@ use crate::protocol::{MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES};
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
 const PIPELINE_TIMEOUT: Duration = Duration::from_secs(45);
 const BUS_POLL_MS: u64 = 50;
-#[cfg(all(not(test), unix))]
-const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
-#[cfg(all(not(test), unix))]
-const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(100);
-#[cfg(all(not(test), unix))]
-const MAX_RESIDENT_BYTES: u64 = 1_024 * 1_024 * 1_024;
 const MAX_DURATION_NS: u64 = 4 * 60 * 60 * 1_000_000_000;
 const MAX_WIDTH: i32 = 7_680;
 const MAX_HEIGHT: i32 = 4_320;
@@ -53,27 +47,8 @@ pub(crate) enum ThumbnailError {
     Timeout,
     Cancelled,
     ResourceLimit,
+    #[allow(dead_code)]
     InvalidOutput,
-}
-
-impl ThumbnailError {
-    pub(crate) const fn error_class(self) -> &'static str {
-        match self {
-            Self::InvalidInput => "input_invalid",
-            Self::MissingRuntime | Self::Pipeline => "pipeline_failure",
-            Self::Timeout => "pipeline_timeout",
-            Self::Cancelled => "cancelled",
-            Self::ResourceLimit => "resource_limit",
-            Self::InvalidOutput => "output_invalid",
-        }
-    }
-
-    pub(crate) const fn retryable(self) -> bool {
-        matches!(
-            self,
-            Self::MissingRuntime | Self::Timeout | Self::ResourceLimit
-        )
-    }
 }
 
 impl fmt::Display for ThumbnailError {
@@ -160,6 +135,7 @@ const fn thumbnail_sandbox_ready() -> bool {
     false
 }
 
+#[cfg(test)]
 pub(crate) fn render_thumbnail_v1(
     source: &[u8],
     output_limit: u64,
@@ -179,94 +155,8 @@ pub(crate) fn render_thumbnail_v1(
     let source_path = scratch.path().join("source.media");
     let output_path = scratch.path().join("thumbnail.png");
     write_source(&source_path, source)?;
-    #[cfg(test)]
-    {
-        run_child_pipeline(&source_path, &output_path, output_limit, cancellation)?;
-        read_output(&output_path, output_limit)
-    }
-    #[cfg(all(not(test), unix))]
-    {
-        run_isolated_pipeline(&source_path, &output_path, output_limit, cancellation)?;
-        read_output(&output_path, output_limit)
-    }
-    #[cfg(all(not(test), not(unix)))]
-    {
-        Err(ThumbnailError::MissingRuntime)
-    }
-}
-
-#[cfg(all(not(test), unix))]
-fn run_isolated_pipeline(
-    source_path: &Path,
-    output_path: &Path,
-    output_limit: u64,
-    cancellation: &CancellationToken,
-) -> Result<(), ThumbnailError> {
-    let executable = env::current_exe().map_err(|_| ThumbnailError::MissingRuntime)?;
-    let mut command = Command::new("/bin/sh");
-    command
-        .arg("-c")
-        .arg("umask 077; ulimit -t 55 || exit 72; ulimit -f 131072 || exit 72; exec \"$@\"")
-        .arg("frame-thumbnail-sandbox")
-        .arg(executable)
-        .arg("thumbnail-child")
-        .arg(source_path)
-        .arg(output_path)
-        .arg(output_limit.to_string())
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for name in ["GST_PLUGIN_SYSTEM_PATH_1_0", "PATH", "TMPDIR"] {
-        if let Some(value) = env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|_| ThumbnailError::MissingRuntime)?;
-    let started = Instant::now();
-    loop {
-        if cancellation.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(ThumbnailError::Cancelled);
-        }
-        if started.elapsed() >= CHILD_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(ThumbnailError::Timeout);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(_)) => return Err(ThumbnailError::Pipeline),
-            Ok(None) => {}
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ThumbnailError::Pipeline);
-            }
-        }
-        match resident_set_bytes(child.id()) {
-            Some(bytes) if bytes <= MAX_RESIDENT_BYTES => {
-                thread::sleep(CHILD_POLL_INTERVAL);
-            }
-            Some(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ThumbnailError::ResourceLimit);
-            }
-            None => match child.try_wait() {
-                Ok(Some(status)) if status.success() => return Ok(()),
-                Ok(Some(_)) => return Err(ThumbnailError::Pipeline),
-                Ok(None) | Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(ThumbnailError::ResourceLimit);
-                }
-            },
-        }
-    }
+    run_child_pipeline(&source_path, &output_path, output_limit, cancellation)?;
+    read_output(&output_path, output_limit)
 }
 
 #[cfg(all(not(test), unix))]
@@ -506,6 +396,7 @@ fn run_pipeline(
     }
 }
 
+#[cfg(test)]
 fn write_source(path: &Path, source: &[u8]) -> Result<(), ThumbnailError> {
     let mut file = OpenOptions::new()
         .create_new(true)
@@ -517,6 +408,7 @@ fn write_source(path: &Path, source: &[u8]) -> Result<(), ThumbnailError> {
     file.sync_all().map_err(|_| ThumbnailError::ResourceLimit)
 }
 
+#[cfg(test)]
 fn read_output(path: &Path, output_limit: u64) -> Result<Vec<u8>, ThumbnailError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| ThumbnailError::InvalidOutput)?;
     if !metadata.file_type().is_file()
@@ -541,10 +433,12 @@ fn read_output(path: &Path, output_limit: u64) -> Result<Vec<u8>, ThumbnailError
     Ok(bytes)
 }
 
+#[cfg(test)]
 struct ScratchDirectory {
     path: PathBuf,
 }
 
+#[cfg(test)]
 impl ScratchDirectory {
     fn create() -> Result<Self, ThumbnailError> {
         let path = std::env::temp_dir().join(format!(
@@ -566,6 +460,7 @@ impl ScratchDirectory {
     }
 }
 
+#[cfg(test)]
 impl Drop for ScratchDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);

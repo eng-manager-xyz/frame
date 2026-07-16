@@ -54,6 +54,13 @@ impl ClientError {
         Self { code }
     }
 
+    /// Construct the redacted retryable error used by consumer-side circuit
+    /// breakers and other transport admission controls.
+    #[must_use]
+    pub const fn transport_unavailable() -> Self {
+        Self::new(ClientErrorCode::TransportUnavailable)
+    }
+
     #[must_use]
     pub const fn code(&self) -> ClientErrorCode {
         self.code

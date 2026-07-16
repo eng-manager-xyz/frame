@@ -111,7 +111,26 @@
   ],
   "cutover": {
     "authorized_operator_digests": ["bfb6f5278ff3bc2c308a382564e7b971db98bb5cac642aed5ddb65becd1804a5"],
+    "authorized_tenant_digests": [
+      "16aec69986a7b51b9fcec7f51320211bbf5af1a59559b8bfd506d7b96494be59",
+      "5abbcec4436addd00a4b8cdf18c22405288499a065a92dae34b49591cb5e08bc",
+      "f86b82a2b7a1d17fa403410d61a6916d48c82916b3633bd239c544d2ba22db09"
+    ],
     "domains": ["metadata"],
+    "maintenance_windows": [
+      {
+        "end_ms": 1735693300000,
+        "start_ms": 1735689699000
+      }
+    ],
+    "slo": {
+      "max_contention_events": 0,
+      "max_dead_letter_events": 0,
+      "max_pending_lag_ms": 5000,
+      "max_shadow_mismatches": 0,
+      "minimum_shadow_observations": 1,
+      "shadow_window_ms": 60000
+    },
     "shadow_queries": {
       "account_list": {
         "order_by": ["id"],

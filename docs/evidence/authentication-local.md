@@ -30,7 +30,7 @@ also passes with the auth files included in an isolated index.
 | Browser boundary | Exact origin, Fetch Metadata, CSRF cookie/header match, and one-use repository mutation grants are enforced |
 | Recovery | Existing sessions and session-bound OTP/OAuth link continuations are revoked/purged before a fresh capability can issue |
 | Account linking | Unowned targets can link; owned/self/cross-user targets deny or suppress; logout/logout-all/recovery invalidate pending links; completion returns no login grant |
-| OAuth | State, S256 PKCE, callback, audience, preflight ordering, replay, post-provider expiry, provider failure audit, and Google-style authorization-code grammar are covered |
+| OAuth | State, S256 PKCE, callback, audience, preflight ordering, replay, post-provider expiry, provider failure audit, and Google-style authorization-code grammar are covered; the provider-free begin/preflight/finalize repository lifecycle also passes compiled local Worker/D1 conformance without persisting raw provider codes |
 | API keys | Tenant role/scope/expiry/revocation and hash-key overlap are enforced in repository conformance; signup cannot self-grant authority |
 | Abuse controls | Identifier/source/device/global limits work independently; fallback histories merge; global denial short-circuits new cardinality; TTL and hard cap are tested |
 | Delivery outbox | Lease reclaim, stale acknowledgement fencing, retry exhaustion, suppressed cleanup, and redaction are covered |
@@ -54,7 +54,7 @@ The adversarial review found and verified fixes for:
 
 Before issue 13 or production authentication can close, the project still needs:
 
-- a D1 adapter running the same repository suite under contention/fault injection;
+- remote D1 contention/replication and provider-induced delayed-commit fault injection beyond the passing compiled local Worker/D1 repository suite;
 - production CSPRNG, authenticated-encryption delivery sealer, and provider/email adapters;
 - the approved legacy session compatibility or forced-login rehearsal;
 - cross-client browser/desktop/mobile/extension fixtures through real transports;

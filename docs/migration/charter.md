@@ -38,6 +38,67 @@ identity, availability, or media-processing dependency on Frame. Optional
 status, handoff, CORS, and player embedding are independently gated and remain
 off until their security tests pass.
 
+## Migration glossary
+
+| Term | Meaning in this program |
+|---|---|
+| authority | the one system permitted to accept a durable mutation for a scoped domain and tenant |
+| shadow read | a non-authoritative comparison that cannot change either system |
+| replay | ordered, idempotent application of a captured authoritative change |
+| fence | a monotonic token that prevents a superseded writer or worker from publishing |
+| compatibility | current and N-1 clients receive the frozen public behavior; it does not mean byte-identical provider output |
+| parity | the approved semantic, privacy, failure, and recovery tolerances for a capability |
+| protected evidence | evidence requiring provider credentials, representative hardware, production-shaped data, or accountable human approval |
+| irreversible gate | an authority or retention transition whose rollback window has expired and therefore requires a signed release decision |
+
+## Ownership map
+
+Names and contact details belong in the protected release record; repository
+artifacts use stable roles so they do not become stale or expose personal data.
+
+| Decision or artifact | Accountable role | Repository evidence owner |
+|---|---|---|
+| product scope, parity, deprecation | product owner | migration charter and capability matrix |
+| identity, tenant and browser security | security owner | threat models and security checkers |
+| D1/R2 authority, reconciliation and restore | data/storage owner | migration and storage conformance lanes |
+| Media Transformations limits, spend, output and kill switch | managed-media owner | media-service catalog and protected canary |
+| native GStreamer capacity and fallback | native-media owner | media conformance and platform lanes |
+| SLOs, alerts, incident and rollback | operations/release owner | operational and launch gates |
+| upstream reuse, licenses and source obligations | legal/provenance owner | dependency policy and per-change provenance record |
+
+The immutable release record maps each role to the approving actor and Git SHA.
+Missing mappings or acknowledgements are blockers and are never inferred from
+this table.
+
+## Decision log
+
+| Decision | Authority | Current disposition | Reopen condition |
+|---|---|---|---|
+| edge/native runtime split | ADR 0001 | accepted | a new ADR proves Worker/native boundary changes preserve every contract |
+| hosted object store | ADR 0002 | private R2 | a new ADR and complete object migration/rollback plan |
+| managed derivatives | ADR 0003 | `[media]` plus native fallback; `[stream]` disabled | separate product, cost, security and migration approval |
+| public hostname topology | ADR 0004 | independent Frame origin | reviewed DNS/routing/security replacement |
+| UI rendering | ADR 0005 | Leptos SSR/hydration and Tauri CSR | measured parity or security failure with a replacement ADR |
+
+Unresolved provider prices, regional capacity, codec/legal approval, and
+production evidence are release-record inputs, not silent edits to these
+decisions.
+
+## Prioritized vertical slice
+
+The first executable slice is deliberately ordered and rollback-safe:
+
+1. create an authenticated tenant-scoped video record with an idempotency key;
+2. issue a scoped upload intent and publish one immutable verified source;
+3. enqueue and fence one versioned derivative request, selecting managed or
+   native execution only after capability preflight;
+4. reconcile the immutable output manifest and terminal D1 state; and
+5. serve a provider-neutral public-share descriptor and byte-range response.
+
+Each step retains its prior durable postcondition on retry. Later editor,
+collaboration, portfolio, and optional browser integrations build on this slice
+rather than bypassing its authority and privacy boundaries.
+
 ## Supported release matrix
 
 | Surface | Initial support | Gate |
@@ -109,6 +170,13 @@ release-blocking incidents independent of aggregate availability.
    and private-title details stay out of public errors and telemetry.
 6. Legacy routes either pass their frozen fixture or return a documented
    retirement/migration response. Accidental 404 parity is not retirement.
+
+Hosted R2 is the required storage contract. S3-compatible, MinIO, user-owned
+bucket, Drive, and self-hosted modes are migration inputs only; no parity loss
+for an existing tenant is accepted until that mode has an owner-approved
+export, retained adapter, or retirement disposition. Self-hosting remains a
+preview and cannot weaken tenant isolation, immutable keys, checksums,
+retention, or recovery.
 
 ## Authority and rollback
 

@@ -2,7 +2,11 @@ use std::fmt;
 
 use thiserror::Error;
 
-pub const MEDIA_JOB_CATALOG_VERSION: u16 = 1;
+mod service;
+
+pub use service::*;
+
+pub const MEDIA_JOB_CATALOG_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MediaJobKind {
@@ -11,16 +15,68 @@ pub enum MediaJobKind {
     Spritesheet,
     AudioExtract,
     Probe,
+    AudioPresence,
+    DistributionMaster,
+    AnimatedPreview,
+    AudioNormalize,
     RemuxRepair,
+    SegmentMux,
     Waveform,
     Composition,
     Normalize,
+    Transcription,
+    AiCleanup,
+}
+
+impl MediaJobKind {
+    pub const ALL: [Self; 16] = [
+        Self::OptimizedClip,
+        Self::Frame,
+        Self::Spritesheet,
+        Self::AudioExtract,
+        Self::Probe,
+        Self::AudioPresence,
+        Self::DistributionMaster,
+        Self::AnimatedPreview,
+        Self::AudioNormalize,
+        Self::RemuxRepair,
+        Self::SegmentMux,
+        Self::Waveform,
+        Self::Composition,
+        Self::Normalize,
+        Self::Transcription,
+        Self::AiCleanup,
+    ];
+
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::OptimizedClip => "optimized_clip",
+            Self::Frame => "frame",
+            Self::Spritesheet => "spritesheet",
+            Self::AudioExtract => "audio_extract",
+            Self::Probe => "probe",
+            Self::AudioPresence => "audio_presence",
+            Self::DistributionMaster => "distribution_master",
+            Self::AnimatedPreview => "animated_preview",
+            Self::AudioNormalize => "audio_normalize",
+            Self::RemuxRepair => "remux_repair",
+            Self::SegmentMux => "segment_mux",
+            Self::Waveform => "waveform",
+            Self::Composition => "composition",
+            Self::Normalize => "normalize",
+            Self::Transcription => "transcription",
+            Self::AiCleanup => "ai_cleanup",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaExecutorKind {
     CloudflareMedia,
     NativeGstreamer,
+    ExternalProvider,
+    ControlPlane,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +155,46 @@ const JOBS: &[MediaJobSpec] = &[
         fallback_to_native: false,
     },
     MediaJobSpec {
+        kind: MediaJobKind::AudioPresence,
+        managed_supported: false,
+        native_supported: true,
+        preferred: MediaExecutorKind::NativeGstreamer,
+        progress: ProgressCapability::Indeterminate,
+        cancellation: CancellationCapability::InFlight,
+        timeout_ms: 30_000,
+        fallback_to_native: false,
+    },
+    MediaJobSpec {
+        kind: MediaJobKind::DistributionMaster,
+        managed_supported: false,
+        native_supported: true,
+        preferred: MediaExecutorKind::NativeGstreamer,
+        progress: ProgressCapability::Monotonic,
+        cancellation: CancellationCapability::InFlight,
+        timeout_ms: 3_600_000,
+        fallback_to_native: false,
+    },
+    MediaJobSpec {
+        kind: MediaJobKind::AnimatedPreview,
+        managed_supported: false,
+        native_supported: true,
+        preferred: MediaExecutorKind::NativeGstreamer,
+        progress: ProgressCapability::Monotonic,
+        cancellation: CancellationCapability::InFlight,
+        timeout_ms: 300_000,
+        fallback_to_native: false,
+    },
+    MediaJobSpec {
+        kind: MediaJobKind::AudioNormalize,
+        managed_supported: false,
+        native_supported: true,
+        preferred: MediaExecutorKind::NativeGstreamer,
+        progress: ProgressCapability::Monotonic,
+        cancellation: CancellationCapability::InFlight,
+        timeout_ms: 900_000,
+        fallback_to_native: false,
+    },
+    MediaJobSpec {
         kind: MediaJobKind::RemuxRepair,
         managed_supported: false,
         native_supported: true,
@@ -106,6 +202,16 @@ const JOBS: &[MediaJobSpec] = &[
         progress: ProgressCapability::Monotonic,
         cancellation: CancellationCapability::InFlight,
         timeout_ms: 900_000,
+        fallback_to_native: false,
+    },
+    MediaJobSpec {
+        kind: MediaJobKind::SegmentMux,
+        managed_supported: false,
+        native_supported: true,
+        preferred: MediaExecutorKind::NativeGstreamer,
+        progress: ProgressCapability::Monotonic,
+        cancellation: CancellationCapability::InFlight,
+        timeout_ms: 1_800_000,
         fallback_to_native: false,
     },
     MediaJobSpec {
@@ -136,6 +242,26 @@ const JOBS: &[MediaJobSpec] = &[
         progress: ProgressCapability::Monotonic,
         cancellation: CancellationCapability::InFlight,
         timeout_ms: 900_000,
+        fallback_to_native: false,
+    },
+    MediaJobSpec {
+        kind: MediaJobKind::Transcription,
+        managed_supported: false,
+        native_supported: false,
+        preferred: MediaExecutorKind::ExternalProvider,
+        progress: ProgressCapability::Indeterminate,
+        cancellation: CancellationCapability::SuppressPublication,
+        timeout_ms: 3_600_000,
+        fallback_to_native: false,
+    },
+    MediaJobSpec {
+        kind: MediaJobKind::AiCleanup,
+        managed_supported: false,
+        native_supported: false,
+        preferred: MediaExecutorKind::ExternalProvider,
+        progress: ProgressCapability::Indeterminate,
+        cancellation: CancellationCapability::SuppressPublication,
+        timeout_ms: 3_600_000,
         fallback_to_native: false,
     },
 ];
@@ -185,6 +311,7 @@ pub enum VideoCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCodec {
     Aac,
+    Mp3,
     Opus,
     Vorbis,
     Pcm,

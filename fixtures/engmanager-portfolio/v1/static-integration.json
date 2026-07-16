@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/matthewharwood/engmanager.xyz.git",
+  "base_commit": "1de52bc8f25793dea3697e67765d53785c05cdfa",
+  "integration_mode": "static-link-only",
+  "patch": "engmanager-static-frame.patch",
+  "patch_sha256": "88f682ebc9d96dd0db0c0da628eadfec8af6aeb18e57b91c5c12b497b680ef25",
+  "canonical_production_origin": "https://frame.engmanager.xyz/",
+  "configuration_variable": "FRAME_ORIGIN",
+  "live_frame_data": false,
+  "frame_client_dependency": false,
+  "changed_files": [
+    "_docs/frame-integration.md",
+    "website/css/src/homepage.css",
+    "website/src/components/nav/mod.rs",
+    "website/src/config.rs",
+    "website/src/main.rs",
+    "website/src/pages/articles.rs",
+    "website/src/pages/homepage.rs",
+    "website/src/pages/search.rs",
+    "website/src/router.rs",
+    "website/src/sitemap.rs"
+  ]
+}

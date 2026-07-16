@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "scenario_set_id": "frame-cutover-dashboard-scenarios-v1",
+  "base_snapshot": {
+    "schema_version": 1,
+    "snapshot_id": "synthetic-ready-internal-v1",
+    "scenario_kind": "synthetic_local_validation",
+    "synthetic": true,
+    "stage_id": "internal",
+    "release_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observed_at_ms": 1735776000000,
+    "evaluated_at_ms": 1735776001000,
+    "window_start_ms": 1735689600000,
+    "window_end_ms": 1735776000000,
+    "phase_gates": {
+      "p0": {"signed": true, "evidence_digest": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "p1": {"signed": true, "evidence_digest": "1111111111111111111111111111111111111111111111111111111111111111"},
+      "p2": {"signed": true, "evidence_digest": "2222222222222222222222222222222222222222222222222222222222222222"},
+      "p3": {"signed": true, "evidence_digest": "3333333333333333333333333333333333333333333333333333333333333333"},
+      "p4": {"signed": true, "evidence_digest": "4444444444444444444444444444444444444444444444444444444444444444"},
+      "p5": {"signed": true, "evidence_digest": "5555555555555555555555555555555555555555555555555555555555555555"}
+    },
+    "blockers": {"unowned_critical": 0, "unowned_high": 0},
+    "slos": {
+      "public_availability": 0.9999,
+      "api_availability": 0.9999,
+      "landing_latency_p95_ms": 700,
+      "api_latency_p95_ms": 450,
+      "upload_finalize_success": 0.9999,
+      "playback_start_p95_ms": 1900,
+      "time_to_share_p95_ms": 29000,
+      "privacy_corruption_or_ack_loss": 0
+    },
+    "parity": {
+      "unexplained_route_differences": 0,
+      "unexplained_authorization_differences": 0,
+      "unexplained_media_differences": 0
+    },
+    "support": {"open_cutover_sev1_or_sev2": 0, "within_signed_volume_budget": true},
+    "reconciliation": {
+      "unexplained_row_differences": 0,
+      "unexplained_relationship_differences": 0,
+      "unexplained_aggregate_differences": 0,
+      "unexplained_field_hash_differences": 0,
+      "unexplained_semantic_differences": 0,
+      "unexplained_object_count_differences": 0,
+      "unexplained_object_byte_differences": 0,
+      "unexplained_object_checksum_differences": 0
+    },
+    "backlog": {"dead_letters": 0, "within_signed_lag_and_queue_budget": true, "unowned_indeterminate_effects": 0},
+    "clients": {
+      "current_release_ready": true,
+      "n_minus_1_release_ready": true,
+      "within_signed_adoption_budget": true,
+      "legacy_writers_fenced_or_supported": true
+    },
+    "capacity": {
+      "minimum_headroom_basis_points": 3000,
+      "provider_limits_within_signed_budget": true,
+      "native_fallback_ready": true
+    },
+    "rollback": {
+      "production_scale_rehearsal_succeeded": true,
+      "elapsed_ms": 899999,
+      "canary_writes_preserved": true,
+      "compatible_pointer_verified": true
+    },
+    "managed_media": {
+      "usage_and_cost_within_signed_budget": true,
+      "limit_rejection_within_signed_budget": true,
+      "provider_errors_within_signed_budget": true,
+      "fallback_within_signed_budget": true,
+      "unexplained_output_drift": 0,
+      "duplicate_artifacts": 0,
+      "billable_effects_without_terminal_state": 0
+    },
+    "evidence": {
+      "signed_stage_record": true,
+      "release_manifest_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "snapshot_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "production_evidence_attached": false,
+      "rollback_expiry_approved": false,
+      "final_reconciliation_attached": false,
+      "source_retention_approved": false,
+      "legacy_write_denial_proved": false,
+      "post_cutover_monitoring_active": false
+    }
+  },
+  "scenarios": [
+    {
+      "id": "synthetic_ready_is_advisory_go",
+      "patch": {},
+      "expected_decision": "GO",
+      "expected_failed_codes": []
+    },
+    {
+      "id": "stale_snapshot_stops",
+      "patch": {"evaluated_at_ms": 1735776600001},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["snapshot_freshness"]
+    },
+    {
+      "id": "unsigned_phase_stops",
+      "patch": {"phase_gates": {"p4": {"signed": false, "evidence_digest": null}}},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["phase_p4_signed"]
+    },
+    {
+      "id": "parity_difference_stops",
+      "patch": {"parity": {"unexplained_route_differences": 1}},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["route_parity"]
+    },
+    {
+      "id": "rollback_failure_stops",
+      "patch": {"rollback": {"production_scale_rehearsal_succeeded": false, "elapsed_ms": 900001, "canary_writes_preserved": false}},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["rollback_preserved_writes", "rollback_rehearsed", "rollback_time"]
+    },
+    {
+      "id": "media_drift_and_duplicate_stop",
+      "patch": {"managed_media": {"unexplained_output_drift": 1, "duplicate_artifacts": 1}},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["media_duplicate_artifacts", "media_output_drift"]
+    },
+    {
+      "id": "reconciliation_difference_stops",
+      "patch": {"reconciliation": {"unexplained_relationship_differences": 1, "unexplained_object_checksum_differences": 1}},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["metadata_relationships", "object_checksums"]
+    },
+    {
+      "id": "capacity_and_client_readiness_stop",
+      "patch": {"capacity": {"minimum_headroom_basis_points": 2999}, "clients": {"n_minus_1_release_ready": false}},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["capacity_headroom", "n_minus_1_client"]
+    },
+    {
+      "id": "protected_shape_without_evidence_stops",
+      "patch": {"scenario_kind": "protected_shape_validation_only", "synthetic": false},
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["production_evidence_attached"]
+    },
+    {
+      "id": "irreversible_stage_missing_approvals_stops",
+      "patch": {
+        "stage_id": "irreversible_finalize",
+        "snapshot_id": "synthetic-irreversible-missing-approvals-v1",
+        "window_start_ms": 1734470400000
+      },
+      "expected_decision": "NO_GO",
+      "expected_failed_codes": ["final_reconciliation_attached", "legacy_write_denial_proved", "post_cutover_monitoring_active", "rollback_expiry_approved", "source_retention_approved"]
+    }
+  ]
+}

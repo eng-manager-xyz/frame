@@ -7,6 +7,7 @@
 
 use std::{cmp::Ordering, collections::BTreeSet, future::Future, ops::Range, time::Duration};
 
+use frame_domain::{business_initial_event_fingerprint, business_payload_checksum};
 use futures::{future::Either, future::select, pin_mut};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
@@ -16,7 +17,7 @@ use worker::{D1Database, D1PreparedStatement, Delay, Error};
 use crate::{
     commands::{
         COMMAND_TTL_MS, MediaJobStatusResponse, StoredCommandRow, UploadStatusResponse,
-        VideoResponse, WorkerJobResponse, derivative_object_key, request_digest,
+        VideoResponse, WorkerJobResponse, request_digest,
     },
     contracts::{
         API_SCHEMA_VERSION, MAX_SAFE_INTEGER, valid_content_type, valid_idempotency_key, valid_uuid,
@@ -442,6 +443,10 @@ pub struct UploadRow {
     pub source_version: i64,
     pub content_type: String,
     pub checksum_sha256: Option<String>,
+    pub transfer_mode: String,
+    pub direct_staging_key: Option<String>,
+    pub direct_checksum_sha256: Option<String>,
+    pub direct_expires_at_ms: Option<i64>,
 }
 
 impl UploadRow {
@@ -467,6 +472,24 @@ impl UploadRow {
                 .checksum_sha256
                 .as_deref()
                 .is_some_and(|digest| !valid_digest(digest))
+            || match self.transfer_mode.as_str() {
+                "brokered" => {
+                    self.direct_staging_key.is_some()
+                        || self.direct_checksum_sha256.is_some()
+                        || self.direct_expires_at_ms.is_some()
+                }
+                "direct" => {
+                    self.direct_staging_key
+                        .as_deref()
+                        .is_none_or(|key| !valid_direct_staging_key(key))
+                        || self
+                            .direct_checksum_sha256
+                            .as_deref()
+                            .is_none_or(|digest| !valid_digest(digest))
+                        || self.direct_expires_at_ms.is_none_or(|expiry| expiry <= 0)
+                }
+                _ => true,
+            }
             || !valid_private_object_key(&self.source_object_key, tenant_id, &self.video_id)
         {
             return Err(RepositoryFailure::CorruptResult);
@@ -485,6 +508,26 @@ impl UploadRow {
             content_type: self.content_type.clone(),
         })
     }
+}
+
+fn valid_direct_staging_key(value: &str) -> bool {
+    let segments = value.split('/').collect::<Vec<_>>();
+    let object = segments.get(3).and_then(|value| value.rsplit_once('.'));
+    (64..=1_024).contains(&value.len())
+        && segments.len() == 4
+        && segments[0] == "uploads"
+        && segments[1].len() == 64
+        && segments[1]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && segments[2] == "staging"
+        && object.is_some_and(|(upload_id, extension)| {
+            valid_uuid(upload_id) && matches!(extension, "mp4" | "webm" | "mov" | "mkv")
+        })
+        && !segments[3].is_empty()
+        && segments[3]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[derive(Deserialize)]
@@ -574,12 +617,6 @@ pub struct WorkerJobRow {
 
 impl WorkerJobRow {
     fn validated(self, tenant_id: &str, job_id: &str) -> RepositoryResult<WorkerJobRow> {
-        let expected_output = u32::try_from(self.source_version)
-            .ok()
-            .filter(|version| *version > 0)
-            .map(|version| {
-                derivative_object_key(tenant_id, &self.video_id, &self.profile, version)
-            });
         if self.id != job_id
             || !valid_uuid(&self.id)
             || !valid_uuid(&self.video_id)
@@ -587,7 +624,13 @@ impl WorkerJobRow {
             || !valid_media_profile(&self.profile)
             || safe_u64(self.revision).is_err()
             || u32::try_from(self.attempt).is_err()
-            || expected_output.as_deref() != Some(self.output_object_key.as_str())
+            || self.source_version <= 0
+            || !valid_derivative_object_key(
+                &self.output_object_key,
+                tenant_id,
+                &self.video_id,
+                &self.profile,
+            )
             || self
                 .worker_id
                 .as_deref()
@@ -953,6 +996,9 @@ impl<'database> AggregateRepository<'database> {
         let response_json =
             serde_json::to_string(&result).map_err(|_| RepositoryFailure::InvalidRequest)?;
         let payload_json = response_json.clone();
+        let payload_checksum =
+            business_payload_checksum(&result).map_err(|_| RepositoryFailure::InvalidRequest)?;
+        let event_fingerprint = business_initial_event_fingerprint();
         let deduplication_key = format!(
             "repository-video-title:{}:{}",
             command.tenant_id, command.idempotency_key
@@ -974,6 +1020,8 @@ impl<'database> AggregateRepository<'database> {
             JsValue::from_str(&payload_json),
             JsValue::from_f64(command.now_ms as f64),
             JsValue::from_f64(expires_at_ms as f64),
+            JsValue::from_str(payload_checksum.as_str()),
+            JsValue::from_str(event_fingerprint.as_str()),
         ]);
         let statements = match [operation].into_iter().collect::<worker::Result<Vec<_>>>() {
             Ok(statements) => statements,
@@ -1348,6 +1396,17 @@ fn valid_private_object_key(value: &str, tenant_id: &str, video_id: &str) -> boo
         && value.bytes().all(|byte| !byte.is_ascii_control())
 }
 
+fn valid_derivative_object_key(
+    value: &str,
+    tenant_id: &str,
+    video_id: &str,
+    profile: &str,
+) -> bool {
+    let prefix = format!("tenants/{tenant_id}/videos/{video_id}/derivatives/{profile}/");
+    value.strip_prefix(&prefix).is_some_and(valid_digest)
+        && valid_private_object_key(value, tenant_id, video_id)
+}
+
 fn valid_media_job_state(value: &str) -> bool {
     matches!(
         value,
@@ -1358,7 +1417,24 @@ fn valid_media_job_state(value: &str) -> bool {
 fn valid_media_profile(value: &str) -> bool {
     matches!(
         value,
-        "thumbnail_v1" | "preview_v1" | "spritesheet_v1" | "audio_v1"
+        "optimized_clip_v1"
+            | "thumbnail_v1"
+            | "spritesheet_v1"
+            | "audio_extract_v1"
+            | "probe_v1"
+            | "audio_presence_v1"
+            | "distribution_master_v1"
+            | "animated_preview_v1"
+            | "audio_normalize_v1"
+            | "remux_repair_v1"
+            | "segment_mux_v1"
+            | "waveform_v1"
+            | "composition_v1"
+            | "normalize_v1"
+            | "transcription_v1"
+            | "ai_cleanup_v1"
+            | "preview_v1"
+            | "audio_v1"
     )
 }
 
@@ -1544,7 +1620,10 @@ mod tests {
             attempt: oversized_attempt,
             profile: "thumbnail_v1".into(),
             source_version: 1,
-            output_object_key: derivative_object_key(tenant_id, ID, "thumbnail_v1", 1),
+            output_object_key: format!(
+                "tenants/{tenant_id}/videos/{ID}/derivatives/thumbnail_v1/{}",
+                "0".repeat(64)
+            ),
             worker_id: None,
             lease_token_digest: None,
             lease_expires_at_ms: None,
@@ -1724,6 +1803,10 @@ mod tests {
             source_version: 1,
             content_type: "video/webm".into(),
             checksum_sha256: Some("a".repeat(64)),
+            transfer_mode: "brokered".into(),
+            direct_staging_key: None,
+            direct_checksum_sha256: None,
+            direct_expires_at_ms: None,
         };
         assert!(upload().validated(tenant, upload_id).is_ok());
 

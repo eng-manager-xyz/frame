@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "ledger_id": "frame-cutover-decommission-protected-evidence-v1",
+  "production_authority_changed": false,
+  "legacy_resource_changed_or_revoked": false,
+  "local_evidence_may_replace_protected_records": false,
+  "records": [
+    {
+      "id": "p0-through-p5-signed-gates",
+      "status": "not_collected",
+      "requires": "immutable phase-gate records for the exact release SHA with independent approver digests and zero unowned critical or high blockers",
+      "blocks": ["any_canary_traffic", "signed_stage_record"]
+    },
+    {
+      "id": "protected-cohort-membership-and-consent",
+      "status": "not_collected",
+      "requires": "protected tenant digests, stable stage assignment, BYO or Drive consent, residency decision, exclusions, and support owner",
+      "blocks": ["representative_canary"]
+    },
+    {
+      "id": "signed-go-no-go-stage-records",
+      "status": "not_collected",
+      "requires": "dashboard input/output digests, exact thresholds, release and stage identity, evidence links, approver digests, and timestamps for every stage",
+      "blocks": ["stage_promotion", "irreversible_gate"]
+    },
+    {
+      "id": "canary-slo-parity-support-observation",
+      "status": "not_collected",
+      "requires": "approved observation windows with production SLOs, route and authorization parity, support report, privacy review, and alert delivery",
+      "blocks": ["stage_promotion", "observation_acceptance"]
+    },
+    {
+      "id": "managed-media-cost-quality-fallback-observation",
+      "status": "not_collected",
+      "requires": "account limits and price revision, signed numeric budgets, usage, provider errors, fallback rate, output drift, duplicate-artifact and billing reconciliation",
+      "blocks": ["managed_media_canary", "stage_promotion"]
+    },
+    {
+      "id": "production-scale-rollback-rehearsal",
+      "status": "not_collected",
+      "requires": "timed representative rehearsal under 15 minutes proving exact fences, reverse replay, preserved canary writes, reconciled in-flight jobs, legacy health, and independent approval",
+      "blocks": ["frame_primary", "irreversible_gate"]
+    },
+    {
+      "id": "final-mysql-d1-reconciliation",
+      "status": "not_collected",
+      "requires": "immutable final manifest plus row, primary and foreign key, field hash, aggregate, policy semantic, sampled API, and replay-checkpoint report with zero unexplained differences",
+      "blocks": ["metadata_finalize", "irreversible_gate"]
+    },
+    {
+      "id": "final-object-reconciliation",
+      "status": "not_collected",
+      "requires": "immutable manifest, two independent complete inventories per side, count, bytes, role, SHA-256, media probe, ownership, orphan, duplicate, provenance, and disposition report with zero unexplained differences",
+      "blocks": ["source_release", "irreversible_gate"]
+    },
+    {
+      "id": "rollback-expiry-and-retention-approval",
+      "status": "not_collected",
+      "requires": "signed rollback deadline expiry, legal hold and customer retention decisions, access controls, encryption, source release scope, and independent owner approval",
+      "blocks": ["metadata_finalize", "source_release", "decommission"]
+    },
+    {
+      "id": "legacy-write-denial-and-scheduled-work-drain",
+      "status": "not_collected",
+      "requires": "denied write probes for services, clients and credentials plus zero queued, leased, scheduled, retrying, dead-lettered or indeterminate legacy work",
+      "blocks": ["decommission"]
+    },
+    {
+      "id": "credential-revocation",
+      "status": "not_collected",
+      "requires": "capability inventory, replacement health, per-key-ID revocation receipts, old credential denial and audit review without secret values",
+      "blocks": ["security_decommission"]
+    },
+    {
+      "id": "decommission-checklist-and-observation",
+      "status": "not_collected",
+      "requires": "immutable per-resource checklist covering services, routes, queues, databases, buckets, DNS, jobs, clients, dashboards and runbooks plus post-cutover monitoring",
+      "blocks": ["legacy_decommission_complete"]
+    },
+    {
+      "id": "cost-delta-and-provider-cleanup",
+      "status": "not_collected",
+      "requires": "approved before and after invoice or usage baseline, idle resource inventory, deletion receipts, contract disposition and no active dependency",
+      "blocks": ["billing_cleanup"]
+    },
+    {
+      "id": "customer-support-report-and-retrospective",
+      "status": "not_collected",
+      "requires": "redacted customer impact and support report plus migration retrospective, decision timeline, follow-up owners and immutable release links",
+      "blocks": ["program_closure"]
+    }
+  ]
+}

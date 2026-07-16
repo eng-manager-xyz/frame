@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "plan_id": "frame-legacy-decommission-retention-v1",
+  "execution_status": "planned_not_executed",
+  "destructive_actions_automated": false,
+  "minimum_preconditions": [
+    "irreversible_gate_approved",
+    "rollback_expiry_approved",
+    "final_reconciliation_zero_unexplained",
+    "legacy_write_denial_proved",
+    "retention_and_legal_hold_approved",
+    "customer_and_support_report_approved",
+    "cost_baseline_captured",
+    "post_cutover_monitors_active"
+  ],
+  "retention_classes": [
+    {
+      "id": "rollback_source",
+      "starts": "frame_full_reversible_authority_timestamp",
+      "ends": "signed_rollback_expiry_timestamp",
+      "access": "named_break_glass_role_with_audit",
+      "encryption": "provider_managed_plus_approved_key_policy",
+      "mutation": "read_only_except_approved_reconciliation",
+      "deletion": "separate_owner_approved_job_after_legal_hold_check"
+    },
+    {
+      "id": "migration_evidence",
+      "starts": "immutable_manifest_creation",
+      "ends": "approved_compliance_and_incident_retention",
+      "access": "migration_auditor_and_security_roles",
+      "encryption": "required",
+      "mutation": "append_only",
+      "deletion": "separate_retention_job_with_receipt"
+    },
+    {
+      "id": "customer_content",
+      "starts": "source_authority_fenced",
+      "ends": "customer_policy_legal_hold_and_verified_target_retention_allow",
+      "access": "scoped_storage_migration_role",
+      "encryption": "required",
+      "mutation": "no_new_application_writes",
+      "deletion": "manifest_scoped_and_never_prefix_or_account_wide"
+    }
+  ],
+  "inventory": [
+    {
+      "id": "legacy_web_and_api_services",
+      "category": "services",
+      "owner_role": "application_owner_role",
+      "action": "scale_to_zero_then_remove_after_observation",
+      "retention_class": "rollback_source",
+      "proof": "service_health_absence_and_frame_synthetics",
+      "rollback_before_expiry": "restore_named_compatible_deploy",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_media_services",
+      "category": "services",
+      "owner_role": "media_operations_owner_role",
+      "action": "disable_admission_drain_or_disposition_jobs_then_scale_to_zero",
+      "retention_class": "rollback_source",
+      "proof": "profile_inventory_zero_in_flight_and_frame_executor_health",
+      "rollback_before_expiry": "restore_profile_scoped_legacy_route",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_http_routes",
+      "category": "routes",
+      "owner_role": "application_owner_role",
+      "action": "return_versioned_retirement_or_remove_exact_flagged_route",
+      "retention_class": "migration_evidence",
+      "proof": "current_and_n_minus_1_client_contract_and_no_legacy_writes",
+      "rollback_before_expiry": "restore_exact_compatible_family_flag",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_job_queues",
+      "category": "queues",
+      "owner_role": "media_operations_owner_role",
+      "action": "stop_publishers_drain_leases_reconcile_dead_letters_then_delete_queue_later",
+      "retention_class": "migration_evidence",
+      "proof": "zero_unowned_pending_claimed_retry_or_indeterminate_jobs",
+      "rollback_before_expiry": "recreate_only_from_versioned_config_and_replay_durable_receipts",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_mysql",
+      "category": "databases",
+      "owner_role": "data_migration_owner_role",
+      "action": "revoke_application_writer_keep_encrypted_read_only_snapshot_then_separate_delete",
+      "retention_class": "rollback_source",
+      "proof": "final_mysql_d1_reconciliation_and_denied_write_probe",
+      "rollback_before_expiry": "approved_break_glass_writer_restore_after_fencing_d1",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_object_sources",
+      "category": "buckets",
+      "owner_role": "storage_migration_owner_role",
+      "action": "remove_application_write_access_retain_manifest_scoped_objects_then_separate_release",
+      "retention_class": "customer_content",
+      "proof": "two_pass_final_object_reconciliation_and_source_release_approval",
+      "rollback_before_expiry": "restore_scoped_read_and_approved_write_adapter_only_after_frame_fence",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_credentials",
+      "category": "secrets",
+      "owner_role": "security_approver_role",
+      "action": "inventory_disable_rotate_and_revoke_each_capability_then_capture_safe_key_id_receipt",
+      "retention_class": "migration_evidence",
+      "proof": "old_credential_denied_new_scoped_credential_healthy_and_audit_reviewed",
+      "rollback_before_expiry": "no_secret_revival_issue_new_scoped_credential_under_break_glass",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_dns_and_edge_records",
+      "category": "dns",
+      "owner_role": "release_commander_role",
+      "action": "remove_only_named_legacy_records_after_ttl_and_certificate_observation",
+      "retention_class": "migration_evidence",
+      "proof": "authoritative_dns_tls_and_frame_route_probes",
+      "rollback_before_expiry": "restore_exact_record_without_apex_or_shop_changes",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_scheduled_jobs",
+      "category": "jobs",
+      "owner_role": "application_owner_role",
+      "action": "disable_schedules_verify_no_new_enqueues_then remove_versioned_definition",
+      "retention_class": "migration_evidence",
+      "proof": "two_schedule_intervals_without_legacy_effect_and_frame_job_health",
+      "rollback_before_expiry": "restore_exact_schedule_only_after_authority_check",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_client_versions",
+      "category": "clients",
+      "owner_role": "application_owner_role",
+      "action": "deny_unsafe_writes_with_stable_migration_response_after_adoption_gate",
+      "retention_class": "migration_evidence",
+      "proof": "current_n_minus_1_and_retirement_contract_reports",
+      "rollback_before_expiry": "restore_additive_compatible_server_capability",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_dashboards_and_alerts",
+      "category": "dashboards",
+      "owner_role": "incident_commander_role",
+      "action": "retain_read_only_through_post_cutover_window_then archive_with_links",
+      "retention_class": "migration_evidence",
+      "proof": "replacement_alert_delivery_and_runbook_links_verified",
+      "rollback_before_expiry": "re_enable_exact_alert_route_without_changing_authority",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_runbooks",
+      "category": "runbooks",
+      "owner_role": "release_commander_role",
+      "action": "mark_historical_link_replacement_and_preserve_incident_context",
+      "retention_class": "migration_evidence",
+      "proof": "on_call_walkthrough_and_link_checker",
+      "rollback_before_expiry": "restore_active_label_only",
+      "status": "planned_not_executed"
+    },
+    {
+      "id": "legacy_provider_billing",
+      "category": "billing",
+      "owner_role": "release_commander_role",
+      "action": "capture_pre_post_cost_delta_remove_idle_resources_and close_contracts_separately",
+      "retention_class": "migration_evidence",
+      "proof": "invoice_usage_and_resource_inventory_with_no_active_dependency",
+      "rollback_before_expiry": "retain_minimum_approved_capacity_until_expiry",
+      "status": "planned_not_executed"
+    }
+  ],
+  "post_cutover": {
+    "monitoring_remains_active": true,
+    "customer_support_report_required": true,
+    "cost_delta_required": true,
+    "retrospective_required": true,
+    "retrospective_sections": ["timeline", "decisions", "slo_and_support", "parity", "reconciliation", "rollback_readiness", "customer_impact", "cost", "security_and_privacy", "follow_ups"],
+    "credential_revocation_receipts_must_exclude_secret_values": true,
+    "decommission_record_is_immutable": true
+  }
+}

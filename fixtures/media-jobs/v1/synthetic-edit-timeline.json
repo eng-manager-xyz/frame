@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "fixture_id": "synthetic_edit_timeline_v1",
+  "license": {
+    "spdx": "CC0-1.0",
+    "customer_media": false
+  },
+  "canvas": {
+    "width": 640,
+    "height": 360,
+    "frame_rate_numerator": 30,
+    "frame_rate_denominator": 1,
+    "background_rgba": "000000ff"
+  },
+  "sources": [
+    {
+      "ordinal": 0,
+      "media_fixture_id": "frame-synthetic-h264-aac-v1",
+      "sha256": "7e63a1e00ad2f12b52d0b68fd017a615501ab529f666839e1b6c491df4943dd0",
+      "bytes": 292382,
+      "content_type": "video/mp4"
+    }
+  ],
+  "clips": [
+    {
+      "source_ordinal": 0,
+      "source_start_ms": 0,
+      "source_end_ms": 2000,
+      "timeline_start_ms": 0,
+      "x": 0,
+      "y": 0,
+      "width": 640,
+      "height": 360,
+      "opacity_milli": 1000,
+      "include_audio": true
+    }
+  ],
+  "expected": {
+    "duration_ms": 2000,
+    "content_type": "video/mp4",
+    "disposition": "protected_timeline_transport_and_codec_gate"
+  }
+}

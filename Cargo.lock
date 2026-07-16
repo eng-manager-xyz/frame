@@ -1162,6 +1162,7 @@ dependencies = [
  "frame-domain",
  "frame-ports",
  "futures",
+ "serde_json",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
@@ -1182,16 +1183,19 @@ name = "frame-control-plane"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "frame-application",
  "frame-client",
  "frame-domain",
  "frame-ports",
  "futures",
+ "getrandom 0.3.4",
  "js-sys",
  "serde",
  "serde_json",
  "sha2",
  "uuid",
  "wasm-bindgen",
+ "wasm-streams 0.6.0",
  "worker",
 ]
 
@@ -1213,7 +1217,9 @@ dependencies = [
  "frame-desktop-core",
  "js-sys",
  "leptos",
+ "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
@@ -1226,6 +1232,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "url",
  "uuid",
 ]
 
@@ -1234,8 +1241,15 @@ name = "frame-media"
 version = "0.1.0"
 dependencies = [
  "gstreamer",
+ "ring",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1274,14 +1288,19 @@ dependencies = [
  "anyhow",
  "axum",
  "frame-client",
+ "js-sys",
  "leptos",
+ "reqwest",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

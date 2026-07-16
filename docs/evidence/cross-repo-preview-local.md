@@ -12,6 +12,25 @@ provider infrastructure. It uses only Python's standard library, checked-in
 synthetic fixtures, temporary files, and loopback HTTP. It refuses to start
 when production/provider configuration is present.
 
+Policy and mutation gates are separate and credential-free:
+
+```sh
+python3 -I scripts/ci/check-cross-repo-contract.py
+python3 -I scripts/ci/test-cross-repo-contract.py
+cargo test --locked -p frame-client seeded_producer_changes_match_the_current_consumer_contract
+```
+
+They prove the canonical digest inventory, all five producer/consumer lane
+definitions, one additive acceptance, five breaking rejections, and nine
+unsafe policy mutations, including static-patch promotion. They do not execute
+the protected external consumer.
+
+Local execution on 2026-07-16 passed the policy checker (five lanes and six
+cases), all nine policy mutations, the 22-test core and 23-test all-feature
+`frame-client` suites, one full two-origin journey, and all six named negative
+controls. The restart exercise closed the original listener before rebinding
+its exact origin and proved recovery; no retry replaced a failed attempt.
+
 ## Topology and authority boundary
 
 The orchestrator starts two independent child processes:
@@ -52,12 +71,14 @@ The harness verifies the following against
 | Public media | Full `HEAD`, bounded and suffix `Range`, `416`, content length/type, `Content-Range`, ETag, and synthetic WebVTT captions are checked. |
 | Privacy | Private, deleted, failed, unavailable, and missing shares are byte-identical. A public-to-private transition immediately returns the generic body and revokes media. |
 | Cache isolation | A private/auth response cannot be public or HIT. A fingerprinted synthetic asset deterministically transitions from semantic MISS to HIT without a cookie. |
-| Portfolio availability | Static routes and the accessible Frame link remain usable during malformed, incompatible, error, slow, and complete Frame outage cases. No upstream body or private marker enters portfolio HTML. |
+| Portfolio availability | Static routes and the accessible Frame link remain usable during malformed, incompatible, error, slow, and complete Frame outage cases. Rollback, retry, same-origin restart, and reconnect restore the background snapshot. No upstream body or private marker enters portfolio HTML. |
+| Auth boundary | Anonymous landing/login render, dashboard denial, host-local entry, logout revocation, and repeat denial remain entirely on the Frame origin. |
 | Cleanup | Every path, including expected negative-control failure, terminates both process groups and proves both listeners are closed before its temporary directory disappears. |
 
-Five deliberate defects prove the assertions are live: shared cookie domain,
+Six deliberate defects prove the assertions are live: shared cookie domain,
 private cache hit, Range off-by-one, unavailable-title disclosure, and a
-handler-path upstream fetch. Each control must fail at its named invariant;
+handler-path upstream fetch, plus a sensitive audit field. Each control must
+fail at its named invariant;
 an unrelated failure does not count. The quality workflow runs the positive
 journey and all controls without retries, so the first unexpected failure
 remains release-blocking.

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "corpus_id": "media-conformance-fuzz-v1",
+  "deterministic_seed": 290429,
+  "cases": [
+    {"id":"empty","hex":"","expected":"invalid"},
+    {"id":"nul","hex":"6c6162656c3a00","expected":"invalid"},
+    {"id":"truncated-json","hex":"7b22","expected":"invalid"},
+    {"id":"invalid-utf8","hex":"fffe","expected":"invalid"},
+    {"id":"oversized-progress","hex":"70726f67726573733a3130303031","expected":"invalid"},
+    {"id":"path-traversal","hex":"6b65793a2e2e2f736563726574","expected":"invalid"},
+    {"id":"url-key","hex":"6b65793a68747470733a2f2f6578616d706c652e696e76616c6964","expected":"invalid"},
+    {"id":"uppercase-sha","hex":"7368613235363a41414141","expected":"invalid"},
+    {"id":"progress-overflow","hex":"70726f67726573733a3635353336","expected":"invalid"},
+    {"id":"valid-label","hex":"6c6162656c3a73796e7468657469632d7631","expected":"valid_label"},
+    {"id":"valid-key","hex":"6b65793a74656e616e74732f742f766964656f732f762f726573756c742e6d7034","expected":"valid_object_key"},
+    {"id":"valid-sha256","hex":"7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161","expected":"valid_sha256"},
+    {"id":"valid-progress","hex":"70726f67726573733a3130303030","expected":"valid_progress"}
+  ],
+  "triage": {
+    "panic_or_abort": "release_blocking_minimize_and_attach_backtrace",
+    "timeout": "release_blocking_attach_seed_and_runtime_provenance",
+    "expected_rejection": "retain_only_if_it_adds_boundary_coverage",
+    "customer_or_private_bytes_forbidden": true
+  }
+}

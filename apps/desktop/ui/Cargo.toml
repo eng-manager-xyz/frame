@@ -20,6 +20,8 @@ csr = [
 frame-desktop-core = { path = ".." }
 js-sys = { workspace = true, optional = true }
 leptos = { workspace = true, optional = true, features = ["csr"] }
+serde.workspace = true
+serde_json.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { version = "0.4.64", optional = true }

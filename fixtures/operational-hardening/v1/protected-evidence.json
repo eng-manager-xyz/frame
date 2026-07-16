@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "record_id": "frame-operational-protected-evidence-v1",
+  "records": [
+    {"id": "trusted-release-signing-and-promotion", "status": "not_collected", "requires": "protected signing identity, production environment reviewer, immutable subject attestation and promotion record", "blocks": ["signed_release", "production_promotion"]},
+    {"id": "production-rollback-demonstration", "status": "not_collected", "requires": "deployed current and previous compatible artifacts plus timed protected rollback", "blocks": ["production_rollback"]},
+    {"id": "slo-dashboards-alert-delivery", "status": "not_collected", "requires": "provider telemetry backend, paging route, synthetic failure injection and screenshots or exports", "blocks": ["operator_detection_acceptance", "dashboard_evidence"]},
+    {"id": "independent-penetration-test", "status": "not_collected", "requires": "authorized independent tester, deployed representative scope and finding disposition", "blocks": ["penetration_evidence", "threat_model_closure"]},
+    {"id": "secret-key-rotation-rehearsal", "status": "not_collected", "requires": "provider secret authorities, old and new scoped credentials, revocation and audit records", "blocks": ["rotation_evidence"]},
+    {"id": "provider-backup-restore", "status": "not_collected", "requires": "isolated D1/R2 resources, encrypted provider backup, exact object manifests and timed restore", "blocks": ["restore_acceptance", "backup_restore_evidence"]},
+    {"id": "signing-key-recovery", "status": "not_collected", "requires": "dual-control key custody authority and recovery receipt without exporting private material", "blocks": ["key_recovery"]},
+    {"id": "managed-media-remote-game", "status": "not_collected", "requires": "Cloudflare account, numeric cost approval, synthetic namespace, managed binding and native fallback capacity", "blocks": ["media_game_acceptance", "provider_change_watch"]},
+    {"id": "production-shaped-capacity-cost", "status": "not_collected", "requires": "approved launch load, provider quotas/rates/invoice data and representative native runners", "blocks": ["capacity_cost_acceptance"]},
+    {"id": "regional-disaster-game", "status": "not_collected", "requires": "approved residency topology, isolated regional target, acknowledged-write replay and traffic control", "blocks": ["regional_rehearsal"]},
+    {"id": "on-call-contact-test", "status": "not_collected", "requires": "protected contact registry, acknowledgement path and human responders", "blocks": ["incident_contact_evidence"]},
+    {"id": "desktop-sign-install-update", "status": "not_collected", "requires": "macOS and Windows signing/notarization authorities and representative clean machines", "blocks": ["desktop_release"]}
+  ],
+  "local_evidence_may_replace_protected_records": false
+}

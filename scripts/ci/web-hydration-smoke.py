@@ -189,7 +189,15 @@ def wait_for_value(
         if predicate(value):
             return value
         time.sleep(0.05)
-    raise SystemExit(f"web hydration smoke: {failure}: {value}")
+    diagnostics = [
+        event
+        for event in devtools.events
+        if event.get("method")
+        in {"Runtime.exceptionThrown", "Runtime.consoleAPICalled", "Log.entryAdded"}
+    ]
+    raise SystemExit(
+        f"web hydration smoke: {failure}: {value}; diagnostics={diagnostics[:3]}"
+    )
 
 
 def reserve_loopback_port() -> int:
@@ -202,9 +210,17 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
     normal_state = r"""(() => {
       const status = document.querySelector('#frame-hydration-state');
       const help = document.querySelector('.player-keyboard-help');
-      const button = help?.querySelector('button');
+      const button = help?.querySelector('button[aria-controls="player-keyboard-help-panel"]');
+      const controls = [...(help?.querySelectorAll('.player-controls button') ?? [])];
+      const rate = document.querySelector('#frame-playback-rate');
+      const player = document.querySelector('#frame-public-player');
+      const playerStatus = help?.querySelector('.player-status');
       const panel = document.querySelector('#player-keyboard-help-panel');
       const fallback = help?.querySelector('.player-keyboard-help-fallback');
+      const collaboration = document.querySelector('.public-collaboration');
+      const collaborationFallback = collaboration?.querySelector('.collaboration-fallback');
+      const collaborationForm = collaboration?.querySelector('.comment-form');
+      const collaborationStatus = collaboration?.querySelector('.collaboration-status');
       const visible = (node) => Boolean(node && !node.hidden &&
         getComputedStyle(node).display !== 'none' && node.getClientRects().length);
       return {
@@ -213,24 +229,39 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
         enhanced: help?.dataset.frameEnhanced === 'true',
         buttonVisible: visible(button),
         fallbackVisible: visible(fallback),
+        collaborationEnhanced: collaboration?.dataset.frameEnhanced === 'true',
+        collaborationFallbackVisible: visible(collaborationFallback),
+        collaborationFormVisible: visible(collaborationForm),
+        collaborationStatus: collaborationStatus?.textContent?.trim(),
         expanded: button?.getAttribute('aria-expanded'),
         panelHidden: panel?.hidden,
         panelVisible: visible(panel),
         buttonText: button?.textContent?.trim(),
+        controlsVisible: controls.length === 6 && controls.every(visible),
+        controlLabels: controls.map((control) => control.textContent?.trim()),
+        rateVisible: visible(rate),
+        fullscreenEnabled: controls.find((control) => control.textContent?.trim() === 'Fullscreen')?.disabled === false,
+        pipEnabled: controls.find((control) => control.textContent?.trim() === 'Picture in picture')?.disabled === false,
+        playerStatus: playerStatus?.textContent?.trim(),
+        playerLabel: player?.getAttribute('aria-label'),
+        playerControls: player?.hasAttribute('controls'),
+        playerRemotePlaybackDisabled: player?.hasAttribute('disableremoteplayback'),
         statusText: status?.textContent?.trim(),
         probeAriaHidden: status?.getAttribute('aria-hidden'),
         probeRole: status?.getAttribute('role'),
         probeLive: status?.getAttribute('aria-live'),
         retainedTitle: document.body?.textContent?.includes('Local public recording') ?? false,
         retainedDescription: document.body?.textContent?.includes('A provider-neutral playback fixture for local UI checks.') ?? false,
-        retainedPrivacy: document.body?.textContent?.includes('Analytics stay off in this server-rendered player') ?? false,
+        retainedPrivacy: document.body?.textContent?.includes('Analytics stay off unless a separate, same-share consent flow records a choice.') ?? false,
         retainedDescriptor: document.body?.textContent?.includes('Playback and caption paths come from a validated provider-neutral public descriptor.') ?? false,
+        retainedTranscript: document.body?.textContent?.includes('English transcript (WebVTT)') ?? false,
+        retainedComments: document.body?.textContent?.includes('Comments appear only after the same-origin collaboration service authorizes this exact share.') ?? false,
         privateSuccess: document.body?.textContent?.includes('Local Frame workspace') ?? false,
       };
     })()"""
     degraded_state = r"""(() => {
       const help = document.querySelector('.player-keyboard-help');
-      const button = help?.querySelector('button');
+      const button = help?.querySelector('button[aria-controls="player-keyboard-help-panel"]');
       const fallback = help?.querySelector('.player-keyboard-help-fallback');
       const visible = (node) => Boolean(node && !node.hidden &&
         getComputedStyle(node).display !== 'none' && node.getClientRects().length);
@@ -292,11 +323,41 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
                 lambda value: isinstance(value, dict)
                 and value.get("ready")
                 and value.get("hydrated")
-                and value.get("enhanced"),
+                and value.get("enhanced")
+                and value.get("collaborationEnhanced"),
                 "interactive islands did not become ready",
             )
             require(initial["buttonVisible"], "player disclosure is not visible")
+            require(initial["controlsVisible"], "hydrated accessible player controls are incomplete")
+            require(initial["rateVisible"], "playback speed control is not visible")
+            require(initial["fullscreenEnabled"], "approved fullscreen control is disabled")
+            require(initial["pipEnabled"], "approved picture-in-picture control is disabled")
+            require(initial["playerStatus"] == "Interactive player controls ready.", "player status did not hydrate")
+            require(initial["playerLabel"] == "Video: Local public recording", "player accessible label drifted")
+            require(initial["playerControls"], "native player controls are absent")
+            require(initial["playerRemotePlaybackDisabled"], "remote playback is unexpectedly enabled")
+            require(
+                initial["controlLabels"] == [
+                    "Play or pause",
+                    "Back 10 seconds",
+                    "Forward 10 seconds",
+                    "Fullscreen",
+                    "Picture in picture",
+                    "Retry playback",
+                ],
+                "player control labels/order drifted",
+            )
             require(not initial["fallbackVisible"], "static help remains duplicated after hydration")
+            require(
+                not initial["collaborationFallbackVisible"]
+                and initial["collaborationFormVisible"],
+                "collaboration enhancement did not replace its static fallback",
+            )
+            require(
+                initial["collaborationStatus"]
+                == "Interactive collaboration requires a live share.",
+                "fixture collaboration did not fail closed",
+            )
             require(initial["expanded"] == "false", "player disclosure starts expanded")
             require(initial["panelHidden"] and not initial["panelVisible"], "closed panel remains visible")
             require(initial["probeAriaHidden"] == "true", "hydration probe is exposed to assistive technology")
@@ -309,10 +370,14 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
                 and initial["retainedDescriptor"],
                 "hydration replaced useful server-rendered content",
             )
+            require(
+                initial["retainedTranscript"] and initial["retainedComments"],
+                "hydration removed collaboration or transcript fallback content",
+            )
             require(not initial["privateSuccess"], "hydration inferred private success")
 
             point = devtools.evaluate(
-                """(async () => { const button = document.querySelector('.player-keyboard-help button'); button.scrollIntoView({block: 'center', behavior: 'instant'}); await new Promise(requestAnimationFrame); const rect = button.getBoundingClientRect(); return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}; })()"""
+                """(async () => { const button = document.querySelector('.player-keyboard-help button[aria-controls="player-keyboard-help-panel"]'); button.scrollIntoView({block: 'center', behavior: 'instant'}); await new Promise(requestAnimationFrame); const rect = button.getBoundingClientRect(); return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}; })()"""
             )
             require(isinstance(point, dict), "player disclosure has no pointer target")
             devtools.command("Input.dispatchMouseEvent", {"type": "mouseMoved", **point})
@@ -336,7 +401,7 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
             require(opened["buttonText"] == "Hide shortcuts", "open disclosure has the wrong label")
 
             focused = devtools.evaluate(
-                """(() => { const button = document.querySelector('.player-keyboard-help button'); button.focus(); return document.activeElement === button; })()"""
+                """(() => { const button = document.querySelector('.player-keyboard-help button[aria-controls="player-keyboard-help-panel"]'); button.focus(); return document.activeElement === button; })()"""
             )
             require(focused is True, "player disclosure cannot receive focus")
             key = {
@@ -363,8 +428,8 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
             devtools.evaluate("new Promise(resolve => setTimeout(resolve, 100))")
             diagnostics = []
             expected_unbacked_fixture_media = {
-                f"{origin}/api/v1/public/shares/fixture-public/playback",
-                f"{origin}/api/v1/public/shares/fixture-public/captions/en.vtt",
+                f"{origin}/api/v1/public/shares/fixture-public/media",
+                f"{origin}/api/v1/public/shares/fixture-public/captions/en",
             }
             for event in devtools.events:
                 method = event.get("method")
@@ -446,7 +511,7 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
                     "DOM.querySelector",
                     {
                         "nodeId": document_node,
-                        "selector": ".player-keyboard-help button",
+                        "selector": ".player-keyboard-help button[aria-controls=\"player-keyboard-help-panel\"]",
                     },
                 )
                 fallback_node = int(fallback.get("nodeId", 0))
@@ -492,6 +557,7 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
                 "javascript_disabled_browser_fallback": True,
                 "probe_aria_hidden": True,
                 "ssr_content_preserved": True,
+                "accessible_player_controls": True,
                 "zero_hydration_console_diagnostics": True,
             }
         finally:
@@ -552,12 +618,17 @@ def main() -> int:
     require("Recording processing" in processing and "<video" not in processing, "processing state is not fail-closed")
     require("Sign in required" in private and "Local Frame workspace" not in private, "private shell leaked before session bootstrap")
     require(
-        "<video" in public and "player-keyboard-help-fallback" in public,
+        "<video" in public
+        and 'id="frame-public-player"' in public
+        and "player-keyboard-help-fallback" in public
+        and "collaboration-fallback" in public
+        and "English transcript (WebVTT)" in public
+        and "Comments appear only after" in public,
         "public static player fallback is incomplete",
     )
     require(public_headers.get("cache-control") == "no-store", "public HTML can outlive its hashed asset closure")
     require("Server-rendered content ready." in public, "SSR hydration boundary is absent")
-    require(public.count('data-frame-hydration-scope="interaction-island"') == 2, "unexpected hydration scope")
+    require(public.count('data-frame-hydration-scope="interaction-island"') == 3, "unexpected hydration scope")
     require(public_headers.get("content-security-policy", "").find("script-src 'self' 'wasm-unsafe-eval'") >= 0, "CSP does not admit only same-origin Wasm")
     asset_paths = re.findall(r'(?:src|href)="(/assets/[a-z0-9_-]+-[0-9a-f]{64}\.(?:js|wasm))"', public)
     require(len(set(asset_paths)) == 2, "SSR does not reference exactly the hashed loader closure")

@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use frame_media::CancellationToken;
@@ -6,8 +6,11 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::{
-    protocol::{ApiFailureDisposition, ClaimedJob, ProtocolApiError, WorkerClient, sha256_hex},
-    thumbnail::{ThumbnailError, ensure_thumbnail_runtime, render_thumbnail_v1},
+    native::{
+        NativeAttempt, NativeError, NativeExecutionPlanV1, NativeOutput, NativeSourcePlanV1,
+        ensure_profile_runtime, ensure_worker_runtime, run_native_plan,
+    },
+    protocol::{ApiFailureDisposition, ClaimedJob, ProtocolApiError, WorkerClient},
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -52,6 +55,16 @@ impl JobFailure {
         }
     }
 
+    const fn lease_lost() -> Self {
+        Self {
+            error_class: "transport_failure",
+            retryable: false,
+            report_failure: false,
+            halt_consumer: false,
+            message: "the native media lease is no longer active",
+        }
+    }
+
     const fn output(message: &'static str) -> Self {
         Self {
             error_class: "output_invalid",
@@ -92,22 +105,26 @@ impl JobFailure {
         }
     }
 
-    const fn from_thumbnail(error: ThumbnailError) -> Self {
+    const fn from_native(error: NativeError) -> Self {
         Self {
             error_class: error.error_class(),
             retryable: error.retryable(),
-            report_failure: !matches!(error, ThumbnailError::Cancelled),
+            report_failure: !matches!(error, NativeError::Cancelled),
             halt_consumer: false,
             message: match error {
-                ThumbnailError::InvalidInput => "the native media input is invalid",
-                ThumbnailError::MissingRuntime => "the native media runtime is unavailable",
-                ThumbnailError::Pipeline => "the native media pipeline failed",
-                ThumbnailError::Timeout => "the native media pipeline timed out",
-                ThumbnailError::Cancelled => "the native media pipeline was cancelled",
-                ThumbnailError::ResourceLimit => {
+                NativeError::UnsupportedProfile => "the native media profile is unsupported",
+                NativeError::InvalidPlan => "the native execution plan is invalid",
+                NativeError::InvalidInput => "the native media input is invalid",
+                NativeError::MissingRuntime => "the native media runtime is unavailable",
+                NativeError::CodecPolicyBlocked => "the native codec policy is not approved",
+                NativeError::UnsupportedGraph => "the native profile graph is unavailable",
+                NativeError::Pipeline => "the native media pipeline failed",
+                NativeError::Timeout => "the native media pipeline timed out",
+                NativeError::Cancelled => "the native media pipeline was cancelled",
+                NativeError::ResourceLimit => {
                     "the native media operation exceeded a resource limit"
                 }
-                ThumbnailError::InvalidOutput => "the native media output is invalid",
+                NativeError::InvalidOutput => "the native media output is invalid",
             },
         }
     }
@@ -177,7 +194,7 @@ impl Drop for PipelineHeartbeatGuard {
 }
 
 pub(crate) async fn work_once(client: &WorkerClient) -> Result<WorkOutcome> {
-    ensure_thumbnail_runtime()?;
+    ensure_worker_runtime()?;
     let Some(job) = client.claim().await? else {
         return Ok(WorkOutcome::Idle);
     };
@@ -221,18 +238,6 @@ async fn process_claim(
         .await
         .map_err(|error| JobFailure::from_protocol(error, "native media heartbeat failed"))?;
     ensure_not_cancelled(&state)?;
-
-    let source = client.download_source(job).await.map_err(|error| {
-        JobFailure::from_protocol(error, "native media source transport failed")
-    })?;
-    let state = client
-        .progress(job, INITIAL_PROGRESS)
-        .await
-        .map_err(|error| {
-            JobFailure::from_protocol(error, "native media progress callback failed")
-        })?;
-    ensure_not_cancelled(&state)?;
-
     let cancellation = CancellationToken::new();
     let (stop_heartbeats, heartbeat_stop) = watch::channel(false);
     let heartbeat_task = tokio::spawn(heartbeat_loop(
@@ -241,72 +246,159 @@ async fn process_claim(
         cancellation.clone(),
         heartbeat_stop,
     ));
-    let background =
+    let mut background =
         PipelineHeartbeatGuard::new(cancellation.clone(), stop_heartbeats, heartbeat_task);
-    let output_limit = job.claim.output.max_bytes;
-    let pipeline_cancellation = cancellation.clone();
-    let pipeline_task = tokio::task::spawn_blocking(move || {
-        render_thumbnail_v1(&source, output_limit, &pipeline_cancellation)
-    });
-    let output = finish_pipeline(pipeline_task, background).await?;
-    if cancellation.is_cancelled() {
-        return Err(JobFailure::cancelled());
-    }
+    let operation = async {
+        let profile = job
+            .claim
+            .native_profile()
+            .map_err(|_| JobFailure::from_native(NativeError::UnsupportedProfile))?;
+        let output_descriptor =
+            job.claim.outputs().first().ok_or_else(|| {
+                JobFailure::output("native media output descriptor was unavailable")
+            })?;
+        ensure_profile_runtime(profile, &output_descriptor.content_type)
+            .map_err(JobFailure::from_native)?;
+        let source_plans = job
+            .claim
+            .sources()
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                u16::try_from(index)
+                    .map(|ordinal| {
+                        NativeSourcePlanV1::new(
+                            ordinal,
+                            source.bytes,
+                            source.checksum_sha256.clone(),
+                            source.content_type.clone(),
+                        )
+                    })
+                    .map_err(|_| JobFailure::from_native(NativeError::InvalidPlan))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let plan = NativeExecutionPlanV1::new(
+            profile,
+            profile.expected_origin(),
+            source_plans,
+            output_descriptor.content_type.clone(),
+            output_descriptor.max_bytes,
+        )
+        .map_err(JobFailure::from_native)?;
+        let attempt = Arc::new(NativeAttempt::create().map_err(JobFailure::from_native)?);
+        for (index, _) in job.claim.sources().iter().enumerate() {
+            client
+                .download_source_to(job, index, &attempt.source_path(index), &cancellation)
+                .await
+                .map_err(|error| {
+                    JobFailure::from_protocol(error, "native media source transport failed")
+                })?;
+        }
+        if cancellation.is_cancelled() {
+            return Err(JobFailure::cancelled());
+        }
+        let state = client
+            .progress(job, INITIAL_PROGRESS)
+            .await
+            .map_err(|error| {
+                JobFailure::from_protocol(error, "native media progress callback failed")
+            })?;
+        ensure_not_cancelled(&state)?;
 
-    let state = client
-        .progress(job, OUTPUT_READY_PROGRESS)
-        .await
-        .map_err(|error| {
-            JobFailure::from_protocol(error, "native media progress callback failed")
-        })?;
-    ensure_not_cancelled(&state)?;
-    let bytes = output.len() as u64;
-    let checksum = sha256_hex(&output);
-    let acknowledgement = client
-        .upload_output(job, output, &checksum)
-        .await
-        .map_err(|error| {
-            JobFailure::from_protocol(error, "native media output transport failed")
-        })?;
-    if acknowledgement.bytes != bytes {
-        return Err(JobFailure::output(
-            "native media output acknowledgement was inconsistent",
-        ));
+        let pipeline_attempt = Arc::clone(&attempt);
+        let pipeline_plan = plan.clone();
+        let pipeline_cancellation = cancellation.clone();
+        let pipeline_task = tokio::task::spawn_blocking(move || {
+            run_native_plan(&pipeline_attempt, &pipeline_plan, &pipeline_cancellation)
+        });
+        let output = finish_pipeline(pipeline_task).await?;
+        if cancellation.is_cancelled() {
+            return Err(JobFailure::cancelled());
+        }
+        if output.content_type != output_descriptor.content_type {
+            return Err(JobFailure::output(
+                "native media output content type was inconsistent",
+            ));
+        }
+
+        let state = client
+            .progress(job, OUTPUT_READY_PROGRESS)
+            .await
+            .map_err(|error| {
+                JobFailure::from_protocol(error, "native media progress callback failed")
+            })?;
+        ensure_not_cancelled(&state)?;
+        let acknowledgement = client
+            .upload_output_file(
+                job,
+                &output.path,
+                output.bytes,
+                &output.checksum_sha256,
+                &cancellation,
+            )
+            .await
+            .map_err(|error| {
+                JobFailure::from_protocol(error, "native media output transport failed")
+            })?;
+        if acknowledgement.bytes != output.bytes {
+            return Err(JobFailure::output(
+                "native media output acknowledgement was inconsistent",
+            ));
+        }
+        if cancellation.is_cancelled() {
+            return Err(JobFailure::cancelled());
+        }
+        let completed = client
+            .complete(job, output.bytes, &output.checksum_sha256)
+            .await
+            .map_err(|error| {
+                JobFailure::from_protocol(error, "native media completion callback failed")
+            })?;
+        if completed.cancel_requested || completed.state != "succeeded" {
+            return Err(
+                if completed.cancel_requested || completed.state == "cancelled" {
+                    JobFailure::cancelled()
+                } else {
+                    JobFailure::output(
+                        "control plane did not accept the native media output as terminal",
+                    )
+                },
+            );
+        }
+        Ok(())
     }
-    let completed = client
-        .complete(job, bytes, &checksum)
-        .await
-        .map_err(|error| {
-            JobFailure::from_protocol(error, "native media completion callback failed")
-        })?;
-    if completed.cancel_requested || completed.state != "succeeded" {
-        return Err(
-            if completed.cancel_requested || completed.state == "cancelled" {
-                JobFailure::cancelled()
-            } else {
-                JobFailure::output(
-                    "control plane did not accept the native media output as terminal",
-                )
-            },
-        );
+    .await;
+    let heartbeat = stop_background(&mut background).await;
+    reconcile_terminal_result(operation, heartbeat)
+}
+
+fn reconcile_terminal_result(
+    operation: std::result::Result<(), JobFailure>,
+    heartbeat: std::result::Result<(), JobFailure>,
+) -> std::result::Result<(), JobFailure> {
+    match (operation, heartbeat) {
+        (Ok(()), _) => Ok(()),
+        (Err(_), Err(heartbeat_failure)) => Err(heartbeat_failure),
+        (Err(operation_failure), Ok(())) => Err(operation_failure),
     }
-    Ok(())
 }
 
 async fn finish_pipeline(
-    pipeline_task: tokio::task::JoinHandle<std::result::Result<Vec<u8>, ThumbnailError>>,
-    mut background: PipelineHeartbeatGuard,
-) -> std::result::Result<Vec<u8>, JobFailure> {
-    let pipeline_result = pipeline_task.await;
+    pipeline_task: tokio::task::JoinHandle<std::result::Result<NativeOutput, NativeError>>,
+) -> std::result::Result<NativeOutput, JobFailure> {
+    let pipeline_result = pipeline_task
+        .await
+        .map_err(|_| JobFailure::transport("native media pipeline task failed"))?;
+    pipeline_result.map_err(JobFailure::from_native)
+}
+
+async fn stop_background(
+    background: &mut PipelineHeartbeatGuard,
+) -> std::result::Result<(), JobFailure> {
     background.request_stop();
     let heartbeat_result = background.heartbeat_mut()?.await;
     background.disarm();
-    let pipeline_result =
-        pipeline_result.map_err(|_| JobFailure::transport("native media pipeline task failed"))?;
-    let heartbeat_result = heartbeat_result
-        .map_err(|_| JobFailure::transport("native media heartbeat task failed"))?;
-    heartbeat_result?;
-    pipeline_result.map_err(JobFailure::from_thumbnail)
+    heartbeat_result.map_err(|_| JobFailure::transport("native media heartbeat task failed"))?
 }
 
 async fn heartbeat_loop(
@@ -335,7 +427,11 @@ async fn heartbeat_loop(
                         cancellation.cancel();
                         return Err(JobFailure::cancelled());
                     }
-                    Ok(_) => {}
+                    Ok(state) if matches!(state.state.as_str(), "leased" | "running") => {}
+                    Ok(_) => {
+                        cancellation.cancel();
+                        return Err(JobFailure::lease_lost());
+                    }
                     Err(error) => {
                         cancellation.cancel();
                         return Err(JobFailure::from_protocol(
@@ -354,6 +450,8 @@ fn ensure_not_cancelled(
 ) -> std::result::Result<(), JobFailure> {
     if state.cancel_requested || state.state == "cancelled" {
         Err(JobFailure::cancelled())
+    } else if !matches!(state.state.as_str(), "leased" | "running") {
+        Err(JobFailure::lease_lost())
     } else {
         Ok(())
     }
@@ -497,22 +595,45 @@ mod tests {
         assert_eq!(body, json!({"schema_version": 1, "tenant_id": TENANT}));
         Json(json!({
             "schema_version": 1,
+            "native_plan_schema_version": 1,
+            "media_job_catalog_version": frame_media::MEDIA_JOB_CATALOG_VERSION,
+            "media_service_catalog_version": frame_media::MEDIA_SERVICE_CATALOG_VERSION,
             "job_id": JOB,
             "state": "leased",
             "profile": "thumbnail_v1",
+            "execution_origin": "managed_fallback",
             "attempt": 1,
             "revision": 2,
             "lease_expires_at_ms": test_now_ms() + 60_000,
-            "source": {
-                "path": format!("/api/v1/worker/media-jobs/{JOB}/source"),
+            "sources": [{
+                "ordinal": 0,
+                "path": format!("/api/v1/worker/media-jobs/{JOB}/sources/0"),
                 "bytes": state.source.len(),
                 "checksum_sha256": state.source_checksum.as_str(),
                 "content_type": "video/webm"
-            },
-            "output": {
-                "path": format!("/api/v1/worker/media-jobs/{JOB}/output"),
+            }],
+            "outputs": [{
+                "ordinal": 0,
+                "role": "thumbnail",
+                "path": format!("/api/v1/worker/media-jobs/{JOB}/outputs/0"),
                 "content_type": "image/png",
                 "max_bytes": 32 * 1_024 * 1_024
+            }],
+            "sandbox": {
+                "max_source_bytes": 2_000_000_000_u64,
+                "max_duration_ms": 14_400_000_u64,
+                "max_width": 7_680_u32,
+                "max_height": 4_320_u32,
+                "max_decoded_bytes": 64_000_000_000_u64,
+                "max_frames": 1_300_000_u64,
+                "max_tracks": 32_u16,
+                "max_memory_bytes": 1_073_741_824_u64,
+                "max_scratch_bytes": 4_000_000_000_u64,
+                "max_cpu_millis": 900_000_u64,
+                "max_gpu_millis": 900_000_u64,
+                "max_output_bytes": 512_000_000_u64,
+                "max_cost_microunits": 10_000_000_u64,
+                "network": "denied"
             },
             "heartbeat_path": format!("/api/v1/worker/media-jobs/{JOB}/heartbeat"),
             "progress_path": format!("/api/v1/worker/media-jobs/{JOB}/progress"),
@@ -620,9 +741,11 @@ mod tests {
         assert!(headers.contains_key("idempotency-key"));
         let output = state.output.lock().expect("output lock");
         let output = output.as_deref().expect("uploaded output");
-        assert_eq!(body["bytes"], output.len());
-        assert_eq!(body["checksum_sha256"], sha256_hex(output));
-        assert_eq!(body["content_type"], "image/png");
+        assert_eq!(body["outputs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["outputs"][0]["ordinal"], 0);
+        assert_eq!(body["outputs"][0]["bytes"], output.len());
+        assert_eq!(body["outputs"][0]["checksum_sha256"], sha256_hex(output));
+        assert_eq!(body["outputs"][0]["content_type"], "image/png");
         Json(json!({
             "schema_version": 1,
             "job_id": JOB,
@@ -697,10 +820,10 @@ mod tests {
         let job_root = format!("/api/v1/worker/media-jobs/{JOB}");
         let app = Router::new()
             .route("/api/v1/worker/media-jobs/claim", post(claim_handler))
-            .route(&format!("{job_root}/source"), get(source_handler))
+            .route(&format!("{job_root}/sources/0"), get(source_handler))
             .route(&format!("{job_root}/heartbeat"), post(heartbeat_handler))
             .route(&format!("{job_root}/progress"), post(progress_handler))
-            .route(&format!("{job_root}/output"), put(output_handler))
+            .route(&format!("{job_root}/outputs/0"), put(output_handler))
             .route(&format!("{job_root}/complete"), post(complete_handler))
             .route(&format!("{job_root}/fail"), post(fail_handler))
             .with_state(state.clone());
@@ -735,18 +858,23 @@ mod tests {
     #[test]
     fn failure_classes_are_allowlisted_and_privacy_safe() {
         for error in [
-            ThumbnailError::InvalidInput,
-            ThumbnailError::MissingRuntime,
-            ThumbnailError::Pipeline,
-            ThumbnailError::Timeout,
-            ThumbnailError::Cancelled,
-            ThumbnailError::ResourceLimit,
-            ThumbnailError::InvalidOutput,
+            NativeError::UnsupportedProfile,
+            NativeError::InvalidPlan,
+            NativeError::InvalidInput,
+            NativeError::MissingRuntime,
+            NativeError::CodecPolicyBlocked,
+            NativeError::UnsupportedGraph,
+            NativeError::Pipeline,
+            NativeError::Timeout,
+            NativeError::Cancelled,
+            NativeError::ResourceLimit,
+            NativeError::InvalidOutput,
         ] {
-            let failure = JobFailure::from_thumbnail(error);
+            let failure = JobFailure::from_native(error);
             assert!(matches!(
                 failure.error_class,
-                "input_invalid"
+                "unsupported_media"
+                    | "input_invalid"
                     | "pipeline_failure"
                     | "pipeline_timeout"
                     | "cancelled"
@@ -762,8 +890,11 @@ mod tests {
     fn transient_failures_are_retryable_but_cancellation_is_not() {
         assert!(JobFailure::transport("transport failed").retryable);
         assert!(!JobFailure::cancelled().retryable);
-        assert!(JobFailure::from_thumbnail(ThumbnailError::Timeout).retryable);
-        assert!(!JobFailure::from_thumbnail(ThumbnailError::Pipeline).retryable);
+        assert!(!JobFailure::lease_lost().retryable);
+        assert!(!JobFailure::lease_lost().report_failure);
+        assert!(JobFailure::from_native(NativeError::Timeout).retryable);
+        assert!(!JobFailure::from_native(NativeError::Pipeline).retryable);
+        assert!(!JobFailure::from_native(NativeError::ResourceLimit).retryable);
     }
 
     #[test]
@@ -796,6 +927,25 @@ mod tests {
         assert!(configuration.halt_consumer);
     }
 
+    #[test]
+    fn terminal_success_wins_only_after_control_plane_completion() {
+        assert!(
+            reconcile_terminal_result(Ok(()), Err(JobFailure::lease_lost())).is_ok(),
+            "a racing terminal heartbeat cannot undo accepted completion"
+        );
+        let configuration = JobFailure::from_protocol(
+            ProtocolApiError::new(
+                "unrecognized_api_error",
+                ApiFailureDisposition::Configuration,
+            )
+            .into(),
+            "configuration failed",
+        );
+        let failure = reconcile_terminal_result(Err(JobFailure::cancelled()), Err(configuration))
+            .expect_err("heartbeat cause");
+        assert!(failure.halt_consumer);
+    }
+
     #[tokio::test]
     async fn pipeline_join_failure_always_stops_and_joins_heartbeats() {
         let (stop, mut stopped) = watch::channel(false);
@@ -809,13 +959,14 @@ mod tests {
             Ok(())
         });
         let pipeline =
-            tokio::task::spawn_blocking(|| -> std::result::Result<Vec<u8>, ThumbnailError> {
+            tokio::task::spawn_blocking(|| -> std::result::Result<NativeOutput, NativeError> {
                 panic!("synthetic pipeline task panic")
             });
-        let background = PipelineHeartbeatGuard::new(CancellationToken::new(), stop, heartbeat);
-        let error = finish_pipeline(pipeline, background)
+        let mut background = PipelineHeartbeatGuard::new(CancellationToken::new(), stop, heartbeat);
+        let error = finish_pipeline(pipeline).await.expect_err("join failure");
+        stop_background(&mut background)
             .await
-            .expect_err("join failure");
+            .expect("heartbeat stopped");
         assert_eq!(error.error_class, "transport_failure");
         assert_eq!(observed.load(Ordering::SeqCst), 1);
     }

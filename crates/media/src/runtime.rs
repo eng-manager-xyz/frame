@@ -49,6 +49,7 @@ pub enum RuntimeCapability {
     AppSourceBridge,
     AppSinkBridge,
     AudioMixing,
+    AudioMetering,
     CameraComposition,
     InstantSegmentation,
     StudioPreview,
@@ -58,6 +59,8 @@ pub enum RuntimeCapability {
     SoftwareH264,
     SoftwareAac,
     SoftwareOpus,
+    StudioMultitrack,
+    MediaTransform,
 }
 
 impl fmt::Display for RuntimeCapability {
@@ -68,6 +71,7 @@ impl fmt::Display for RuntimeCapability {
             Self::AppSourceBridge => "appsrc_bridge",
             Self::AppSinkBridge => "appsink_bridge",
             Self::AudioMixing => "audio_mixing",
+            Self::AudioMetering => "audio_metering",
             Self::CameraComposition => "camera_composition",
             Self::InstantSegmentation => "instant_segmentation",
             Self::StudioPreview => "studio_preview",
@@ -77,6 +81,8 @@ impl fmt::Display for RuntimeCapability {
             Self::SoftwareH264 => "software_h264",
             Self::SoftwareAac => "software_aac",
             Self::SoftwareOpus => "software_opus",
+            Self::StudioMultitrack => "studio_multitrack",
+            Self::MediaTransform => "media_transform",
         };
         formatter.write_str(value)
     }
@@ -229,6 +235,18 @@ const FACTORIES: &[FactorySpec] = &[
         platform: PlatformScope::NativeDesktop,
     },
     FactorySpec {
+        factory: "volume",
+        capability: RuntimeCapability::AudioMixing,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "level",
+        capability: RuntimeCapability::AudioMetering,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
         factory: "compositor",
         capability: RuntimeCapability::CameraComposition,
         requirement: FactoryRequirement::Optional,
@@ -273,6 +291,54 @@ const FACTORIES: &[FactorySpec] = &[
     FactorySpec {
         factory: "avenc_aac",
         capability: RuntimeCapability::SoftwareAac,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "h264parse",
+        capability: RuntimeCapability::SoftwareH264,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "aacparse",
+        capability: RuntimeCapability::SoftwareAac,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "wavenc",
+        capability: RuntimeCapability::StudioMultitrack,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "videorate",
+        capability: RuntimeCapability::MediaTransform,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "jpegenc",
+        capability: RuntimeCapability::MediaTransform,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "gifenc",
+        capability: RuntimeCapability::MediaTransform,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "lamemp3enc",
+        capability: RuntimeCapability::MediaTransform,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "concat",
+        capability: RuntimeCapability::MediaTransform,
         requirement: FactoryRequirement::Optional,
         platform: PlatformScope::NativeDesktop,
     },

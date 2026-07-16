@@ -29,6 +29,9 @@ pass.
 
 The detailed client flows, capability boundaries, abuse controls, and legacy-session migration
 rules are defined in [Authentication protocol and threat model](authentication-protocol.md).
+The public/private player decision, range, embed, collaboration, analytics,
+domain, and cache contracts are defined in
+[Share and player contract v1](../architecture/share-player-v1.md).
 
 - Session cookies are host-only, `Secure`, `HttpOnly`, and `SameSite=Lax` or
   stricter. No `Domain=engmanager.xyz` cookie is permitted.
@@ -61,8 +64,28 @@ rules are defined in [Authentication protocol and threat model](authentication-p
   disclose existence across tenants or include stack traces, SQL, provider
   messages, object keys, signed URLs, bodies, cookies, tokens, emails, or
   private titles.
+- Every legacy route, server action, RPC, callback, and durable workflow is
+  checksum-pinned in the versioned API parity report. A family mapping is not
+  cutover evidence; current and N-1 clients keep their route fallback until all
+  endpoint contract axes pass.
+- Webhook bodies are bounded before HMAC-SHA-256 verification. Timestamp
+  windows, overlapping bounded-lifetime keys, constant-time comparison, an
+  atomic durable replay claim, and business idempotency all fail closed. Replay
+  store unavailability never bypasses verification.
+- Outbound integration URLs require HTTPS, exact configured hosts, default
+  ports, no user info or fragments, and a pinned DNS resolution whose every IP
+  is public. Redirects are relative or exact-origin; protocol-relative and
+  control-character targets are rejected.
+- Scheduled and provider workflows use expiring leases and monotonic fences.
+  Indeterminate external effects are queried with the original provider
+  idempotency key and cannot be resubmitted or terminally cancelled by a stale
+  worker.
 
 ### Upload, object, and media
+
+The executable role/surface matrix, signed and custom-domain read rules,
+untrusted-media policy, and lifecycle evidence contract are specified in
+[Storage governance v1](storage-governance-v1.md).
 
 - Keys are derived from validated tenant/video/revision/role/profile values;
   clients cannot choose arbitrary prefixes. Published outputs are immutable.

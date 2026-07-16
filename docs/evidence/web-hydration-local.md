@@ -9,8 +9,10 @@ infrastructure. It does not claim page-family parity or production closure.
 - Axum renders useful landmarks, route metadata, privacy state, loading/error
   state, native video controls, captions, and no-JavaScript help.
 - Two exact Leptos subtrees hydrate: a data-free readiness boundary on every
-  page and public-player keyboard help. The components share one Rust source
-  between SSR and Wasm and start from identical markup.
+  page and the public-player control/help island. The latter adds play/pause,
+  bounded seek, speed, approved fullscreen/PiP, retry, live status, and the
+  exact-origin/source/schema/share/sequence embed listener. The components
+  share one Rust source between SSR and Wasm and start from identical markup.
 - Authentication, role, private workspace, playback availability, and metadata
   remain server-authoritative. Hydration cannot invent authenticated success.
 - The public fixture exists only under local deployment. Unknown, processing,

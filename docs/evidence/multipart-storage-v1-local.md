@@ -84,3 +84,30 @@ establish R2 compatibility, durability, latency, Worker memory safety, browser p
 correctness in production, or operational readiness. Upload parts remain bounded buffers at this
 local port. Those protected/provider gates remain explicitly open in the architecture document;
 this record must not be used to close issue 19.
+
+## Repository wiring audit
+
+The later control-plane work adds two distinct R2 implementations, but only one currently has a
+production call path:
+
+- `r2_direct_upload.rs` is constructed by upload intent, signs a private staging PUT, and is consumed
+  by the authenticated direct-finalize path. That path verifies R2 size, SHA-256, content type, and
+  metadata before an immutable publication and D1 mutation.
+- `r2_multipart.rs` implements the `MultipartObjectStoreV1` provider operations and has D1 tables for
+  sessions, parts, and completion receipts. It is exported by the Worker crate, but no runtime code
+  constructs `R2MultipartObjectStoreV1`, no API route invokes it, and no scheduled task invokes its
+  stale-session cleanup.
+
+The missing constructor is not a cosmetic wiring omission. Multipart completion requires a
+`TrustedR2MediaProbeV1`; the repository has no implementation of that trait. The existing native
+probe is an asynchronous media-job result produced only after a source object manifest exists, so it
+cannot be injected into the current synchronous multipart-complete contract without defining a
+durable provider-completed/reconcile boundary. The current upload-intent path therefore returns
+`multipart_required` for objects above the single-PUT ceiling rather than creating a multipart
+session.
+
+Only deterministic helper tests exist beside the R2 multipart adapter. There is no Wrangler-local
+or hosted test that constructs the adapter and exercises create/list/part/resume/complete/abort,
+lost acknowledgement, expiry cleanup, or checksum failure through the Worker binding. Consequently
+the checked-in adapter and migrations are useful implementation groundwork, but they do not satisfy
+issue 19's provider-adapter deliverable or acceptance evidence yet.

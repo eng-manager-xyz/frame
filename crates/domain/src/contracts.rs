@@ -399,9 +399,11 @@ pub enum ObjectRole {
     Source,
     RecordingSegment,
     Thumbnail,
+    Screenshot,
     Preview,
     Spritesheet,
     Audio,
+    Caption,
     Export,
     Manifest,
 }
@@ -413,9 +415,11 @@ impl ObjectRole {
             Self::Source => "source",
             Self::RecordingSegment => "segment",
             Self::Thumbnail => "thumbnail",
+            Self::Screenshot => "screenshot",
             Self::Preview => "preview",
             Self::Spritesheet => "spritesheet",
             Self::Audio => "audio",
+            Self::Caption => "caption",
             Self::Export => "export",
             Self::Manifest => "manifest",
         }
@@ -457,9 +461,11 @@ impl ObjectRetentionPolicy {
         match role {
             ObjectRole::Source | ObjectRole::RecordingSegment => self.source,
             ObjectRole::Thumbnail
+            | ObjectRole::Screenshot
             | ObjectRole::Preview
             | ObjectRole::Spritesheet
             | ObjectRole::Audio
+            | ObjectRole::Caption
             | ObjectRole::Export
             | ObjectRole::Manifest => self.derivatives,
         }
@@ -746,6 +752,8 @@ pub enum LifecycleError {
     Cancelled,
     #[error("the executor cannot report progress")]
     ProgressUnsupported,
+    #[error("the lifecycle epoch is exhausted")]
+    EpochExhausted,
 }
 
 impl UploadContract {
@@ -1595,8 +1603,58 @@ impl ReconciliationSummary {
 #[serde(rename_all = "snake_case")]
 pub enum DataAuthority {
     Legacy,
-    DualWrite,
     D1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CutoverDomain(String);
+
+impl CutoverDomain {
+    pub fn parse(value: &str) -> Result<Self, ContractError> {
+        if value.is_empty()
+            || value.len() > 64
+            || !value.as_bytes()[0].is_ascii_lowercase()
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+            })
+        {
+            return Err(ContractError::InvalidIdentifier("cutover domain"));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CutoverDomain {
+    type Error = ContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<CutoverDomain> for String {
+    fn from(value: CutoverDomain) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CutoverScope {
+    pub tenant_id: TenantId,
+    pub domain: CutoverDomain,
+}
+
+impl CutoverScope {
+    #[must_use]
+    pub const fn new(tenant_id: TenantId, domain: CutoverDomain) -> Self {
+        Self { tenant_id, domain }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1612,60 +1670,189 @@ pub enum CutoverPhase {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CutoverEvidence {
+    pub shadow_observation_ready: bool,
     pub reconciliation_clean: bool,
     pub rollback_rehearsed: bool,
     pub observation_window_complete: bool,
+    pub reconciliation_digest_present: bool,
+    pub legacy_fenced: bool,
+    pub d1_fenced: bool,
+    pub legacy_caught_up: bool,
+    pub pending_events: u64,
+    pub dead_letter_events: u64,
+    pub shadow_mismatches: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CutoverState {
-    pub phase: CutoverPhase,
-    pub authority: DataAuthority,
-    pub epoch: u64,
-}
+impl CutoverEvidence {
+    #[must_use]
+    const fn counts_are_safe(self) -> bool {
+        self.pending_events <= MAX_WIRE_INTEGER
+            && self.dead_letter_events <= MAX_WIRE_INTEGER
+            && self.shadow_mismatches <= MAX_WIRE_INTEGER
+    }
 
-impl Default for CutoverState {
-    fn default() -> Self {
-        Self {
-            phase: CutoverPhase::LegacyAuthoritative,
-            authority: DataAuthority::Legacy,
-            epoch: 0,
-        }
+    #[must_use]
+    const fn shadow_is_clean(self) -> bool {
+        self.observation_window_complete && self.shadow_mismatches == 0
+    }
+
+    #[must_use]
+    const fn replay_is_drained(self) -> bool {
+        self.pending_events == 0 && self.dead_letter_events == 0
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CutoverState {
+    pub scope: CutoverScope,
+    pub phase: CutoverPhase,
+    pub writer: DataAuthority,
+    pub mirror_enabled: bool,
+    pub replay_paused: bool,
+    pub epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityFence {
+    pub scope: CutoverScope,
+    pub writer: DataAuthority,
+    pub epoch: u64,
+}
+
 impl CutoverState {
+    #[must_use]
+    pub const fn new(scope: CutoverScope) -> Self {
+        Self {
+            scope,
+            phase: CutoverPhase::LegacyAuthoritative,
+            writer: DataAuthority::Legacy,
+            mirror_enabled: false,
+            replay_paused: false,
+            epoch: 0,
+        }
+    }
+
     pub fn transition(
         &mut self,
         next: CutoverPhase,
         evidence: CutoverEvidence,
     ) -> Result<(), LifecycleError> {
-        let authority = match (self.phase, next) {
-            (CutoverPhase::LegacyAuthoritative, CutoverPhase::ShadowRead) => DataAuthority::Legacy,
-            (CutoverPhase::ShadowRead, CutoverPhase::DualWrite) if evidence.rollback_rehearsed => {
-                DataAuthority::DualWrite
+        if !evidence.counts_are_safe() {
+            return Err(LifecycleError::InvalidTransition);
+        }
+        let writer = match (self.phase, next) {
+            (CutoverPhase::LegacyAuthoritative, CutoverPhase::ShadowRead)
+                if evidence.shadow_observation_ready =>
+            {
+                DataAuthority::Legacy
+            }
+            (CutoverPhase::ShadowRead | CutoverPhase::RolledBack, CutoverPhase::DualWrite)
+                if evidence.reconciliation_clean && evidence.shadow_is_clean() =>
+            {
+                DataAuthority::Legacy
             }
             (CutoverPhase::DualWrite, CutoverPhase::D1Authoritative)
-                if evidence.reconciliation_clean && evidence.rollback_rehearsed =>
+                if evidence.reconciliation_clean
+                    && evidence.rollback_rehearsed
+                    && evidence.reconciliation_digest_present
+                    && evidence.legacy_fenced
+                    && evidence.shadow_is_clean()
+                    && evidence.replay_is_drained() =>
             {
                 DataAuthority::D1
             }
             (CutoverPhase::D1Authoritative, CutoverPhase::Finalized)
-                if evidence.reconciliation_clean && evidence.observation_window_complete =>
+                if evidence.reconciliation_clean
+                    && evidence.reconciliation_digest_present
+                    && evidence.shadow_is_clean()
+                    && evidence.replay_is_drained() =>
             {
                 DataAuthority::D1
             }
-            (
-                CutoverPhase::ShadowRead | CutoverPhase::DualWrite | CutoverPhase::D1Authoritative,
-                CutoverPhase::RolledBack,
-            ) => DataAuthority::Legacy,
-            (CutoverPhase::RolledBack, CutoverPhase::ShadowRead) => DataAuthority::Legacy,
+            (CutoverPhase::D1Authoritative, CutoverPhase::RolledBack)
+                if evidence.d1_fenced
+                    && evidence.legacy_caught_up
+                    && evidence.rollback_rehearsed
+                    && evidence.reconciliation_clean
+                    && evidence.reconciliation_digest_present
+                    && evidence.replay_is_drained() =>
+            {
+                DataAuthority::Legacy
+            }
             _ => return Err(LifecycleError::InvalidTransition),
         };
+        let epoch = self
+            .epoch
+            .checked_add(1)
+            .filter(|epoch| *epoch <= MAX_WIRE_INTEGER)
+            .ok_or(LifecycleError::EpochExhausted)?;
         self.phase = next;
-        self.authority = authority;
-        self.epoch = self.epoch.saturating_add(1);
+        self.writer = writer;
+        self.mirror_enabled = matches!(
+            next,
+            CutoverPhase::DualWrite | CutoverPhase::D1Authoritative | CutoverPhase::RolledBack
+        );
+        self.replay_paused = false;
+        self.epoch = epoch;
         Ok(())
+    }
+
+    #[must_use]
+    pub const fn invariants_hold(&self) -> bool {
+        let writer_matches_phase = match self.phase {
+            CutoverPhase::LegacyAuthoritative
+            | CutoverPhase::ShadowRead
+            | CutoverPhase::DualWrite
+            | CutoverPhase::RolledBack => matches!(self.writer, DataAuthority::Legacy),
+            CutoverPhase::D1Authoritative | CutoverPhase::Finalized => {
+                matches!(self.writer, DataAuthority::D1)
+            }
+        };
+        writer_matches_phase
+            && self.mirror_enabled
+                == matches!(
+                    self.phase,
+                    CutoverPhase::DualWrite
+                        | CutoverPhase::D1Authoritative
+                        | CutoverPhase::RolledBack
+                )
+            && self.epoch <= MAX_WIRE_INTEGER
+    }
+
+    pub fn set_replay_paused(&mut self, paused: bool) -> Result<(), LifecycleError> {
+        if self.replay_paused == paused
+            || !matches!(
+                self.phase,
+                CutoverPhase::ShadowRead
+                    | CutoverPhase::DualWrite
+                    | CutoverPhase::D1Authoritative
+                    | CutoverPhase::RolledBack
+            )
+        {
+            return Err(LifecycleError::InvalidTransition);
+        }
+        self.epoch = self
+            .epoch
+            .checked_add(1)
+            .filter(|epoch| *epoch <= MAX_WIRE_INTEGER)
+            .ok_or(LifecycleError::EpochExhausted)?;
+        self.replay_paused = paused;
+        Ok(())
+    }
+
+    pub fn authorize_writer(
+        &self,
+        writer: DataAuthority,
+        expected_epoch: u64,
+    ) -> Result<AuthorityFence, LifecycleError> {
+        if self.writer != writer || self.epoch != expected_epoch {
+            return Err(LifecycleError::InvalidTransition);
+        }
+        Ok(AuthorityFence {
+            scope: self.scope.clone(),
+            writer,
+            epoch: expected_epoch,
+        })
     }
 }
 
@@ -2115,9 +2302,19 @@ mod tests {
 
     #[test]
     fn cutover_requires_evidence_and_remains_rollbackable_until_finalized() {
-        let mut state = CutoverState::default();
+        let scope = CutoverScope::new(
+            TenantId::parse("00000000-0000-0000-0000-000000000017").expect("tenant"),
+            CutoverDomain::parse("metadata").expect("domain"),
+        );
+        let mut state = CutoverState::new(scope);
         state
-            .transition(CutoverPhase::ShadowRead, CutoverEvidence::default())
+            .transition(
+                CutoverPhase::ShadowRead,
+                CutoverEvidence {
+                    shadow_observation_ready: true,
+                    ..CutoverEvidence::default()
+                },
+            )
             .expect("shadow");
         assert_eq!(
             state.transition(CutoverPhase::DualWrite, CutoverEvidence::default()),
@@ -2127,25 +2324,52 @@ mod tests {
             .transition(
                 CutoverPhase::DualWrite,
                 CutoverEvidence {
-                    rollback_rehearsed: true,
+                    reconciliation_clean: true,
+                    observation_window_complete: true,
                     ..CutoverEvidence::default()
                 },
             )
             .expect("dual write");
+        assert_eq!(state.writer, DataAuthority::Legacy);
+        assert!(state.mirror_enabled);
         state
             .transition(
                 CutoverPhase::D1Authoritative,
                 CutoverEvidence {
                     reconciliation_clean: true,
                     rollback_rehearsed: true,
-                    observation_window_complete: false,
+                    observation_window_complete: true,
+                    reconciliation_digest_present: true,
+                    legacy_fenced: true,
+                    ..CutoverEvidence::default()
                 },
             )
             .expect("D1");
+        let stale_epoch = state.epoch - 1;
+        assert_eq!(
+            state.authorize_writer(DataAuthority::Legacy, stale_epoch),
+            Err(LifecycleError::InvalidTransition)
+        );
+        assert!(
+            state
+                .authorize_writer(DataAuthority::D1, state.epoch)
+                .is_ok()
+        );
         state
-            .transition(CutoverPhase::RolledBack, CutoverEvidence::default())
+            .transition(
+                CutoverPhase::RolledBack,
+                CutoverEvidence {
+                    rollback_rehearsed: true,
+                    d1_fenced: true,
+                    legacy_caught_up: true,
+                    reconciliation_clean: true,
+                    reconciliation_digest_present: true,
+                    ..CutoverEvidence::default()
+                },
+            )
             .expect("rollback");
-        assert_eq!(state.authority, DataAuthority::Legacy);
+        assert_eq!(state.writer, DataAuthority::Legacy);
+        assert!(state.invariants_hold());
     }
 
     #[test]

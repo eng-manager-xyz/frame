@@ -64,6 +64,7 @@ DEFECT_EXPECTATIONS = {
     "range-off-by-one": "range-contract",
     "unavailable-title-leak": "unavailable-privacy",
     "handler-path-upstream-fetch": "portfolio-latency",
+    "audit-sensitive-field": "audit-redaction",
 }
 SAFE_RELEASE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
@@ -249,7 +250,10 @@ def cookie_names(raw: str | None) -> list[str]:
 
 class PreviewHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    # A semantic deploy deliberately restarts Frame on the exact paired origin.
+    # The orchestrator proves the old listener is closed before this socket is
+    # created, so address reuse covers TCP TIME_WAIT without overlapping owners.
+    allow_reuse_address = True
 
     def __init__(
         self,
@@ -293,6 +297,8 @@ class PreviewHTTPServer(ThreadingHTTPServer):
                 else "browser-like-client"
             ),
         }
+        if self.defect == "audit-sensitive-field":
+            record["cookie_value"] = "synthetic-value-that-must-never-be-retained"
         encoded = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
         with self.audit_lock:
             with self.audit_path.open("a", encoding="utf-8") as output:
@@ -426,7 +432,23 @@ class FrameHandler(QuietHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler interface
         path = urlsplit(self.path).path
-        self.server.audit(self, "frame_session" if path == "/__local/session" else "unknown")
+        route = {
+            "/__local/session": "frame_session",
+            "/logout": "frame_logout",
+        }.get(path, "unknown")
+        self.server.audit(self, route)
+        if path == "/logout":
+            self._api(
+                HTTPStatus.NO_CONTENT,
+                b"",
+                extra={
+                    "set-cookie": (
+                        "frame_session=; Path=/; HttpOnly; SameSite=Lax; "
+                        "Max-Age=0"
+                    )
+                },
+            )
+            return
         if path != "/__local/session":
             self._api(HTTPStatus.NOT_FOUND, self._generic_error("not_found", "never"))
             return
@@ -471,6 +493,47 @@ class FrameHandler(QuietHandler):
                     "x-robots-tag": "noindex, nofollow, noarchive",
                 },
                 head_only,
+            )
+            return
+        if path == "/login":
+            self.server.audit(self, "frame_login")
+            body = (
+                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+                "<title>Sign in to Frame</title>"
+                "<meta name=\"robots\" content=\"noindex,nofollow\"></head>"
+                "<body><main><h1>Sign in to Frame</h1>"
+                "<p>Authentication remains on the Frame origin.</p></main></body></html>"
+            ).encode()
+            self._send(
+                HTTPStatus.OK,
+                body,
+                {
+                    "content-type": "text/html; charset=utf-8",
+                    "cache-control": "no-store, max-age=0",
+                    "content-security-policy": (
+                        "default-src 'self'; base-uri 'none'; frame-ancestors 'none'"
+                    ),
+                    "referrer-policy": "no-referrer",
+                    "x-frame-options": "DENY",
+                    "x-robots-tag": "noindex, nofollow, noarchive",
+                },
+                head_only,
+            )
+            return
+        if path == "/dashboard":
+            self.server.audit(self, "frame_dashboard")
+            if "frame_session" not in cookie_names(self.headers.get("Cookie")):
+                self._api(
+                    HTTPStatus.UNAUTHORIZED,
+                    self._generic_error("unauthenticated", "never"),
+                    extra={"www-authenticate": 'Session realm="frame"'},
+                    head_only=head_only,
+                )
+                return
+            self._api(
+                HTTPStatus.OK,
+                b'{"account":"synthetic-local","status":"ready"}\n',
+                head_only=head_only,
             )
             return
         if path == "/api/v1/health":
@@ -924,12 +987,14 @@ class ManagedServer:
         state_dir: Path,
         defect: str | None,
         frame_origin: str | None = None,
+        listen_port: int = 0,
     ) -> None:
         self.role = role
         self.state_dir = state_dir
         self.port_path = state_dir / f"{role}.port"
         self.log_path = state_dir / f"{role}.log"
         self.log_handle = self.log_path.open("wb")
+        self.port_path.unlink(missing_ok=True)
         command = [
             sys.executable,
             "-I",
@@ -937,7 +1002,7 @@ class ManagedServer:
             "--serve",
             role,
             "--port",
-            "0",
+            str(listen_port),
             "--state-dir",
             str(state_dir),
         ]
@@ -1213,6 +1278,16 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                 200,
                 "share-contract",
             )
+            processing_share = http_request(
+                "GET", f"{frame_origin}/api/v1/public/shares/processing-demo"
+            )
+            assert_fixture_response(
+                processing_share,
+                fixtures,
+                "share.processing.json",
+                200,
+                "share-contract",
+            )
             error = http_request("GET", f"{frame_origin}/api/v1/__local/error")
             assert_fixture_response(
                 error,
@@ -1221,7 +1296,10 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                 503,
                 "error-contract",
             )
-            emit(report, "exact health, public-share, error, and no-store HTTP contracts")
+            emit(
+                report,
+                "exact health, public/processing-share, error, and no-store HTTP contracts",
+            )
 
             jar = http.cookiejar.CookieJar()
             browser = build_opener(ProxyHandler({}), HTTPCookieProcessor(jar))
@@ -1275,6 +1353,23 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                 "top-level-navigation",
                 "portfolio authority crossed the top-level navigation boundary",
             )
+            login = http_request("GET", f"{frame_origin}/login", opener=browser)
+            denied_dashboard = http_request(
+                "GET", f"{frame_origin}/dashboard", opener=browser
+            )
+            require(
+                login.status == 200
+                and b"Sign in to Frame" in login.body
+                and login.headers.get("x-robots-tag") == "noindex, nofollow, noarchive",
+                "login-boundary",
+                "anonymous Frame login boundary drifted",
+            )
+            require(
+                denied_dashboard.status == 401,
+                "dashboard-boundary",
+                "anonymous dashboard request was not denied",
+            )
+            assert_no_store(denied_dashboard, fixtures, "dashboard-boundary")
 
             frame_session = http_request(
                 "POST",
@@ -1307,20 +1402,52 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                 "cookie-origin-isolation",
                 "host-local sessions crossed between loopback origins",
             )
-            emit(report, "top-level navigation, Back-equivalent return, and host-only cookies")
-
-            private = http_request(
-                "GET", f"{frame_origin}/api/v1/private/me", opener=browser
+            dashboard = http_request("GET", f"{frame_origin}/dashboard", opener=browser)
+            require(
+                dashboard.status == 200
+                and dashboard.json("dashboard-boundary")
+                == {"account": "synthetic-local", "status": "ready"},
+                "dashboard-boundary",
+                "host-local Frame session did not enter the synthetic dashboard",
+            )
+            assert_no_store(dashboard, fixtures, "dashboard-boundary")
+            logout = http_request(
+                "POST", f"{frame_origin}/logout", data=b"", opener=browser
             )
             require(
-                private.status == 401
-                and private.headers.get("cache-control") == "no-store, max-age=0"
-                and private.headers.get("x-frame-cache") != "HIT"
-                and "age" not in private.headers,
-                "private-cache-isolation",
-                "private/auth response was cacheable or appeared as a cache hit",
+                logout.status == 204
+                and "Max-Age=0" in logout.headers.get("set-cookie", ""),
+                "logout-boundary",
+                "Frame logout did not revoke the host-local session",
             )
-            assert_no_store(private, fixtures, "private-cache-isolation")
+            assert_no_store(logout, fixtures, "logout-boundary")
+            denied_after_logout = http_request(
+                "GET", f"{frame_origin}/dashboard", opener=browser
+            )
+            require(
+                denied_after_logout.status == 401,
+                "logout-boundary",
+                "dashboard remained available after logout",
+            )
+            assert_no_store(denied_after_logout, fixtures, "logout-boundary")
+            emit(
+                report,
+                "top-level navigation, Back-equivalent return, login/dashboard/logout, and host-only cookies",
+            )
+
+            for _attempt in range(3):
+                private = http_request(
+                    "GET", f"{frame_origin}/api/v1/private/me", opener=browser
+                )
+                require(
+                    private.status == 401
+                    and private.headers.get("cache-control") == "no-store, max-age=0"
+                    and private.headers.get("x-frame-cache") != "HIT"
+                    and "age" not in private.headers,
+                    "private-cache-isolation",
+                    "private/auth response was cacheable or appeared as a cache hit",
+                )
+                assert_no_store(private, fixtures, "private-cache-isolation")
             asset_path = "/assets/frame.0123456789abcdef.js"
             asset_first = http_request("GET", f"{frame_origin}{asset_path}")
             asset_second = http_request("GET", f"{frame_origin}{asset_path}")
@@ -1452,6 +1579,7 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                 "privacy-purge",
                 "public privacy seed media was unavailable",
             )
+            privacy_started = time.monotonic()
             atomic_write(state_dir / "privacy-mode", "private\n")
             hidden_share = http_request(
                 "GET",
@@ -1466,9 +1594,10 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
             require(
                 hidden_share.body == fixtures.json_bytes["share.unavailable.json"]
                 and hidden_media.status == 404
-                and hidden_media.headers.get("x-frame-cache") != "HIT",
+                and hidden_media.headers.get("x-frame-cache") != "HIT"
+                and time.monotonic() - privacy_started < 0.500,
                 "privacy-purge",
-                "privacy change did not immediately revoke summary and media",
+                "privacy change did not revoke summary and media inside the local SLO",
             )
             assert_no_store(hidden_share, fixtures, "privacy-purge")
             assert_no_store(hidden_media, fixtures, "privacy-purge")
@@ -1490,6 +1619,14 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                     "portfolio-latency",
                     f"portfolio route coupled to {mode} Frame response",
                 )
+
+            atomic_write(state_dir / "frame-mode", "healthy\n")
+            wait_for(
+                lambda: home_has_state(portfolio_origin, "available"),
+                timeout=min(timeout, 2),
+                check="portfolio-retry-recovery",
+                message="portfolio background retry did not recover after rollback",
+            )
 
             health_before = len(
                 [
@@ -1521,8 +1658,17 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                 "slow Frame response delayed the portfolio handler",
             )
 
+            old_port = frame.port
+            require(old_port is not None, "frame-restart", "Frame port was not recorded")
             frame.stop()
-            time.sleep(PORTFOLIO_POLL_TIMEOUT_SECONDS + 0.100)
+            frame.prove_closed()
+            frame = None
+            wait_for(
+                lambda: home_has_state(portfolio_origin, "stale"),
+                timeout=min(timeout, 2),
+                check="portfolio-degradation",
+                message="portfolio did not retain stale state during Frame outage",
+            )
             outage_page, outage_latency = timed_home(portfolio_origin, browser)
             require(
                 outage_page.status == 200
@@ -1555,10 +1701,42 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
                 "portfolio-public-data",
                 "portfolio HTML contained private or upstream response material",
             )
-            emit(report, "malformed/version/error/slow/outage degradation within latency budget")
+            atomic_write(state_dir / "frame-mode", "healthy\n")
+            frame = ManagedServer(
+                "frame", state_dir, defect, listen_port=old_port
+            )
+            restarted_origin = frame.await_origin("127.0.0.1", min(timeout, 4))
+            require(
+                restarted_origin == frame_origin,
+                "frame-restart",
+                "Frame semantic deploy did not retain the paired origin",
+            )
+            wait_for(
+                lambda: home_has_state(portfolio_origin, "available"),
+                timeout=min(timeout, 3),
+                check="portfolio-retry-recovery",
+                message="portfolio did not reconnect after Frame restart",
+            )
+            emit(
+                report,
+                "malformed/version/error/slow/outage plus rollback/retry/reconnect within latency budget",
+            )
 
             frame_audit = read_audit(state_dir / "frame.audit.jsonl")
             portfolio_audit = read_audit(state_dir / "portfolio.audit.jsonl")
+            safe_audit_fields = {
+                "route",
+                "method",
+                "cookie_names",
+                "has_authorization",
+                "consumer",
+            }
+            require(
+                all(set(record) == safe_audit_fields for record in frame_audit)
+                and all(set(record) == safe_audit_fields for record in portfolio_audit),
+                "audit-redaction",
+                "audit retained a response, credential, identifier, or unapproved field",
+            )
             background = [
                 record
                 for record in frame_audit

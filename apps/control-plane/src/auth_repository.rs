@@ -15,7 +15,8 @@ use frame_domain::{
     AuthAuditEventId, AuthAuditOutcome, AuthAuditReason, AuthClientKind, AuthDeliveryId,
     AuthDeliveryLeaseId, AuthRateLimitBucket, AuthSessionDecision, AuthSessionRecord,
     AuthSessionState, DurationMillis, ExactBrowserOrigin, FetchSite, HashKeyVersion,
-    IdentityProvisioningGrantId, ManagedApiKeyRecord, NewVerificationChallenge, OrganizationRole,
+    IdentityProvisioningGrantId, ManagedApiKeyRecord, NewVerificationChallenge,
+    OAuthExchangeReservationId, OAuthFlowId, OAuthFlowPurpose, OAuthProvider, OrganizationRole,
     PrincipalIssuanceGrantId, PrincipalSnapshot, SealedDeliveryEnvelope, SecretDigest,
     SecretDigestCandidates, SessionContinuationBinding, SessionFamilyId, SessionId,
     SessionMutationGrantId, SessionRevocationReason, TenantGrant, TenantId, TimestampMillis,
@@ -28,13 +29,13 @@ use frame_ports::{
     AuthDeliveryRetryOutcome, AuthStateRepository, AuthenticatedSessionPresentation, DecisionAudit,
     IdentityProvisionCommand, IdentityProvisionOutcome, IdentityProvisioningGrant,
     LogoutAllOutcome, MAX_AUTH_DELIVERY_ATTEMPTS, MAX_AUTH_DELIVERY_LEASE_MILLIS,
-    MAX_RATE_LIMIT_BUCKETS, OAuthBeginCommand, OAuthBeginOutcome, OAuthExchangeOutcome,
-    OAuthFinalizeCommand, OAuthPreflightCommand, OAuthPreflightOutcome, PortError,
-    PrincipalIssuanceGrant, SessionAuditContext, SessionAuthenticationCommand,
-    SessionIssueAuthority, SessionIssueCommand, SessionIssueOutcome, SessionMutationGrant,
-    SessionPresentation, SessionRevokeCommand, SessionRotationOutcome, SessionRotationRequest,
-    VerificationAtomicOutcome, VerificationAttemptCommand, VerificationIssueAtomicOutcome,
-    VerificationIssueCommand,
+    MAX_PENDING_OAUTH_FLOWS, MAX_RATE_LIMIT_BUCKETS, OAuthBeginCommand, OAuthBeginOutcome,
+    OAuthExchangeOutcome, OAuthFinalizeCommand, OAuthPreflightCommand, OAuthPreflightOutcome,
+    OAuthProviderResult, PortError, PrincipalIssuanceGrant, SessionAuditContext,
+    SessionAuthenticationCommand, SessionIssueAuthority, SessionIssueCommand, SessionIssueOutcome,
+    SessionMutationGrant, SessionPresentation, SessionRevokeCommand, SessionRotationOutcome,
+    SessionRotationRequest, VerificationAtomicOutcome, VerificationAttemptCommand,
+    VerificationIssueAtomicOutcome, VerificationIssueCommand,
 };
 use futures::{future::Either, future::select, pin_mut};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -223,6 +224,57 @@ const VERIFICATION_ATTEMPT_PROVISIONING_POSTCONDITION_SQL: &str =
     include_str!("../queries/auth/verification_attempt_provisioning_postcondition.sql");
 const VERIFICATION_ATTEMPT_LINKED_POSTCONDITION_SQL: &str =
     include_str!("../queries/auth/verification_attempt_linked_postcondition.sql");
+const OAUTH_OPERATION_INSERT_SQL: &str = include_str!("../queries/auth/oauth_operation_insert.sql");
+const OAUTH_OPERATION_BY_ID_SQL: &str = include_str!("../queries/auth/oauth_operation_by_id.sql");
+const OAUTH_FLOW_BY_STATE_SQL: &str = include_str!("../queries/auth/oauth_flow_by_state.sql");
+const OAUTH_FLOW_ID_EXISTS_SQL: &str = include_str!("../queries/auth/oauth_flow_id_exists.sql");
+const OAUTH_RESERVATION_BY_ID_SQL: &str =
+    include_str!("../queries/auth/oauth_reservation_by_id.sql");
+const OAUTH_EXTERNAL_ACCOUNT_BY_SUBJECT_SQL: &str =
+    include_str!("../queries/auth/oauth_external_account_by_subject.sql");
+const OAUTH_FLOW_INSERT_SQL: &str = include_str!("../queries/auth/oauth_flow_insert.sql");
+const OAUTH_FLOW_ABSENT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_flow_absent_assert.sql");
+const OAUTH_FLOW_BEGIN_ABSENT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_flow_begin_absent_assert.sql");
+const OAUTH_FLOW_COLLISION_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_flow_collision_assert.sql");
+const OAUTH_FLOW_CAPACITY_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_flow_capacity_assert.sql");
+const OAUTH_FLOW_CURRENT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_flow_current_assert.sql");
+const OAUTH_FLOW_CONSUME_SQL: &str = include_str!("../queries/auth/oauth_flow_consume.sql");
+const OAUTH_FLOW_DELETE_SQL: &str = include_str!("../queries/auth/oauth_flow_delete.sql");
+const OAUTH_EXPIRED_FLOWS_DELETE_SQL: &str =
+    include_str!("../queries/auth/oauth_expired_flows_delete.sql");
+const OAUTH_RESERVATION_INSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_reservation_insert.sql");
+const OAUTH_RESERVATION_CONSUME_SQL: &str =
+    include_str!("../queries/auth/oauth_reservation_consume.sql");
+const OAUTH_RESERVATION_ABSENT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_reservation_absent_assert.sql");
+const OAUTH_RESERVATION_CURRENT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_reservation_current_assert.sql");
+const OAUTH_CONTINUATION_INVALID_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_continuation_invalid_assert.sql");
+const OAUTH_MUTATION_GRANT_INVALID_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_mutation_grant_invalid_assert.sql");
+const OAUTH_EXTERNAL_ACCOUNT_AUTHORITY_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_external_account_authority_assert.sql");
+const OAUTH_EXTERNAL_ACCOUNT_SNAPSHOT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_external_account_snapshot_assert.sql");
+const OAUTH_IDENTIFIER_AUTHORITY_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_identifier_authority_assert.sql");
+const OAUTH_IDENTIFIER_SNAPSHOT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_identifier_snapshot_assert.sql");
+const OAUTH_EXTERNAL_ACCOUNT_DELETE_FALLBACKS_SQL: &str =
+    include_str!("../queries/auth/oauth_external_account_delete_fallbacks.sql");
+const OAUTH_EXTERNAL_ACCOUNT_UPSERT_SQL: &str =
+    include_str!("../queries/auth/oauth_external_account_upsert.sql");
+const OAUTH_EXTERNAL_ACCOUNT_POSTCONDITION_SQL: &str =
+    include_str!("../queries/auth/oauth_external_account_postcondition.sql");
+const OAUTH_VERIFIED_POSTCONDITION_SQL: &str =
+    include_str!("../queries/auth/oauth_verified_postcondition.sql");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdapterFailure {
@@ -496,15 +548,46 @@ fn opt_i64(value: Option<i64>) -> JsValue {
 }
 
 fn enum_name<T: Serialize>(value: T) -> AdapterResult<String> {
-    serde_json::to_value(value)
+    let name = serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
-        .ok_or(AdapterFailure::Invalid)
+        .ok_or(AdapterFailure::Invalid)?;
+    Ok(match name.as_str() {
+        "o_auth_begin" => "oauth_begin".into(),
+        "o_auth_exchange" => "oauth_exchange".into(),
+        "o_auth_exchange_preflight" => "oauth_exchange_preflight".into(),
+        _ => name,
+    })
 }
 
 fn parse_enum<T: DeserializeOwned>(value: &str) -> AdapterResult<T> {
     serde_json::from_value(serde_json::Value::String(value.into()))
         .map_err(|_| AdapterFailure::Corrupt)
+}
+
+fn rate_policy_fingerprint(policy: frame_domain::MultiRateLimitPolicy) -> String {
+    format!(
+        "{}:{}:{}|{}:{}:{}|{}:{}:{}|{}:{}:{}",
+        policy.identifier.max_attempts(),
+        policy.identifier.window().get(),
+        policy.identifier.block_for().get(),
+        policy.source.max_attempts(),
+        policy.source.window().get(),
+        policy.source.block_for().get(),
+        policy.device.max_attempts(),
+        policy.device.window().get(),
+        policy.device.block_for().get(),
+        policy.global.max_attempts(),
+        policy.global.window().get(),
+        policy.global.block_for().get(),
+    )
+}
+
+fn digest_candidates_contain(
+    candidates: &SecretDigestCandidates,
+    expected: &VersionedSecretDigest,
+) -> bool {
+    candidates.iter().any(|candidate| candidate == expected)
 }
 
 const fn fetch_site_name(value: FetchSite) -> &'static str {
@@ -698,6 +781,88 @@ struct IdentifierOwnerRow {
     user_id: String,
     key_version: i64,
     digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OAuthFlowRow {
+    id: String,
+    provider: String,
+    purpose: String,
+    initiator_session_id: Option<String>,
+    initiator_user_id: Option<String>,
+    initiator_generation: Option<i64>,
+    state_key_version: i64,
+    state_digest: String,
+    pkce_key_version: i64,
+    pkce_digest: String,
+    redirect_key_version: i64,
+    redirect_digest: String,
+    audience_key_version: i64,
+    audience_digest: String,
+    created_at_ms: i64,
+    expires_at_ms: i64,
+    consumed_at_ms: Option<i64>,
+    revoked: i64,
+    revision: i64,
+    last_operation_id: String,
+    candidate_order: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OAuthReservationRow {
+    id: String,
+    flow_id: String,
+    provider: String,
+    initiator_session_id: Option<String>,
+    initiator_user_id: Option<String>,
+    initiator_generation: Option<i64>,
+    expires_at_ms: i64,
+    created_at_ms: i64,
+    consumed_at_ms: Option<i64>,
+    revision: i64,
+    last_operation_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OAuthExternalAccountRow {
+    user_id: String,
+    subject_key_version: i64,
+    subject_digest: String,
+    candidate_order: i64,
+}
+
+#[derive(Debug, Clone)]
+struct StoredOAuthFlow {
+    id: OAuthFlowId,
+    provider: OAuthProvider,
+    purpose: OAuthFlowPurpose,
+    initiator: Option<SessionContinuationBinding>,
+    state_digest: VersionedSecretDigest,
+    pkce_digest: VersionedSecretDigest,
+    redirect_digest: VersionedSecretDigest,
+    audience_digest: VersionedSecretDigest,
+    created_at: TimestampMillis,
+    expires_at: TimestampMillis,
+    consumed_at: Option<TimestampMillis>,
+    revoked: bool,
+    revision: u64,
+}
+
+#[derive(Debug, Clone)]
+struct StoredOAuthReservation {
+    id: OAuthExchangeReservationId,
+    flow_id: OAuthFlowId,
+    provider: OAuthProvider,
+    initiator: Option<SessionContinuationBinding>,
+    expires_at: TimestampMillis,
+    created_at: TimestampMillis,
+    consumed_at: Option<TimestampMillis>,
+    revision: u64,
+}
+
+#[derive(Debug, Clone)]
+struct StoredExternalAccount {
+    user_id: UserId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -961,6 +1126,100 @@ impl ApiKeyRow {
             safe_revision(self.revision)?,
             candidate_order,
         ))
+    }
+}
+
+fn decode_oauth_initiator(
+    session_id: Option<String>,
+    user_id: Option<String>,
+    generation: Option<i64>,
+) -> AdapterResult<Option<SessionContinuationBinding>> {
+    match (session_id, user_id, generation) {
+        (None, None, None) => Ok(None),
+        (Some(session_id), Some(user_id), Some(generation)) => {
+            Ok(Some(SessionContinuationBinding {
+                session_id: SessionId::parse(&session_id).map_err(|_| AdapterFailure::Corrupt)?,
+                user_id: UserId::parse(&user_id).map_err(|_| AdapterFailure::Corrupt)?,
+                generation: safe_revision(generation)?,
+            }))
+        }
+        _ => Err(AdapterFailure::Corrupt),
+    }
+}
+
+impl OAuthFlowRow {
+    fn decode(self) -> AdapterResult<StoredOAuthFlow> {
+        if !(0..5).contains(&self.candidate_order) || !matches!(self.revoked, 0 | 1) {
+            return Err(AdapterFailure::Corrupt);
+        }
+        safe_uuid(&self.last_operation_id)?;
+        let created_at = safe_timestamp(self.created_at_ms)?;
+        let expires_at = safe_timestamp(self.expires_at_ms)?;
+        let consumed_at = self.consumed_at_ms.map(safe_timestamp).transpose()?;
+        if expires_at <= created_at
+            || consumed_at.is_some_and(|value| value < created_at || value >= expires_at)
+        {
+            return Err(AdapterFailure::Corrupt);
+        }
+        Ok(StoredOAuthFlow {
+            id: OAuthFlowId::parse(&self.id).map_err(|_| AdapterFailure::Corrupt)?,
+            provider: parse_enum(&self.provider)?,
+            purpose: parse_enum(&self.purpose)?,
+            initiator: decode_oauth_initiator(
+                self.initiator_session_id,
+                self.initiator_user_id,
+                self.initiator_generation,
+            )?,
+            state_digest: versioned_digest(self.state_key_version, &self.state_digest)?,
+            pkce_digest: versioned_digest(self.pkce_key_version, &self.pkce_digest)?,
+            redirect_digest: versioned_digest(self.redirect_key_version, &self.redirect_digest)?,
+            audience_digest: versioned_digest(self.audience_key_version, &self.audience_digest)?,
+            created_at,
+            expires_at,
+            consumed_at,
+            revoked: self.revoked == 1,
+            revision: safe_revision(self.revision)?,
+        })
+    }
+}
+
+impl OAuthReservationRow {
+    fn decode(self) -> AdapterResult<StoredOAuthReservation> {
+        safe_uuid(&self.last_operation_id)?;
+        let created_at = safe_timestamp(self.created_at_ms)?;
+        let expires_at = safe_timestamp(self.expires_at_ms)?;
+        let consumed_at = self.consumed_at_ms.map(safe_timestamp).transpose()?;
+        if expires_at <= created_at
+            || consumed_at.is_some_and(|value| value < created_at || value >= expires_at)
+        {
+            return Err(AdapterFailure::Corrupt);
+        }
+        Ok(StoredOAuthReservation {
+            id: OAuthExchangeReservationId::parse(&self.id).map_err(|_| AdapterFailure::Corrupt)?,
+            flow_id: OAuthFlowId::parse(&self.flow_id).map_err(|_| AdapterFailure::Corrupt)?,
+            provider: parse_enum(&self.provider)?,
+            initiator: decode_oauth_initiator(
+                self.initiator_session_id,
+                self.initiator_user_id,
+                self.initiator_generation,
+            )?,
+            expires_at,
+            created_at,
+            consumed_at,
+            revision: safe_revision(self.revision)?,
+        })
+    }
+}
+
+impl OAuthExternalAccountRow {
+    fn decode(self) -> AdapterResult<StoredExternalAccount> {
+        if !(0..5).contains(&self.candidate_order) {
+            return Err(AdapterFailure::Corrupt);
+        }
+        versioned_digest(self.subject_key_version, &self.subject_digest)?;
+        Ok(StoredExternalAccount {
+            user_id: UserId::parse(&self.user_id).map_err(|_| AdapterFailure::Corrupt)?,
+        })
     }
 }
 
@@ -2435,6 +2694,726 @@ impl<'database> D1AuthStateRepository<'database> {
         UserId::parse(&row.user_id)
             .map(Some)
             .map_err(|_| AdapterFailure::Corrupt)
+    }
+
+    async fn oauth_flow_by_state(
+        &self,
+        candidates: &SecretDigestCandidates,
+    ) -> AdapterResult<Option<StoredOAuthFlow>> {
+        let rows = self
+            .rows::<OAuthFlowRow>(
+                OAUTH_FLOW_BY_STATE_SQL,
+                &[JsValue::from_str(&candidates_json(candidates)?)],
+            )
+            .await?;
+        match rows.len() {
+            0 => Ok(None),
+            1 => rows
+                .into_iter()
+                .next()
+                .ok_or(AdapterFailure::Corrupt)?
+                .decode()
+                .map(Some),
+            _ => Err(AdapterFailure::Corrupt),
+        }
+    }
+
+    async fn oauth_flow_id_exists(
+        &self,
+        id: OAuthFlowId,
+        now: TimestampMillis,
+    ) -> AdapterResult<bool> {
+        match self
+            .one::<ExistenceRow>(
+                OAUTH_FLOW_ID_EXISTS_SQL,
+                &[
+                    JsValue::from_str(&id.to_string()),
+                    JsValue::from_f64(now.get() as f64),
+                ],
+            )
+            .await?
+        {
+            Some(ExistenceRow { present: 1 }) => Ok(true),
+            Some(ExistenceRow { present: 0 }) => Ok(false),
+            _ => Err(AdapterFailure::Corrupt),
+        }
+    }
+
+    async fn oauth_reservation(
+        &self,
+        id: OAuthExchangeReservationId,
+    ) -> AdapterResult<Option<StoredOAuthReservation>> {
+        self.one::<OAuthReservationRow>(
+            OAUTH_RESERVATION_BY_ID_SQL,
+            &[JsValue::from_str(&id.to_string())],
+        )
+        .await?
+        .map(OAuthReservationRow::decode)
+        .transpose()
+    }
+
+    async fn oauth_external_account(
+        &self,
+        provider: OAuthProvider,
+        candidates: &SecretDigestCandidates,
+    ) -> AdapterResult<Option<StoredExternalAccount>> {
+        let rows = self
+            .rows::<OAuthExternalAccountRow>(
+                OAUTH_EXTERNAL_ACCOUNT_BY_SUBJECT_SQL,
+                &[
+                    JsValue::from_str(&enum_name(provider)?),
+                    JsValue::from_str(&candidates_json(candidates)?),
+                ],
+            )
+            .await?;
+        let mut decoded = rows
+            .into_iter()
+            .map(OAuthExternalAccountRow::decode)
+            .collect::<AdapterResult<Vec<_>>>()?;
+        if decoded
+            .first()
+            .is_some_and(|first| decoded.iter().any(|row| row.user_id != first.user_id))
+        {
+            return Err(AdapterFailure::Corrupt);
+        }
+        Ok(decoded.drain(..).next())
+    }
+
+    async fn settled_oauth_external_account(
+        &self,
+        provider: OAuthProvider,
+        candidates: &SecretDigestCandidates,
+    ) -> AdapterResult<Option<StoredExternalAccount>> {
+        let rows = self
+            .settled_rows::<OAuthExternalAccountRow>(
+                OAUTH_EXTERNAL_ACCOUNT_BY_SUBJECT_SQL,
+                &[
+                    JsValue::from_str(&enum_name(provider)?),
+                    JsValue::from_str(&candidates_json(candidates)?),
+                ],
+            )
+            .await?;
+        let mut decoded = rows
+            .into_iter()
+            .map(OAuthExternalAccountRow::decode)
+            .collect::<AdapterResult<Vec<_>>>()?;
+        if decoded
+            .first()
+            .is_some_and(|first| decoded.iter().any(|row| row.user_id != first.user_id))
+        {
+            return Err(AdapterFailure::Corrupt);
+        }
+        Ok(decoded.drain(..).next())
+    }
+
+    async fn oauth_pending_capacity_retry(
+        &self,
+        now: TimestampMillis,
+    ) -> AdapterResult<Option<TimestampMillis>> {
+        #[derive(Deserialize)]
+        struct PendingOAuthCapacityRow {
+            pending_count: i64,
+            retry_at_ms: Option<i64>,
+        }
+        let row = self
+            .one::<PendingOAuthCapacityRow>(
+                "SELECT COUNT(*) pending_count,MIN(expires_at_ms) retry_at_ms \
+                   FROM auth_oauth_flows_v2 WHERE expires_at_ms>?1",
+                &[JsValue::from_f64(now.get() as f64)],
+            )
+            .await?
+            .ok_or(AdapterFailure::Corrupt)?;
+        let count = usize::try_from(row.pending_count).map_err(|_| AdapterFailure::Corrupt)?;
+        if count < MAX_PENDING_OAUTH_FLOWS {
+            Ok(None)
+        } else {
+            row.retry_at_ms
+                .map(safe_timestamp)
+                .transpose()?
+                .ok_or(AdapterFailure::Corrupt)
+                .map(Some)
+        }
+    }
+
+    async fn oauth_operation_result(
+        &self,
+        request: &OperationReceipt,
+    ) -> AdapterResult<Option<StoredOperationResult>> {
+        let rows = self
+            .settled_rows::<OperationRow>(
+                OAUTH_OPERATION_BY_ID_SQL,
+                &[JsValue::from_str(&request.operation_id)],
+            )
+            .await?;
+        let row = match rows.as_slice() {
+            [row] => row,
+            [] => return Ok(None),
+            _ => return Err(AdapterFailure::Corrupt),
+        };
+        if row.operation_id != request.operation_id
+            || row.operation_kind != request.operation_kind
+            || row.committed_at_ms != request.committed_at.get()
+        {
+            return Err(AdapterFailure::Corrupt);
+        }
+        if row.subject_id != request.subject_id
+            || row.request_fingerprint != request.request_fingerprint
+        {
+            return Err(AdapterFailure::Invalid);
+        }
+        Ok(Some(StoredOperationResult {
+            code: row.result_code.clone(),
+            timestamp: row.result_timestamp_ms.map(safe_timestamp).transpose()?,
+        }))
+    }
+
+    async fn oauth_operation_receipt_matches(
+        &self,
+        receipt: &OperationReceipt,
+    ) -> AdapterResult<bool> {
+        let Some(result) = self.oauth_operation_result(receipt).await? else {
+            return Ok(false);
+        };
+        if result.code != receipt.result_code || result.timestamp != receipt.result_timestamp {
+            return Err(AdapterFailure::Corrupt);
+        }
+        Ok(true)
+    }
+
+    fn push_oauth_operation_receipt(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        receipt: &OperationReceipt,
+    ) -> AdapterResult<()> {
+        self.push_statement(
+            statements,
+            OAUTH_OPERATION_INSERT_SQL,
+            &[
+                JsValue::from_str(&receipt.operation_id),
+                JsValue::from_str(receipt.operation_kind),
+                JsValue::from_str(&receipt.subject_id),
+                JsValue::from_str(receipt.result_code),
+                opt_i64(receipt.result_timestamp.map(TimestampMillis::get)),
+                JsValue::from_str(&receipt.request_fingerprint),
+                JsValue::from_f64(receipt.committed_at.get() as f64),
+            ],
+        )
+    }
+
+    async fn oauth_batch_mutation(
+        &self,
+        mut statements: Vec<D1PreparedStatement>,
+        receipt: &OperationReceipt,
+    ) -> AdapterResult<()> {
+        self.push_oauth_operation_receipt(&mut statements, receipt)?;
+        match self.batch(statements).await {
+            Ok(()) => Ok(()),
+            Err(failure) => match self.oauth_operation_receipt_matches(receipt).await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(failure),
+                Err(AdapterFailure::Invalid) => Err(AdapterFailure::Invalid),
+                Err(_) => Err(AdapterFailure::Unavailable),
+            },
+        }
+    }
+
+    async fn commit_oauth_decision(
+        &self,
+        mut statements: Vec<D1PreparedStatement>,
+        receipt: &OperationReceipt,
+        audit: &DecisionAudit,
+        user_id: Option<UserId>,
+        outcome: AuthAuditOutcome,
+        reason: AuthAuditReason,
+    ) -> AdapterResult<()> {
+        self.push_audit(
+            &mut statements,
+            &receipt.operation_id,
+            audit,
+            None,
+            user_id,
+            outcome,
+            reason,
+        )?;
+        self.push_cleanup(&mut statements, &receipt.operation_id)?;
+        self.oauth_batch_mutation(statements, receipt).await
+    }
+
+    fn push_oauth_flow_current_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        flow: &StoredOAuthFlow,
+    ) -> AdapterResult<()> {
+        self.push_statement(
+            statements,
+            OAUTH_FLOW_CURRENT_ASSERT_SQL,
+            &[
+                JsValue::from_str(&flow.id.to_string()),
+                JsValue::from_f64(flow.revision as f64),
+                opt_i64(flow.consumed_at.map(TimestampMillis::get)),
+                JsValue::from_str(&format!("{operation_id}:oauth_flow_current")),
+            ],
+        )
+    }
+
+    fn push_oauth_reservation_current_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        reservation: &StoredOAuthReservation,
+    ) -> AdapterResult<()> {
+        self.push_statement(
+            statements,
+            OAUTH_RESERVATION_CURRENT_ASSERT_SQL,
+            &[
+                JsValue::from_str(&reservation.id.to_string()),
+                JsValue::from_f64(reservation.revision as f64),
+                opt_i64(reservation.consumed_at.map(TimestampMillis::get)),
+                JsValue::from_str(&format!("{operation_id}:oauth_reservation_current")),
+            ],
+        )
+    }
+
+    fn push_oauth_continuation_invalid_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        binding: SessionContinuationBinding,
+        now: TimestampMillis,
+    ) -> AdapterResult<()> {
+        self.push_statement(
+            statements,
+            OAUTH_CONTINUATION_INVALID_ASSERT_SQL,
+            &[
+                JsValue::from_str(&binding.session_id.to_string()),
+                JsValue::from_str(&binding.user_id.to_string()),
+                JsValue::from_f64(binding.generation as f64),
+                JsValue::from_f64(now.get() as f64),
+                JsValue::from_str(&format!("{operation_id}:continuation_invalid")),
+            ],
+        )
+    }
+
+    fn push_oauth_mutation_grant_invalid_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        grant: &SessionMutationGrant,
+        now: TimestampMillis,
+    ) -> AdapterResult<()> {
+        let (version, digest) = digest_values(grant.token_digest());
+        self.push_statement(
+            statements,
+            OAUTH_MUTATION_GRANT_INVALID_ASSERT_SQL,
+            &[
+                JsValue::from_str(&grant.id().to_string()),
+                JsValue::from_str(&grant.session_id().to_string()),
+                JsValue::from_str(&grant.user_id().to_string()),
+                JsValue::from_f64(grant.generation() as f64),
+                version,
+                digest,
+                JsValue::from_f64(now.get() as f64),
+                JsValue::from_str(&format!("{operation_id}:oauth_grant_invalid")),
+            ],
+        )
+    }
+
+    fn push_oauth_external_account_snapshot_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        provider: OAuthProvider,
+        candidates: &SecretDigestCandidates,
+        expected_user_id: Option<UserId>,
+    ) -> AdapterResult<()> {
+        let expected_user_id = expected_user_id.map(|value| value.to_string());
+        self.push_statement(
+            statements,
+            OAUTH_EXTERNAL_ACCOUNT_SNAPSHOT_ASSERT_SQL,
+            &[
+                JsValue::from_str(&enum_name(provider)?),
+                JsValue::from_str(&candidates_json(candidates)?),
+                opt_string(expected_user_id.as_deref()),
+                JsValue::from_str(&format!("{operation_id}:oauth_subject_snapshot")),
+            ],
+        )
+    }
+
+    fn push_oauth_identifier_snapshot_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        candidates: &SecretDigestCandidates,
+        expected_user_id: Option<UserId>,
+    ) -> AdapterResult<()> {
+        let expected_user_id = expected_user_id.map(|value| value.to_string());
+        self.push_statement(
+            statements,
+            OAUTH_IDENTIFIER_SNAPSHOT_ASSERT_SQL,
+            &[
+                JsValue::from_str(&candidates_json(candidates)?),
+                opt_string(expected_user_id.as_deref()),
+                JsValue::from_str(&format!("{operation_id}:oauth_identifier_snapshot")),
+            ],
+        )
+    }
+
+    fn push_oauth_external_account_authority_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        provider: OAuthProvider,
+        candidates: &SecretDigestCandidates,
+        user_id: UserId,
+    ) -> AdapterResult<()> {
+        self.push_statement(
+            statements,
+            OAUTH_EXTERNAL_ACCOUNT_AUTHORITY_ASSERT_SQL,
+            &[
+                JsValue::from_str(&enum_name(provider)?),
+                JsValue::from_str(&candidates_json(candidates)?),
+                JsValue::from_str(&user_id.to_string()),
+                JsValue::from_str(&format!("{operation_id}:oauth_subject_authority")),
+            ],
+        )
+    }
+
+    fn push_oauth_identifier_authority_assertion(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        candidates: &SecretDigestCandidates,
+        user_id: UserId,
+        allow_absent: bool,
+    ) -> AdapterResult<()> {
+        self.push_statement(
+            statements,
+            OAUTH_IDENTIFIER_AUTHORITY_ASSERT_SQL,
+            &[
+                JsValue::from_str(&candidates_json(candidates)?),
+                JsValue::from_str(&user_id.to_string()),
+                JsValue::from_f64(if allow_absent { 1.0 } else { 0.0 }),
+                JsValue::from_str(&format!("{operation_id}:oauth_identifier_authority")),
+            ],
+        )
+    }
+
+    fn push_oauth_external_account_write(
+        &self,
+        statements: &mut Vec<D1PreparedStatement>,
+        operation_id: &str,
+        provider: OAuthProvider,
+        candidates: &SecretDigestCandidates,
+        user_id: UserId,
+        now: TimestampMillis,
+    ) -> AdapterResult<()> {
+        let provider = enum_name(provider)?;
+        let candidates_json = candidates_json(candidates)?;
+        let active = candidates.active();
+        let (active_version, active_digest) = digest_values(active);
+        self.push_statement(
+            statements,
+            OAUTH_EXTERNAL_ACCOUNT_DELETE_FALLBACKS_SQL,
+            &[
+                JsValue::from_str(&provider),
+                JsValue::from_str(&user_id.to_string()),
+                active_version.clone(),
+                active_digest.clone(),
+                JsValue::from_str(&candidates_json),
+            ],
+        )?;
+        self.push_statement(
+            statements,
+            OAUTH_EXTERNAL_ACCOUNT_UPSERT_SQL,
+            &[
+                JsValue::from_str(&provider),
+                active_version.clone(),
+                active_digest.clone(),
+                JsValue::from_str(&user_id.to_string()),
+                JsValue::from_f64(now.get() as f64),
+                JsValue::from_str(operation_id),
+            ],
+        )?;
+        self.push_assertion(statements, operation_id, "oauth_subject_upsert", 1)?;
+        self.push_statement(
+            statements,
+            OAUTH_EXTERNAL_ACCOUNT_POSTCONDITION_SQL,
+            &[
+                JsValue::from_str(&provider),
+                active_version,
+                active_digest,
+                JsValue::from_str(&user_id.to_string()),
+                JsValue::from_str(operation_id),
+                JsValue::from_str(&candidates_json),
+                JsValue::from_str(&format!("{operation_id}:oauth_subject_postcondition")),
+            ],
+        )
+    }
+
+    async fn oauth_begin_outcome_committed(
+        &self,
+        base_receipt: &OperationReceipt,
+        command: &OAuthBeginCommand,
+    ) -> AdapterResult<Option<OAuthBeginOutcome>> {
+        let Some(result) = self.oauth_operation_result(base_receipt).await? else {
+            return Ok(None);
+        };
+        let (receipt, outcome, audit_outcome, reason) = match result.code.as_str() {
+            "started" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("started"),
+                OAuthBeginOutcome::Started,
+                AuthAuditOutcome::Allow,
+                AuthAuditReason::Issued,
+            ),
+            "rejected_invalid" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("rejected_invalid"),
+                OAuthBeginOutcome::Rejected(AuthAuditReason::InvalidCredential),
+                AuthAuditOutcome::Deny,
+                AuthAuditReason::InvalidCredential,
+            ),
+            "rate_limited" => {
+                let retry_at = result.timestamp.ok_or(AdapterFailure::Corrupt)?;
+                (
+                    base_receipt
+                        .clone()
+                        .with_result_code("rate_limited")
+                        .with_result_timestamp(retry_at),
+                    OAuthBeginOutcome::RateLimited { retry_at },
+                    AuthAuditOutcome::Deny,
+                    AuthAuditReason::RateLimited,
+                )
+            }
+            _ => return Err(AdapterFailure::Corrupt),
+        };
+        if !self.oauth_operation_receipt_matches(&receipt).await?
+            || !self
+                .audit_operation_exists(
+                    &receipt.operation_id,
+                    command.audit.action,
+                    audit_outcome,
+                    reason,
+                )
+                .await?
+        {
+            return Err(AdapterFailure::Unavailable);
+        }
+        Ok(Some(outcome))
+    }
+
+    async fn oauth_preflight_outcome_committed(
+        &self,
+        base_receipt: &OperationReceipt,
+        command: &OAuthPreflightCommand,
+    ) -> AdapterResult<Option<OAuthPreflightOutcome>> {
+        let Some(result) = self.oauth_operation_result(base_receipt).await? else {
+            return Ok(None);
+        };
+        let (receipt, denied, audit_outcome, reason) = match result.code.as_str() {
+            "ready" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("ready"),
+                None,
+                AuthAuditOutcome::Allow,
+                AuthAuditReason::Issued,
+            ),
+            "rejected_invalid" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("rejected_invalid"),
+                Some(OAuthPreflightOutcome::Rejected(
+                    AuthAuditReason::InvalidCredential,
+                )),
+                AuthAuditOutcome::Deny,
+                AuthAuditReason::InvalidCredential,
+            ),
+            "rejected_expired" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("rejected_expired"),
+                Some(OAuthPreflightOutcome::Rejected(AuthAuditReason::Expired)),
+                AuthAuditOutcome::Deny,
+                AuthAuditReason::Expired,
+            ),
+            "rejected_replay" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("rejected_replay"),
+                Some(OAuthPreflightOutcome::Rejected(
+                    AuthAuditReason::ReplayDetected,
+                )),
+                AuthAuditOutcome::Deny,
+                AuthAuditReason::ReplayDetected,
+            ),
+            "rate_limited" => {
+                let retry_at = result.timestamp.ok_or(AdapterFailure::Corrupt)?;
+                (
+                    base_receipt
+                        .clone()
+                        .with_result_code("rate_limited")
+                        .with_result_timestamp(retry_at),
+                    Some(OAuthPreflightOutcome::RateLimited { retry_at }),
+                    AuthAuditOutcome::Deny,
+                    AuthAuditReason::RateLimited,
+                )
+            }
+            _ => return Err(AdapterFailure::Corrupt),
+        };
+        if !self.oauth_operation_receipt_matches(&receipt).await?
+            || !self
+                .audit_operation_exists(
+                    &receipt.operation_id,
+                    command.audit.action,
+                    audit_outcome,
+                    reason,
+                )
+                .await?
+        {
+            return Err(AdapterFailure::Unavailable);
+        }
+        if let Some(outcome) = denied {
+            return Ok(Some(outcome));
+        }
+        let reservation_id = OAuthExchangeReservationId::parse(&stable_child_uuid(
+            &receipt.operation_id,
+            "oauth-reservation",
+        ))
+        .map_err(|_| AdapterFailure::Corrupt)?;
+        let stored = self
+            .oauth_reservation(reservation_id)
+            .await?
+            .ok_or(AdapterFailure::Unavailable)?;
+        if stored.id != reservation_id || stored.provider != command.provider {
+            return Err(AdapterFailure::Unavailable);
+        }
+        Ok(Some(OAuthPreflightOutcome::Ready(
+            frame_ports::OAuthExchangeReservation::from_repository(
+                stored.id,
+                stored.flow_id,
+                stored.provider,
+                stored.initiator,
+                stored.expires_at,
+            ),
+        )))
+    }
+
+    async fn oauth_finalize_outcome_committed(
+        &self,
+        base_receipt: &OperationReceipt,
+        command: &OAuthFinalizeCommand,
+    ) -> AdapterResult<Option<OAuthExchangeOutcome>> {
+        let Some(result) = self.oauth_operation_result(base_receipt).await? else {
+            return Ok(None);
+        };
+        let (receipt, rejected, audit_outcome, reason) = match result.code.as_str() {
+            "linked" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("linked"),
+                None,
+                AuthAuditOutcome::Allow,
+                AuthAuditReason::Linked,
+            ),
+            "verified" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("verified"),
+                None,
+                AuthAuditOutcome::Allow,
+                AuthAuditReason::Authenticated,
+            ),
+            "rejected_invalid" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("rejected_invalid"),
+                Some(AuthAuditReason::InvalidCredential),
+                AuthAuditOutcome::Deny,
+                AuthAuditReason::InvalidCredential,
+            ),
+            "rejected_expired" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("rejected_expired"),
+                Some(AuthAuditReason::Expired),
+                AuthAuditOutcome::Deny,
+                AuthAuditReason::Expired,
+            ),
+            "rejected_replay" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("rejected_replay"),
+                Some(AuthAuditReason::ReplayDetected),
+                AuthAuditOutcome::Deny,
+                AuthAuditReason::ReplayDetected,
+            ),
+            "adapter_failure" if result.timestamp.is_none() => (
+                base_receipt.clone().with_result_code("adapter_failure"),
+                Some(AuthAuditReason::AdapterFailure),
+                AuthAuditOutcome::Error,
+                AuthAuditReason::AdapterFailure,
+            ),
+            _ => return Err(AdapterFailure::Corrupt),
+        };
+        if !self.oauth_operation_receipt_matches(&receipt).await?
+            || !self
+                .audit_operation_exists(
+                    &receipt.operation_id,
+                    command.audit.action,
+                    audit_outcome,
+                    reason,
+                )
+                .await?
+        {
+            return Err(AdapterFailure::Unavailable);
+        }
+        if let Some(reason) = rejected {
+            return Ok(Some(OAuthExchangeOutcome::Rejected(reason)));
+        }
+        let OAuthProviderResult::Verified(assertion) = &command.provider_result else {
+            return Err(AdapterFailure::Corrupt);
+        };
+        if assertion.provider != command.reservation.provider() {
+            return Err(AdapterFailure::Corrupt);
+        }
+        let account = self
+            .settled_oauth_external_account(assertion.provider, &assertion.subject_digests)
+            .await?
+            .ok_or(AdapterFailure::Unavailable)?;
+        if result.code == "linked" {
+            let initiator = command
+                .reservation
+                .initiator()
+                .ok_or(AdapterFailure::Corrupt)?;
+            if account.user_id != initiator.user_id {
+                return Err(AdapterFailure::Unavailable);
+            }
+            return Ok(Some(OAuthExchangeOutcome::Linked {
+                user_id: initiator.user_id,
+            }));
+        }
+        if command.reservation.initiator().is_some() {
+            return Err(AdapterFailure::Corrupt);
+        }
+        let principal = self
+            .settled_principal(account.user_id)
+            .await?
+            .ok_or(AdapterFailure::Unavailable)?;
+        let grant_id = PrincipalIssuanceGrantId::parse(&stable_child_uuid(
+            &receipt.operation_id,
+            "issuance-grant",
+        ))
+        .map_err(|_| AdapterFailure::Corrupt)?;
+        let rows = self
+            .settled_rows::<ExistenceRow>(
+                OAUTH_VERIFIED_POSTCONDITION_SQL,
+                &[
+                    JsValue::from_str(&grant_id.to_string()),
+                    JsValue::from_str(&account.user_id.to_string()),
+                    JsValue::from_f64(principal.snapshot.identity_revision as f64),
+                    JsValue::from_f64(command.reservation.expires_at().get() as f64),
+                    JsValue::from_str(&receipt.operation_id),
+                ],
+            )
+            .await?;
+        if !matches!(rows.as_slice(), [ExistenceRow { present: 1 }]) {
+            return if matches!(rows.as_slice(), [ExistenceRow { present: 0 }]) {
+                Err(AdapterFailure::Unavailable)
+            } else {
+                Err(AdapterFailure::Corrupt)
+            };
+        }
+        Ok(Some(OAuthExchangeOutcome::Verified {
+            principal: principal.snapshot.clone(),
+            issuance_grant: PrincipalIssuanceGrant::from_repository(
+                grant_id,
+                account.user_id,
+                principal.snapshot.identity_revision,
+                command.reservation.expires_at(),
+            ),
+        }))
     }
 
     async fn session_by_id(&self, id: SessionId) -> AdapterResult<Option<SessionState>> {
@@ -4035,10 +5014,6 @@ fn verification_reason(decision: VerificationDecision) -> AuthAuditReason {
         VerificationDecision::AttemptsExhausted => AuthAuditReason::AttemptsExhausted,
         VerificationDecision::Replayed => AuthAuditReason::ReplayDetected,
     }
-}
-
-fn unsupported_oauth() -> PortError {
-    PortError::Unsupported("d1_oauth_provider_flow_pending_protected_evidence".into())
 }
 
 #[async_trait]
@@ -6931,23 +7906,1095 @@ impl AuthStateRepository for D1AuthStateRepository<'_> {
 
     async fn begin_oauth(
         &self,
-        _command: OAuthBeginCommand,
+        command: OAuthBeginCommand,
     ) -> Result<OAuthBeginOutcome, PortError> {
-        Err(unsupported_oauth())
+        let mut telemetry = AuthRepositoryTelemetry::span("oauth_begin");
+        require_action(&command.audit, AuthAuditAction::OAuthBegin)
+            .map_err(AdapterFailure::into_port)?;
+        let flow = &command.flow;
+        let semantic = vec![
+            enum_name(flow.provider).map_err(AdapterFailure::into_port)?,
+            enum_name(flow.purpose).map_err(AdapterFailure::into_port)?,
+            flow.initiator
+                .map(|binding| {
+                    format!(
+                        "{}:{}:{}",
+                        binding.session_id, binding.user_id, binding.generation
+                    )
+                })
+                .unwrap_or_default(),
+            command
+                .initiator
+                .as_ref()
+                .map(|grant| grant.id().to_string())
+                .unwrap_or_default(),
+            serde_json::to_string(&DigestWire::from(&flow.state_digest))
+                .map_err(|_| AdapterFailure::Invalid.into_port())?,
+            serde_json::to_string(&DigestWire::from(&flow.pkce_digest))
+                .map_err(|_| AdapterFailure::Invalid.into_port())?,
+            serde_json::to_string(&DigestWire::from(&flow.redirect_digest))
+                .map_err(|_| AdapterFailure::Invalid.into_port())?,
+            serde_json::to_string(&DigestWire::from(&flow.audience_digest))
+                .map_err(|_| AdapterFailure::Invalid.into_port())?,
+            flow.created_at.get().to_string(),
+            flow.expires_at.get().to_string(),
+            candidates_json(&command.abuse.identifier).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.abuse.source).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.abuse.device).map_err(AdapterFailure::into_port)?,
+            rate_policy_fingerprint(command.rate_policy),
+        ];
+        let base_receipt = OperationReceipt::for_audit(
+            "oauth_begin",
+            flow.id.to_string(),
+            &command.audit,
+            &semantic,
+        );
+        let state_candidates = SecretDigestCandidates::new(flow.state_digest.clone(), Vec::new())
+            .map_err(|_| AdapterFailure::Invalid.into_port())?;
+        for attempt in 0..3 {
+            let outcome: Result<OAuthBeginOutcome, PortError> = async {
+                if let Some(outcome) = self
+                    .oauth_begin_outcome_committed(&base_receipt, &command)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                {
+                    telemetry.finish(
+                        "replayed",
+                        usize::from(outcome == OAuthBeginOutcome::Started),
+                    );
+                    return Ok(outcome);
+                }
+                let operation_id = base_receipt.operation_id.clone();
+                let mut statements = Vec::with_capacity(24);
+                self.push_statement(
+                    &mut statements,
+                    OAUTH_EXPIRED_FLOWS_DELETE_SQL,
+                    &[JsValue::from_f64(command.audit.occurred_at.get() as f64)],
+                )
+                .map_err(AdapterFailure::into_port)?;
+                if let Some(retry_at) = self
+                    .oauth_pending_capacity_retry(command.audit.occurred_at)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                {
+                    self.push_statement(
+                        &mut statements,
+                        OAUTH_FLOW_CAPACITY_ASSERT_SQL,
+                        &[
+                            JsValue::from_f64(command.audit.occurred_at.get() as f64),
+                            JsValue::from_f64(retry_at.get() as f64),
+                            JsValue::from_str(&format!("{operation_id}:oauth_flow_capacity")),
+                        ],
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt
+                        .clone()
+                        .with_result_code("rate_limited")
+                        .with_result_timestamp(retry_at);
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        None,
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::RateLimited,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_begin_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rate_limited", 0);
+                    return Ok(outcome);
+                }
+                if let Some(retry_at) = self
+                    .append_rate_limit_plan(
+                        &mut statements,
+                        &operation_id,
+                        AuthAbuseAction::OAuthBegin,
+                        &command.abuse,
+                        command.rate_policy,
+                        command.audit.occurred_at,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                {
+                    let receipt = base_receipt
+                        .clone()
+                        .with_result_code("rate_limited")
+                        .with_result_timestamp(retry_at);
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        None,
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::RateLimited,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_begin_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rate_limited", 0);
+                    return Ok(outcome);
+                }
+                let validated = match command.initiator.as_ref() {
+                    Some(grant) => self
+                        .mutation_grant(grant, command.audit.occurred_at)
+                        .await
+                        .map_err(AdapterFailure::into_port)?,
+                    None => None,
+                };
+                if let Some(grant) = command.initiator.as_ref()
+                    && validated.is_none()
+                {
+                    self.push_oauth_mutation_grant_invalid_assertion(
+                        &mut statements,
+                        &operation_id,
+                        grant,
+                        command.audit.occurred_at,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                }
+                let validated_binding =
+                    validated.as_ref().map(|value| SessionContinuationBinding {
+                        session_id: value.session.record.id,
+                        user_id: value.session.record.user_id,
+                        generation: value.session.record.generation,
+                    });
+                let initiator_shape_matches = match (&command.initiator, validated_binding) {
+                    (None, None) => true,
+                    (Some(_), Some(binding)) => flow.initiator == Some(binding),
+                    _ => false,
+                };
+                let purpose_matches = match flow.purpose {
+                    OAuthFlowPurpose::SignIn => validated_binding.is_none(),
+                    OAuthFlowPurpose::AccountLink => validated_binding.is_some(),
+                };
+                let valid_shape = initiator_shape_matches
+                    && purpose_matches
+                    && flow.created_at == command.audit.occurred_at
+                    && flow.expires_at > command.audit.occurred_at
+                    && flow.consumed_at.is_none()
+                    && !flow.revoked;
+                if let (Some(grant), Some(_)) = (command.initiator.as_ref(), validated.as_ref()) {
+                    self.push_mutation_grant_consume(
+                        &mut statements,
+                        &operation_id,
+                        grant,
+                        command.audit.occurred_at,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                }
+                if !valid_shape {
+                    let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        validated_binding.map(|binding| binding.user_id),
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::InvalidCredential,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_begin_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                }
+                let state_collision = self
+                    .oauth_flow_by_state(&state_candidates)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                    .is_some_and(|existing| existing.expires_at > command.audit.occurred_at);
+                let id_collision = self
+                    .oauth_flow_id_exists(flow.id, command.audit.occurred_at)
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                if state_collision || id_collision {
+                    self.push_statement(
+                        &mut statements,
+                        OAUTH_FLOW_COLLISION_ASSERT_SQL,
+                        &[
+                            JsValue::from_str(&flow.id.to_string()),
+                            JsValue::from_str(
+                                &candidates_json(&state_candidates)
+                                    .map_err(AdapterFailure::into_port)?,
+                            ),
+                            JsValue::from_f64(command.audit.occurred_at.get() as f64),
+                            JsValue::from_str(&format!("{operation_id}:oauth_flow_collision")),
+                        ],
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        validated_binding.map(|binding| binding.user_id),
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::InvalidCredential,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_begin_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                }
+                self.push_statement(
+                    &mut statements,
+                    OAUTH_FLOW_BEGIN_ABSENT_ASSERT_SQL,
+                    &[
+                        JsValue::from_str(&flow.id.to_string()),
+                        JsValue::from_str(
+                            &candidates_json(&state_candidates)
+                                .map_err(AdapterFailure::into_port)?,
+                        ),
+                        JsValue::from_str(&format!("{operation_id}:oauth_flow_absent")),
+                    ],
+                )
+                .map_err(AdapterFailure::into_port)?;
+                let (state_version, state_digest) = digest_values(&flow.state_digest);
+                let (pkce_version, pkce_digest) = digest_values(&flow.pkce_digest);
+                let (redirect_version, redirect_digest) = digest_values(&flow.redirect_digest);
+                let (audience_version, audience_digest) = digest_values(&flow.audience_digest);
+                self.push_statement(
+                    &mut statements,
+                    OAUTH_FLOW_INSERT_SQL,
+                    &[
+                        JsValue::from_str(&flow.id.to_string()),
+                        JsValue::from_str(
+                            &enum_name(flow.provider).map_err(AdapterFailure::into_port)?,
+                        ),
+                        JsValue::from_str(
+                            &enum_name(flow.purpose).map_err(AdapterFailure::into_port)?,
+                        ),
+                        opt_string(
+                            validated_binding
+                                .map(|binding| binding.session_id.to_string())
+                                .as_deref(),
+                        ),
+                        opt_string(
+                            validated_binding
+                                .map(|binding| binding.user_id.to_string())
+                                .as_deref(),
+                        ),
+                        opt_i64(
+                            validated_binding.map(|binding| {
+                                i64::try_from(binding.generation).unwrap_or(i64::MAX)
+                            }),
+                        ),
+                        state_version,
+                        state_digest,
+                        pkce_version,
+                        pkce_digest,
+                        redirect_version,
+                        redirect_digest,
+                        audience_version,
+                        audience_digest,
+                        JsValue::from_f64(flow.created_at.get() as f64),
+                        JsValue::from_f64(flow.expires_at.get() as f64),
+                        JsValue::from_str(&operation_id),
+                    ],
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_assertion(&mut statements, &operation_id, "oauth_flow", 1)
+                    .map_err(AdapterFailure::into_port)?;
+                self.push_audit(
+                    &mut statements,
+                    &operation_id,
+                    &command.audit,
+                    None,
+                    validated_binding.map(|binding| binding.user_id),
+                    AuthAuditOutcome::Allow,
+                    AuthAuditReason::Issued,
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_cleanup(&mut statements, &operation_id)
+                    .map_err(AdapterFailure::into_port)?;
+                let receipt = base_receipt.clone().with_result_code("started");
+                self.oauth_batch_mutation(statements, &receipt)
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                let outcome = self
+                    .oauth_begin_outcome_committed(&base_receipt, &command)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                    .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                telemetry.finish("started", 1);
+                Ok(outcome)
+            }
+            .await;
+            match outcome {
+                Err(PortError::Conflict) if attempt < 2 => {}
+                outcome => return outcome,
+            }
+        }
+        Err(PortError::Conflict)
     }
 
     async fn preflight_oauth_exchange(
         &self,
-        _command: OAuthPreflightCommand,
+        command: OAuthPreflightCommand,
     ) -> Result<OAuthPreflightOutcome, PortError> {
-        Err(unsupported_oauth())
+        let mut telemetry = AuthRepositoryTelemetry::span("oauth_preflight");
+        require_action(&command.audit, AuthAuditAction::OAuthExchangePreflight)
+            .map_err(AdapterFailure::into_port)?;
+        let semantic = vec![
+            enum_name(command.provider).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.state_digests).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.pkce_digests).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.redirect_digests).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.audience_digests).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.abuse.identifier).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.abuse.source).map_err(AdapterFailure::into_port)?,
+            candidates_json(&command.abuse.device).map_err(AdapterFailure::into_port)?,
+            rate_policy_fingerprint(command.rate_policy),
+        ];
+        let base_receipt = OperationReceipt::for_audit(
+            "oauth_preflight",
+            enum_name(command.provider).map_err(AdapterFailure::into_port)?,
+            &command.audit,
+            &semantic,
+        );
+        for attempt in 0..3 {
+            let outcome: Result<OAuthPreflightOutcome, PortError> = async {
+                if let Some(outcome) = self
+                    .oauth_preflight_outcome_committed(&base_receipt, &command)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                {
+                    telemetry.finish(
+                        "replayed",
+                        usize::from(matches!(outcome, OAuthPreflightOutcome::Ready(_))),
+                    );
+                    return Ok(outcome);
+                }
+                let operation_id = base_receipt.operation_id.clone();
+                let mut statements = Vec::with_capacity(24);
+                if let Some(retry_at) = self
+                    .append_rate_limit_plan(
+                        &mut statements,
+                        &operation_id,
+                        AuthAbuseAction::OAuthExchange,
+                        &command.abuse,
+                        command.rate_policy,
+                        command.audit.occurred_at,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                {
+                    let receipt = base_receipt
+                        .clone()
+                        .with_result_code("rate_limited")
+                        .with_result_timestamp(retry_at);
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        None,
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::RateLimited,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_preflight_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rate_limited", 0);
+                    return Ok(outcome);
+                }
+                let Some(flow) = self
+                    .oauth_flow_by_state(&command.state_digests)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                else {
+                    self.push_statement(
+                        &mut statements,
+                        OAUTH_FLOW_ABSENT_ASSERT_SQL,
+                        &[
+                            JsValue::from_str(
+                                &candidates_json(&command.state_digests)
+                                    .map_err(AdapterFailure::into_port)?,
+                            ),
+                            JsValue::from_str(&format!("{operation_id}:oauth_flow_absent")),
+                        ],
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        None,
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::InvalidCredential,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_preflight_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                };
+                if let Some(binding) = flow.initiator
+                    && !self
+                        .valid_continuation(binding, command.audit.occurred_at)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                {
+                    self.push_oauth_continuation_invalid_assertion(
+                        &mut statements,
+                        &operation_id,
+                        binding,
+                        command.audit.occurred_at,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    self.push_statement(
+                        &mut statements,
+                        OAUTH_FLOW_DELETE_SQL,
+                        &[
+                            JsValue::from_str(&flow.id.to_string()),
+                            JsValue::from_f64(flow.revision as f64),
+                        ],
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    self.push_assertion(&mut statements, &operation_id, "oauth_flow", 1)
+                        .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        Some(binding.user_id),
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::InvalidCredential,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_preflight_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                }
+                let purpose_matches = match flow.purpose {
+                    OAuthFlowPurpose::SignIn => flow.initiator.is_none(),
+                    OAuthFlowPurpose::AccountLink => flow.initiator.is_some(),
+                };
+                let invalid = !purpose_matches
+                    || flow.provider != command.provider
+                    || flow.revoked
+                    || !digest_candidates_contain(&command.state_digests, &flow.state_digest)
+                    || !digest_candidates_contain(&command.pkce_digests, &flow.pkce_digest)
+                    || !digest_candidates_contain(&command.redirect_digests, &flow.redirect_digest)
+                    || !digest_candidates_contain(&command.audience_digests, &flow.audience_digest);
+                let rejection = if invalid {
+                    Some(("rejected_invalid", AuthAuditReason::InvalidCredential))
+                } else if flow.consumed_at.is_some() {
+                    Some(("rejected_replay", AuthAuditReason::ReplayDetected))
+                } else if command.audit.occurred_at < flow.created_at
+                    || command.audit.occurred_at >= flow.expires_at
+                {
+                    Some(("rejected_expired", AuthAuditReason::Expired))
+                } else {
+                    None
+                };
+                if let Some((result_code, reason)) = rejection {
+                    self.push_oauth_flow_current_assertion(&mut statements, &operation_id, &flow)
+                        .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt.clone().with_result_code(result_code);
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        flow.initiator.map(|binding| binding.user_id),
+                        AuthAuditOutcome::Deny,
+                        reason,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_preflight_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                }
+                self.push_statement(
+                    &mut statements,
+                    OAUTH_FLOW_CONSUME_SQL,
+                    &[
+                        JsValue::from_str(&flow.id.to_string()),
+                        JsValue::from_f64(flow.revision as f64),
+                        JsValue::from_f64(command.audit.occurred_at.get() as f64),
+                        JsValue::from_str(&operation_id),
+                    ],
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_assertion(&mut statements, &operation_id, "oauth_flow", 1)
+                    .map_err(AdapterFailure::into_port)?;
+                if let Some(binding) = flow.initiator {
+                    self.push_continuation_assertion(
+                        &mut statements,
+                        &operation_id,
+                        binding,
+                        command.audit.occurred_at,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                }
+                let reservation_id = OAuthExchangeReservationId::parse(&stable_child_uuid(
+                    &operation_id,
+                    "oauth-reservation",
+                ))
+                .map_err(|_| AdapterFailure::Corrupt.into_port())?;
+                let initiator_session_id =
+                    flow.initiator.map(|binding| binding.session_id.to_string());
+                let initiator_user_id = flow.initiator.map(|binding| binding.user_id.to_string());
+                self.push_statement(
+                    &mut statements,
+                    OAUTH_RESERVATION_INSERT_SQL,
+                    &[
+                        JsValue::from_str(&reservation_id.to_string()),
+                        JsValue::from_str(&flow.id.to_string()),
+                        JsValue::from_str(
+                            &enum_name(flow.provider).map_err(AdapterFailure::into_port)?,
+                        ),
+                        opt_string(initiator_session_id.as_deref()),
+                        opt_string(initiator_user_id.as_deref()),
+                        opt_i64(
+                            flow.initiator.map(|binding| {
+                                i64::try_from(binding.generation).unwrap_or(i64::MAX)
+                            }),
+                        ),
+                        JsValue::from_f64(flow.expires_at.get() as f64),
+                        JsValue::from_f64(command.audit.occurred_at.get() as f64),
+                        JsValue::from_str(&operation_id),
+                    ],
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_assertion(&mut statements, &operation_id, "oauth_reservation", 1)
+                    .map_err(AdapterFailure::into_port)?;
+                self.push_audit(
+                    &mut statements,
+                    &operation_id,
+                    &command.audit,
+                    None,
+                    flow.initiator.map(|binding| binding.user_id),
+                    AuthAuditOutcome::Allow,
+                    AuthAuditReason::Issued,
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_cleanup(&mut statements, &operation_id)
+                    .map_err(AdapterFailure::into_port)?;
+                let receipt = base_receipt.clone().with_result_code("ready");
+                self.oauth_batch_mutation(statements, &receipt)
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                let outcome = self
+                    .oauth_preflight_outcome_committed(&base_receipt, &command)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                    .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                telemetry.finish("ready", 1);
+                Ok(outcome)
+            }
+            .await;
+            match outcome {
+                Err(PortError::Conflict) if attempt < 2 => {}
+                outcome => return outcome,
+            }
+        }
+        Err(PortError::Conflict)
     }
 
     async fn finalize_oauth_exchange(
         &self,
-        _command: OAuthFinalizeCommand,
+        command: OAuthFinalizeCommand,
     ) -> Result<OAuthExchangeOutcome, PortError> {
-        Err(unsupported_oauth())
+        let mut telemetry = AuthRepositoryTelemetry::span("oauth_finalize");
+        require_action(&command.audit, AuthAuditAction::OAuthExchange)
+            .map_err(AdapterFailure::into_port)?;
+        let reservation = &command.reservation;
+        let initiator = reservation.initiator();
+        let mut semantic = vec![
+            reservation.id().to_string(),
+            reservation.flow_id().to_string(),
+            enum_name(reservation.provider()).map_err(AdapterFailure::into_port)?,
+            initiator
+                .map(|binding| {
+                    format!(
+                        "{}:{}:{}",
+                        binding.session_id, binding.user_id, binding.generation
+                    )
+                })
+                .unwrap_or_default(),
+            reservation.expires_at().get().to_string(),
+        ];
+        match &command.provider_result {
+            OAuthProviderResult::Verified(assertion) => {
+                semantic.push("verified".into());
+                semantic.push(enum_name(assertion.provider).map_err(AdapterFailure::into_port)?);
+                semantic.push(
+                    candidates_json(&assertion.subject_digests)
+                        .map_err(AdapterFailure::into_port)?,
+                );
+                semantic.push(
+                    assertion
+                        .verified_identifier_digests
+                        .as_ref()
+                        .map(candidates_json)
+                        .transpose()
+                        .map_err(AdapterFailure::into_port)?
+                        .unwrap_or_default(),
+                );
+            }
+            OAuthProviderResult::Rejected => semantic.push("rejected".into()),
+            OAuthProviderResult::AdapterFailure => semantic.push("adapter_failure".into()),
+        }
+        let base_receipt = OperationReceipt::for_audit(
+            "oauth_finalize",
+            reservation.id().to_string(),
+            &command.audit,
+            &semantic,
+        );
+        for attempt in 0..3 {
+            let outcome: Result<OAuthExchangeOutcome, PortError> = async {
+                if let Some(outcome) = self
+                    .oauth_finalize_outcome_committed(&base_receipt, &command)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                {
+                    telemetry.finish(
+                        "replayed",
+                        usize::from(matches!(
+                            outcome,
+                            OAuthExchangeOutcome::Verified { .. }
+                                | OAuthExchangeOutcome::Linked { .. }
+                        )),
+                    );
+                    return Ok(outcome);
+                }
+                let operation_id = base_receipt.operation_id.clone();
+                let mut statements = Vec::with_capacity(24);
+                let Some(stored) = self
+                    .oauth_reservation(reservation.id())
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                else {
+                    self.push_statement(
+                        &mut statements,
+                        OAUTH_RESERVATION_ABSENT_ASSERT_SQL,
+                        &[
+                            JsValue::from_str(&reservation.id().to_string()),
+                            JsValue::from_str(&format!("{operation_id}:oauth_reservation_absent")),
+                        ],
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt.clone().with_result_code("rejected_replay");
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        None,
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::ReplayDetected,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_finalize_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                };
+                let stored_user = stored.initiator.map(|binding| binding.user_id);
+                let rejection = if stored.consumed_at.is_some() {
+                    Some(("rejected_replay", AuthAuditReason::ReplayDetected))
+                } else if stored.flow_id != reservation.flow_id()
+                    || stored.provider != reservation.provider()
+                    || stored.initiator != reservation.initiator()
+                    || stored.expires_at != reservation.expires_at()
+                    || command.audit.occurred_at < stored.created_at
+                {
+                    Some(("rejected_invalid", AuthAuditReason::InvalidCredential))
+                } else if command.audit.occurred_at >= stored.expires_at {
+                    Some(("rejected_expired", AuthAuditReason::Expired))
+                } else {
+                    None
+                };
+                if let Some((result_code, reason)) = rejection {
+                    self.push_oauth_reservation_current_assertion(
+                        &mut statements,
+                        &operation_id,
+                        &stored,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt.clone().with_result_code(result_code);
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        stored_user,
+                        AuthAuditOutcome::Deny,
+                        reason,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_finalize_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                }
+                self.push_statement(
+                    &mut statements,
+                    OAUTH_RESERVATION_CONSUME_SQL,
+                    &[
+                        JsValue::from_str(&stored.id.to_string()),
+                        JsValue::from_f64(stored.revision as f64),
+                        JsValue::from_f64(command.audit.occurred_at.get() as f64),
+                        JsValue::from_str(&operation_id),
+                    ],
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_assertion(&mut statements, &operation_id, "oauth_reservation", 1)
+                    .map_err(AdapterFailure::into_port)?;
+                if let Some(binding) = stored.initiator {
+                    if self
+                        .valid_continuation(binding, command.audit.occurred_at)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                    {
+                        self.push_continuation_assertion(
+                            &mut statements,
+                            &operation_id,
+                            binding,
+                            command.audit.occurred_at,
+                        )
+                        .map_err(AdapterFailure::into_port)?;
+                    } else {
+                        self.push_oauth_continuation_invalid_assertion(
+                            &mut statements,
+                            &operation_id,
+                            binding,
+                            command.audit.occurred_at,
+                        )
+                        .map_err(AdapterFailure::into_port)?;
+                        let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                        self.commit_oauth_decision(
+                            statements,
+                            &receipt,
+                            &command.audit,
+                            Some(binding.user_id),
+                            AuthAuditOutcome::Deny,
+                            AuthAuditReason::InvalidCredential,
+                        )
+                        .await
+                        .map_err(AdapterFailure::into_port)?;
+                        let outcome = self
+                            .oauth_finalize_outcome_committed(&base_receipt, &command)
+                            .await
+                            .map_err(AdapterFailure::into_port)?
+                            .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                        telemetry.finish("rejected", 0);
+                        return Ok(outcome);
+                    }
+                }
+                let assertion = match &command.provider_result {
+                    OAuthProviderResult::Verified(assertion)
+                        if assertion.provider == stored.provider =>
+                    {
+                        assertion
+                    }
+                    OAuthProviderResult::Verified(_) | OAuthProviderResult::Rejected => {
+                        let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                        self.commit_oauth_decision(
+                            statements,
+                            &receipt,
+                            &command.audit,
+                            stored_user,
+                            AuthAuditOutcome::Deny,
+                            AuthAuditReason::InvalidCredential,
+                        )
+                        .await
+                        .map_err(AdapterFailure::into_port)?;
+                        let outcome = self
+                            .oauth_finalize_outcome_committed(&base_receipt, &command)
+                            .await
+                            .map_err(AdapterFailure::into_port)?
+                            .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                        telemetry.finish("rejected", 0);
+                        return Ok(outcome);
+                    }
+                    OAuthProviderResult::AdapterFailure => {
+                        let receipt = base_receipt.clone().with_result_code("adapter_failure");
+                        self.commit_oauth_decision(
+                            statements,
+                            &receipt,
+                            &command.audit,
+                            stored_user,
+                            AuthAuditOutcome::Error,
+                            AuthAuditReason::AdapterFailure,
+                        )
+                        .await
+                        .map_err(AdapterFailure::into_port)?;
+                        let outcome = self
+                            .oauth_finalize_outcome_committed(&base_receipt, &command)
+                            .await
+                            .map_err(AdapterFailure::into_port)?
+                            .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                        telemetry.finish("adapter_failure", 0);
+                        return Ok(outcome);
+                    }
+                };
+                let subject = self
+                    .oauth_external_account(assertion.provider, &assertion.subject_digests)
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                let subject_user = subject.as_ref().map(|account| account.user_id);
+                let identifier_user = match &assertion.verified_identifier_digests {
+                    Some(candidates) => self
+                        .identifier_owner(candidates)
+                        .await
+                        .map_err(AdapterFailure::into_port)?,
+                    None => None,
+                };
+                if let Some(binding) = stored.initiator {
+                    let ownership_conflict = subject_user
+                        .is_some_and(|user_id| user_id != binding.user_id)
+                        || identifier_user.is_some_and(|user_id| user_id != binding.user_id);
+                    if ownership_conflict {
+                        self.push_oauth_external_account_snapshot_assertion(
+                            &mut statements,
+                            &operation_id,
+                            assertion.provider,
+                            &assertion.subject_digests,
+                            subject_user,
+                        )
+                        .map_err(AdapterFailure::into_port)?;
+                        if let Some(candidates) = &assertion.verified_identifier_digests {
+                            self.push_oauth_identifier_snapshot_assertion(
+                                &mut statements,
+                                &operation_id,
+                                candidates,
+                                identifier_user,
+                            )
+                            .map_err(AdapterFailure::into_port)?;
+                        }
+                        let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                        self.commit_oauth_decision(
+                            statements,
+                            &receipt,
+                            &command.audit,
+                            Some(binding.user_id),
+                            AuthAuditOutcome::Deny,
+                            AuthAuditReason::InvalidCredential,
+                        )
+                        .await
+                        .map_err(AdapterFailure::into_port)?;
+                        let outcome = self
+                            .oauth_finalize_outcome_committed(&base_receipt, &command)
+                            .await
+                            .map_err(AdapterFailure::into_port)?
+                            .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                        telemetry.finish("rejected", 0);
+                        return Ok(outcome);
+                    }
+                    self.push_oauth_external_account_authority_assertion(
+                        &mut statements,
+                        &operation_id,
+                        assertion.provider,
+                        &assertion.subject_digests,
+                        binding.user_id,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    if let Some(candidates) = &assertion.verified_identifier_digests {
+                        self.push_oauth_identifier_authority_assertion(
+                            &mut statements,
+                            &operation_id,
+                            candidates,
+                            binding.user_id,
+                            identifier_user.is_none(),
+                        )
+                        .map_err(AdapterFailure::into_port)?;
+                    }
+                    self.push_oauth_external_account_write(
+                        &mut statements,
+                        &operation_id,
+                        assertion.provider,
+                        &assertion.subject_digests,
+                        binding.user_id,
+                        command.audit.occurred_at,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    let receipt = base_receipt.clone().with_result_code("linked");
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        Some(binding.user_id),
+                        AuthAuditOutcome::Allow,
+                        AuthAuditReason::Linked,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_finalize_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("linked", 1);
+                    return Ok(outcome);
+                }
+                let ownership_conflict = matches!(
+                    (subject_user, identifier_user),
+                    (Some(subject_user), Some(identifier_user)) if subject_user != identifier_user
+                );
+                let user_id = subject_user.or(identifier_user);
+                if ownership_conflict || user_id.is_none() {
+                    self.push_oauth_external_account_snapshot_assertion(
+                        &mut statements,
+                        &operation_id,
+                        assertion.provider,
+                        &assertion.subject_digests,
+                        subject_user,
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                    if let Some(candidates) = &assertion.verified_identifier_digests {
+                        self.push_oauth_identifier_snapshot_assertion(
+                            &mut statements,
+                            &operation_id,
+                            candidates,
+                            identifier_user,
+                        )
+                        .map_err(AdapterFailure::into_port)?;
+                    }
+                    let receipt = base_receipt.clone().with_result_code("rejected_invalid");
+                    self.commit_oauth_decision(
+                        statements,
+                        &receipt,
+                        &command.audit,
+                        None,
+                        AuthAuditOutcome::Deny,
+                        AuthAuditReason::InvalidCredential,
+                    )
+                    .await
+                    .map_err(AdapterFailure::into_port)?;
+                    let outcome = self
+                        .oauth_finalize_outcome_committed(&base_receipt, &command)
+                        .await
+                        .map_err(AdapterFailure::into_port)?
+                        .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                    telemetry.finish("rejected", 0);
+                    return Ok(outcome);
+                }
+                let user_id = user_id.ok_or_else(|| AdapterFailure::Corrupt.into_port())?;
+                let principal = self
+                    .principal(user_id)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                    .ok_or_else(|| AdapterFailure::Corrupt.into_port())?;
+                self.push_oauth_external_account_authority_assertion(
+                    &mut statements,
+                    &operation_id,
+                    assertion.provider,
+                    &assertion.subject_digests,
+                    user_id,
+                )
+                .map_err(AdapterFailure::into_port)?;
+                if let Some(candidates) = &assertion.verified_identifier_digests {
+                    self.push_oauth_identifier_authority_assertion(
+                        &mut statements,
+                        &operation_id,
+                        candidates,
+                        user_id,
+                        identifier_user.is_none(),
+                    )
+                    .map_err(AdapterFailure::into_port)?;
+                }
+                self.push_oauth_external_account_write(
+                    &mut statements,
+                    &operation_id,
+                    assertion.provider,
+                    &assertion.subject_digests,
+                    user_id,
+                    command.audit.occurred_at,
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_identity_current_assertion(&mut statements, &operation_id, &principal)
+                    .map_err(AdapterFailure::into_port)?;
+                let grant_id = PrincipalIssuanceGrantId::parse(&stable_child_uuid(
+                    &operation_id,
+                    "issuance-grant",
+                ))
+                .map_err(|_| AdapterFailure::Corrupt.into_port())?;
+                self.push_statement(
+                    &mut statements,
+                    ISSUANCE_GRANT_INSERT_SQL,
+                    &[
+                        JsValue::from_str(&grant_id.to_string()),
+                        JsValue::from_str(&user_id.to_string()),
+                        JsValue::from_f64(principal.snapshot.identity_revision as f64),
+                        JsValue::from_f64(stored.expires_at.get() as f64),
+                        JsValue::from_f64(command.audit.occurred_at.get() as f64),
+                        JsValue::from_str(&operation_id),
+                    ],
+                )
+                .map_err(AdapterFailure::into_port)?;
+                self.push_assertion(&mut statements, &operation_id, "issuance_grant", 1)
+                    .map_err(AdapterFailure::into_port)?;
+                let receipt = base_receipt.clone().with_result_code("verified");
+                self.commit_oauth_decision(
+                    statements,
+                    &receipt,
+                    &command.audit,
+                    Some(user_id),
+                    AuthAuditOutcome::Allow,
+                    AuthAuditReason::Authenticated,
+                )
+                .await
+                .map_err(AdapterFailure::into_port)?;
+                let outcome = self
+                    .oauth_finalize_outcome_committed(&base_receipt, &command)
+                    .await
+                    .map_err(AdapterFailure::into_port)?
+                    .ok_or_else(|| AdapterFailure::Unavailable.into_port())?;
+                telemetry.finish("verified", 1);
+                Ok(outcome)
+            }
+            .await;
+            match outcome {
+                Err(PortError::Conflict) if attempt < 2 => {}
+                outcome => return outcome,
+            }
+        }
+        Err(PortError::Conflict)
     }
 
     async fn claim_auth_delivery(
@@ -7354,11 +9401,30 @@ mod tests {
             RATE_BUCKET_UPSERT_SQL,
             SESSION_INSERT_SQL,
             PENDING_INSERT_SQL,
+            OAUTH_FLOW_INSERT_SQL,
+            OAUTH_RESERVATION_INSERT_SQL,
+            OAUTH_EXTERNAL_ACCOUNT_UPSERT_SQL,
         ] {
             assert!(sql.contains("?1"));
             assert!(!sql.contains("raw-session"));
             assert!(!sql.contains("raw-api-key"));
         }
+    }
+
+    #[test]
+    fn oauth_enum_names_match_the_persisted_contract() {
+        assert_eq!(
+            enum_name(AuthAbuseAction::OAuthBegin).expect("abuse action"),
+            "oauth_begin"
+        );
+        assert_eq!(
+            enum_name(AuthAbuseAction::OAuthExchange).expect("abuse action"),
+            "oauth_exchange"
+        );
+        assert_eq!(
+            enum_name(AuthAuditAction::OAuthExchangePreflight).expect("audit action"),
+            "oauth_exchange_preflight"
+        );
     }
 
     #[test]
@@ -7437,6 +9503,7 @@ mod tests {
     #[test]
     fn migration_is_expand_only_and_has_no_plaintext_secret_columns() {
         let migration = include_str!("../migrations/0009_auth_repository_expand.sql");
+        let oauth_migration = include_str!("../migrations/0023_auth_oauth_direct_upload.sql");
         for destructive in [
             "DROP TABLE",
             "DROP COLUMN",
@@ -7447,8 +9514,14 @@ mod tests {
         }
         for forbidden in ["raw_token", "raw_otp", "api_key_plaintext", "oauth_code"] {
             assert!(!migration.contains(forbidden));
+            assert!(!oauth_migration.contains(forbidden));
+        }
+        for forbidden in ["authorization_code", "client_secret", "raw_state"] {
+            assert!(!oauth_migration.contains(forbidden));
         }
         assert!(migration.contains("auth_repository_assertions_v2"));
+        assert!(oauth_migration.contains("auth_oauth_operations_v2"));
+        assert!(oauth_migration.contains("auth_external_accounts_v2"));
         assert!(migration.contains("authentication audit is append-only"));
         assert_eq!(migration.matches(AUTH_CAS_CONFLICT_SENTINEL).count(), 2);
         assert!(!migration.contains("authentication rate bucket capacity reached"));

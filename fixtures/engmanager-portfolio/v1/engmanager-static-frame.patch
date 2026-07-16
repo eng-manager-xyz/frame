@@ -1,0 +1,732 @@
+diff --git a/_docs/frame-integration.md b/_docs/frame-integration.md
+new file mode 100644
+index 0000000..9439ca4
+--- /dev/null
++++ b/_docs/frame-integration.md
+@@ -0,0 +1,59 @@
++# Frame portfolio integration
++
++The portfolio links to Frame as an independent application. It does not proxy,
++embed, authenticate, poll, or fetch Frame during startup or request handling.
++Frame outages therefore cannot delay portfolio pages, search, shop, or checkout.
++
++## Configuration
++
++`FRAME_ORIGIN` is the only configuration input. When it is unset, links use
++`https://frame.engmanager.xyz/`. HTTPS preview origins and HTTP loopback
++origins such as `http://127.0.0.1:3100/` are valid overrides. Credentials,
++non-root paths, query strings, fragments, non-loopback HTTP, and malformed
++values fail startup validation.
++
++The initial integration is deliberately static. No `frame-client` dependency,
++background poller, status snapshot, or status state is enabled. Consequently,
++the optional healthy/stale/not-configured presentation and its data TTL are
++not applicable to this stage. Enabling public data later requires a separate
++review against Frame's public contract, strict bounded background refresh, and
++tests proving that handlers remain I/O-free.
++
++## Search, cache, and browser boundaries
++
++- The homepage card and shared article/search navigation use the same validated
++  origin and ordinary top-level navigation.
++- The soft-navigation router declines cross-origin destinations, and the
++  service worker declines cross-origin requests. Neither fetches or caches a
++  Frame response.
++- Portfolio HTML remains public and contains only static copy and the public
++  Frame origin. No Frame status, identity, title, media URL, object key, or
++  response body enters HTML, logs, search, RUM, or cache tags.
++- The apex canonical, robots response, and sitemap remain apex-only. Frame owns
++  its canonical, robots, and sitemap policy.
++- The portfolio security headers remain unchanged. This stage adds no iframe,
++  CORS, cookie, camera, microphone, display-capture, or `postMessage` boundary.
++- A request carrying the production Frame host receives `421 Misdirected
++  Request` instead of portfolio or shop markup. Cloudflare and Render remain
++  the authoritative production host split.
++
++## Release and rollback record
++
++Source acceptance does not launch the link. Production exposure remains gated
++by the Frame subdomain launch runbook.
++
++Record each rollout without requiring an atomic cross-repository deploy:
++
++| Field | Value |
++| --- | --- |
++| Portfolio commit | `<engmanager.xyz SHA>` |
++| Frame UI commit | `<Frame Render SHA>` |
++| Frame API commit | `<Frame Worker SHA>` |
++| Frame contract major | `1` |
++| Preview evidence | `<portfolio preview + Frame preview URLs/run>` |
++| Production evidence | `<headers/cache/navigation run>` |
++
++Roll back the portfolio commit to remove the card and nav link. That rollback
++does not alter Frame DNS, Worker routes, Render, authentication, D1, R2, or
++media. If live public data is introduced later, disable it before removing the
++static link.
+diff --git a/website/css/src/homepage.css b/website/css/src/homepage.css
+index bf1e9d3..b92ecf9 100644
+--- a/website/css/src/homepage.css
++++ b/website/css/src/homepage.css
+@@ -18,11 +18,113 @@
+     block-size: auto;
+ }
+
+-.homepage > :is(.skip-link, .fluid-display-wrap, .marquee-bar, .article-fluid-link) {
++.homepage > :is(.skip-link, .fluid-display-wrap, .frame-project, .marquee-bar, .article-fluid-link) {
+     position: relative;
+     z-index: 1;
+ }
+
++.frame-project {
++    display: grid;
++    grid-template-columns: minmax(0, 1fr) auto;
++    gap: 0.6rem 1.5rem;
++    align-items: center;
++    margin: 0 clamp(0.75rem, 3vw, 2rem) clamp(1.5rem, 4vw, 3rem);
++    padding: clamp(1rem, 2.5vw, 1.5rem);
++    color: var(--ctp-text);
++    background: color-mix(in oklab, var(--ctp-base) 92%, var(--accent));
++    border: 0.14rem solid currentColor;
++    border-radius: 0.5rem;
++    box-shadow: 0.35rem 0.35rem 0 currentColor;
++}
++
++.frame-project-kicker,
++.frame-project-summary,
++.frame-project-boundary {
++    margin: 0;
++}
++
++.frame-project-kicker {
++    grid-column: 1;
++    color: var(--accent);
++    font-family: var(--font-mono);
++    font-size: 0.72rem;
++    font-weight: 800;
++    letter-spacing: 0.08em;
++}
++
++.frame-project h2 {
++    grid-column: 1;
++    margin: 0;
++    font-family: var(--font-display);
++    font-size: clamp(1.8rem, 5vw, 3.4rem);
++    line-height: 0.95;
++    text-transform: uppercase;
++}
++
++.frame-project-summary {
++    grid-column: 1;
++    max-inline-size: 58ch;
++    line-height: 1.5;
++}
++
++.frame-project-cta {
++    grid-column: 2;
++    grid-row: 1 / span 3;
++    display: inline-flex;
++    align-items: center;
++    justify-content: center;
++    gap: 0.65rem;
++    min-block-size: 3rem;
++    padding: 0.75rem 1rem;
++    color: var(--ctp-base);
++    background: var(--accent);
++    border: 0.12rem solid currentColor;
++    border-radius: 999rem;
++    font-family: var(--font-mono);
++    font-weight: 900;
++    text-decoration: none;
++    text-transform: uppercase;
++}
++
++.frame-project-cta:hover {
++    transform: translate(-0.1rem, -0.1rem);
++    box-shadow: 0.2rem 0.2rem 0 var(--ctp-text);
++}
++
++.frame-project-cta:focus-visible {
++    outline: 0.2rem solid var(--ctp-text);
++    outline-offset: 0.2rem;
++}
++
++.frame-project-boundary {
++    grid-column: 1 / -1;
++    color: var(--ctp-subtext0);
++    font-family: var(--font-mono);
++    font-size: 0.72rem;
++}
++
++@media (max-width: 40rem) {
++    .frame-project {
++        grid-template-columns: 1fr;
++    }
++
++    .frame-project-cta {
++        grid-column: 1;
++        grid-row: auto;
++        justify-self: stretch;
++    }
++
++    .frame-project-boundary {
++        grid-column: 1;
++    }
++}
++
++@media (prefers-reduced-motion: reduce) {
++    .frame-project-cta:hover {
++        transform: none;
++    }
++}
++
+ .dvd-bouncer {
+     position: fixed;
+     inset-block-start: 0;
+diff --git a/website/src/components/nav/mod.rs b/website/src/components/nav/mod.rs
+index f48a52d..31adc19 100644
+--- a/website/src/components/nav/mod.rs
++++ b/website/src/components/nav/mod.rs
+@@ -42,6 +42,8 @@ const ICON_DISCORD: &str = r##"<svg class="site-nav-icon" viewBox="0 0 16 16" ar
+
+ const ICON_GITHUB: &str = r##"<svg class="site-nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.32c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.89-1.16-.89-1.16-.73-.5.06-.49.06-.49.81.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.77-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.66 7.66 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.74.54 1.49v2.21c0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>"##;
+
++const ICON_FRAME: &str = r##"<svg class="site-nav-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5 14h6M8 11.5V14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>"##;
++
+ /// One row in the Articles dropdown panel. Hoisted data — the caller fetches
+ /// the latest articles and passes them in so `render` stays pure.
+ pub struct DropdownItem {
+@@ -70,6 +72,8 @@ pub struct Props {
+     pub global_search: Rendered,
+     pub search_toggle: HtmlFragment,
+     pub articles: Articles,
++    /// Validated, canonical Frame origin hoisted from runtime configuration.
++    pub frame_origin: String,
+ }
+
+ fn icon(svg: &'static str) -> HtmlFragment {
+@@ -149,6 +153,7 @@ pub fn render(props: Props) -> Rendered {
+         global_search,
+         search_toggle,
+         articles,
++        frame_origin,
+     } = props;
+
+     // The nav-dropdown TRIGGER sits in the nav bar (visible at first paint), so
+@@ -196,6 +201,10 @@ pub fn render(props: Props) -> Rendered {
+             <div class="site-nav-links">
+                 { search_toggle }
+                 { articles_slot }
++                <a class="site-nav-link" href={ frame_origin } aria-label="Open Frame screen recorder">
++                    { icon(ICON_FRAME) }
++                    <span class="site-nav-link-label">"Frame"</span>
++                </a>
+                 <a class="site-nav-link" href="https://discord.gg/sTzQBrbnBM" target="_blank" rel="noopener" aria-label="Join the Discord">
+                     { icon(ICON_DISCORD) }
+                     <span class="site-nav-link-label">"Discord"</span>
+@@ -231,6 +240,7 @@ mod tests {
+                 slug: "hello-world".to_string(),
+                 date_label: "MAY 2026".to_string(),
+             }]),
++            frame_origin: "https://frame.engmanager.xyz/".to_string(),
+         }
+     }
+
+@@ -282,6 +292,20 @@ mod tests {
+         assert!(brand < search && search < links);
+     }
+
++    #[test]
++    fn frame_link_is_accessible_and_uses_normal_cross_origin_navigation() {
++        let html = render(dropdown_props()).markup.into_string();
++        assert!(html.contains(
++            r#"href="https://frame.engmanager.xyz/" aria-label="Open Frame screen recorder""#
++        ));
++        let frame_link = html
++            .split(r#"aria-label="Open Frame screen recorder""#)
++            .next()
++            .expect("Frame link");
++        let frame_link = frame_link.rsplit("<a ").next().expect("Frame anchor");
++        assert!(!frame_link.contains(r#"target="_blank""#));
++    }
++
+     #[test]
+     fn link_config_is_plain_link_with_no_dropdown_assets() {
+         let rendered = render(Props {
+diff --git a/website/src/config.rs b/website/src/config.rs
+index e0ec6e1..53ec943 100644
+--- a/website/src/config.rs
++++ b/website/src/config.rs
+@@ -3,6 +3,7 @@
+ //! composition root"; rust-core-patterns "smart constructors" for `from_env`.)
+
+ use std::env::var;
++use std::fmt;
+ use std::net::SocketAddr;
+ use std::sync::LazyLock;
+
+@@ -13,6 +14,9 @@ use std::sync::LazyLock;
+ pub const SITE_ORIGIN: &str = "https://engmanager.xyz";
+ #[allow(dead_code)] // consumers are wired up in P2/P5
+ pub const SHOP_ORIGIN: &str = "https://store.engmanager.xyz";
++pub const DEFAULT_FRAME_ORIGIN: &str = "https://frame.engmanager.xyz/";
++
++const FRAME_ORIGIN_ENV_VAR: &str = "FRAME_ORIGIN";
+
+ const PORT_ENV_VAR: &str = "PORT";
+ const DEFAULT_PORT: u16 = 3000;
+@@ -37,6 +41,77 @@ static SHOP_DEV_HOSTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+         .collect()
+ });
+
++/// Validated, root-only origin used by every static link to Frame.
++///
++/// Production needs no configuration. Preview and local processes may set
++/// `FRAME_ORIGIN`; insecure HTTP is accepted only for an exact loopback host.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct FrameOrigin(reqwest::Url);
++
++impl FrameOrigin {
++    pub fn parse(raw: &str) -> Result<Self, String> {
++        if raw.is_empty()
++            || raw
++                .chars()
++                .any(|character| character.is_whitespace() || character.is_control())
++        {
++            return Err("must not be empty or contain whitespace/control characters".to_string());
++        }
++
++        let authority = raw
++            .split_once("://")
++            .map(|(_, remainder)| remainder)
++            .and_then(|remainder| remainder.split(['/', '?', '#']).next())
++            .unwrap_or_default();
++        if authority.contains('@') {
++            return Err("must not contain credentials".to_string());
++        }
++
++        let parsed = reqwest::Url::parse(raw)
++            .map_err(|error| format!("must be an absolute URL: {error}"))?;
++        let host = parsed
++            .host_str()
++            .ok_or_else(|| "must include a host".to_string())?;
++        let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
++
++        match parsed.scheme() {
++            "https" => {}
++            "http" if loopback => {}
++            "http" => return Err("HTTP is allowed only for an exact loopback host".to_string()),
++            _ => return Err("scheme must be HTTPS, or HTTP for loopback development".to_string()),
++        }
++        if !parsed.username().is_empty() || parsed.password().is_some() {
++            return Err("must not contain credentials".to_string());
++        }
++        if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
++            return Err("must be an origin with only the root path".to_string());
++        }
++
++        Ok(Self(parsed))
++    }
++
++    pub fn as_str(&self) -> &str {
++        self.0.as_str()
++    }
++}
++
++impl fmt::Display for FrameOrigin {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter.write_str(self.as_str())
++    }
++}
++
++static FRAME_ORIGIN: LazyLock<FrameOrigin> = LazyLock::new(|| {
++    let configured = var(FRAME_ORIGIN_ENV_VAR).ok();
++    let raw = configured.as_deref().unwrap_or(DEFAULT_FRAME_ORIGIN);
++    FrameOrigin::parse(raw)
++        .unwrap_or_else(|error| panic!("invalid {FRAME_ORIGIN_ENV_VAR}: {error}"))
++});
++
++pub fn frame_origin() -> &'static FrameOrigin {
++    &FRAME_ORIGIN
++}
++
+ // Load local dev env from `.env.local` (preferred) then `.env`, before any
+ // `env::var` read in startup (Stripe code reads STRIPE_*). In production
+ // (Render) these files don't exist, so
+@@ -58,6 +133,8 @@ pub struct Config {
+     pub bind: SocketAddr,
+     /// Extra shop hosts accepted in dev (snapshot of `SHOP_DEV_HOSTS`).
+     pub shop_dev_hosts: Vec<String>,
++    /// Canonical, validated Frame origin. Resolved once during startup.
++    pub frame_origin: FrameOrigin,
+ }
+
+ impl Config {
+@@ -68,6 +145,7 @@ impl Config {
+                 .and_then(|port| port.parse::<u16>().ok()),
+             bind: resolve_server_address(),
+             shop_dev_hosts: SHOP_DEV_HOSTS.clone(),
++            frame_origin: frame_origin().clone(),
+         }
+     }
+ }
+@@ -102,9 +180,18 @@ pub fn is_shop_host(host: &str) -> bool {
+             .any(|shop_host| host_without_port.eq_ignore_ascii_case(shop_host))
+ }
+
++/// Prevent an accidentally attached Frame hostname from rendering the
++/// portfolio. Infrastructure still owns the real host split; this is the
++/// application-level collision guard.
++pub fn is_frame_production_host(host: &str) -> bool {
++    host.split(':')
++        .next()
++        .is_some_and(|host| host.eq_ignore_ascii_case("frame.engmanager.xyz"))
++}
++
+ #[cfg(test)]
+ mod tests {
+-    use super::is_shop_host;
++    use super::{DEFAULT_FRAME_ORIGIN, FrameOrigin, is_frame_production_host, is_shop_host};
+
+     #[test]
+     fn shop_host_detection_accepts_production_and_local_hosts() {
+@@ -118,4 +205,56 @@ mod tests {
+         assert!(!is_shop_host("engmanager.xyz"));
+         assert!(!is_shop_host("www.engmanager.xyz"));
+     }
++
++    #[test]
++    fn frame_origin_accepts_production_preview_and_loopback_overrides() {
++        assert_eq!(
++            FrameOrigin::parse(DEFAULT_FRAME_ORIGIN).unwrap().as_str(),
++            DEFAULT_FRAME_ORIGIN,
++        );
++        assert_eq!(
++            FrameOrigin::parse("https://frame-pr-42.onrender.com")
++                .unwrap()
++                .as_str(),
++            "https://frame-pr-42.onrender.com/",
++        );
++        assert_eq!(
++            FrameOrigin::parse("http://127.0.0.1:3100/")
++                .unwrap()
++                .as_str(),
++            "http://127.0.0.1:3100/",
++        );
++        assert!(FrameOrigin::parse("http://localhost:3100").is_ok());
++    }
++
++    #[test]
++    fn frame_origin_rejects_unsafe_or_non_origin_values() {
++        for invalid in [
++            "",
++            "frame.engmanager.xyz",
++            "http://frame.engmanager.xyz/",
++            "http://localhost.evil.example/",
++            "https://user@example.com/",
++            "https://example.com/frame",
++            "https://example.com/?token=secret",
++            "https://example.com/#fragment",
++            "javascript:alert(1)",
++            "https://example.com/\n",
++        ] {
++            assert!(
++                FrameOrigin::parse(invalid).is_err(),
++                "unsafe Frame origin unexpectedly accepted: {invalid:?}",
++            );
++        }
++    }
++
++    #[test]
++    fn frame_host_collision_guard_is_exact() {
++        assert!(is_frame_production_host("frame.engmanager.xyz"));
++        assert!(is_frame_production_host("FRAME.ENGMANAGER.XYZ:443"));
++        assert!(!is_frame_production_host("engmanager.xyz"));
++        assert!(!is_frame_production_host(
++            "frame.engmanager.xyz.evil.example"
++        ));
++    }
+ }
+diff --git a/website/src/main.rs b/website/src/main.rs
+index d016d59..5c99e74 100644
+--- a/website/src/main.rs
++++ b/website/src/main.rs
+@@ -62,6 +62,11 @@ async fn main() {
+         return;
+     }
+
++    // Resolve and validate every runtime setting before starting background
++    // work. In particular, an invalid FRAME_ORIGIN fails startup before the
++    // portfolio begins serving links with ambiguous destination semantics.
++    let config = config::Config::from_env();
++
+     // Debug-only: panic at startup if any article slice carries duplicate
+     // tags. Release builds skip this since `unique_tags` dedups at render
+     // time anyway; this is just a faster signal for the author.
+@@ -95,11 +100,11 @@ async fn main() {
+
+     let app = router::build_router(state);
+
+-    let config = config::Config::from_env();
+     tracing::debug!(
+         port = ?config.port,
+         bind = %config.bind,
+         shop_dev_hosts = ?config.shop_dev_hosts,
++        frame_origin = %config.frame_origin,
+         "resolved runtime configuration"
+     );
+     let addr = config.bind;
+diff --git a/website/src/pages/articles.rs b/website/src/pages/articles.rs
+index 98abcea..42dcee7 100644
+--- a/website/src/pages/articles.rs
++++ b/website/src/pages/articles.rs
+@@ -19,7 +19,7 @@ use crate::components::{
+     Head, api_receipt, discord_widget, discovery_toasts, global_search, nav, quick_actions,
+     region_map, to_top,
+ };
+-use crate::config::SITE_ORIGIN;
++use crate::config::{SITE_ORIGIN, frame_origin};
+ use crate::content::{
+     ARTICLE_RELATIONS, ARTICLES, Article, Category, Tag, article_markdown, public_articles,
+     relevance_score, unique_tags,
+@@ -165,6 +165,7 @@ fn layout(
+         }),
+         search_toggle: render_nav_search_toggle(),
+         articles: nav::Articles::Dropdown(nav_dropdown_items),
++        frame_origin: frame_origin().to_string(),
+     });
+
+     // Discovery-toast overlay: container + its async (deferred) styles.
+diff --git a/website/src/pages/homepage.rs b/website/src/pages/homepage.rs
+index 3c0bc8c..8702172 100644
+--- a/website/src/pages/homepage.rs
++++ b/website/src/pages/homepage.rs
+@@ -8,7 +8,7 @@ use std::fmt::Write;
+ use super::shell::{MetaTags, PageShell, json_ld_island};
+ use super::{AVATAR_SRC, avatar_srcset, render_experience_urls, render_liquid_title_filter};
+ use crate::components::{Head, api_receipt, discovery_toasts, json_data_island, quick_actions};
+-use crate::config::SITE_ORIGIN;
++use crate::config::{SITE_ORIGIN, frame_origin};
+ use crate::content::{Category, Tag, public_articles};
+
+ const HOME_LIQUID_HEADLINE_ENABLED: bool = true;
+@@ -16,6 +16,32 @@ const HOME_LIQUID_HEADLINE_ENABLED: bool = true;
+ /// Homepage meta description (~150 chars, ledger #3 additive SEO head).
+ const HOME_DESCRIPTION: &str = "Essays from matthew harwood, an engineering manager: AI-assisted development, Rust, developer tooling, and team leadership — plus embroidered dad caps.";
+
++/// Static discovery surface for Frame. It intentionally receives only a
++/// validated URL: no client, status snapshot, user data, or request-time I/O
++/// can enter portfolio HTML through this component.
++fn render_frame_project(origin: &str) -> HtmlFragment {
++    view! {
++        <section class="frame-project"
++                 aria-labelledby="frame-project-title"
++                 data-frame-integration="static">
++            <p class="frame-project-kicker">"PROJECT · SCREEN RECORDING"</p>
++            <h2 id="frame-project-title">"Frame"</h2>
++            <p class="frame-project-summary">
++                "Record, edit, and share clear product walkthroughs from a dedicated app."
++            </p>
++            <a class="frame-project-cta"
++               href={ origin.to_string() }
++               aria-label="Open Frame screen recorder">
++                <span>"Open Frame"</span>
++                <span aria-hidden="true">"↗"</span>
++            </a>
++            <p class="frame-project-boundary">
++                "Frame runs independently; this portfolio never waits on it."
++            </p>
++        </section>
++    }
++}
++
+ /// JSON-LD `WebSite` object with a `SearchAction` pointing at /search.
+ fn website_json_ld() -> HtmlFragment {
+     json_ld_island(&format!(
+@@ -494,6 +520,7 @@ pub async fn index() -> Html<String> {
+                     </svg>
+                 </div>
+                 <EngHeadline />
++                { render_frame_project(frame_origin().as_str()) }
+                 { render_topic_marquees() }
+                 // Fixed-bottom floating search. Real submit button on the
+                 // right (the circle) so the rightmost tap target is
+@@ -602,3 +629,20 @@ pub async fn index() -> Html<String> {
+             .render(body),
+     )
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::render_frame_project;
++
++    #[test]
++    fn frame_project_is_static_accessible_and_override_safe() {
++        let html = render_frame_project("http://127.0.0.1:3100/").into_string();
++        assert!(html.contains(r#"data-frame-integration="static""#));
++        assert!(html.contains(r#"aria-labelledby="frame-project-title""#));
++        assert!(html.contains(r#"href="http://127.0.0.1:3100/""#));
++        assert!(html.contains(r#"aria-label="Open Frame screen recorder""#));
++        assert!(!html.contains("target=\"_blank\""));
++        assert!(!html.contains("FrameClient"));
++        assert!(!html.contains("fetch("));
++    }
++}
+diff --git a/website/src/pages/search.rs b/website/src/pages/search.rs
+index 5a0dc1d..227619e 100644
+--- a/website/src/pages/search.rs
++++ b/website/src/pages/search.rs
+@@ -11,6 +11,7 @@ use super::shell::PageShell;
+ use crate::AppState;
+ use crate::asset_url;
+ use crate::components::{Head, global_search, nav};
++use crate::config::frame_origin;
+ use crate::content::{Category, Tag};
+ use crate::http::no_store;
+ use crate::search::{
+@@ -157,6 +158,7 @@ fn render_page(
+         }),
+         search_toggle: render_nav_search_toggle(),
+         articles: nav::Articles::Link,
++        frame_origin: frame_origin().to_string(),
+     });
+     let mut assets = Head::new();
+     assets.add_css("css/search.css");
+diff --git a/website/src/router.rs b/website/src/router.rs
+index 5fc2413..54593e3 100644
+--- a/website/src/router.rs
++++ b/website/src/router.rs
+@@ -5,15 +5,17 @@
+ use std::time::Duration;
+
+ use axum::Router;
++use axum::body::Body;
+ use axum::extract::State;
+-use axum::http::{HeaderMap, StatusCode, Uri, header};
++use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
++use axum::middleware::Next;
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::{get, post};
+ use tower_http::compression::CompressionLayer;
+ use tower_http::timeout::TimeoutLayer;
+ use tower_http::trace::TraceLayer;
+
+-use crate::config::is_shop_host;
++use crate::config::{is_frame_production_host, is_shop_host};
+ use crate::state::AppState;
+ use crate::{assets, http, pages, sitemap};
+
+@@ -65,6 +67,9 @@ pub fn build_router(state: AppState) -> Router {
+         .route(routes::ASSETS, get(assets::asset_handler))
+         .fallback(fallback_handler)
+         .with_state(state)
++        // A mistakenly attached Frame hostname must not expose any portfolio
++        // route, including explicit paths such as /articles or /assets.
++        .layer(axum::middleware::from_fn(frame_host_guard))
+         // Layer stack, innermost first (each `.layer` call wraps everything
+         // registered before it). Outermost → innermost at runtime:
+         //   TraceLayer → CompressionLayer → html_cache_layer
+@@ -120,6 +125,19 @@ async fn fallback_handler(State(state): State<AppState>, headers: HeaderMap, uri
+     }
+ }
+
++async fn frame_host_guard(request: Request<Body>, next: Next) -> Response {
++    let host = request
++        .headers()
++        .get(header::HOST)
++        .and_then(|value| value.to_str().ok())
++        .unwrap_or_default();
++    if is_frame_production_host(host) {
++        StatusCode::MISDIRECTED_REQUEST.into_response()
++    } else {
++        next.run(request).await
++    }
++}
++
+ // Router-surface regression tests: drive the fully-layered Router with
+ // tower::ServiceExt::oneshot and pin the externally observable contract
+ // (status codes, cache headers, security headers, asset round-trips).
+@@ -141,6 +159,7 @@ mod tests {
+
+     const SITE_HOST: &str = "engmanager.xyz";
+     const SHOP_HOST: &str = "shop.localhost";
++    const FRAME_HOST: &str = "frame.engmanager.xyz";
+
+     async fn test_router() -> Router {
+         let search = Arc::new(
+@@ -213,6 +232,20 @@ mod tests {
+         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+     }
+
++    #[tokio::test]
++    async fn frame_host_never_renders_portfolio_or_shop_routes() {
++        let router = test_router().await;
++        for path in ["/", "/articles/", "/shop", "/definitely-not-a-page"] {
++            let response = get(&router, FRAME_HOST, path).await;
++            assert_eq!(
++                response.status(),
++                StatusCode::MISDIRECTED_REQUEST,
++                "Frame host collision at {path}",
++            );
++            assert_eq!(header_str(&response, "cache-control"), None);
++        }
++    }
++
+     // /checkout is host-partitioned: the cart lives in shop-origin
+     // localStorage, so non-shop hosts get the 404 page (preserved
+     // pre-refactor behavior) and shop hosts get the real page.
+@@ -307,6 +340,36 @@ mod tests {
+         assert_eq!(header_str(&response, "cache-tag"), Some("html"));
+     }
+
++    #[tokio::test]
++    async fn portfolio_surfaces_frame_without_changing_apex_seo_or_cache_policy() {
++        let router = test_router().await;
++
++        let root = get(&router, SITE_HOST, "/").await;
++        assert_eq!(header_str(&root, "cache-control"), Some(HTML_CACHE_CONTROL));
++        let root_html = body_string(root).await;
++        assert!(root_html.contains(r#"data-frame-integration="static""#));
++        assert!(root_html.contains(r#"href="https://frame.engmanager.xyz/""#));
++        assert!(root_html.contains(r#"aria-label="Open Frame screen recorder""#));
++        assert!(root_html.contains(r#"rel="canonical" href="https://engmanager.xyz/""#));
++        assert!(!root_html.contains(r#"rel="canonical" href="https://frame.engmanager.xyz/""#));
++
++        let articles = get(&router, SITE_HOST, "/articles/").await;
++        let articles_html = body_string(articles).await;
++        assert!(articles_html.contains(r#"href="https://frame.engmanager.xyz/""#));
++        assert!(articles_html.contains(r#"aria-label="Open Frame screen recorder""#));
++    }
++
++    #[test]
++    fn browser_navigation_and_service_worker_leave_frame_cross_origin() {
++        let nav_router = include_str!("../js/src/nav-router.js");
++        let service_worker = include_str!("../js/src/sw.js");
++
++        assert!(nav_router.contains("if (dest.origin !== location.origin) return;"));
++        assert!(nav_router.contains("prefers-reduced-motion: reduce"));
++        assert!(service_worker.contains("if (url.origin !== self.location.origin) return;"));
++        assert!(!service_worker.contains("frame.engmanager.xyz"));
++    }
++
+     #[tokio::test]
+     async fn not_found_html_is_no_store_without_cdn_headers() {
+         let router = test_router().await;
+diff --git a/website/src/sitemap.rs b/website/src/sitemap.rs
+index 7d816fb..ee3a3bc 100644
+--- a/website/src/sitemap.rs
++++ b/website/src/sitemap.rs
+@@ -177,6 +177,14 @@ mod tests {
+                 loc.starts_with("https://"),
+                 "sitemap loc must be absolute HTTPS: {loc}"
+             );
++            assert!(
++                loc.starts_with(&format!("{SITE_ORIGIN}/")),
++                "apex sitemap must not contain a subdomain URL: {loc}",
++            );
++            assert!(
++                !loc.contains("frame.engmanager.xyz"),
++                "Frame owns its own sitemap: {loc}",
++            );
+             assert_iso_date(child_text(url, "lastmod"));
+
+             let changefreq = child_text(url, "changefreq");

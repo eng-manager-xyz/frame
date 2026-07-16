@@ -39,6 +39,14 @@ Every candidate records:
 `frame_authoritative` -> `legacy_read_only` -> `legacy_retained` ->
 `legacy_decommissioned`.
 
+For the issue-17 metadata control, the exact persisted phases are
+`legacy_authoritative`, `shadow_read`, `dual_write`, `d1_authoritative`,
+`rolled_back`, and `finalized`. Their one-writer mappings, scoped commands, SLO
+gates, and emergency rollback sequence are defined in
+[Metadata authority cutover and rollback](metadata-authority-cutover.md). The
+broader lifecycle above is a release-program view and must not be written into
+the scoped state table as an invented phase.
+
 Only the audited control may advance a tenant/domain. Fencing occurs before a
 writer changes. Each transition records the last source change, replay
 checkpoint, comparison digest, mismatch count, rollback deadline, and actor.

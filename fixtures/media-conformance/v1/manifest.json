@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "manifest_id": "media-conformance-fixtures-v1",
+  "immutable": true,
+  "privacy": {
+    "synthetic_only": true,
+    "contains_customer_data": false,
+    "contains_secrets": false,
+    "contains_media_bytes": false
+  },
+  "files": [
+    {"path":"fuzz-corpus.json","sha256":"02102cde1b9136dbc56a07ec3ff73320326d34b997880efa6b2e0328e6e09605"},
+    {"path":"matrix.json","sha256":"56f1d21243f4bc60d48199f7de068a1b2d7d8bf2de856d5ff6d161895341394a"},
+    {"path":"offline-cases.json","sha256":"5fa69c6bacd08a1595d8a544ebefd912de114efef2d167be9b39e540466ceeb5"},
+    {"path":"protected-lanes.json","sha256":"015bb8eaaeee93f6b8d08987b612e014528cede4f31a5579de993e9b81dfa934"}
+  ]
+}

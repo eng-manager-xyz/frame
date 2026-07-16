@@ -57,6 +57,9 @@ JOB_B = "018f47a6-7b1c-7f55-8f39-8f8a86900212"
 CONTENTION_VIDEO = "018f47a6-7b1c-7f55-8f39-8f8a86900304"
 CONFORMANCE_PATH = "/__frame/local/repository-conformance"
 TOKEN_HEADER = "x-frame-repository-conformance-token"
+INITIAL_EVENT_FINGERPRINT = (
+    "daf2d49bd689dfe48d2c4e168137808de05d76d9766c3cb98ab5da27e7c378b9"
+)
 
 
 class ConformanceFailure(RuntimeError):
@@ -124,13 +127,16 @@ def fixture_statements() -> list[str]:
         f"INSERT INTO organizations(id,owner_id,name,status,settings_json,created_at_ms,updated_at_ms,revision) VALUES ({sql_literal(ORG_B)},{sql_literal(USER_B)},'Tenant B','active','{{}}',1700000000000,1700000000000,3)",
         f"INSERT INTO organization_members(organization_id,user_id,role,state,has_pro_seat,created_at_ms,updated_at_ms,revision) VALUES ({sql_literal(ORG_A)},{sql_literal(USER_A)},'owner','active',1,1700000000000,1700000000000,0)",
         f"INSERT INTO organization_members(organization_id,user_id,role,state,has_pro_seat,created_at_ms,updated_at_ms,revision) VALUES ({sql_literal(ORG_B)},{sql_literal(USER_B)},'owner','active',1,1700000000000,1700000000000,0)",
-        f"INSERT INTO videos(id,owner_id,title,state,created_at_ms,updated_at_ms,organization_id,privacy,metadata_json,revision) VALUES ({sql_literal(VIDEO_A)},{sql_literal(USER_A)},'Found A','ready',1700000000100,1700000000100,{sql_literal(ORG_A)},'private','{{}}',4)",
-        f"INSERT INTO videos(id,owner_id,title,state,created_at_ms,updated_at_ms,organization_id,privacy,metadata_json,revision) VALUES ({sql_literal(VIDEO_B)},{sql_literal(USER_B)},'Found B','ready',1700000000100,1700000000100,{sql_literal(ORG_B)},'private','{{}}',8)",
-        f"INSERT INTO videos(id,owner_id,title,state,created_at_ms,updated_at_ms,organization_id,privacy,metadata_json,revision) VALUES ({sql_literal(CONTENTION_VIDEO)},{sql_literal(USER_A)},'Contention','ready',1700000000200,1700000000200,{sql_literal(ORG_A)},'private','{{}}',10)",
-        f"INSERT INTO video_uploads(id,organization_id,video_id,state,expected_bytes,received_bytes,idempotency_key,source_object_key,source_version,content_type,checksum_sha256,created_at_ms,updated_at_ms,revision) VALUES ({sql_literal(UPLOAD_A)},{sql_literal(ORG_A)},{sql_literal(VIDEO_A)},'complete',42,42,'upload-a-key',{sql_literal(f'tenants/{ORG_A}/videos/{VIDEO_A}/source/v1/source.webm')},1,'video/webm',{'a' * 64!r},1700000000000,1700000000001,1)",
-        f"INSERT INTO video_uploads(id,organization_id,video_id,state,expected_bytes,received_bytes,idempotency_key,source_object_key,source_version,content_type,checksum_sha256,created_at_ms,updated_at_ms,revision) VALUES ({sql_literal(UPLOAD_B)},{sql_literal(ORG_B)},{sql_literal(VIDEO_B)},'initiated',42,0,'upload-b-key',{sql_literal(f'tenants/{ORG_B}/videos/{VIDEO_B}/source/v1/source.webm')},1,'video/webm',NULL,1700000000000,1700000000000,0)",
-        f"INSERT INTO media_jobs(id,video_id,kind,state,idempotency_key,attempt,payload_json,created_at_ms,updated_at_ms,organization_id,selected_executor,source_version,profile_version,output_object_key,progress_basis_points,revision) VALUES ({sql_literal(JOB_A)},{sql_literal(VIDEO_A)},'frame','succeeded','job-a-key',1,'{{\"profile\":\"thumbnail_v1\"}}',1700000000000,1700000000001,{sql_literal(ORG_A)},'native_gstreamer',1,1,{sql_literal(f'tenants/{ORG_A}/videos/{VIDEO_A}/derivatives/thumbnail_v1/v1/output')},10000,2)",
-        f"INSERT INTO media_jobs(id,video_id,kind,state,idempotency_key,attempt,payload_json,created_at_ms,updated_at_ms,organization_id,selected_executor,source_version,profile_version,output_object_key,revision) VALUES ({sql_literal(JOB_B)},{sql_literal(VIDEO_B)},'frame','queued','job-b-key',0,'{{\"profile\":\"thumbnail_v1\"}}',1700000000000,1700000000000,{sql_literal(ORG_B)},'native_gstreamer',1,1,{sql_literal(f'tenants/{ORG_B}/videos/{VIDEO_B}/derivatives/thumbnail_v1/v1/output')},0)",
+        f"INSERT INTO videos(id,owner_id,title,state,created_at_ms,updated_at_ms,organization_id,privacy,metadata_json,revision) VALUES ({sql_literal(VIDEO_A)},{sql_literal(USER_A)},'Found A','ready',1700000000100,1700000000100,{sql_literal(ORG_A)},'private',NULL,4)",
+        f"INSERT INTO videos(id,owner_id,title,state,created_at_ms,updated_at_ms,organization_id,privacy,metadata_json,revision) VALUES ({sql_literal(VIDEO_B)},{sql_literal(USER_B)},'Found B','ready',1700000000100,1700000000100,{sql_literal(ORG_B)},'private',NULL,8)",
+        f"INSERT INTO videos(id,owner_id,title,state,created_at_ms,updated_at_ms,organization_id,privacy,metadata_json,revision) VALUES ({sql_literal(CONTENTION_VIDEO)},{sql_literal(USER_A)},'Contention','ready',1700000000200,1700000000200,{sql_literal(ORG_A)},'private',NULL,10)",
+        f"INSERT INTO video_uploads(id,organization_id,video_id,state,expected_bytes,received_bytes,idempotency_key,source_object_key,source_version,content_type,checksum_sha256,created_at_ms,updated_at_ms,revision,event_sequence,event_fingerprint) VALUES ({sql_literal(UPLOAD_A)},{sql_literal(ORG_A)},{sql_literal(VIDEO_A)},'initiated',42,0,'upload-a-key',{sql_literal(f'tenants/{ORG_A}/videos/{VIDEO_A}/source/v1/source.webm')},1,'video/webm',NULL,1700000000000,1700000000000,0,0,{sql_literal(INITIAL_EVENT_FINGERPRINT)})",
+        f"UPDATE video_uploads SET state='uploading',received_bytes=21,updated_at_ms=1700000000001,revision=1,event_sequence=1,event_fingerprint={'e' * 64!r} WHERE id={sql_literal(UPLOAD_A)}",
+        f"UPDATE video_uploads SET state='finalizing',received_bytes=42,updated_at_ms=1700000000002,revision=2,event_sequence=2,event_fingerprint={'f' * 64!r} WHERE id={sql_literal(UPLOAD_A)}",
+        f"UPDATE video_uploads SET state='complete',checksum_sha256={'a' * 64!r},updated_at_ms=1700000000003,revision=3,event_sequence=3,event_fingerprint={'b' * 64!r} WHERE id={sql_literal(UPLOAD_A)}",
+        f"INSERT INTO video_uploads(id,organization_id,video_id,state,expected_bytes,received_bytes,idempotency_key,source_object_key,source_version,content_type,checksum_sha256,created_at_ms,updated_at_ms,revision,event_sequence,event_fingerprint) VALUES ({sql_literal(UPLOAD_B)},{sql_literal(ORG_B)},{sql_literal(VIDEO_B)},'initiated',42,0,'upload-b-key',{sql_literal(f'tenants/{ORG_B}/videos/{VIDEO_B}/source/v1/source.webm')},1,'video/webm',NULL,1700000000000,1700000000000,0,0,{sql_literal(INITIAL_EVENT_FINGERPRINT)})",
+        f"INSERT INTO media_jobs(id,video_id,kind,state,idempotency_key,attempt,payload_json,created_at_ms,updated_at_ms,organization_id,selected_executor,source_version,profile_version,output_object_key,progress_basis_points,revision) VALUES ({sql_literal(JOB_A)},{sql_literal(VIDEO_A)},'frame','succeeded','job-a-key',1,'{{\"profile\":\"thumbnail_v1\"}}',1700000000000,1700000000001,{sql_literal(ORG_A)},'native_gstreamer',1,1,{sql_literal(f'tenants/{ORG_A}/videos/{VIDEO_A}/derivatives/thumbnail_v1/{"a" * 64}')},10000,2)",
+        f"INSERT INTO media_jobs(id,video_id,kind,state,idempotency_key,attempt,payload_json,created_at_ms,updated_at_ms,organization_id,selected_executor,source_version,profile_version,output_object_key,revision) VALUES ({sql_literal(JOB_B)},{sql_literal(VIDEO_B)},'frame','queued','job-b-key',0,'{{\"profile\":\"thumbnail_v1\"}}',1700000000000,1700000000000,{sql_literal(ORG_B)},'native_gstreamer',1,1,{sql_literal(f'tenants/{ORG_B}/videos/{VIDEO_B}/derivatives/thumbnail_v1/{"b" * 64}')},0)",
     ]
     for index in range(205):
         video_id = fixture_video_id(index)
@@ -139,7 +145,7 @@ def fixture_statements() -> list[str]:
             "INSERT INTO videos(id,owner_id,title,state,created_at_ms,updated_at_ms,"
             "organization_id,privacy,metadata_json,revision) VALUES "
             f"({sql_literal(video_id)},{sql_literal(USER_A)},'Page {index:03d}','ready',"
-            f"{created_at},{created_at},{sql_literal(ORG_A)},'private','{{}}',0)"
+            f"{created_at},{created_at},{sql_literal(ORG_A)},'private',NULL,0)"
         )
     rejected_key = f"repository-video-title:{ORG_A}:repository-constraint-0001"
     statements.append(
@@ -232,7 +238,15 @@ class WranglerD1:
             check=False,
         )
         if check and process.returncode != 0:
-            raise ConformanceFailure("local Wrangler D1 command failed")
+            if arguments[:2] == ["d1", "migrations"]:
+                phase = "migration_apply"
+            elif "--file" in arguments:
+                phase = "fixture_load"
+            elif "--command" in arguments:
+                phase = "bounded_query"
+            else:
+                phase = "unknown"
+            raise ConformanceFailure(f"local Wrangler D1 command failed ({phase})")
         return process
 
     def d1_base(self) -> list[str]:
@@ -409,6 +423,7 @@ def reference_write_operation() -> tuple[str, Sequence[object]]:
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    payload_checksum = hashlib.sha256(response.encode("utf-8")).hexdigest()
     reservation = "018f47a6-7b1c-7f55-8f39-8f8a86904101"
     outbox = "018f47a6-7b1c-7f55-8f39-8f8a86904102"
     operation = "018f47a6-7b1c-7f55-8f39-8f8a86904103"
@@ -431,6 +446,8 @@ def reference_write_operation() -> tuple[str, Sequence[object]]:
             response,
             1_700_100_000_000,
             1_700_186_400_000,
+            payload_checksum,
+            INITIAL_EVENT_FINGERPRINT,
         ],
     )
 

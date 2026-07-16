@@ -5,7 +5,13 @@ portfolio-to-Frame harness. It reuses the canonical public JSON fixtures under
 `fixtures/frame-api/v1` and the generated, non-decodable 127-byte payload under
 `fixtures/hermetic/v1`.
 
-The evidence class is `local_semantic_fake`. These files contain no production
+The evidence class is `local_semantic_fake`. `compatibility-cases.json` is the
+seeded additive/breaking producer matrix; the current Rust consumer executes
+every case. `ci-policy.json` is the machine-checked ownership, workflow,
+preview, artifact, retry, flake, cost, and protected-evidence definition. Its
+canonical fixture digests make an unreviewed v1 rewrite fail closed.
+
+These files contain no production
 response, private recording, account data, cookie, token, signed URL, provider
 identifier, or real browser trace. They do not assert compatibility with
 Cloudflare, Render, R2, Media Transformations, an upstream EngManager build, or

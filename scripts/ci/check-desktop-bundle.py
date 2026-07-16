@@ -98,8 +98,19 @@ def main() -> int:
     )
     if capability.get("windows") != ["main"]:
         fail("bootstrap capability is not restricted to the main window")
-    if capability.get("permissions") != ["allow-bootstrap-main"]:
-        fail("bootstrap capability grants more than one command")
+    expected_permissions = [
+        "allow-bootstrap-main",
+        "allow-bootstrap-desktop",
+        "allow-dispatch-main",
+    ]
+    if capability.get("permissions") != expected_permissions:
+        fail("desktop capability drifted from the three-command boundary")
+    explicit_permissions = (
+        ROOT / "apps" / "desktop" / "permissions" / "desktop.toml"
+    ).read_text(encoding="utf-8")
+    for command in ("bootstrap_desktop", "dispatch_main"):
+        if f'commands.allow = ["{command}"]' not in explicit_permissions:
+            fail(f"desktop permission does not isolate {command}")
     if capability.get("platforms") != ["macOS", "windows"]:
         fail("desktop platform boundary drifted")
 

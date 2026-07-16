@@ -4,16 +4,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 import stat
 import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("FRAME_WORKFLOW_POLICY_ROOT", Path(__file__).resolve().parents[2])).resolve()
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
-OWNED = {
+REQUIRED_WORKFLOWS = {
     "ci.yml",
+    "cross-repository-contract.yml",
     "quality-gates.yml",
     "production-gate.yml",
     "production-smoke.yml",
@@ -37,6 +39,9 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     texts: dict[str, str] = {}
+    owned = {path.name for path in WORKFLOW_DIR.glob("*.yml")}
+    for required in sorted(REQUIRED_WORKFLOWS - owned):
+        errors.append(f"missing owned workflow: .github/workflows/{required}")
     gstreamer_launcher = ROOT / "scripts" / "ci" / "gstreamer-sanitized-exec"
     cargo_config = ROOT / ".cargo" / "config.toml"
     require(
@@ -54,7 +59,7 @@ def main() -> int:
         errors,
     )
 
-    for name in sorted(OWNED):
+    for name in sorted(owned):
         path = WORKFLOW_DIR / name
         require(path.is_file(), f"missing owned workflow: {path.relative_to(ROOT)}", errors)
         if path.is_file():
@@ -91,22 +96,48 @@ def main() -> int:
     require("generate-cyclonedx.py" in quality and "hermetic-journey.py" in quality,
             "quality-gates.yml: SBOM and provider-free walking-slice checks must be required", errors)
     require("d1-repository-conformance.py" in quality
-            and "target/evidence/d1-repository-conformance.json" in quality,
-            "quality-gates.yml: isolated local D1 repository conformance and evidence must be required", errors)
+            and "auth-d1-conformance.py" in quality
+            and "organization-d1-conformance.py" in quality
+            and "api-workflow-d1-conformance.py" in quality
+            and "target/evidence/d1-repository-conformance.json" in quality
+            and "target/evidence/auth-d1-conformance.json" in quality
+            and "target/evidence/organization-d1-conformance.json" in quality
+            and "target/evidence/api-workflow-d1-conformance.json" in quality,
+            "quality-gates.yml: every isolated local D1 conformance suite and its evidence must be required", errors)
+    require("r2-storage-conformance.py" in quality
+            and "target/evidence/r2-storage-conformance.json" in quality,
+            "quality-gates.yml: credential-free local R2 adapter conformance and evidence must be required", errors)
+    require("check-desktop-product.py" in quality
+            and "check-media-service.py" in quality
+            and "business-sqlite-semantic-conformance.py" in quality
+            and "organization-sqlite-semantic-conformance.py" in quality
+            and "public-collaboration-sqlite-conformance.py" in quality,
+            "quality-gates.yml: desktop, media-service, business, organization, and public-collaboration semantic contracts must be required", errors)
     require("GST_PLUGIN_SYSTEM_PATH_1_0" in quality
             and "gstreamer-sanitized-exec" in quality
             and "hostile-gstreamer-readiness.py" in quality
             and "gstreamer-packages-ci.tsv" in quality
             and "gstreamer-runtime-hostile-xdg-ci.json" in quality,
             "quality-gates.yml: trusted-root, package, hostile-env, and hostile-XDG media gates must be required", errors)
+    require("check-media-conformance.py" in quality
+            and "media-conformance-offline.json" in quality
+            and "media-conformance-dashboard.json" in quality,
+            "quality-gates.yml: deterministic media conformance and dashboard evidence must be required", errors)
     require("build-web-hydration.py" in quality
             and "check-web-hydration-bundle.py" in quality
             and "web-hydration-smoke.py" in quality
+            and "render-web-runtime-smoke.py" in quality
+            and "render-web-runtime-linux.json" in quality
             and "frame-web-hydrate" in quality
             and "google-chrome --version" in quality,
-            "quality-gates.yml: locked Wasm hydration, bundle closure, and browser smoke must be required", errors)
+            "quality-gates.yml: locked hydration, browser, and Render-runtime smokes must be required", errors)
     require("cross-repo-preview-e2e.py" in quality and "--self-test --timeout 20" in quality,
             "quality-gates.yml: credential-free two-origin preview controls must be required", errors)
+    require("check-launch-observability.py" in quality,
+            "quality-gates.yml: launch SLO, observability, privacy, drift, and rollback contract must be required", errors)
+    require("check-cross-repo-contract.py" in quality
+            and "test-cross-repo-contract.py" in quality,
+            "quality-gates.yml: cross-repository ownership/policy mutations must be required", errors)
     require("macos-15" in quality and "windows-2022" in quality and "macos-14" not in quality,
             "quality-gates.yml: portable core checks must cover macOS and Windows", errors)
     require("desktop_shell:" in quality and "trunk --version 0.21.14 --locked" in quality
@@ -156,6 +187,12 @@ def main() -> int:
     require("GST_PLUGIN_SYSTEM_PATH_1_0" in production_untrusted
             and "gstreamer-sanitized-exec" in production_untrusted,
             "production-gate.yml: native preflight must pin the GStreamer root and sanitize loader overrides", errors)
+    require("check-media-conformance.py" in production_untrusted,
+            "production-gate.yml: local media conformance definition must be validated before protected parity", errors)
+    require("check-launch-observability.py" in production_untrusted,
+            "production-gate.yml: launch SLO, observability, privacy, drift, and rollback contract must be required", errors)
+    require("check-cross-repo-contract.py" in production_untrusted,
+            "production-gate.yml: cross-repository contract policy must block release", errors)
     require("package-release.sh" in production and "verify-release-bundle.sh" in production,
             "production-gate.yml: release must create and verify the immutable SBOM-bearing handoff", errors)
     require("build-web-hydration.py" in production
@@ -176,6 +213,13 @@ def main() -> int:
             "ci.yml: workspace tests and media smoke must pin the GStreamer root and sanitize loader overrides", errors)
     require("github.event.workflow_run.conclusion == 'success'" in smoke and "expected_release_sha" in smoke,
             "production-smoke.yml: paired release verification must follow only a successful production gate", errors)
+    require("apps/web crates scripts/ci Cargo.toml Cargo.lock rust-toolchain.toml render.yaml" in smoke,
+            "production-smoke.yml: paired release paths must match Render's build filter", errors)
+
+    change_plan_path = ROOT / "scripts" / "ci" / "release-change-plan.sh"
+    change_plan = change_plan_path.read_text(encoding="utf-8") if change_plan_path.is_file() else ""
+    require("apps/web/* | crates/* | scripts/ci/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | render.yaml" in change_plan,
+            "release-change-plan.sh: web impact must match Render's committed build filter", errors)
 
     terraform = texts.get("cloudflare-account.yml", "")
     require("pull_request:" in terraform and "workflow_dispatch:" in terraform,
@@ -208,7 +252,7 @@ def main() -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print(f"Workflow policy checks passed for all {len(OWNED)} Frame-owned workflows.")
+    print(f"Workflow policy checks passed for all {len(owned)} Frame-owned workflows.")
     return 0
 
 

@@ -36,6 +36,7 @@ Usage: scripts/frame <command>
   media-smoke  create a synthetic WebM artifact under target/
   d1-conformance
                 run aggregate repository parity/fault tests in isolated local D1
+  preview-e2e   run the credential-free two-origin portfolio/Frame journey
 EOF
 }
 
@@ -169,10 +170,30 @@ case "$command" in
     python3 scripts/ci/generate-cyclonedx.py --self-test
     python3 -I scripts/ci/hermetic-journey.py --timeout 20
     python3 scripts/ci/check-fixtures.py
+    python3 -I scripts/ci/check-issue-closure.py
+    python3 -I scripts/ci/check-desktop-product.py
+    python3 -I scripts/ci/check-media-service.py
+    python3 scripts/ci/check-api-workflow-parity.py
+    python3 -I scripts/ci/api-workflow-d1-conformance.py
     python3 scripts/ci/check-cloudflare-zone-contract.py
+    python3 -I scripts/ci/check-cloudflare-edge-policy.py
+    python3 -I scripts/ci/test-frame-cache-purge.py
+    python3 -I scripts/ci/check-browser-security.py
+    python3 -I scripts/ci/check-engmanager-portfolio-integration.py
+    python3 -I scripts/ci/check-launch-observability.py
     python3 scripts/ci/check-migrations.py
     python3 scripts/ci/test-migration.py
+    python3 scripts/ci/cutover-authority-conformance.py
+    python3 -I scripts/ci/business-sqlite-semantic-conformance.py
+    python3 -I scripts/ci/organization-sqlite-semantic-conformance.py
+    python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
+    python3 -I scripts/migration/test_cap_id_map.py
+    python3 -I scripts/migration/test_etl_cap_id_map.py
+    python3 -I scripts/migration/test_cap_business_plan_contract.py
     python3 -I scripts/migration/test_local.py
+    python3 -I scripts/migration/test_mysql_snapshot.py
+    python3 -I scripts/migration/test_mysql_cdc.py
+    python3 -I scripts/migration/test_d1_target.py
     ;;
   test)
     configure_gstreamer
@@ -211,6 +232,13 @@ case "$command" in
   d1-conformance)
     refuse_production
     python3 -I scripts/ci/d1-repository-conformance.py
+    python3 -I scripts/ci/auth-d1-conformance.py
+    python3 -I scripts/ci/organization-d1-conformance.py
+    python3 -I scripts/ci/api-workflow-d1-conformance.py
+    ;;
+  preview-e2e)
+    refuse_production
+    python3 -I scripts/ci/cross-repo-preview-e2e.py --self-test --timeout 20
     ;;
   help|-h|--help)
     usage

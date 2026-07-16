@@ -10,14 +10,16 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod consumer;
+mod native;
 mod protocol;
 mod thumbnail;
 
 use consumer::{WorkOutcome, run_consumer_loop, work_once};
+use native::{NativeProfile, ensure_worker_runtime, run_native_child};
 use protocol::{WorkerClient, WorkerConfig};
 use thumbnail::{
-    ReadyGstreamerRuntime, ensure_thumbnail_runtime, run_thumbnail_child, thumbnail_factory_count,
-    thumbnail_runtime_capability, thumbnail_runtime_missing_factories,
+    ReadyGstreamerRuntime, thumbnail_factory_count, thumbnail_runtime_capability,
+    thumbnail_runtime_missing_factories,
 };
 
 const HEALTH_SCHEMA_VERSION: u16 = 1;
@@ -29,6 +31,9 @@ struct HealthResponse {
     status: &'static str,
     catalog_version: u16,
     required_factories_unavailable: usize,
+    native_profiles_declared: usize,
+    native_profiles_implemented: usize,
+    native_profiles_blocked: usize,
 }
 
 fn health_response() -> (StatusCode, Json<HealthResponse>) {
@@ -62,6 +67,15 @@ fn health_response_with(
             status: if ready { "ready" } else { "degraded" },
             catalog_version: media_job_catalog().version,
             required_factories_unavailable: missing.max(thumbnail_missing),
+            native_profiles_declared: NativeProfile::ALL.len(),
+            native_profiles_implemented: NativeProfile::ALL
+                .iter()
+                .filter(|profile| profile.has_implemented_graph())
+                .count(),
+            native_profiles_blocked: NativeProfile::ALL
+                .iter()
+                .filter(|profile| !profile.has_implemented_graph())
+                .count(),
         }),
     )
 }
@@ -73,6 +87,15 @@ async fn live() -> Json<HealthResponse> {
         status: "live",
         catalog_version: media_job_catalog().version,
         required_factories_unavailable: 0,
+        native_profiles_declared: NativeProfile::ALL.len(),
+        native_profiles_implemented: NativeProfile::ALL
+            .iter()
+            .filter(|profile| profile.has_implemented_graph())
+            .count(),
+        native_profiles_blocked: NativeProfile::ALL
+            .iter()
+            .filter(|profile| !profile.has_implemented_graph())
+            .count(),
     })
 }
 
@@ -85,7 +108,7 @@ async fn serve() -> Result<()> {
         .map(WorkerClient::new)
         .transpose()?;
     if worker_client.is_some() {
-        ensure_thumbnail_runtime()?;
+        ensure_worker_runtime()?;
     }
     let address = env::var("FRAME_MEDIA_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8790".into())
@@ -217,23 +240,16 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        "thumbnail-child" => {
+        "native-child" => {
             let mut arguments = env::args_os().skip(2);
-            let source = arguments
+            let plan = arguments
                 .next()
                 .map(PathBuf::from)
-                .ok_or_else(|| anyhow::anyhow!("thumbnail child arguments are invalid"))?;
-            let output = arguments
-                .next()
-                .map(PathBuf::from)
-                .ok_or_else(|| anyhow::anyhow!("thumbnail child arguments are invalid"))?;
-            let output_limit = arguments
-                .next()
-                .and_then(|value| value.into_string().ok())
-                .and_then(|value| value.parse::<u64>().ok())
                 .filter(|_| arguments.next().is_none())
-                .ok_or_else(|| anyhow::anyhow!("thumbnail child arguments are invalid"))?;
-            run_thumbnail_child(&source, &output, output_limit)?;
+                .ok_or_else(|| anyhow::anyhow!("native child arguments are invalid"))?;
+            if let Err(error) = run_native_child(&plan) {
+                std::process::exit(error.child_exit_code());
+            }
         }
         "serve" => serve().await?,
         command => {
@@ -259,6 +275,9 @@ mod tests {
             status: "live",
             catalog_version: media_job_catalog().version,
             required_factories_unavailable: 0,
+            native_profiles_declared: NativeProfile::ALL.len(),
+            native_profiles_implemented: 4,
+            native_profiles_blocked: 10,
         };
         assert_eq!(response.schema_version, 1);
         assert_eq!(response.service, "frame-media-worker");

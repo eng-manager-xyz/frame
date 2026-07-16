@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Static fail-closed review for the desktop product and accessibility boundary."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+from typing import NoReturn
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def fail(message: str) -> NoReturn:
+    raise SystemExit(f"desktop product check failed: {message}")
+
+
+def text(path: str) -> str:
+    target = ROOT / path
+    if not target.is_file():
+        fail(f"missing {path}")
+    return target.read_text(encoding="utf-8")
+
+
+def require(content: str, markers: tuple[str, ...], label: str) -> None:
+    missing = [marker for marker in markers if marker not in content]
+    if missing:
+        fail(f"{label} is missing {missing}")
+
+
+def digest(path: str) -> str:
+    return hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--evidence", type=Path)
+    args = parser.parse_args()
+
+    ipc = text("apps/desktop/src/ipc.rs")
+    runtime = text("apps/desktop/src/runtime.rs")
+    native = text("apps/desktop/src/main.rs")
+    ui = text("apps/desktop/ui/src/main.rs")
+    css = text("apps/desktop/ui/src/app.css")
+    capability = json.loads(text("apps/desktop/capabilities/main.json"))
+    permissions = text("apps/desktop/permissions/desktop.toml")
+    journey = text("apps/desktop/tests/fake_desktop_journey.rs")
+    architecture = text("docs/architecture/desktop-product-v1.md")
+    evidence_doc = text("docs/evidence/desktop-editor-a11y-local.md")
+    operations = text("docs/operations/desktop-recovery-and-release.md")
+    hardware_workflow = text(".github/workflows/desktop-real-hardware.yml")
+
+    require(
+        ipc,
+        (
+            "pub const IPC_PROTOCOL_VERSION",
+            "pub struct RequestEnvelope",
+            "pub enum WindowRole",
+            "pub enum IpcCommand",
+            "completed_order",
+            "PathOutOfScope",
+            "CommandOutOfScope",
+            "SequenceGap",
+        ),
+        "typed IPC",
+    )
+    require(
+        runtime,
+        (
+            "pub const DESKTOP_RUNTIME_VERSION",
+            "DesktopAdapterKind::Unavailable",
+            "DesktopAdapterKind::DeterministicFake",
+            "pub fn dispatch_json",
+            "pub fn advance_fake",
+            "pub fn simulate_fake_device_loss",
+            "pub fn simulate_fake_restart",
+            "legacy_desktop_selectable: true",
+        ),
+        "native runtime",
+    )
+    require(
+        native,
+        (
+            "fn bootstrap_desktop",
+            "fn dispatch_main",
+            'app.emit("frame-desktop://event-v1"',
+            'cfg!(debug_assertions)',
+            'FRAME_DESKTOP_FAKE_PIPELINE',
+            "DesktopAdapterKind::Unavailable",
+        ),
+        "Tauri boundary",
+    )
+
+    expected_permissions = [
+        "allow-bootstrap-main",
+        "allow-bootstrap-desktop",
+        "allow-dispatch-main",
+    ]
+    if capability.get("windows") != ["main"]:
+        fail("capability is not restricted to the main WebView")
+    if capability.get("permissions") != expected_permissions:
+        fail("capability command allowlist drifted")
+    for command in ("bootstrap_desktop", "dispatch_main"):
+        require(
+            permissions,
+            (f'commands.allow = ["{command}"]', f'commands.deny = ["{command}"]'),
+            f"{command} permission",
+        )
+
+    require(
+        ui,
+        (
+            'class="skip-link"',
+            '<nav aria-label="Desktop workspace">',
+            '<main id="main-content"',
+            'id="recorder"',
+            'id="recovery"',
+            'id="editor"',
+            'id="settings"',
+            'aria-label="Recording controls"',
+            'aria-label="Live input meters"',
+            'legend>"Numeric timeline alternative"',
+            'role="status" aria-live="polite"',
+            'role="alertdialog" aria-modal="true"',
+            'aria-describedby="timeline-help"',
+            '<progress',
+            '<meter',
+        ),
+        "Leptos accessibility surface",
+    )
+    require(
+        css,
+        (
+            ":focus-visible",
+            "@media (prefers-reduced-motion: reduce)",
+            "@media (forced-colors: active)",
+            "@media (prefers-color-scheme: light)",
+            "@media (max-width: 48rem)",
+        ),
+        "desktop CSS accessibility",
+    )
+    require(
+        journey,
+        (
+            "keyboard_equivalent_fake_journey",
+            "fake_crash_and_device_loss",
+            "simulate_fake_restart",
+            "ExportState::Completed",
+            "UploadState::Completed",
+        ),
+        "fake journey",
+    )
+    require(
+        hardware_workflow,
+        (
+            "workflow_dispatch:",
+            "desktop-real-hardware.py",
+            "frame-macos-hardware",
+            "frame-windows-hardware",
+        ),
+        "protected hardware workflow",
+    )
+    require(architecture, ("Backend truth", "Window ownership", "Fake adapter"), "architecture")
+    require(
+        evidence_doc,
+        ("Local deterministic evidence", "Protected evidence still required"),
+        "evidence report",
+    )
+    require(
+        operations,
+        ("Crash and recovery", "Rollback", "Real-hardware gate"),
+        "operations runbook",
+    )
+
+    reviewed = [
+        "apps/desktop/src/ipc.rs",
+        "apps/desktop/src/runtime.rs",
+        "apps/desktop/src/main.rs",
+        "apps/desktop/ui/src/main.rs",
+        "apps/desktop/ui/src/app.css",
+        "apps/desktop/capabilities/main.json",
+        "apps/desktop/permissions/desktop.toml",
+        "apps/desktop/tests/fake_desktop_journey.rs",
+    ]
+    result = {
+        "schema_version": 1,
+        "evidence_class": "deterministic_desktop_product_review",
+        "checks": {
+            "typed_ipc": True,
+            "logical_window_scopes": True,
+            "backend_truth_runtime": True,
+            "explicit_tauri_capabilities": True,
+            "fake_pipeline_journey_present": True,
+            "semantic_accessibility_surface": True,
+            "real_hardware_evidence": False,
+        },
+        "reviewed_files": [
+            {"path": path, "sha256": digest(path)} for path in reviewed
+        ],
+    }
+    if args.evidence:
+        destination = args.evidence.resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    print("desktop product, security, and accessibility boundary passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

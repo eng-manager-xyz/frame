@@ -1,0 +1,274 @@
+{
+  "schema": "frame.same-origin-route-owner-matrix.v1",
+  "canonical_host": "frame.engmanager.xyz",
+  "worker_route_pattern": "frame.engmanager.xyz/api*",
+  "lookalike_policy": "non_cacheable_404",
+  "cases": [
+    {
+      "id": "render-root",
+      "url": "https://frame.engmanager.xyz/",
+      "raw_path": "/",
+      "edge_owner": "render",
+      "worker_class": "legacy_root"
+    },
+    {
+      "id": "render-root-query",
+      "url": "https://frame.engmanager.xyz/?from=portfolio",
+      "raw_path": "/",
+      "edge_owner": "render",
+      "worker_class": "legacy_root"
+    },
+    {
+      "id": "render-live",
+      "url": "https://frame.engmanager.xyz/health/live",
+      "raw_path": "/health/live",
+      "edge_owner": "render",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "render-ready",
+      "url": "https://frame.engmanager.xyz/health/ready",
+      "raw_path": "/health/ready",
+      "edge_owner": "render",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "render-hashed-asset",
+      "url": "https://frame.engmanager.xyz/assets/frame.7f4c2a19.js",
+      "raw_path": "/assets/frame.7f4c2a19.js",
+      "edge_owner": "render",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "render-share",
+      "url": "https://frame.engmanager.xyz/s/018f47a6-7b1c-7f55-8f39-8f8a8690f123",
+      "raw_path": "/s/018f47a6-7b1c-7f55-8f39-8f8a8690f123",
+      "edge_owner": "render",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "render-unknown",
+      "url": "https://frame.engmanager.xyz/unknown/path",
+      "raw_path": "/unknown/path",
+      "edge_owner": "render",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "api-discovery",
+      "url": "https://frame.engmanager.xyz/api",
+      "raw_path": "/api",
+      "edge_owner": "worker_api",
+      "worker_class": "discovery"
+    },
+    {
+      "id": "api-discovery-query",
+      "url": "https://frame.engmanager.xyz/api?query=%2Fapix&query=two",
+      "raw_path": "/api",
+      "edge_owner": "worker_api",
+      "worker_class": "discovery"
+    },
+    {
+      "id": "api-discovery-slash",
+      "url": "https://frame.engmanager.xyz/api/",
+      "raw_path": "/api/",
+      "edge_owner": "worker_api",
+      "worker_class": "discovery"
+    },
+    {
+      "id": "api-capabilities",
+      "url": "https://frame.engmanager.xyz/api/v1",
+      "raw_path": "/api/v1",
+      "edge_owner": "worker_api",
+      "worker_class": "capabilities"
+    },
+    {
+      "id": "api-capabilities-slash",
+      "url": "https://frame.engmanager.xyz/api/v1/",
+      "raw_path": "/api/v1/",
+      "edge_owner": "worker_api",
+      "worker_class": "capabilities"
+    },
+    {
+      "id": "api-health",
+      "url": "https://frame.engmanager.xyz/api/v1/health?probe=edge",
+      "raw_path": "/api/v1/health",
+      "edge_owner": "worker_api",
+      "worker_class": "api_health"
+    },
+    {
+      "id": "api-unknown-version",
+      "url": "https://frame.engmanager.xyz/api/v2/health",
+      "raw_path": "/api/v2/health",
+      "edge_owner": "worker_reject",
+      "worker_class": "unknown_api"
+    },
+    {
+      "id": "api-repeated-slash",
+      "url": "https://frame.engmanager.xyz/api//v1",
+      "raw_path": "/api//v1",
+      "edge_owner": "worker_reject",
+      "worker_class": "invalid_api_path"
+    },
+    {
+      "id": "api-dot-segment",
+      "url": "https://frame.engmanager.xyz/api/./v1",
+      "raw_path": "/api/./v1",
+      "edge_owner": "worker_reject",
+      "worker_class": "invalid_api_path"
+    },
+    {
+      "id": "api-parent-segment",
+      "url": "https://frame.engmanager.xyz/api/../private",
+      "raw_path": "/api/../private",
+      "edge_owner": "worker_reject",
+      "worker_class": "invalid_api_path"
+    },
+    {
+      "id": "api-semicolon",
+      "url": "https://frame.engmanager.xyz/api/v1;admin",
+      "raw_path": "/api/v1;admin",
+      "edge_owner": "worker_reject",
+      "worker_class": "invalid_api_path"
+    },
+    {
+      "id": "api-encoded-dot",
+      "url": "https://frame.engmanager.xyz/api/%2e%2e/private",
+      "raw_path": "/api/%2e%2e/private",
+      "edge_owner": "worker_reject",
+      "worker_class": "invalid_api_path"
+    },
+    {
+      "id": "api-backslash",
+      "url": "https://frame.engmanager.xyz/api%5Cv1",
+      "raw_path": "/api%5Cv1",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "lookalike-apix",
+      "url": "https://frame.engmanager.xyz/apix",
+      "raw_path": "/apix",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "lookalike-apiary",
+      "url": "https://frame.engmanager.xyz/apiary?query=1",
+      "raw_path": "/apiary",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "lookalike-encoded-slash",
+      "url": "https://frame.engmanager.xyz/api%2Fv1",
+      "raw_path": "/api%2Fv1",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "lookalike-double-encoded-slash",
+      "url": "https://frame.engmanager.xyz/api%252Fv1",
+      "raw_path": "/api%252Fv1",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "lookalike-uppercase",
+      "url": "https://frame.engmanager.xyz/API/v1",
+      "raw_path": "/API/v1",
+      "edge_owner": "render",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "lookalike-encoded-prefix",
+      "url": "https://frame.engmanager.xyz/%61pi",
+      "raw_path": "/%61pi",
+      "edge_owner": "render_or_edge_reject",
+      "worker_class": "not_api"
+    }
+  ],
+  "host_cases": [
+    {
+      "id": "canonical",
+      "url": "https://frame.engmanager.xyz/api",
+      "host_header": "frame.engmanager.xyz",
+      "expected": "accepted"
+    },
+    {
+      "id": "canonical-uppercase-header",
+      "url": "https://frame.engmanager.xyz/api",
+      "host_header": "FRAME.ENGMANAGER.XYZ",
+      "expected": "accepted"
+    },
+    {
+      "id": "insecure",
+      "url": "http://frame.engmanager.xyz/api",
+      "host_header": "frame.engmanager.xyz",
+      "expected": "insecure_scheme"
+    },
+    {
+      "id": "explicit-port",
+      "url": "https://frame.engmanager.xyz:443/api",
+      "host_header": "frame.engmanager.xyz:443",
+      "expected": "unexpected_host"
+    },
+    {
+      "id": "unexpected-host",
+      "url": "https://evil.example/api",
+      "host_header": "evil.example",
+      "expected": "unexpected_host"
+    },
+    {
+      "id": "mismatched-header",
+      "url": "https://frame.engmanager.xyz/api",
+      "host_header": "evil.example",
+      "expected": "host_header_mismatch"
+    },
+    {
+      "id": "missing-header",
+      "url": "https://frame.engmanager.xyz/api",
+      "host_header": null,
+      "expected": "host_header_mismatch"
+    },
+    {
+      "id": "userinfo",
+      "url": "https://evil@frame.engmanager.xyz/api",
+      "host_header": "frame.engmanager.xyz",
+      "expected": "malformed_target"
+    }
+  ],
+  "transport_cases": [
+    {
+      "kind": "methods",
+      "contract": "original Request method is dispatched without an edge rewrite; route-specific allowlists return 405"
+    },
+    {
+      "kind": "query",
+      "contract": "query remains on the Request while raw-path classification excludes it"
+    },
+    {
+      "kind": "request_body",
+      "contract": "bounded JSON and fixed-length upload streams are read from the original Request"
+    },
+    {
+      "kind": "response_stream",
+      "contract": "R2 response bodies are returned as streams without a gateway buffer"
+    },
+    {
+      "kind": "range",
+      "contract": "one bounded byte range yields verified 206 metadata; invalid or multi-range input yields 416"
+    },
+    {
+      "kind": "redirect",
+      "contract": "edge ownership introduces no redirect; Worker Location headers are resource locations, never user-derived redirect targets"
+    },
+    {
+      "kind": "upgrade",
+      "contract": "no API route upgrades protocols; unsupported methods or paths fail closed and never return 101"
+    },
+    {
+      "kind": "error",
+      "contract": "stable JSON errors include one normalized request ID and no-store headers"
+    }
+  ]
+}

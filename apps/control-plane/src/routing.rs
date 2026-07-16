@@ -124,30 +124,57 @@ pub enum Route {
     ApiHealth,
     PublicShare { share_id: String },
     PublicMedia { share_id: String },
+    PublicCollaborationGrant { share_id: String },
+    PublicComments { share_id: String },
+    PublicTranscript { share_id: String },
+    PublicAnalyticsConsent { share_id: String },
+    PublicAnalyticsEvents { share_id: String },
+    AuthenticatedWebWorkspace { surface: String },
+    StorageGrantCreate,
+    StorageGrantRevoke { grant_id: String },
+    StorageGrantRead { tenant_id: String, grant_id: String },
     VideoCreate,
     VideoPrivacy { video_id: String },
+    VideoTranscript { video_id: String },
     UploadIntent,
     UploadStatus { upload_id: String },
     UploadContent { upload_id: String },
+    UploadFinalize { upload_id: String },
     MediaJobCreate,
     MediaJobStatus { job_id: String },
     MediaJobCancel { job_id: String },
     WorkerMediaJobClaim,
     WorkerMediaJobSource { job_id: String },
     WorkerMediaJobOutput { job_id: String },
+    WorkerMediaJobSourceOrdinal { job_id: String, ordinal: u16 },
+    WorkerMediaJobOutputOrdinal { job_id: String, ordinal: u16 },
     WorkerMediaJobHeartbeat { job_id: String },
     WorkerMediaJobProgress { job_id: String },
     WorkerMediaJobComplete { job_id: String },
     WorkerMediaJobFail { job_id: String },
     AuthorityStatus,
+    CutoverStatus { tenant_id: String, domain: String },
+    CutoverTransition { tenant_id: String, domain: String },
+    CutoverReplayPause { tenant_id: String, domain: String },
+    CutoverReplayResume { tenant_id: String, domain: String },
+    CutoverSignal { tenant_id: String, domain: String },
+    CutoverShadowObservation { tenant_id: String, domain: String },
     LocalRepositoryConformance,
     LocalAuthRepositoryConformance,
+    LocalOrganizationRepositoryConformance,
+    LocalR2StorageConformance,
     InvalidApiPath,
     UnknownApi,
     NotApi,
 }
 
 pub fn classify_raw_path(path: &str) -> Route {
+    if path == "/__frame/local/r2-storage-conformance" {
+        return Route::LocalR2StorageConformance;
+    }
+    if path == "/__frame/local/organization-repository-conformance" {
+        return Route::LocalOrganizationRepositoryConformance;
+    }
     if path == "/__frame/local/auth-repository-conformance" {
         return Route::LocalAuthRepositoryConformance;
     }
@@ -176,6 +203,7 @@ pub fn classify_raw_path(path: &str) -> Route {
         "/api/v1/videos" => Route::VideoCreate,
         "/api/v1/uploads/intents" => Route::UploadIntent,
         "/api/v1/media-jobs" => Route::MediaJobCreate,
+        "/api/v1/storage/grants" => Route::StorageGrantCreate,
         "/api/v1/worker/media-jobs/claim" => Route::WorkerMediaJobClaim,
         "/api/v1/operations/authority" => Route::AuthorityStatus,
         _ => dynamic_route(path),
@@ -200,13 +228,79 @@ fn dynamic_route(path: &str) -> Route {
         ["", "api", "v1", "public", "shares", share_id, "media"] => Route::PublicMedia {
             share_id: (*share_id).to_owned(),
         },
+        [
+            "",
+            "api",
+            "v1",
+            "public",
+            "shares",
+            share_id,
+            "collaboration-grants",
+        ] => Route::PublicCollaborationGrant {
+            share_id: (*share_id).to_owned(),
+        },
+        ["", "api", "v1", "public", "shares", share_id, "comments"] => Route::PublicComments {
+            share_id: (*share_id).to_owned(),
+        },
+        ["", "api", "v1", "public", "shares", share_id, "transcript"] => Route::PublicTranscript {
+            share_id: (*share_id).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "public",
+            "shares",
+            share_id,
+            "analytics",
+            "consent",
+        ] => Route::PublicAnalyticsConsent {
+            share_id: (*share_id).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "public",
+            "shares",
+            share_id,
+            "analytics",
+            "events",
+        ] => Route::PublicAnalyticsEvents {
+            share_id: (*share_id).to_owned(),
+        },
+        ["", "api", "v1", "web", "workspace", surface] => Route::AuthenticatedWebWorkspace {
+            surface: (*surface).to_owned(),
+        },
+        ["", "api", "v1", "storage", "grants", grant_id] => Route::StorageGrantRevoke {
+            grant_id: (*grant_id).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "storage",
+            "tenants",
+            tenant_id,
+            "grants",
+            grant_id,
+        ] => Route::StorageGrantRead {
+            tenant_id: (*tenant_id).to_owned(),
+            grant_id: (*grant_id).to_owned(),
+        },
         ["", "api", "v1", "videos", video_id, "privacy"] => Route::VideoPrivacy {
+            video_id: (*video_id).to_owned(),
+        },
+        ["", "api", "v1", "videos", video_id, "transcript"] => Route::VideoTranscript {
             video_id: (*video_id).to_owned(),
         },
         ["", "api", "v1", "uploads", upload_id] => Route::UploadStatus {
             upload_id: (*upload_id).to_owned(),
         },
         ["", "api", "v1", "uploads", upload_id, "content"] => Route::UploadContent {
+            upload_id: (*upload_id).to_owned(),
+        },
+        ["", "api", "v1", "uploads", upload_id, "finalize"] => Route::UploadFinalize {
             upload_id: (*upload_id).to_owned(),
         },
         ["", "api", "v1", "media-jobs", job_id] => Route::MediaJobStatus {
@@ -225,6 +319,36 @@ fn dynamic_route(path: &str) -> Route {
                 job_id: (*job_id).to_owned(),
             }
         }
+        [
+            "",
+            "api",
+            "v1",
+            "worker",
+            "media-jobs",
+            job_id,
+            "sources",
+            ordinal,
+        ] => canonical_worker_ordinal(ordinal).map_or(Route::UnknownApi, |ordinal| {
+            Route::WorkerMediaJobSourceOrdinal {
+                job_id: (*job_id).to_owned(),
+                ordinal,
+            }
+        }),
+        [
+            "",
+            "api",
+            "v1",
+            "worker",
+            "media-jobs",
+            job_id,
+            "outputs",
+            ordinal,
+        ] => canonical_worker_ordinal(ordinal).map_or(Route::UnknownApi, |ordinal| {
+            Route::WorkerMediaJobOutputOrdinal {
+                job_id: (*job_id).to_owned(),
+                ordinal,
+            }
+        }),
         ["", "api", "v1", "worker", "media-jobs", job_id, "heartbeat"] => {
             Route::WorkerMediaJobHeartbeat {
                 job_id: (*job_id).to_owned(),
@@ -243,8 +367,84 @@ fn dynamic_route(path: &str) -> Route {
         ["", "api", "v1", "worker", "media-jobs", job_id, "fail"] => Route::WorkerMediaJobFail {
             job_id: (*job_id).to_owned(),
         },
+        ["", "api", "v1", "operations", "cutover", tenant_id, domain] => Route::CutoverStatus {
+            tenant_id: (*tenant_id).to_owned(),
+            domain: (*domain).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "operations",
+            "cutover",
+            tenant_id,
+            domain,
+            "transition",
+        ] => Route::CutoverTransition {
+            tenant_id: (*tenant_id).to_owned(),
+            domain: (*domain).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "operations",
+            "cutover",
+            tenant_id,
+            domain,
+            "replay",
+            "pause",
+        ] => Route::CutoverReplayPause {
+            tenant_id: (*tenant_id).to_owned(),
+            domain: (*domain).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "operations",
+            "cutover",
+            tenant_id,
+            domain,
+            "replay",
+            "resume",
+        ] => Route::CutoverReplayResume {
+            tenant_id: (*tenant_id).to_owned(),
+            domain: (*domain).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "operations",
+            "cutover",
+            tenant_id,
+            domain,
+            "signals",
+        ] => Route::CutoverSignal {
+            tenant_id: (*tenant_id).to_owned(),
+            domain: (*domain).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "operations",
+            "cutover",
+            tenant_id,
+            domain,
+            "shadow-observations",
+        ] => Route::CutoverShadowObservation {
+            tenant_id: (*tenant_id).to_owned(),
+            domain: (*domain).to_owned(),
+        },
         _ => Route::UnknownApi,
     }
+}
+
+fn canonical_worker_ordinal(value: &str) -> Option<u16> {
+    let ordinal = value.parse::<u16>().ok().filter(|ordinal| *ordinal < 64)?;
+    (ordinal.to_string() == value).then_some(ordinal)
 }
 
 fn invalid_api_path(path: &str) -> bool {
@@ -387,6 +587,32 @@ mod tests {
         ] {
             assert_eq!(classify_raw_path(path), Route::NotApi);
         }
+        assert_eq!(
+            classify_raw_path("/__frame/local/organization-repository-conformance"),
+            Route::LocalOrganizationRepositoryConformance
+        );
+        for path in [
+            "/__frame/local/organization-repository-conformance/",
+            "/__frame/local/organization-repository-conformance%2f",
+            "/__frame/local/organization-repository-conformance/invite",
+        ] {
+            assert_eq!(classify_raw_path(path), Route::NotApi);
+        }
+        assert_eq!(
+            classify_raw_path("/__frame/local/r2-storage-conformance"),
+            Route::LocalR2StorageConformance
+        );
+        for path in [
+            "/__frame/local/r2-storage-conformance/",
+            "/__frame/local/r2-storage-conformance%2f",
+            "/__frame/local/r2-storage-conformance/objects",
+        ] {
+            assert_eq!(classify_raw_path(path), Route::NotApi);
+        }
+        let r2_allowed =
+            parse_raw_request_target("http://127.0.0.1:8787/__frame/local/r2-storage-conformance")
+                .expect("target");
+        assert!(valid_repository_conformance_target(&r2_allowed));
         for denied in [
             "http://localhost:8787/__frame/local/repository-conformance",
             "https://127.0.0.1:8787/__frame/local/repository-conformance",
@@ -434,6 +660,19 @@ mod tests {
         assert_eq!(classify_raw_path("/api/v2/health"), Route::UnknownApi);
         assert_eq!(classify_raw_path("/api/v1/videos"), Route::VideoCreate);
         assert_eq!(
+            classify_raw_path("/api/v1/storage/grants"),
+            Route::StorageGrantCreate
+        );
+        assert_eq!(
+            classify_raw_path(
+                "/api/v1/storage/tenants/018f47a6-7b1c-7f55-8f39-8f8a86900001/grants/018f47a6-7b1c-7f55-8f39-8f8a86900002"
+            ),
+            Route::StorageGrantRead {
+                tenant_id: "018f47a6-7b1c-7f55-8f39-8f8a86900001".into(),
+                grant_id: "018f47a6-7b1c-7f55-8f39-8f8a86900002".into(),
+            }
+        );
+        assert_eq!(
             classify_raw_path("/api/v1/videos/018f47a6-7b1c-7f55-8f39-8f8a86900111/privacy"),
             Route::VideoPrivacy {
                 video_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
@@ -443,6 +682,71 @@ mod tests {
             classify_raw_path("/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/content"),
             Route::UploadContent {
                 upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/finalize"),
+            Route::UploadFinalize {
+                upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
+        assert_eq!(
+            classify_raw_path(
+                "/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/finalize/extra"
+            ),
+            Route::UnknownApi
+        );
+        let tenant_id = "018f47a6-7b1c-7f55-8f39-8f8a86900001";
+        assert_eq!(
+            classify_raw_path(&format!("/api/v1/operations/cutover/{tenant_id}/metadata")),
+            Route::CutoverStatus {
+                tenant_id: tenant_id.into(),
+                domain: "metadata".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!(
+                "/api/v1/operations/cutover/{tenant_id}/metadata/transition"
+            )),
+            Route::CutoverTransition {
+                tenant_id: tenant_id.into(),
+                domain: "metadata".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!(
+                "/api/v1/operations/cutover/{tenant_id}/metadata/replay/pause"
+            )),
+            Route::CutoverReplayPause {
+                tenant_id: tenant_id.into(),
+                domain: "metadata".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!(
+                "/api/v1/operations/cutover/{tenant_id}/metadata/replay/resume"
+            )),
+            Route::CutoverReplayResume {
+                tenant_id: tenant_id.into(),
+                domain: "metadata".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!(
+                "/api/v1/operations/cutover/{tenant_id}/metadata/signals"
+            )),
+            Route::CutoverSignal {
+                tenant_id: tenant_id.into(),
+                domain: "metadata".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!(
+                "/api/v1/operations/cutover/{tenant_id}/metadata/shadow-observations"
+            )),
+            Route::CutoverShadowObservation {
+                tenant_id: tenant_id.into(),
+                domain: "metadata".into(),
             }
         );
     }
@@ -466,6 +770,28 @@ mod tests {
                 job_id: job_id.into()
             }
         );
+        assert_eq!(
+            classify_raw_path(&format!("/api/v1/worker/media-jobs/{job_id}/sources/0")),
+            Route::WorkerMediaJobSourceOrdinal {
+                job_id: job_id.into(),
+                ordinal: 0,
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!("/api/v1/worker/media-jobs/{job_id}/outputs/0")),
+            Route::WorkerMediaJobOutputOrdinal {
+                job_id: job_id.into(),
+                ordinal: 0,
+            }
+        );
+        for ordinal in ["00", "+0", "64", "65536"] {
+            assert_eq!(
+                classify_raw_path(&format!(
+                    "/api/v1/worker/media-jobs/{job_id}/sources/{ordinal}"
+                )),
+                Route::UnknownApi
+            );
+        }
         assert_eq!(
             classify_raw_path(&format!("/api/v1/worker/media-jobs/{job_id}/secret")),
             Route::UnknownApi

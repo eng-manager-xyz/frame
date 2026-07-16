@@ -28,6 +28,7 @@
     "private-cache-hit",
     "range-off-by-one",
     "unavailable-title-leak",
-    "handler-path-upstream-fetch"
+    "handler-path-upstream-fetch",
+    "audit-sensitive-field"
   ]
 }

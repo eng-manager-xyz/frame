@@ -12,6 +12,18 @@ from urllib.parse import urlsplit
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "fixtures" / "frame-api" / "v1"
+SCHEMA = FIXTURES / "contract.schema.json"
+EXPECTED_FIXTURES = {
+    "error.json",
+    "health.additive.json",
+    "health.ok.json",
+    "share.deleted.json",
+    "share.failed.json",
+    "share.private.json",
+    "share.processing.json",
+    "share.public.json",
+    "share.unavailable.json",
+}
 
 FORBIDDEN_KEYS = {
     "authorization",
@@ -65,19 +77,57 @@ def main() -> int:
         print("missing fixtures/frame-api/v1", file=sys.stderr)
         return 1
 
-    files = sorted(FIXTURES.glob("*.json"))
-    if not files:
-        print("no public API fixtures found", file=sys.stderr)
-        return 1
+    files = sorted(path for path in FIXTURES.glob("*.json") if path != SCHEMA)
 
     errors: list[str] = []
+    names = {path.name for path in files}
+    if names != EXPECTED_FIXTURES:
+        errors.append("fixtures/frame-api/v1: canonical fixture inventory drifted")
+    try:
+        schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"{SCHEMA.relative_to(ROOT)}: invalid JSON ({type(error).__name__})")
+        schema = {}
+    definitions = schema.get("$defs") if isinstance(schema, dict) else None
+    if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+        errors.append("fixtures/frame-api/v1/contract.schema.json: schema dialect drifted")
+    if not isinstance(definitions, dict) or set(definitions) != {
+        "apiError",
+        "apiVersion",
+        "captionTrack",
+        "health",
+        "playbackDescriptor",
+        "publicShareSummary",
+    }:
+        errors.append("fixtures/frame-api/v1/contract.schema.json: public definitions drifted")
+
+    payloads: dict[str, Any] = {}
     for fixture in files:
         try:
             payload = json.loads(fixture.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             errors.append(f"{fixture.relative_to(ROOT)}: invalid JSON ({type(error).__name__})")
             continue
+        payloads[fixture.name] = payload
         walk(payload, str(fixture.relative_to(ROOT)), errors)
+
+    for name, payload in payloads.items():
+        if name != "error.json" and payload.get("api_version") != {"major": 1}:
+            errors.append(f"fixtures/frame-api/v1/{name}: API major drifted")
+    unavailable_names = [
+        "share.unavailable.json",
+        "share.private.json",
+        "share.deleted.json",
+        "share.failed.json",
+    ]
+    unavailable_bytes = []
+    for name in unavailable_names:
+        try:
+            unavailable_bytes.append((FIXTURES / name).read_bytes())
+        except OSError:
+            unavailable_bytes.append(b"")
+    if not unavailable_bytes or any(value != unavailable_bytes[0] for value in unavailable_bytes):
+        errors.append("fixtures/frame-api/v1: non-public share responses are distinguishable")
 
     if errors:
         print("public fixture validation failed:", file=sys.stderr)
@@ -85,7 +135,9 @@ def main() -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print(f"validated {len(files)} privacy-safe public contract fixtures")
+    print(
+        f"validated {len(files)} privacy-safe public contract fixtures and one v1 schema"
+    )
     return 0
 
 

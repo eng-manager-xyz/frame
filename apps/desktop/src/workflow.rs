@@ -10,7 +10,8 @@ use crate::ipc::SessionId;
 
 pub const WORKFLOW_PROTOCOL_VERSION: u16 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkflowArea {
     Recorder,
     Devices,
@@ -36,7 +37,8 @@ pub enum SafeFailureCode {
     Internal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum RecorderState {
     Idle,
     Preparing,
@@ -58,7 +60,8 @@ pub struct DeviceCounts {
     pub cameras: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "data", rename_all = "snake_case")]
 pub enum DeviceState {
     Unknown,
     Enumerating,
@@ -67,7 +70,8 @@ pub enum DeviceState {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum RecoveryState {
     Hidden,
     Scanning,
@@ -77,7 +81,8 @@ pub enum RecoveryState {
     Failed { code: SafeFailureCode },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum EditorState {
     Closed,
     Loading,
@@ -91,19 +96,21 @@ pub enum EditorState {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EditorOperation {
     Apply,
     Save,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditorOperationFailure {
     pub operation: EditorOperation,
     pub code: SafeFailureCode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum ExportState {
     Idle,
     Running {
@@ -122,7 +129,8 @@ pub enum ExportState {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum UploadState {
     Idle,
     Uploading {
@@ -142,7 +150,8 @@ pub enum UploadState {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UploadPauseReason {
     User,
     Offline,

@@ -4,15 +4,27 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod api_workflow;
+mod backfill;
+mod business;
 mod contracts;
 mod identity;
 mod multipart;
+mod organization;
+mod public_collaboration;
 mod storage;
+mod storage_governance;
 
+pub use api_workflow::*;
+pub use backfill::*;
+pub use business::*;
 pub use contracts::*;
 pub use identity::*;
 pub use multipart::*;
+pub use organization::*;
+pub use public_collaboration::*;
 pub use storage::*;
+pub use storage_governance::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

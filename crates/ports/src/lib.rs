@@ -9,19 +9,27 @@ use std::{
 
 use async_trait::async_trait;
 use frame_domain::{
-    ByteSize, ChecksumSha256, ContentType, CutoverState, EtlCheckpoint, EtlManifest, EtlRunId,
-    MultipartUploadId, ObjectKey, Page, PageCursor, PageRequest, ReconciliationSummary, SessionId,
-    SessionRecord, TenantId, TimestampMillis, Video, VideoId,
+    ByteSize, ChecksumSha256, ContentType, CutoverScope, CutoverState, EtlCheckpoint, EtlManifest,
+    EtlRunId, MAX_WIRE_INTEGER, MultipartUploadId, ObjectKey, Page, PageCursor, PageRequest,
+    ReconciliationSummary, SessionId, SessionRecord, TenantId, TimestampMillis, Video, VideoId,
 };
 use thiserror::Error;
 
+mod backfill;
+mod business;
 mod identity;
 mod multipart;
+mod organization;
 mod storage;
+mod storage_governance;
 
+pub use backfill::*;
+pub use business::*;
 pub use identity::*;
 pub use multipart::*;
+pub use organization::*;
 pub use storage::*;
+pub use storage_governance::*;
 
 #[derive(Error, PartialEq, Eq)]
 pub enum PortError {
@@ -931,9 +939,10 @@ pub trait MigrationStateRepository: Send + Sync {
         table: &str,
         summary: ReconciliationSummary,
     ) -> Result<(), PortError>;
-    async fn cutover_state(&self) -> Result<CutoverState, PortError>;
+    async fn cutover_state(&self, scope: &CutoverScope) -> Result<CutoverState, PortError>;
     async fn compare_and_set_cutover(
         &self,
+        scope: &CutoverScope,
         expected_epoch: u64,
         next: CutoverState,
     ) -> Result<(), PortError>;
@@ -944,7 +953,7 @@ pub struct MemoryMigrationStateRepository {
     manifests: RwLock<HashMap<EtlRunId, EtlManifest>>,
     checkpoints: RwLock<HashMap<(EtlRunId, String), EtlCheckpoint>>,
     reconciliations: RwLock<HashMap<(EtlRunId, String), ReconciliationSummary>>,
-    cutover: RwLock<CutoverState>,
+    cutover: RwLock<HashMap<CutoverScope, CutoverState>>,
 }
 
 impl fmt::Debug for MemoryMigrationStateRepository {
@@ -1021,25 +1030,42 @@ impl MigrationStateRepository for MemoryMigrationStateRepository {
         Ok(())
     }
 
-    async fn cutover_state(&self) -> Result<CutoverState, PortError> {
-        Ok(*self.cutover.read().map_err(lock_error)?)
+    async fn cutover_state(&self, scope: &CutoverScope) -> Result<CutoverState, PortError> {
+        Ok(self
+            .cutover
+            .read()
+            .map_err(lock_error)?
+            .get(scope)
+            .cloned()
+            .unwrap_or_else(|| CutoverState::new(scope.clone())))
     }
 
     async fn compare_and_set_cutover(
         &self,
+        scope: &CutoverScope,
         expected_epoch: u64,
         next: CutoverState,
     ) -> Result<(), PortError> {
-        if next.epoch != expected_epoch.saturating_add(1) {
+        let Some(required_epoch) = expected_epoch.checked_add(1) else {
             return Err(PortError::InvalidRequest(
-                "cutover epoch must advance exactly once".into(),
+                "cutover epoch is outside the safe integer range".into(),
+            ));
+        };
+        if required_epoch > MAX_WIRE_INTEGER
+            || next.epoch != required_epoch
+            || next.scope != *scope
+            || !next.invariants_hold()
+        {
+            return Err(PortError::InvalidRequest(
+                "cutover proposal violates its scope or authority invariant".into(),
             ));
         }
-        let mut state = self.cutover.write().map_err(lock_error)?;
-        if state.epoch != expected_epoch {
+        let mut states = self.cutover.write().map_err(lock_error)?;
+        let current_epoch = states.get(scope).map_or(0, |state| state.epoch);
+        if current_epoch != expected_epoch {
             return Err(PortError::Conflict);
         }
-        *state = next;
+        states.insert(scope.clone(), next);
         Ok(())
     }
 }
@@ -1051,8 +1077,8 @@ fn lock_error<T>(error: std::sync::PoisonError<T>) -> PortError {
 #[cfg(test)]
 mod tests {
     use frame_domain::{
-        CheckpointToken, CutoverEvidence, CutoverPhase, EtlTableManifest, SecretDigest,
-        SessionState, UserId, VideoState,
+        CheckpointToken, CutoverDomain, CutoverEvidence, CutoverPhase, CutoverScope,
+        EtlTableManifest, SecretDigest, SessionState, UserId, VideoState,
     };
 
     use super::*;
@@ -1414,17 +1440,39 @@ mod tests {
             Err(PortError::Conflict)
         );
 
-        let mut state = repository.cutover_state().await.expect("state");
+        let scope = CutoverScope::new(
+            TenantId::parse("00000000-0000-0000-0000-000000000017").expect("tenant"),
+            CutoverDomain::parse("metadata").expect("domain"),
+        );
+        let other_scope = CutoverScope::new(
+            TenantId::parse("00000000-0000-0000-0000-000000000018").expect("tenant"),
+            CutoverDomain::parse("metadata").expect("domain"),
+        );
+        let mut state = repository.cutover_state(&scope).await.expect("state");
         state
-            .transition(CutoverPhase::ShadowRead, CutoverEvidence::default())
+            .transition(
+                CutoverPhase::ShadowRead,
+                CutoverEvidence {
+                    shadow_observation_ready: true,
+                    ..CutoverEvidence::default()
+                },
+            )
             .expect("transition");
         repository
-            .compare_and_set_cutover(0, state)
+            .compare_and_set_cutover(&scope, 0, state.clone())
             .await
             .expect("compare and set");
         assert_eq!(
-            repository.compare_and_set_cutover(0, state).await,
+            repository.compare_and_set_cutover(&scope, 0, state).await,
             Err(PortError::Conflict)
+        );
+        assert_eq!(
+            repository
+                .cutover_state(&other_scope)
+                .await
+                .expect("isolated scope")
+                .epoch,
+            0
         );
     }
 

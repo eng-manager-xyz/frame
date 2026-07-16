@@ -1,0 +1,63 @@
+name: API and workflow parity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-workflow-parity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  offline-contract:
+    name: Inventory, security, compatibility, and fault contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install the declared Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
+      - name: Restore the Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Validate the committed parity inventory and generated documentation
+        run: |
+          python3 scripts/ci/check-api-workflow-parity.py
+          python3 scripts/ci/check-migrations.py
+          python3 -I scripts/ci/api-workflow-d1-conformance.py \
+            --evidence target/evidence/api-workflow-d1-conformance.json
+      - name: Test public snapshots, admission, webhook, compatibility, and workflow faults
+        run: |
+          cargo test --locked -p frame-domain --test api_workflow_contract_v1
+          cargo test --locked -p frame-domain --lib api_workflow
+          cargo test --locked -p frame-application --lib api_workflow
+          cargo test --locked -p frame-control-plane --lib api_workflow_runtime
+      - name: Check formatting and strict focused lints
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked -p frame-domain -p frame-application --all-targets -- -D warnings
+          cargo clippy --locked -p frame-control-plane --lib -- -D warnings
+      - name: Retain the privacy-safe local contract evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-workflow-parity-${{ github.sha }}
+          path: |
+            fixtures/api-parity/v1/route-workflow-report.json
+            fixtures/api-parity/v1/contract-cases.json
+            docs/generated/api-workflow-parity-v1.md
+            docs/evidence/api-workflow-parity-local.md
+            target/evidence/api-workflow-d1-conformance.json
+          if-no-files-found: error
+          retention-days: 14

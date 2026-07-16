@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "origins": {
+    "portfolio": "https://engmanager.xyz",
+    "frame": "https://frame.engmanager.xyz",
+    "relationship": "mutually_untrusted_siblings"
+  },
+  "capabilities": [
+    {"name":"top_level_navigation","production":"enabled","authority":"none_shared"},
+    {"name":"frame_host_only_session","production":"contract_ready_adapter_gated","authority":"frame_only"},
+    {"name":"authenticated_ssr","production":"disabled","authority":"none"},
+    {"name":"portfolio_login_handoff","production":"disabled","authority":"none"},
+    {"name":"portfolio_browser_cors","production":"disabled","authority":"none"},
+    {"name":"public_player_embed","production":"disabled","authority":"feature_flag"},
+    {"name":"recorder_embed","production":"forbidden","authority":"top_level_only"},
+    {"name":"csp_enforcement","production":"enabled","authority":"frame_web"},
+    {"name":"csp_reporting","production":"privacy_sanitized","authority":"frame_web"}
+  ],
+  "headers": {
+    "top_level": {
+      "frame_ancestors": ["'none'"],
+      "x_frame_options": "DENY",
+      "referrer_policy": "no-referrer",
+      "capture_permissions": "disabled",
+      "cache": "no-store"
+    },
+    "public_embed_when_enabled": {
+      "frame_ancestors": ["https://engmanager.xyz", "https://www.engmanager.xyz"],
+      "x_frame_options": "omitted",
+      "capture_permissions": "disabled",
+      "cache": "no-store"
+    }
+  },
+  "cors": {
+    "normal_ui_api": "same_origin_no_cors",
+    "portfolio_browser_api": "disabled",
+    "wildcard_credentials": false
+  },
+  "messages": {
+    "schema": "frame.embed-command.v1",
+    "reply_schema": "frame.embed-reply.v1",
+    "exact_origin": true,
+    "parent_window_only": true,
+    "share_scoped": true,
+    "monotonic_sequence": true,
+    "unknown_fields_rejected": true
+  },
+  "csp_reports": {
+    "maximum_body_bytes": 16384,
+    "maximum_reports_per_body": 8,
+    "retained_fields": ["release", "directive_class", "blocked_resource_class", "disposition"],
+    "forbidden_fields": ["document_uri", "blocked_uri", "source_file", "sample", "referrer", "policy", "body"]
+  }
+}

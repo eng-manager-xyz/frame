@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
-use frame_web::{RuntimeConfig, build_app, shutdown_signal};
-use tracing::info;
+use std::time::Duration;
+
+use frame_web::{DrainOutcome, RuntimeConfig, build_app, serve_with_shutdown, shutdown_signal};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -19,8 +21,16 @@ async fn main() -> Result<()> {
         .with_context(|| format!("bind Frame web listener at {address}"))?;
 
     info!(%address, deployment, release, "Frame web service listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+    let outcome = serve_with_shutdown(listener, app, shutdown_signal(), Duration::from_secs(55))
         .await
-        .context("serve Frame web application")
+        .context("serve Frame web application")?;
+    match outcome {
+        DrainOutcome::DeadlineExceeded => {
+            warn!(deployment, release, "Frame web drain deadline reached");
+        }
+        DrainOutcome::Drained | DrainOutcome::StoppedWithoutSignal => {
+            info!(deployment, release, ?outcome, "Frame web service stopped");
+        }
+    }
+    Ok(())
 }

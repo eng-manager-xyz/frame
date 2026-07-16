@@ -93,6 +93,20 @@
       "sha256": "8a28b6d3c6c90e73b96bc7cf4a942738e8ee3330457c3e53673beee30d4d6edb"
     },
     {
+      "path": "business-cap-schema-v1.json",
+      "media_type": "application/json",
+      "evidence_class": "test_definition",
+      "bytes": 11724,
+      "sha256": "31d2737dd3c6c7ebafcfceabf180074b5a4a4fd8bc86048c75a87f76d0c1fc02"
+    },
+    {
+      "path": "cap-id-map-v1.json",
+      "media_type": "application/json",
+      "evidence_class": "test_definition",
+      "bytes": 1246,
+      "sha256": "7b1bbc37eba5fb5c507cf5444c2ac182882d4249d420da359c976ba91a477271"
+    },
+    {
       "path": "diffs/cap-frame-intentional-mismatch.json",
       "media_type": "application/json",
       "evidence_class": "local_simulated",

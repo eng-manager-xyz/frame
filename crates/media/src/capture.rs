@@ -136,7 +136,7 @@ impl CaptureTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PixelFormat {
     Bgra8,
     Rgba8,
@@ -272,7 +272,7 @@ pub enum SourceEvent {
     FormatChanged,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AudioFormat {
     pub sample_rate: u32,
     pub channels: u8,
@@ -288,14 +288,14 @@ impl AudioFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AudioSampleFormat {
     Signed16,
     Signed32,
     Float32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CameraFormat {
     pub width: u32,
     pub height: u32,

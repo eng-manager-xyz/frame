@@ -182,8 +182,10 @@ must not delete a provider-completed object.
 
 The following work is required before issue 19 can close:
 
-- a real Cloudflare R2/Worker multipart and streaming-download adapter, including actual R2
-  create/list/part/complete/abort/checksum/etag behavior and documented provider limits;
+- production construction and endpoint wiring for the checked-in Cloudflare R2/Worker multipart
+  adapter, including a concrete trusted-probe/reconciliation boundary, plus Wrangler-local and
+  hosted evidence for actual R2 create/list/part/complete/abort/checksum/etag behavior and documented
+  provider limits;
 - an approved decision and implementation for same-origin brokering versus R2-supported signed PUT
   or temporary credentials, including signing-key rotation and emergency revocation;
 - D1-backed `MultipartJournalV1` migrations/transactions and hosted reconciliation scheduling;

@@ -13,25 +13,56 @@ import argparse
 import datetime as dt
 import decimal
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
 import re
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator, Mapping, Sequence
-
+from typing import Any, BinaryIO, Iterator, Mapping, Sequence
 
 SCHEMA_VERSION = 1
+MYSQL_SNAPSHOT_ATTESTATION_KIND = "mysql_snapshot_v1"
+MYSQL_SNAPSHOT_BOUNDARY = "snapshot-boundary.protected.json"
+MYSQL_SNAPSHOT_PROOF = "snapshot-proof.json"
+MAX_SNAPSHOT_ATTESTATION_BYTES = 8 * 1024 * 1024
+MAX_SOURCE_ROW_BYTES = 16 * 1024 * 1024
+MAX_CHUNK_BYTES = 64 * 1024 * 1024
+MAX_MANIFEST_BYTES = 64 * 1024 * 1024
+MAX_MANIFEST_SECTIONS = 100_000
+MAX_MANIFEST_CHUNKS = 100_000
+MAX_PLAN_BYTES = 8 * 1024 * 1024
+MAX_PLAN_TABLES = 128
+MAX_PLAN_COLUMNS_PER_TABLE = 256
+MAX_PLAN_RECONCILIATION_RULES = 512
+MAX_PLAN_ENUM_VALUES = 1_024
 MAX_WIRE_INTEGER = 9_007_199_254_740_991
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MISSING = object()
+
+
+def _load_cap_id_mapper():
+    path = pathlib.Path(__file__).resolve().with_name("cap_id_map.py")
+    specification = importlib.util.spec_from_file_location("frame_cap_id_map_v1", path)
+    if specification is None or specification.loader is None:
+        raise RuntimeError("Cap ID mapping contract could not be loaded")
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    mapper = getattr(module, "map_cap_nanoid", None)
+    if not callable(mapper):
+        raise RuntimeError("Cap ID mapping contract is invalid")
+    return mapper
+
+
+map_cap_nanoid = _load_cap_id_mapper()
 
 
 class EtlError(Exception):
@@ -44,23 +75,37 @@ class InjectedInterruption(Exception):
 
 @dataclass(frozen=True)
 class Column:
-    source: str
+    source: str | None
     target: str
     transform: str
     nullable: bool
     options: Mapping[str, Any]
     has_default: bool
     default: Any
+    sources: tuple[str, ...] = ()
+
+    def input_sources(self) -> tuple[str, ...]:
+        if self.sources:
+            return self.sources
+        return () if self.source is None else (self.source,)
 
 
 @dataclass(frozen=True)
 class Table:
     name: str
-    tenant_column: str
+    tenant_column: str | None
     primary_key: tuple[str, ...]
     columns: tuple[Column, ...]
     foreign_keys: tuple[Mapping[str, Any], ...]
     aggregates: tuple[Mapping[str, Any], ...]
+    target_table: str | None = None
+    tenant_source: str | None = None
+    tenant_transform: str = "identity"
+    import_order: tuple[str, ...] = ()
+
+    @property
+    def target_name(self) -> str:
+        return self.target_table or self.name
 
 
 @dataclass(frozen=True)
@@ -158,6 +203,37 @@ def require_integer(raw: Any, field: str) -> int:
     return raw
 
 
+def bounded_regular_bytes(
+    path: pathlib.Path,
+    maximum_bytes: int,
+    description: str,
+    *,
+    allow_empty: bool = False,
+) -> bytes:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        minimum = 0 if allow_empty else 1
+        if not stat.S_ISREG(metadata.st_mode) or not minimum <= metadata.st_size <= maximum_bytes:
+            raise EtlError(f"{description} is missing, unsafe, or outside its size bound")
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            descriptor = None
+            payload = handle.read(maximum_bytes + 1)
+            final_metadata = os.fstat(handle.fileno())
+        if len(payload) != metadata.st_size or final_metadata.st_size != metadata.st_size:
+            raise EtlError(f"{description} changed while it was being read")
+        return payload
+    except OSError as error:
+        raise EtlError(f"{description} is unreadable") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def load_json(path: pathlib.Path, description: str) -> Any:
     try:
         return strict_json(path.read_text(encoding="utf-8"))
@@ -166,7 +242,11 @@ def load_json(path: pathlib.Path, description: str) -> Any:
 
 
 def load_plan(path: pathlib.Path) -> Plan:
-    raw = load_json(path, "ETL plan")
+    try:
+        plan_payload = bounded_regular_bytes(path, MAX_PLAN_BYTES, "ETL plan")
+        raw = strict_json(plan_payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        raise EtlError("ETL plan is unreadable or invalid JSON") from error
     if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
         raise EtlError("plan schema version is unsupported")
     run_id = require_label(raw.get("run_id"), "run_id")
@@ -184,7 +264,11 @@ def load_plan(path: pathlib.Path) -> Plan:
         raise EtlError("plan window is reversed")
 
     raw_tables = raw.get("tables")
-    if not isinstance(raw_tables, list) or not raw_tables:
+    if (
+        not isinstance(raw_tables, list)
+        or not raw_tables
+        or len(raw_tables) > MAX_PLAN_TABLES
+    ):
         raise EtlError("plan has no tables")
     tables: list[Table] = []
     seen_tables: set[str] = set()
@@ -196,7 +280,21 @@ def load_plan(path: pathlib.Path) -> Plan:
         "wire_integer",
         "decimal_scaled",
         "casefold_nfkc",
+        "cap_nanoid_uuid_v1",
         "enum",
+        "sha256_digest",
+        "canonical_json_sha256",
+        "canonical_checksum",
+        "composite",
+        "date_utc",
+        "microseconds",
+        "constant",
+        "versioned_json",
+        "versioned_json_sha256",
+        "canonical_object",
+        "canonical_object_sha256",
+        "milliseconds",
+        "presence_enum",
     }
     for raw_table in raw_tables:
         if not isinstance(raw_table, dict):
@@ -206,19 +304,24 @@ def load_plan(path: pathlib.Path) -> Plan:
         if name in seen_tables:
             raise EtlError("plan repeats a table")
         seen_tables.add(name)
+        target_table = raw_table.get("target_table", name)
+        quote(target_table)
         tenant_column = raw_table.get("tenant_column")
-        quote(tenant_column)
+        if tenant_column is not None:
+            quote(tenant_column)
         raw_columns = raw_table.get("columns")
-        if not isinstance(raw_columns, list) or not raw_columns:
+        if (
+            not isinstance(raw_columns, list)
+            or not raw_columns
+            or len(raw_columns) > MAX_PLAN_COLUMNS_PER_TABLE
+        ):
             raise EtlError("plan table has no columns")
         columns: list[Column] = []
         seen_targets: set[str] = set()
         for raw_column in raw_columns:
             if not isinstance(raw_column, dict):
                 raise EtlError("plan column is invalid")
-            source = raw_column.get("source")
             target = raw_column.get("target")
-            quote(source)
             quote(target)
             if target in seen_targets:
                 raise EtlError("plan repeats a target column")
@@ -229,17 +332,134 @@ def load_plan(path: pathlib.Path) -> Plan:
             options = raw_column.get("options", {})
             if not isinstance(options, dict):
                 raise EtlError("plan transform options are invalid")
+            option_transforms = {
+                "decimal_scaled",
+                "enum",
+                "sha256_digest",
+                "canonical_checksum",
+                "composite",
+                "versioned_json",
+                "versioned_json_sha256",
+                "canonical_object",
+                "canonical_object_sha256",
+                "presence_enum",
+            }
+            if transform not in option_transforms and options:
+                raise EtlError("plan transform options are invalid")
             if transform == "decimal_scaled":
+                if set(options) != {"scale"}:
+                    raise EtlError("decimal scale is invalid")
                 scale = options.get("scale")
                 if isinstance(scale, bool) or not isinstance(scale, int) or not 0 <= scale <= 9:
                     raise EtlError("decimal scale is invalid")
             if transform == "enum":
+                if set(options) != {"mapping"}:
+                    raise EtlError("enum mapping is invalid")
                 mapping = options.get("mapping")
-                if not isinstance(mapping, dict) or not mapping:
+                if (
+                    not isinstance(mapping, dict)
+                    or not mapping
+                    or len(mapping) > MAX_PLAN_ENUM_VALUES
+                ):
                     raise EtlError("enum mapping is invalid")
                 if not all(isinstance(key, str) and isinstance(value, str) for key, value in mapping.items()):
                     raise EtlError("enum mapping is invalid")
             has_default = "default" in raw_column
+            raw_source = raw_column.get("source")
+            if isinstance(raw_source, str):
+                quote(raw_source)
+                source = raw_source
+                sources = (raw_source,)
+            elif isinstance(raw_source, list):
+                if (
+                    not raw_source
+                    or len(raw_source) > 32
+                    or not all(isinstance(item, str) for item in raw_source)
+                    or len(raw_source) != len(set(raw_source))
+                ):
+                    raise EtlError("plan column source list is invalid")
+                for item in raw_source:
+                    quote(item)
+                source = raw_source[0]
+                sources = tuple(raw_source)
+            elif raw_source is None and transform == "constant" and has_default:
+                source = None
+                sources = ()
+            else:
+                raise EtlError("plan column source is invalid")
+            if transform in {
+                "composite",
+                "canonical_checksum",
+                "canonical_object",
+                "canonical_object_sha256",
+            } and len(sources) < 2:
+                raise EtlError("plan multi-source transform requires multiple sources")
+            if transform not in {
+                "composite",
+                "canonical_checksum",
+                "canonical_object",
+                "canonical_object_sha256",
+            } and len(sources) > 1:
+                raise EtlError("plan transform does not accept multiple sources")
+            if transform == "constant" and (sources or not has_default):
+                raise EtlError("plan constant transform is invalid")
+            if transform == "sha256_digest":
+                if set(options) - {"domain"}:
+                    raise EtlError("plan digest options are invalid")
+                if "domain" in options:
+                    require_label(options["domain"], "digest.domain")
+            if transform == "canonical_checksum":
+                if set(options) - {"domain", "labels"}:
+                    raise EtlError("plan checksum options are invalid")
+                if "domain" in options:
+                    require_label(options["domain"], "checksum.domain")
+                labels = options.get("labels")
+                if labels is not None and (
+                    not isinstance(labels, list)
+                    or len(labels) != len(sources)
+                    or not all(isinstance(label, str) and SAFE_LABEL.fullmatch(label) for label in labels)
+                ):
+                    raise EtlError("plan checksum labels are invalid")
+            if transform == "composite":
+                if set(options) - {"delimiter", "prefix"}:
+                    raise EtlError("plan composite options are invalid")
+                delimiter = options.get("delimiter", ":")
+                prefix = options.get("prefix", "")
+                if (
+                    not isinstance(delimiter, str)
+                    or not 1 <= len(delimiter) <= 8
+                    or not isinstance(prefix, str)
+                    or len(prefix) > 64
+                ):
+                    raise EtlError("plan composite options are invalid")
+            if transform in {"versioned_json", "versioned_json_sha256"}:
+                if set(options) != {"schema_version"}:
+                    raise EtlError("plan versioned JSON options are invalid")
+                version = options["schema_version"]
+                if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= 65535:
+                    raise EtlError("plan versioned JSON options are invalid")
+            if transform in {"canonical_object", "canonical_object_sha256"}:
+                if set(options) - {"labels", "schema_version"}:
+                    raise EtlError("plan canonical object options are invalid")
+                labels = options.get("labels")
+                if (
+                    not isinstance(labels, list)
+                    or len(labels) != len(sources)
+                    or len(labels) != len(set(labels))
+                    or not all(isinstance(label, str) and SAFE_LABEL.fullmatch(label) for label in labels)
+                ):
+                    raise EtlError("plan canonical object labels are invalid")
+                version = options.get("schema_version")
+                if version is not None and (
+                    isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= 65535
+                ):
+                    raise EtlError("plan canonical object version is invalid")
+            if transform == "presence_enum":
+                if set(options) != {"missing", "present"} or not all(
+                    isinstance(options[key], str) and SAFE_LABEL.fullmatch(options[key])
+                    for key in ("missing", "present")
+                ):
+                    raise EtlError("plan presence enum options are invalid")
             columns.append(
                 Column(
                     source=source,
@@ -249,10 +469,24 @@ def load_plan(path: pathlib.Path) -> Plan:
                     options=options,
                     has_default=has_default,
                     default=raw_column.get("default"),
+                    sources=sources,
                 )
             )
+        tenant_source = raw_table.get("tenant_source")
+        tenant_transform = raw_table.get("tenant_transform", "identity")
+        if tenant_source is not None:
+            quote(tenant_source)
+        if tenant_transform not in {"identity", "cap_nanoid_uuid_v1"}:
+            raise EtlError("tenant transform is unsupported")
         if tenant_column not in seen_targets:
-            raise EtlError("tenant column must be present in transformed target columns")
+            if tenant_column is not None or tenant_source is None:
+                raise EtlError("tenant scope must be a target column or explicit source")
+        elif tenant_source is not None:
+            tenant_columns = [column for column in columns if column.target == tenant_column]
+            if len(tenant_columns) != 1 or tenant_columns[0].input_sources() != (tenant_source,):
+                raise EtlError("tenant source differs from its target column mapping")
+            if tenant_columns[0].transform != tenant_transform:
+                raise EtlError("tenant transform differs from its target column mapping")
         primary_key = raw_table.get("primary_key")
         if (
             not isinstance(primary_key, list)
@@ -260,9 +494,34 @@ def load_plan(path: pathlib.Path) -> Plan:
             or not all(isinstance(item, str) and item in seen_targets for item in primary_key)
         ):
             raise EtlError("plan primary key is invalid")
+        import_order = raw_table.get("import_order", primary_key)
+        if (
+            not isinstance(import_order, list)
+            or not import_order
+            or len(import_order) > 32
+            or not all(isinstance(item, str) and item in seen_targets for item in import_order)
+            or len(import_order) != len(set(import_order))
+        ):
+            raise EtlError("plan import order is invalid")
+        columns_by_target = {column.target: column for column in columns}
+        if any(
+            columns_by_target[item].nullable
+            or columns_by_target[item].transform
+            in {
+                "canonical_json",
+                "versioned_json",
+                "canonical_object",
+            }
+            for item in import_order
+        ):
+            raise EtlError("plan import order must use required scalar columns")
         foreign_keys = raw_table.get("foreign_keys", [])
         aggregates = raw_table.get("aggregates", [])
-        if not isinstance(foreign_keys, list) or not isinstance(aggregates, list):
+        if (
+            not isinstance(foreign_keys, list)
+            or not isinstance(aggregates, list)
+            or len(foreign_keys) + len(aggregates) > MAX_PLAN_RECONCILIATION_RULES
+        ):
             raise EtlError("plan reconciliation rules are invalid")
         for foreign_key in foreign_keys:
             _validate_foreign_key(foreign_key, seen_targets)
@@ -276,6 +535,10 @@ def load_plan(path: pathlib.Path) -> Plan:
                 columns=tuple(columns),
                 foreign_keys=tuple(foreign_keys),
                 aggregates=tuple(aggregates),
+                target_table=target_table,
+                tenant_source=tenant_source,
+                tenant_transform=tenant_transform,
+                import_order=tuple(import_order),
             )
         )
 
@@ -286,16 +549,32 @@ def load_plan(path: pathlib.Path) -> Plan:
             referenced = foreign_key["references"]["table"]
             if referenced not in prior:
                 raise EtlError("foreign-key dependency must appear earlier in the plan")
-        prior.add(table.name)
+        prior.add(table.target_name)
 
     semantic_rules = raw.get("semantic_rules", [])
-    if not isinstance(semantic_rules, list):
+    if (
+        not isinstance(semantic_rules, list)
+        or len(semantic_rules) > MAX_PLAN_RECONCILIATION_RULES
+    ):
         raise EtlError("plan semantic rules are invalid")
     for rule in semantic_rules:
         _validate_semantic_rule(rule, seen_tables)
-    table_columns = {
-        table.name: {column.target for column in table.columns} for table in tables
-    }
+    table_columns: dict[str, set[str]] = {}
+    target_shapes: dict[str, tuple[Any, ...]] = {}
+    for table in tables:
+        columns = {column.target for column in table.columns}
+        shape = (
+            table.tenant_column,
+            table.primary_key,
+            table.import_order,
+            tuple(column.target for column in table.columns),
+            table.foreign_keys,
+            table.aggregates,
+        )
+        if table.target_name in target_shapes and target_shapes[table.target_name] != shape:
+            raise EtlError("plan streams targeting one table must share an exact target shape")
+        target_shapes[table.target_name] = shape
+        table_columns[table.target_name] = columns
     for table in tables:
         for foreign_key in table.foreign_keys:
             referenced = foreign_key["references"]
@@ -421,23 +700,25 @@ def _timestamp_ms(value: Any) -> int:
 
 
 def transform_value(column: Column, value: Any) -> Any:
+    kind = column.transform
     if value is MISSING or value is None:
         if column.has_default:
             value = column.default
+        elif kind == "presence_enum" and value is None:
+            return column.options["missing"]
         elif column.nullable:
             return None
         else:
             raise ValueError("required_value_missing")
-    kind = column.transform
     try:
         if kind == "identity":
             if not isinstance(value, (str, int)) or isinstance(value, bool):
                 raise ValueError("invalid_identity_value")
             return value
         if kind == "boolean":
-            if value in (True, 1, "1", "true", "TRUE"):
+            if value is True or type(value) is int and value == 1 or value in ("1", "true", "TRUE"):
                 return 1
-            if value in (False, 0, "0", "false", "FALSE"):
+            if value is False or type(value) is int and value == 0 or value in ("0", "false", "FALSE"):
                 return 0
             raise ValueError("invalid_boolean")
         if kind == "canonical_json":
@@ -448,6 +729,8 @@ def transform_value(column: Column, value: Any) -> Any:
         if kind == "timestamp_ms":
             return _timestamp_ms(value)
         if kind == "wire_integer":
+            if isinstance(value, bool):
+                raise ValueError("invalid_integer")
             integer = int(value)
             if str(integer) != str(value).strip() and not isinstance(value, int):
                 raise ValueError("invalid_integer")
@@ -469,11 +752,97 @@ def transform_value(column: Column, value: Any) -> Any:
             if not isinstance(value, str):
                 raise ValueError("invalid_collation_value")
             return unicodedata.normalize("NFKC", value).casefold().strip()
+        if kind == "cap_nanoid_uuid_v1":
+            if not isinstance(value, str):
+                raise ValueError("invalid_cap_nanoid")
+            return map_cap_nanoid(value)
         if kind == "enum":
             mapping = column.options["mapping"]
             if not isinstance(value, str) or value not in mapping:
                 raise ValueError("unknown_enum")
             return mapping[value]
+        if kind == "sha256_digest":
+            if not isinstance(value, (str, int)) or isinstance(value, bool):
+                raise ValueError("invalid_digest_value")
+            domain = column.options.get("domain", "frame-etl-digest-v1")
+            return sha256_bytes(f"{domain}\0{value}".encode("utf-8"))
+        if kind == "canonical_json_sha256":
+            decoded = strict_json(value) if isinstance(value, str) else value
+            if not isinstance(decoded, (dict, list)):
+                raise ValueError("invalid_json_shape")
+            return sha256_json(decoded)
+        if kind in {"versioned_json", "versioned_json_sha256"}:
+            decoded = strict_json(value) if isinstance(value, str) else value
+            if not isinstance(decoded, (dict, list)):
+                raise ValueError("invalid_json_shape")
+            document = {
+                "schema_version": column.options["schema_version"],
+                "payload": decoded,
+            }
+            return canonical(document) if kind == "versioned_json" else sha256_json(document)
+        if kind == "canonical_checksum":
+            if not isinstance(value, tuple) or any(item is MISSING for item in value):
+                raise ValueError("required_value_missing")
+            labels = column.options.get("labels")
+            material: Any = (
+                {label: item for label, item in zip(labels, value, strict=True)}
+                if labels is not None
+                else list(value)
+            )
+            domain = column.options.get("domain", "frame-etl-checksum-v1")
+            return sha256_bytes(f"{domain}\0{canonical(material)}".encode("utf-8"))
+        if kind == "composite":
+            if (
+                not isinstance(value, tuple)
+                or any(item is MISSING or item is None for item in value)
+                or any(not isinstance(item, (str, int)) or isinstance(item, bool) for item in value)
+            ):
+                raise ValueError("invalid_composite_value")
+            delimiter = column.options.get("delimiter", ":")
+            return f"{column.options.get('prefix', '')}{delimiter.join(str(item) for item in value)}"
+        if kind in {"canonical_object", "canonical_object_sha256"}:
+            if not isinstance(value, tuple) or any(item is MISSING for item in value):
+                raise ValueError("required_value_missing")
+            material = {
+                label: item
+                for label, item in zip(column.options["labels"], value, strict=True)
+            }
+            if "schema_version" in column.options:
+                material = {
+                    "schema_version": column.options["schema_version"],
+                    "capabilities": material,
+                }
+            return canonical(material) if kind == "canonical_object" else sha256_json(material)
+        if kind == "date_utc":
+            if not isinstance(value, str):
+                raise ValueError("invalid_date")
+            try:
+                parsed_date = dt.date.fromisoformat(value[:10])
+            except ValueError as error:
+                raise ValueError("invalid_date") from error
+            if value not in {parsed_date.isoformat(), f"{parsed_date.isoformat()}T00:00:00Z"}:
+                raise ValueError("invalid_date")
+            return parsed_date.isoformat()
+        if kind == "microseconds":
+            if isinstance(value, bool):
+                raise ValueError("invalid_microseconds")
+            seconds = decimal.Decimal(str(value))
+            micros = seconds * decimal.Decimal(1_000_000)
+            if micros != micros.to_integral_value() or not 0 <= micros <= MAX_WIRE_INTEGER:
+                raise ValueError("invalid_microseconds")
+            return int(micros)
+        if kind == "milliseconds":
+            if isinstance(value, bool):
+                raise ValueError("invalid_milliseconds")
+            seconds = decimal.Decimal(str(value))
+            millis = seconds * decimal.Decimal(1_000)
+            if millis != millis.to_integral_value() or not 0 <= millis <= MAX_WIRE_INTEGER:
+                raise ValueError("invalid_milliseconds")
+            return int(millis)
+        if kind == "presence_enum":
+            return column.options["present"]
+        if kind == "constant":
+            return value
     except (decimal.InvalidOperation, OverflowError, TypeError, ValueError) as error:
         if isinstance(error, ValueError) and str(error) in {
             "required_value_missing",
@@ -488,7 +857,13 @@ def transform_value(column: Column, value: Any) -> Any:
             "decimal_precision_loss",
             "decimal_out_of_range",
             "invalid_collation_value",
+            "invalid_cap_nanoid",
             "unknown_enum",
+            "invalid_digest_value",
+            "invalid_composite_value",
+            "invalid_date",
+            "invalid_microseconds",
+            "invalid_milliseconds",
         }:
             raise
         raise ValueError(f"invalid_{kind}") from error
@@ -513,150 +888,605 @@ def strict_json(value: str) -> Any:
 def transform_row(table: Table, tenant: str, source: Mapping[str, Any]) -> dict[str, Any]:
     transformed: dict[str, Any] = {}
     for column in table.columns:
-        transformed[column.target] = transform_value(column, source.get(column.source, MISSING))
-    tenant_value = transformed[table.tenant_column]
-    if tenant_value != tenant:
+        input_sources = column.input_sources()
+        if not input_sources:
+            raw_value: Any = MISSING
+        elif len(input_sources) == 1:
+            raw_value = source.get(input_sources[0], MISSING)
+        else:
+            raw_value = tuple(source.get(item, MISSING) for item in input_sources)
+        transformed[column.target] = transform_value(column, raw_value)
+    tenant_value = transform_tenant(table, tenant, source)
+    if table.tenant_column is not None and transformed[table.tenant_column] != tenant_value:
         raise ValueError("tenant_scope_mismatch")
     if any(transformed[column] is None for column in table.primary_key):
         raise ValueError("missing_primary_key")
     return transformed
 
 
-def read_source(payload: bytes, tables: Mapping[str, Table]) -> Iterator[tuple[int, str, str, Mapping[str, Any]]]:
+def transform_tenant(table: Table, source_tenant: str, source: Mapping[str, Any]) -> str:
+    if table.tenant_column is not None:
+        columns = [column for column in table.columns if column.target == table.tenant_column]
+        if len(columns) != 1 or len(columns[0].input_sources()) != 1:
+            raise ValueError("tenant_scope_invalid")
+        column = columns[0]
+        logical_source = column.input_sources()[0]
+    else:
+        if table.tenant_source is None:
+            raise ValueError("tenant_scope_invalid")
+        logical_source = table.tenant_source
+        column = Column(
+            source=logical_source,
+            target="tenant_scope",
+            transform=table.tenant_transform,
+            nullable=False,
+            options={},
+            has_default=False,
+            default=None,
+        )
+    raw_scope = source.get(logical_source, MISSING)
+    if raw_scope != source_tenant:
+        raise ValueError("tenant_scope_mismatch")
+    transformed = transform_value(column, raw_scope)
+    if not isinstance(transformed, str) or not SAFE_LABEL.fullmatch(transformed):
+        raise ValueError("tenant_scope_invalid")
+    return transformed
+
+
+def read_source(
+    source: pathlib.Path,
+    tables: Mapping[str, Table],
+    source_hasher: Any,
+) -> Iterator[tuple[int, str, str, Mapping[str, Any]]]:
     try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise EtlError("source NDJSON is not UTF-8") from error
-    for ordinal, line in enumerate(text.splitlines(), start=1):
-        try:
-            envelope = strict_json(line)
-        except (json.JSONDecodeError, ValueError) as error:
-            raise EtlError("source NDJSON contains invalid JSON") from error
-        if not isinstance(envelope, dict) or set(envelope) != {"table", "tenant", "row"}:
-            raise EtlError("source NDJSON envelope is invalid")
-        table = envelope["table"]
-        tenant = envelope["tenant"]
-        row = envelope["row"]
-        if table not in tables or not isinstance(tenant, str) or not SAFE_LABEL.fullmatch(tenant):
-            raise EtlError("source NDJSON scope is invalid")
-        if not isinstance(row, dict):
-            raise EtlError("source NDJSON row is invalid")
-        yield ordinal, table, tenant, row
-
-
-def chunks(values: Sequence[dict[str, Any]], size: int) -> Iterator[Sequence[dict[str, Any]]]:
-    for index in range(0, len(values), size):
-        yield values[index : index + size]
-
-
-def export_bundle(source: pathlib.Path, plan: Plan, bundle: pathlib.Path, chunk_rows: int) -> Mapping[str, Any]:
-    if not 1 <= chunk_rows <= 100_000:
-        raise EtlError("chunk_rows must be between 1 and 100000")
-    private_directory(bundle, must_create=True)
-    try:
-        source_payload = source.read_bytes()
+        descriptor = os.open(
+            source,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise EtlError("source NDJSON must be a regular file")
+        handle = os.fdopen(descriptor, "rb")
     except OSError as error:
         raise EtlError("source NDJSON is unreadable") from error
-    tables = {table.name: table for table in plan.tables}
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    rejects: list[dict[str, Any]] = []
-    seen_keys: set[tuple[str, str, tuple[Any, ...]]] = set()
-    source_tenants: set[str] = set()
-    for ordinal, table_name, tenant, raw_row in read_source(source_payload, tables):
-        source_tenants.add(tenant)
-        table = tables[table_name]
-        try:
-            transformed = transform_row(table, tenant, raw_row)
-            logical_key = tuple(transformed[column] for column in table.primary_key)
-            scoped_key = (table_name, tenant, logical_key)
-            if scoped_key in seen_keys:
-                raise ValueError("duplicate_logical_record")
-            seen_keys.add(scoped_key)
-            grouped.setdefault((table_name, tenant), []).append(transformed)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-            reason = str(error).split(":", maxsplit=1)[0]
-            if not SAFE_LABEL.fullmatch(reason):
-                reason = "invalid_record"
-            rejects.append(
-                {
-                    "ordinal": ordinal,
-                    "reason_code": reason,
-                    "table": table_name,
-                    "tenant_digest": tenant_digest(tenant),
-                }
-            )
+    with handle:
+        ordinal = 0
+        while raw_line := handle.readline(MAX_SOURCE_ROW_BYTES + 2):
+            ordinal += 1
+            source_hasher.update(raw_line)
+            line_bytes = raw_line[:-1] if raw_line.endswith(b"\n") else raw_line
+            if line_bytes.endswith(b"\r"):
+                line_bytes = line_bytes[:-1]
+            if len(line_bytes) > MAX_SOURCE_ROW_BYTES:
+                raise EtlError("source NDJSON row exceeds the supported size")
+            try:
+                line = line_bytes.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise EtlError("source NDJSON is not UTF-8") from error
+            try:
+                envelope = strict_json(line)
+            except (json.JSONDecodeError, ValueError) as error:
+                raise EtlError("source NDJSON contains invalid JSON") from error
+            if not isinstance(envelope, dict) or set(envelope) != {"table", "tenant", "row"}:
+                raise EtlError("source NDJSON envelope is invalid")
+            table = envelope["table"]
+            tenant = envelope["tenant"]
+            row = envelope["row"]
+            if table not in tables or not isinstance(tenant, str) or not SAFE_LABEL.fullmatch(tenant):
+                raise EtlError("source NDJSON scope is invalid")
+            if not isinstance(row, dict):
+                raise EtlError("source NDJSON row is invalid")
+            yield ordinal, table, tenant, row
 
-    manifest_tables: list[dict[str, Any]] = []
-    for table in plan.tables:
-        target_columns = [column.target for column in table.columns]
-        tenant_sections: list[dict[str, Any]] = []
-        # A zero-row scope is evidence too: it lets reconciliation detect target
-        # extras for tables where a tenant had no source records.
-        tenants = sorted(source_tenants)
-        for tenant in tenants:
-            rows = grouped.get((table.name, tenant), [])
-            rows.sort(key=lambda row: tuple(canonical(row[column]) for column in table.primary_key))
-            chunk_entries: list[dict[str, Any]] = []
-            for chunk_index, chunk in enumerate(chunks(rows, chunk_rows), start=1):
-                relative = pathlib.Path("chunks") / table.name / tenant_digest(tenant) / f"{chunk_index:06d}.ndjson"
-                payload = "".join(f"{canonical(row)}\n" for row in chunk).encode("utf-8")
-                immutable_private_write(bundle / relative, payload)
-                chunk_entries.append(
-                    {
-                        "path": relative.as_posix(),
-                        "rows": len(chunk),
-                        "sha256": sha256_bytes(payload),
-                    }
-                )
-            tenant_sections.append(
-                {
-                    "tenant": tenant,
-                    "tenant_digest": tenant_digest(tenant),
-                    "row_count": len(rows),
-                    "chunks": chunk_entries,
-                }
-            )
-        manifest_tables.append(
+
+def _create_staging_database(path: pathlib.Path) -> sqlite3.Connection:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(descriptor)
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA journal_mode = DELETE")
+    connection.execute("PRAGMA synchronous = FULL")
+    connection.executescript(
+        """
+        CREATE TABLE staged_tenants (
+          tenant TEXT PRIMARY KEY NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TABLE staged_rows (
+          table_name TEXT NOT NULL,
+          tenant TEXT NOT NULL,
+          logical_key TEXT NOT NULL,
+          import_order TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          PRIMARY KEY(table_name, tenant, logical_key)
+        ) WITHOUT ROWID;
+        """
+    )
+    return connection
+
+
+def _write_staged_chunks(
+    connection: sqlite3.Connection,
+    bundle: pathlib.Path,
+    table_name: str,
+    tenant: str,
+    chunk_rows: int,
+    import_order: Sequence[str],
+) -> tuple[list[dict[str, Any]], int]:
+    order_sql = ", ".join(
+        f"json_extract(import_order, '$[{index}]')"
+        for index in range(len(import_order))
+    )
+    cursor = connection.execute(
+        f"""SELECT payload FROM staged_rows
+           WHERE table_name = ? AND tenant = ? ORDER BY {order_sql}, logical_key""",
+        (table_name, tenant),
+    )
+    entries: list[dict[str, Any]] = []
+    chunk_index = 0
+    total_rows = 0
+    handle: BinaryIO | None = None
+    hasher: Any = None
+    current_rows = 0
+    current_bytes = 0
+    relative: pathlib.Path | None = None
+
+    def finish_chunk() -> None:
+        nonlocal handle, hasher, current_rows, current_bytes, relative
+        if handle is None or relative is None:
+            return
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        entries.append(
             {
-                "name": table.name,
-                "tenant_column": table.tenant_column,
-                "columns": target_columns,
-                "primary_key": list(table.primary_key),
-                "foreign_keys": list(table.foreign_keys),
-                "aggregates": list(table.aggregates),
-                "row_count": sum(section["row_count"] for section in tenant_sections),
-                "tenants": tenant_sections,
+                "path": relative.as_posix(),
+                "rows": current_rows,
+                "sha256": hasher.hexdigest(),
             }
         )
+        handle = None
+        relative = None
+        current_rows = 0
+        current_bytes = 0
 
-    if rejects:
-        quarantine = "".join(f"{canonical(reject)}\n" for reject in rejects).encode("utf-8")
-        immutable_private_write(bundle / "quarantine.ndjson", quarantine)
-    manifest: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": plan.run_id,
-        "source_schema": plan.source_schema,
-        "target_migration": plan.target_migration,
-        "code_sha": plan.code_sha,
-        "window": {"start_ms": plan.window_start_ms, "end_ms": plan.window_end_ms},
-        "source_sha256": sha256_bytes(source_payload),
-        "plan_sha256": sha256_json(plan.raw),
-        "chunk_rows": chunk_rows,
-        "row_count": sum(table["row_count"] for table in manifest_tables),
-        "reject_count": len(rejects),
-        "tables": manifest_tables,
-        "semantic_rules": list(plan.semantic_rules),
+    try:
+        for (payload,) in cursor:
+            if handle is None:
+                if chunk_index >= MAX_MANIFEST_CHUNKS:
+                    raise EtlError("bundle exceeds the supported chunk count")
+                chunk_index += 1
+                relative = (
+                    pathlib.Path("chunks")
+                    / table_name
+                    / tenant_digest(tenant)
+                    / f"{chunk_index:06d}.ndjson"
+                )
+                destination = bundle / relative
+                private_directory(destination.parent)
+                descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                handle = os.fdopen(descriptor, "wb")
+                hasher = hashlib.sha256()
+            encoded = f"{payload}\n".encode("utf-8")
+            if len(encoded) > MAX_CHUNK_BYTES:
+                raise EtlError("transformed record exceeds the supported chunk size")
+            if handle is not None and current_bytes + len(encoded) > MAX_CHUNK_BYTES:
+                finish_chunk()
+                if chunk_index >= MAX_MANIFEST_CHUNKS:
+                    raise EtlError("bundle exceeds the supported chunk count")
+                chunk_index += 1
+                relative = (
+                    pathlib.Path("chunks")
+                    / table_name
+                    / tenant_digest(tenant)
+                    / f"{chunk_index:06d}.ndjson"
+                )
+                destination = bundle / relative
+                private_directory(destination.parent)
+                descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                handle = os.fdopen(descriptor, "wb")
+                hasher = hashlib.sha256()
+            handle.write(encoded)
+            hasher.update(encoded)
+            current_rows += 1
+            current_bytes += len(encoded)
+            total_rows += 1
+            if current_rows == chunk_rows:
+                finish_chunk()
+        finish_chunk()
+    except BaseException:
+        if handle is not None:
+            handle.close()
+        raise
+    return entries, total_rows
+
+
+def export_bundle(
+    source: pathlib.Path,
+    plan: Plan,
+    bundle: pathlib.Path,
+    chunk_rows: int,
+    *,
+    source_attestation: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    if not 1 <= chunk_rows <= 100_000:
+        raise EtlError("chunk_rows must be between 1 and 100000")
+    if source_attestation is not None:
+        _validate_snapshot_attestation_shape(source_attestation)
+    tables = {table.name: table for table in plan.tables}
+    source_hasher = hashlib.sha256()
+    reject_count = 0
+    with tempfile.TemporaryDirectory(prefix=".frame-etl-transform-", dir=bundle.parent) as raw:
+        staging = pathlib.Path(raw)
+        staging.chmod(0o700)
+        connection = _create_staging_database(staging / "rows.sqlite")
+        try:
+            quarantine_path = staging / "quarantine.ndjson"
+            quarantine_descriptor = os.open(
+                quarantine_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+            quarantine_handle = os.fdopen(quarantine_descriptor, "wb")
+            try:
+                processed = 0
+                for ordinal, table_name, tenant, raw_row in read_source(
+                    source, tables, source_hasher
+                ):
+                    table = tables[table_name]
+                    try:
+                        transformed_tenant = transform_tenant(table, tenant, raw_row)
+                        transformed = transform_row(table, tenant, raw_row)
+                        connection.execute(
+                            "INSERT OR IGNORE INTO staged_tenants(tenant) VALUES (?)",
+                            (transformed_tenant,),
+                        )
+                        logical_key = canonical(
+                            [transformed[column] for column in table.primary_key]
+                        )
+                        import_order = canonical(
+                            [transformed[column] for column in table.import_order]
+                        )
+                        try:
+                            connection.execute(
+                                """INSERT INTO staged_rows(
+                                     table_name, tenant, logical_key, import_order, payload
+                                   ) VALUES (?, ?, ?, ?, ?)""",
+                                (
+                                    table.target_name,
+                                    transformed_tenant,
+                                    logical_key,
+                                    import_order,
+                                    canonical(transformed),
+                                ),
+                            )
+                        except sqlite3.IntegrityError as error:
+                            raise ValueError("duplicate_logical_record") from error
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                        reason = str(error).split(":", maxsplit=1)[0]
+                        if not SAFE_LABEL.fullmatch(reason):
+                            reason = "invalid_record"
+                        reject = {
+                            "ordinal": ordinal,
+                            "reason_code": reason,
+                            "table": table_name,
+                            "tenant_digest": tenant_digest(tenant),
+                        }
+                        quarantine_handle.write(f"{canonical(reject)}\n".encode("utf-8"))
+                        reject_count += 1
+                    processed += 1
+                    if processed % 10_000 == 0:
+                        connection.commit()
+                connection.commit()
+                quarantine_handle.flush()
+                os.fsync(quarantine_handle.fileno())
+            finally:
+                quarantine_handle.close()
+
+            private_directory(bundle, must_create=True)
+            manifest_tables: list[dict[str, Any]] = []
+            section_count = 0
+            chunk_count = 0
+            target_streams: list[Table] = []
+            seen_targets: set[str] = set()
+            for table in plan.tables:
+                if table.target_name not in seen_targets:
+                    target_streams.append(table)
+                    seen_targets.add(table.target_name)
+            for table in target_streams:
+                target_name = table.target_name
+                target_columns = [column.target for column in table.columns]
+                tenant_sections: list[dict[str, Any]] = []
+                tenant_cursor = connection.execute(
+                    "SELECT tenant FROM staged_tenants ORDER BY tenant"
+                )
+                for (tenant,) in tenant_cursor:
+                    section_count += 1
+                    if section_count > MAX_MANIFEST_SECTIONS:
+                        raise EtlError("bundle exceeds the supported tenant-section count")
+                    chunk_entries, row_count = _write_staged_chunks(
+                        connection,
+                        bundle,
+                        target_name,
+                        tenant,
+                        chunk_rows,
+                        table.import_order,
+                    )
+                    chunk_count += len(chunk_entries)
+                    if chunk_count > MAX_MANIFEST_CHUNKS:
+                        raise EtlError("bundle exceeds the supported chunk count")
+                    tenant_sections.append(
+                        {
+                            "tenant": tenant,
+                            "tenant_digest": tenant_digest(tenant),
+                            "row_count": row_count,
+                            "chunks": chunk_entries,
+                        }
+                    )
+                manifest_tables.append(
+                    {
+                        "name": target_name,
+                        "tenant_column": table.tenant_column,
+                        "columns": target_columns,
+                        "primary_key": list(table.primary_key),
+                        "import_order": list(table.import_order),
+                        "foreign_keys": list(table.foreign_keys),
+                        "aggregates": list(table.aggregates),
+                        "row_count": sum(
+                            section["row_count"] for section in tenant_sections
+                        ),
+                        "tenants": tenant_sections,
+                    }
+                )
+            if reject_count:
+                os.rename(quarantine_path, bundle / "quarantine.ndjson")
+            manifest: dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "run_id": plan.run_id,
+                "source_schema": plan.source_schema,
+                "target_migration": plan.target_migration,
+                "code_sha": plan.code_sha,
+                "window": {"start_ms": plan.window_start_ms, "end_ms": plan.window_end_ms},
+                "source_sha256": source_hasher.hexdigest(),
+                "plan_sha256": sha256_json(plan.raw),
+                "chunk_rows": chunk_rows,
+                "row_count": sum(table["row_count"] for table in manifest_tables),
+                "reject_count": reject_count,
+                "tables": manifest_tables,
+                "semantic_rules": list(plan.semantic_rules),
+            }
+            if source_attestation is not None:
+                manifest["source_attestation"] = dict(source_attestation)
+            payload = f"{canonical(manifest)}\n".encode("utf-8")
+            if len(payload) > MAX_MANIFEST_BYTES:
+                raise EtlError("bundle manifest exceeds the supported size")
+            immutable_private_write(bundle / "manifest.json", payload)
+            immutable_private_write(
+                bundle / "manifest.sha256",
+                f"{sha256_bytes(payload)}  manifest.json\n".encode("ascii"),
+            )
+            return manifest
+        finally:
+            connection.close()
+
+
+def _validate_snapshot_attestation_shape(attestation: Mapping[str, Any]) -> None:
+    expected = {
+        "kind",
+        "boundary_path",
+        "boundary_sha256",
+        "proof_path",
+        "proof_sha256",
+        "query_sha256",
+        "gtid_sha256",
+        "source_binding_sha256",
+        "manifest_core_sha256",
     }
-    payload = f"{canonical(manifest)}\n".encode("utf-8")
-    immutable_private_write(bundle / "manifest.json", payload)
-    immutable_private_write(bundle / "manifest.sha256", f"{sha256_bytes(payload)}  manifest.json\n".encode("ascii"))
-    return manifest
+    if set(attestation) != expected:
+        raise EtlError("snapshot source attestation has an invalid shape")
+    if (
+        attestation.get("kind") != MYSQL_SNAPSHOT_ATTESTATION_KIND
+        or attestation.get("boundary_path") != MYSQL_SNAPSHOT_BOUNDARY
+        or attestation.get("proof_path") != MYSQL_SNAPSHOT_PROOF
+    ):
+        raise EtlError("snapshot source attestation has an unsupported identity")
+    for field in (
+        "boundary_sha256",
+        "proof_sha256",
+        "query_sha256",
+        "gtid_sha256",
+        "source_binding_sha256",
+        "manifest_core_sha256",
+    ):
+        value = attestation.get(field)
+        if not isinstance(value, str) or not SHA256.fullmatch(value):
+            raise EtlError("snapshot source attestation contains an invalid digest")
+
+
+def manifest_core_sha256(manifest: Mapping[str, Any]) -> str:
+    core = dict(manifest)
+    core.pop("source_attestation", None)
+    return sha256_json(core)
+
+
+def attach_source_attestation(
+    bundle: pathlib.Path,
+    manifest: Mapping[str, Any],
+    source_attestation: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if "source_attestation" in manifest:
+        raise EtlError("bundle manifest already has a source attestation")
+    _validate_snapshot_attestation_shape(source_attestation)
+    if source_attestation["manifest_core_sha256"] != manifest_core_sha256(manifest):
+        raise EtlError("source attestation does not bind the manifest core")
+    updated = dict(manifest)
+    updated["source_attestation"] = dict(source_attestation)
+    payload = f"{canonical(updated)}\n".encode("utf-8")
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise EtlError("bundle manifest exceeds the supported size")
+    atomic_private_write(bundle / "manifest.json", payload)
+    atomic_private_write(
+        bundle / "manifest.sha256",
+        f"{sha256_bytes(payload)}  manifest.json\n".encode("ascii"),
+    )
+    return updated
+
+
+def _canonical_attestation_file(bundle: pathlib.Path, name: str) -> tuple[bytes, Mapping[str, Any]]:
+    path = bundle / name
+    try:
+        payload = bounded_regular_bytes(
+            path, MAX_SNAPSHOT_ATTESTATION_BYTES, "snapshot attestation file"
+        )
+        decoded = payload.decode("utf-8")
+        value = strict_json(decoded)
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        raise EtlError("snapshot attestation file is unreadable or invalid") from error
+    if not isinstance(value, dict) or payload != f"{canonical(value)}\n".encode("utf-8"):
+        raise EtlError("snapshot attestation file is not canonical")
+    return payload, value
+
+
+def _attestation_integer(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_WIRE_INTEGER:
+        raise EtlError(f"snapshot attestation {label} is invalid")
+    return value
+
+
+def _validate_snapshot_attestation_files(
+    bundle: pathlib.Path,
+    manifest: Mapping[str, Any],
+) -> None:
+    attestation = manifest.get("source_attestation")
+    if attestation is None:
+        return
+    if not isinstance(attestation, dict):
+        raise EtlError("snapshot source attestation is invalid")
+    _validate_snapshot_attestation_shape(attestation)
+    boundary_payload, boundary = _canonical_attestation_file(bundle, MYSQL_SNAPSHOT_BOUNDARY)
+    proof_payload, proof = _canonical_attestation_file(bundle, MYSQL_SNAPSHOT_PROOF)
+    if (
+        sha256_bytes(boundary_payload) != attestation["boundary_sha256"]
+        or sha256_bytes(proof_payload) != attestation["proof_sha256"]
+    ):
+        raise EtlError("snapshot attestation file digest mismatch")
+
+    boundary_fields = {
+        "schema_version",
+        "run_id",
+        "snapshot_started_at_ms",
+        "snapshot_completed_at_ms",
+        "gtid_before_snapshot",
+        "gtid_sha256",
+        "query_sha256",
+        "source_binding_sha256",
+        "manifest_core_sha256",
+        "source_sha256",
+        "plan_sha256",
+        "preflight_policy",
+    }
+    proof_fields = {
+        "schema_version",
+        "run_id",
+        "snapshot_started_at_ms",
+        "snapshot_completed_at_ms",
+        "captured_row_count",
+        "source_bytes",
+        "gtid_sha256",
+        "query_sha256",
+        "source_binding_sha256",
+        "manifest_core_sha256",
+        "source_sha256",
+        "plan_sha256",
+        "preflight_policy",
+        "contains_source_values",
+        "production_evidence",
+    }
+    if set(boundary) != boundary_fields or set(proof) != proof_fields:
+        raise EtlError("snapshot attestation payload has an invalid shape")
+    if boundary.get("schema_version") != 1 or proof.get("schema_version") != 1:
+        raise EtlError("snapshot attestation payload version is unsupported")
+    started = _attestation_integer(boundary.get("snapshot_started_at_ms"), "start time")
+    completed = _attestation_integer(boundary.get("snapshot_completed_at_ms"), "end time")
+    _attestation_integer(proof.get("snapshot_started_at_ms"), "proof start time")
+    _attestation_integer(proof.get("snapshot_completed_at_ms"), "proof end time")
+    captured_row_count = _attestation_integer(
+        proof.get("captured_row_count"), "captured row count"
+    )
+    manifest_row_count = _attestation_integer(manifest.get("row_count"), "manifest row count")
+    manifest_reject_count = _attestation_integer(
+        manifest.get("reject_count"), "manifest reject count"
+    )
+    _attestation_integer(proof.get("source_bytes"), "source size")
+    window = manifest.get("window")
+    if not isinstance(window, dict):
+        raise EtlError("snapshot attestation cannot bind an invalid manifest window")
+    window_start = _attestation_integer(window.get("start_ms"), "manifest window start")
+    window_end = _attestation_integer(window.get("end_ms"), "manifest window end")
+    if (
+        started > completed
+        or started < window_start
+        or completed > window_end
+        or proof["snapshot_started_at_ms"] != started
+        or proof["snapshot_completed_at_ms"] != completed
+        or captured_row_count != manifest_row_count + manifest_reject_count
+    ):
+        raise EtlError("snapshot attestation timing or row count differs from manifest")
+    gtid = boundary.get("gtid_before_snapshot")
+    if not isinstance(gtid, str) or not gtid or len(gtid.encode("utf-8")) > 4 * 1024 * 1024:
+        raise EtlError("snapshot attestation GTID boundary is invalid")
+    try:
+        gtid_bytes = gtid.encode("ascii", errors="strict")
+    except UnicodeEncodeError as error:
+        raise EtlError("snapshot attestation GTID boundary is invalid") from error
+    if sha256_bytes(gtid_bytes) != boundary.get("gtid_sha256"):
+        raise EtlError("snapshot attestation GTID digest mismatch")
+    common = (
+        "run_id",
+        "gtid_sha256",
+        "query_sha256",
+        "source_binding_sha256",
+        "manifest_core_sha256",
+        "source_sha256",
+        "plan_sha256",
+        "preflight_policy",
+    )
+    if any(boundary.get(field) != proof.get(field) for field in common):
+        raise EtlError("snapshot proof and protected boundary disagree")
+    for field in (
+        "gtid_sha256",
+        "query_sha256",
+        "source_binding_sha256",
+        "manifest_core_sha256",
+        "source_sha256",
+        "plan_sha256",
+    ):
+        if not isinstance(boundary.get(field), str) or not SHA256.fullmatch(boundary[field]):
+            raise EtlError("snapshot attestation payload contains an invalid digest")
+    if (
+        boundary.get("run_id") != manifest.get("run_id")
+        or boundary.get("manifest_core_sha256") != manifest_core_sha256(manifest)
+        or boundary.get("manifest_core_sha256") != attestation.get("manifest_core_sha256")
+        or boundary.get("source_sha256") != manifest.get("source_sha256")
+        or boundary.get("plan_sha256") != manifest.get("plan_sha256")
+        or boundary.get("preflight_policy") != "mysql_gtid_row_full_innodb_v2"
+        or proof.get("contains_source_values") is not False
+        or proof.get("production_evidence") is not False
+    ):
+        raise EtlError("snapshot attestation does not bind the ETL manifest")
+    for field in (
+        "query_sha256",
+        "gtid_sha256",
+        "source_binding_sha256",
+        "manifest_core_sha256",
+    ):
+        if boundary.get(field) != attestation.get(field):
+            raise EtlError("snapshot attestation digest differs from manifest")
 
 
 def load_manifest(bundle: pathlib.Path) -> Mapping[str, Any]:
     try:
-        payload = (bundle / "manifest.json").read_bytes()
-        checksum_line = (bundle / "manifest.sha256").read_text(encoding="ascii").strip()
+        manifest_path = bundle / "manifest.json"
+        payload = bounded_regular_bytes(manifest_path, MAX_MANIFEST_BYTES, "bundle manifest")
+        checksum_line = bounded_regular_bytes(
+            bundle / "manifest.sha256", 256, "bundle manifest checksum"
+        ).decode("ascii").strip()
         expected_checksum, expected_name = checksum_line.split("  ", maxsplit=1)
         manifest_text = payload.decode("utf-8")
         manifest = strict_json(manifest_text)
@@ -670,6 +1500,7 @@ def load_manifest(bundle: pathlib.Path) -> Mapping[str, Any]:
         raise EtlError("bundle manifest checksum mismatch")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION:
         raise EtlError("bundle manifest version is unsupported")
+    _validate_snapshot_attestation_files(bundle, manifest)
     return manifest
 
 
@@ -678,10 +1509,14 @@ def read_chunk(bundle: pathlib.Path, chunk: Mapping[str, Any]) -> list[dict[str,
         relative = pathlib.PurePosixPath(chunk["path"])
         if relative.is_absolute() or ".." in relative.parts:
             raise EtlError("bundle contains an unsafe chunk path")
-        payload = bundle.joinpath(*relative.parts).read_bytes()
+        path = bundle.joinpath(*relative.parts)
+        payload = bounded_regular_bytes(path, MAX_CHUNK_BYTES, "bundle chunk")
         if sha256_bytes(payload) != chunk["sha256"]:
             raise EtlError("bundle chunk checksum mismatch")
-        lines = payload.decode("utf-8").splitlines()
+        if not payload.endswith(b"\n"):
+            raise EtlError("bundle chunk lacks its terminal record delimiter")
+        encoded_lines = payload[:-1].split(b"\n")
+        lines = [line.decode("utf-8") for line in encoded_lines]
         rows = [strict_json(line) for line in lines]
         if any(f"{canonical(row)}" != line for row, line in zip(rows, lines, strict=True)):
             raise EtlError("bundle chunk is not in canonical form")
@@ -733,6 +1568,20 @@ def _insert_and_verify(connection: sqlite3.Connection, table: Mapping[str, Any],
             raise EtlError("target key already contains different data")
 
 
+def _import_order_key(table: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[str | int, ...]:
+    order = table.get("import_order", table["primary_key"])
+    if (
+        not isinstance(order, list)
+        or not order
+        or any(column not in row for column in order)
+    ):
+        raise EtlError("bundle import order is invalid")
+    values = tuple(row[column] for column in order)
+    if any(isinstance(value, bool) or not isinstance(value, (str, int)) for value in values):
+        raise EtlError("bundle import order contains a non-scalar value")
+    return values
+
+
 def import_bundle(
     target: pathlib.Path,
     bundle: pathlib.Path,
@@ -759,6 +1608,7 @@ def import_bundle(
     try:
         for table in manifest["tables"]:
             for tenant in table["tenants"]:
+                previous_order: tuple[str | int, ...] | None = None
                 for chunk in tenant["chunks"]:
                     checkpoint = None
                     if not dry_run:
@@ -771,6 +1621,19 @@ def import_bundle(
                         skipped += 1
                         continue
                     rows = read_chunk(bundle, chunk)
+                    for row in rows:
+                        current_order = _import_order_key(table, row)
+                        try:
+                            if previous_order is not None and current_order < previous_order:
+                                raise EtlError("bundle rows violate their declared import order")
+                        except TypeError as error:
+                            raise EtlError("bundle import order has inconsistent scalar types") from error
+                        previous_order = current_order
+                    tenant_column = table.get("tenant_column")
+                    if tenant_column is not None and any(
+                        row.get(tenant_column) != tenant["tenant"] for row in rows
+                    ):
+                        raise EtlError("bundle row differs from its tenant section")
                     if not dry_run:
                         connection.execute("BEGIN IMMEDIATE")
                     try:
@@ -809,166 +1672,331 @@ def import_bundle(
     return {"applied_chunks": applied, "skipped_chunks": skipped, "validated_rows": applied_rows}
 
 
-def _expected_rows(bundle: pathlib.Path, manifest: Mapping[str, Any]) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    result: dict[str, dict[str, list[dict[str, Any]]]] = {}
-    for table in manifest["tables"]:
-        result[table["name"]] = {}
-        for tenant in table["tenants"]:
-            rows: list[dict[str, Any]] = []
-            for chunk in tenant["chunks"]:
-                rows.extend(read_chunk(bundle, chunk))
-            result[table["name"]][tenant["tenant"]] = rows
-    return result
-
-
-def _actual_rows(
-    connection: sqlite3.Connection, table: Mapping[str, Any], tenant: str
-) -> list[dict[str, Any]]:
-    columns = table["columns"]
-    sql = (
-        f"SELECT {', '.join(quote(column) for column in columns)} FROM {quote(table['name'])} "
-        f"WHERE {quote(table['tenant_column'])} = ?"
+def _reconciliation_database(path: pathlib.Path) -> sqlite3.Connection:
+    connection = _create_staging_database(path)
+    connection.execute("PRAGMA secure_delete = ON")
+    connection.executescript(
+        """
+        DROP TABLE staged_tenants;
+        DROP TABLE staged_rows;
+        CREATE TABLE reconciliation_scopes (
+          side INTEGER NOT NULL CHECK(side IN (0, 1)),
+          table_name TEXT NOT NULL,
+          tenant TEXT NOT NULL,
+          PRIMARY KEY(side, table_name, tenant)
+        ) WITHOUT ROWID;
+        CREATE TABLE reconciliation_rows (
+          side INTEGER NOT NULL CHECK(side IN (0, 1)),
+          table_name TEXT NOT NULL,
+          tenant TEXT NOT NULL,
+          logical_key TEXT NOT NULL,
+          row_hash TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          PRIMARY KEY(side, table_name, tenant, logical_key)
+        ) WITHOUT ROWID;
+        CREATE INDEX reconciliation_rows_scope
+          ON reconciliation_rows(side, table_name, tenant);
+        """
     )
-    return [dict(row) for row in connection.execute(sql, (tenant,))]
+    return connection
 
 
-def _keyed(rows: Iterable[Mapping[str, Any]], primary_key: Sequence[str]) -> dict[tuple[Any, ...], str]:
-    result: dict[tuple[Any, ...], str] = {}
-    for row in rows:
-        key = tuple(row[column] for column in primary_key)
-        result[key] = sha256_json(row)
-    return result
+def _stage_reconciliation(
+    staging: sqlite3.Connection,
+    target: sqlite3.Connection,
+    bundle: pathlib.Path,
+    manifest: Mapping[str, Any],
+) -> None:
+    insert_scope = "INSERT OR IGNORE INTO reconciliation_scopes VALUES (?, ?, ?)"
+    insert_row = "INSERT INTO reconciliation_rows VALUES (?, ?, ?, ?, ?, ?)"
+    processed = 0
+    for table in manifest["tables"]:
+        name = table["name"]
+        columns = table["columns"]
+        primary_key = table["primary_key"]
+        for tenant in table["tenants"]:
+            tenant_value = tenant["tenant"]
+            staging.execute(insert_scope, (0, name, tenant_value))
+            for chunk in tenant["chunks"]:
+                for row in read_chunk(bundle, chunk):
+                    tenant_column = table.get("tenant_column")
+                    if set(row) != set(columns) or (
+                        tenant_column is not None and row[tenant_column] != tenant_value
+                    ):
+                        raise EtlError("bundle reconciliation row differs from its manifest scope")
+                    logical_key = canonical([row[column] for column in primary_key])
+                    try:
+                        staging.execute(
+                            insert_row,
+                            (0, name, tenant_value, logical_key, sha256_json(row), canonical(row)),
+                        )
+                    except sqlite3.IntegrityError as error:
+                        raise EtlError("bundle repeats a reconciliation logical record") from error
+                    processed += 1
+                    if processed % 10_000 == 0:
+                        staging.commit()
+        select = f"SELECT {', '.join(quote(column) for column in columns)} FROM {quote(name)}"
+        for raw_row in target.execute(select):
+            row = dict(raw_row)
+            logical_key = canonical([row[column] for column in primary_key])
+            expected_tenants = staging.execute(
+                "SELECT tenant FROM reconciliation_rows "
+                "WHERE side=0 AND table_name=? AND logical_key=? ORDER BY tenant LIMIT 2",
+                (name, logical_key),
+            ).fetchall()
+            if len(expected_tenants) > 1:
+                raise EtlError("bundle maps one target key to multiple tenants")
+            if expected_tenants:
+                tenant_value = expected_tenants[0][0]
+            elif table.get("tenant_column") is not None:
+                tenant_value = row[table["tenant_column"]]
+            else:
+                tenant_value = "target-only"
+            if not isinstance(tenant_value, str) or not SAFE_LABEL.fullmatch(tenant_value):
+                raise EtlError("target contains an invalid tenant scope")
+            staging.execute(insert_scope, (1, name, tenant_value))
+            staging.execute(
+                insert_row,
+                (1, name, tenant_value, logical_key, sha256_json(row), canonical(row)),
+            )
+            processed += 1
+            if processed % 10_000 == 0:
+                staging.commit()
+    staging.commit()
 
 
-def _relationship_violations(
-    rows: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+def _json_value(alias: str, column: str) -> str:
+    quote(column)
+    return f"json_extract({alias}.payload, '$.{column}')"
+
+
+def _relationship_violations_disk(
+    staging: sqlite3.Connection,
     tables: Sequence[Mapping[str, Any]],
+    side: int,
 ) -> int:
     violations = 0
-    table_lookup = {table["name"]: table for table in tables}
     for table in tables:
         for foreign_key in table["foreign_keys"]:
-            referenced_table = table_lookup[foreign_key["references"]["table"]]
-            for tenant, local_rows in rows[table["name"]].items():
-                if foreign_key.get("same_tenant", True):
-                    referenced_rows = rows[referenced_table["name"]].get(tenant, [])
-                else:
-                    referenced_rows = [row for values in rows[referenced_table["name"]].values() for row in values]
-                reference_keys = {
-                    tuple(row[column] for column in foreign_key["references"]["columns"])
-                    for row in referenced_rows
-                }
-                for row in local_rows:
-                    key = tuple(row[column] for column in foreign_key["columns"])
-                    if any(value is None for value in key):
-                        continue
-                    if key not in reference_keys:
-                        violations += 1
+            local_values = [
+                _json_value("child", column) for column in foreign_key["columns"]
+            ]
+            remote_values = [
+                _json_value("parent", column)
+                for column in foreign_key["references"]["columns"]
+            ]
+            non_null = " AND ".join(f"{value} IS NOT NULL" for value in local_values)
+            equality = " AND ".join(
+                f"{left} IS {right}"
+                for left, right in zip(local_values, remote_values, strict=True)
+            )
+            tenant = " AND parent.tenant = child.tenant" if foreign_key.get("same_tenant", True) else ""
+            query = f"""
+                SELECT COUNT(*) FROM reconciliation_rows AS child
+                WHERE child.side = ? AND child.table_name = ? AND {non_null}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM reconciliation_rows AS parent
+                    WHERE parent.side = ? AND parent.table_name = ?{tenant} AND {equality}
+                  )
+            """
+            violations += staging.execute(
+                query,
+                (
+                    side,
+                    table["name"],
+                    side,
+                    foreign_key["references"]["table"],
+                ),
+            ).fetchone()[0]
     return violations
 
 
-def _aggregate_mismatches(
-    expected: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
-    actual: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+def _aggregate_value(
+    staging: sqlite3.Connection,
+    table: str,
+    tenant: str,
+    side: int,
+    aggregate: Mapping[str, Any],
+) -> int:
+    if aggregate["operation"] == "count":
+        expression = "COUNT(*)"
+    else:
+        expression = f"COALESCE(SUM({_json_value('item', aggregate['column'])}), 0)"
+    return staging.execute(
+        f"SELECT {expression} FROM reconciliation_rows AS item "
+        "WHERE item.side = ? AND item.table_name = ? AND item.tenant = ?",
+        (side, table, tenant),
+    ).fetchone()[0]
+
+
+def _aggregate_mismatches_disk(
+    staging: sqlite3.Connection,
     tables: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     report: list[dict[str, Any]] = []
     for table in tables:
         mismatch_count = 0
-        for aggregate in table["aggregates"]:
-            for tenant, expected_rows in expected[table["name"]].items():
-                actual_rows = actual[table["name"]].get(tenant, [])
-                if aggregate["operation"] == "count":
-                    left, right = len(expected_rows), len(actual_rows)
-                else:
-                    column = aggregate["column"]
-                    left = sum(row[column] for row in expected_rows if row[column] is not None)
-                    right = sum(row[column] for row in actual_rows if row[column] is not None)
+        tenants = staging.execute(
+            "SELECT DISTINCT tenant FROM reconciliation_scopes WHERE table_name = ? ORDER BY tenant",
+            (table["name"],),
+        )
+        for (tenant,) in tenants:
+            for aggregate in table["aggregates"]:
+                left = _aggregate_value(staging, table["name"], tenant, 0, aggregate)
+                right = _aggregate_value(staging, table["name"], tenant, 1, aggregate)
                 mismatch_count += int(left != right)
         report.append({"table": table["name"], "aggregate_mismatches": mismatch_count})
     return report
 
 
-def _semantic_violations(
-    rows: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+def _semantic_violations_disk(
+    staging: sqlite3.Connection,
     rules: Sequence[Mapping[str, Any]],
+    side: int,
 ) -> dict[str, int]:
     result: dict[str, int] = {}
     for rule in rules:
-        violations = 0
         if rule["kind"] == "unique_per_tenant":
-            for values in rows[rule["table"]].values():
-                seen: set[Any] = set()
-                for row in values:
-                    value = row[rule["column"]]
-                    if value in seen:
-                        violations += 1
-                    seen.add(value)
-        elif rule["kind"] == "owner_membership":
-            parent_rows = rows[rule["parent_table"]]
-            membership_rows = rows[rule["membership_table"]]
-            for tenant, parents in parent_rows.items():
-                memberships = membership_rows.get(tenant, [])
-                valid = {
-                    (member[rule["membership_parent_column"]], member[rule["membership_user_column"]])
-                    for member in memberships
-                    if member[rule["role_column"]] == rule["required_role"]
-                    and member[rule["state_column"]] == rule["required_state"]
-                }
-                for parent in parents:
-                    key = (parent[rule["parent_id_column"]], parent[rule["owner_column"]])
-                    if key not in valid:
-                        violations += 1
+            value = _json_value("item", rule["column"])
+            query = f"""
+                SELECT COALESCE(SUM(duplicates), 0) FROM (
+                  SELECT COUNT(*) - 1 AS duplicates
+                  FROM reconciliation_rows AS item
+                  WHERE item.side = ? AND item.table_name = ?
+                  GROUP BY item.tenant, {value}
+                  HAVING COUNT(*) > 1
+                )
+            """
+            violations = staging.execute(query, (side, rule["table"])).fetchone()[0]
+        else:
+            parent_id = _json_value("parent", rule["parent_id_column"])
+            owner = _json_value("parent", rule["owner_column"])
+            member_parent = _json_value("member", rule["membership_parent_column"])
+            member_user = _json_value("member", rule["membership_user_column"])
+            role = _json_value("member", rule["role_column"])
+            state = _json_value("member", rule["state_column"])
+            query = f"""
+                SELECT COUNT(*) FROM reconciliation_rows AS parent
+                WHERE parent.side = ? AND parent.table_name = ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM reconciliation_rows AS member
+                    WHERE member.side = ? AND member.table_name = ?
+                      AND member.tenant = parent.tenant
+                      AND {member_parent} IS {parent_id}
+                      AND {member_user} IS {owner}
+                      AND {role} IS ? AND {state} IS ?
+                  )
+            """
+            violations = staging.execute(
+                query,
+                (
+                    side,
+                    rule["parent_table"],
+                    side,
+                    rule["membership_table"],
+                    rule["required_role"],
+                    rule["required_state"],
+                ),
+            ).fetchone()[0]
         result[rule["name"]] = violations
     return result
 
 
 def reconcile_bundle(target: pathlib.Path, bundle: pathlib.Path) -> Mapping[str, Any]:
     manifest = load_manifest(bundle)
-    expected = _expected_rows(bundle, manifest)
-    connection = sqlite3.connect(target)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    actual: dict[str, dict[str, list[dict[str, Any]]]] = {}
-    sections: list[dict[str, Any]] = []
-    mismatch_total = 0
     try:
-        for table in manifest["tables"]:
-            actual[table["name"]] = {}
-            for tenant in table["tenants"]:
-                tenant_value = tenant["tenant"]
-                expected_rows = expected[table["name"]][tenant_value]
-                actual_rows = _actual_rows(connection, table, tenant_value)
-                actual[table["name"]][tenant_value] = actual_rows
-                expected_keyed = _keyed(expected_rows, table["primary_key"])
-                actual_keyed = _keyed(actual_rows, table["primary_key"])
-                missing = len(expected_keyed.keys() - actual_keyed.keys())
-                extra = len(actual_keyed.keys() - expected_keyed.keys())
-                changed = sum(
-                    expected_keyed[key] != actual_keyed[key]
-                    for key in expected_keyed.keys() & actual_keyed.keys()
-                )
+        scratch_parent = bundle.parent.resolve(strict=True)
+        scratch_metadata = scratch_parent.lstat()
+    except OSError as error:
+        raise EtlError("reconciliation scratch parent is unavailable") from error
+    if (
+        not stat.S_ISDIR(scratch_metadata.st_mode)
+        or stat.S_ISLNK(scratch_metadata.st_mode)
+        or scratch_metadata.st_uid != os.getuid()
+        or scratch_metadata.st_mode & 0o077
+    ):
+        raise EtlError("reconciliation scratch parent must be owner-private")
+    try:
+        target_uri = target.resolve(strict=True).as_uri() + "?mode=ro"
+    except OSError as error:
+        raise EtlError("reconciliation target is unavailable") from error
+    with tempfile.TemporaryDirectory(
+        prefix=".frame-etl-reconcile-", dir=scratch_parent
+    ) as raw:
+        staging_path = pathlib.Path(raw)
+        staging_path.chmod(0o700)
+        staging = _reconciliation_database(staging_path / "reconciliation.sqlite")
+        target_connection = sqlite3.connect(target_uri, uri=True)
+        target_connection.row_factory = sqlite3.Row
+        target_connection.execute("PRAGMA foreign_keys = ON")
+        target_connection.execute("PRAGMA query_only = ON")
+        target_connection.execute("BEGIN")
+        try:
+            _stage_reconciliation(staging, target_connection, bundle, manifest)
+            sections: list[dict[str, Any]] = []
+            mismatch_total = 0
+            scopes = staging.execute(
+                "SELECT table_name, tenant FROM reconciliation_scopes "
+                "GROUP BY table_name, tenant ORDER BY table_name, tenant"
+            )
+            for table_name, tenant in scopes:
+                if len(sections) >= MAX_MANIFEST_SECTIONS:
+                    raise EtlError("reconciliation exceeds the supported tenant-section count")
+                expected_rows, actual_rows = staging.execute(
+                    "SELECT SUM(CASE WHEN side = 0 THEN 1 ELSE 0 END), "
+                    "SUM(CASE WHEN side = 1 THEN 1 ELSE 0 END) "
+                    "FROM reconciliation_rows WHERE table_name = ? AND tenant = ?",
+                    (table_name, tenant),
+                ).fetchone()
+                expected_rows = expected_rows or 0
+                actual_rows = actual_rows or 0
+                missing = staging.execute(
+                    "SELECT COUNT(*) FROM reconciliation_rows AS expected "
+                    "WHERE expected.side = 0 AND expected.table_name = ? AND expected.tenant = ? "
+                    "AND NOT EXISTS (SELECT 1 FROM reconciliation_rows AS actual "
+                    "WHERE actual.side = 1 AND actual.table_name = expected.table_name "
+                    "AND actual.tenant = expected.tenant AND actual.logical_key = expected.logical_key)",
+                    (table_name, tenant),
+                ).fetchone()[0]
+                extra = staging.execute(
+                    "SELECT COUNT(*) FROM reconciliation_rows AS actual "
+                    "WHERE actual.side = 1 AND actual.table_name = ? AND actual.tenant = ? "
+                    "AND NOT EXISTS (SELECT 1 FROM reconciliation_rows AS expected "
+                    "WHERE expected.side = 0 AND expected.table_name = actual.table_name "
+                    "AND expected.tenant = actual.tenant AND expected.logical_key = actual.logical_key)",
+                    (table_name, tenant),
+                ).fetchone()[0]
+                changed = staging.execute(
+                    "SELECT COUNT(*) FROM reconciliation_rows AS expected "
+                    "JOIN reconciliation_rows AS actual ON actual.side = 1 "
+                    "AND actual.table_name = expected.table_name AND actual.tenant = expected.tenant "
+                    "AND actual.logical_key = expected.logical_key "
+                    "WHERE expected.side = 0 AND expected.table_name = ? AND expected.tenant = ? "
+                    "AND expected.row_hash != actual.row_hash",
+                    (table_name, tenant),
+                ).fetchone()[0]
                 mismatch_total += missing + extra + changed
                 sections.append(
                     {
-                        "table": table["name"],
-                        "tenant_digest": tenant["tenant_digest"],
-                        "expected_rows": len(expected_rows),
-                        "actual_rows": len(actual_rows),
+                        "table": table_name,
+                        "tenant_digest": tenant_digest(tenant),
+                        "expected_rows": expected_rows,
+                        "actual_rows": actual_rows,
                         "missing_primary_keys": missing,
                         "extra_primary_keys": extra,
                         "field_hash_mismatches": changed,
                     }
                 )
-        expected_relationship = _relationship_violations(expected, manifest["tables"])
-        actual_relationship = _relationship_violations(actual, manifest["tables"])
-        sqlite_foreign_keys = len(connection.execute("PRAGMA foreign_key_check").fetchall())
-    finally:
-        connection.close()
-    aggregate_report = _aggregate_mismatches(expected, actual, manifest["tables"])
+            expected_relationship = _relationship_violations_disk(staging, manifest["tables"], 0)
+            actual_relationship = _relationship_violations_disk(staging, manifest["tables"], 1)
+            sqlite_foreign_keys = sum(1 for _row in target_connection.execute("PRAGMA foreign_key_check"))
+            aggregate_report = _aggregate_mismatches_disk(staging, manifest["tables"])
+            expected_semantics = _semantic_violations_disk(staging, manifest["semantic_rules"], 0)
+            actual_semantics = _semantic_violations_disk(staging, manifest["semantic_rules"], 1)
+        finally:
+            target_connection.close()
+            staging.close()
     aggregate_mismatches = sum(section["aggregate_mismatches"] for section in aggregate_report)
-    expected_semantics = _semantic_violations(expected, manifest["semantic_rules"])
-    actual_semantics = _semantic_violations(actual, manifest["semantic_rules"])
     semantic_report = [
         {
             "name": name,

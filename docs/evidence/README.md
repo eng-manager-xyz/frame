@@ -3,7 +3,37 @@
 Repository checks produce reproducible evidence; provider and human gates are
 attached to the immutable release record rather than fabricated in source.
 
+The [checkbox closure inventory](../../fixtures/closure/v1/README.md) assigns
+all 553 issue deliverable/acceptance checkboxes to locally satisfied,
+protected-pending, or true local-gap status. Its checker pins the complete
+requirement text and fails on missing evidence or classification drift:
+
+```sh
+python3 -I scripts/ci/check-issue-closure.py
+```
+
+This audit is a ledger, not a waiver: protected records remain pending and a
+local gap remains open even when a surrounding design document or fake passes.
+
 ## Local and CI evidence
+
+The [API and workflow parity v1 record](api-workflow-parity-local.md) freezes the
+pinned route/action/RPC/workflow inventory and the local admission, webhook,
+compatibility, retry, fault, and state-machine load evidence. It explicitly
+does not promote endpoint adapters, protected providers, or retirements.
+
+The [Leptos authenticated-web local record](leptos-authenticated-web-local.md)
+binds 17 private routes to owner/admin/member and denial states, form/query
+contracts, legacy redirects, and loopback SSR/privacy/performance checks. It
+explicitly leaves production adapters, cross-browser visual diffs, named
+screen-reader checks, billing/provider journeys, and route cutover pending.
+
+The [share/player v1 local record](share-player-local.md) binds the privacy
+matrix, descriptor scope, range planner, accessible SSR/hydration controls,
+embed protocol, comments, transcripts, analytics consent, legacy links, custom
+domains, and cache revisions. Its browser/device rows remain explicitly
+protected pending real media, providers, assistive technology, and production
+adapters.
 
 The following are required from a clean checkout:
 
@@ -25,6 +55,23 @@ and [D1 aggregate repository conformance](d1-repository-local.md) for the exact
 local proofs and their deliberately narrow evidence boundaries. Test output
 must retain the first failure; retries may establish flakiness but cannot
 replace a failing release result.
+
+Organization policy, race, tenant-boundary, retention, and dry-run graph-repair
+proof is bounded in
+[organization repository local conformance](organization-d1-local.md). The
+current repaired SQL semantics have network-free SQLite evidence; the older
+compiled Wrangler artifact is explicitly stale until rerun.
+
+The [local media-conformance record](media-conformance-local.md) freezes the
+Issue-29 matrix, comparator, boundary, fault, idempotency, resource, dashboard,
+and seeded-fuzz contracts. It explicitly leaves provider, cross-executor,
+hardware, permission, and one-hour platform evidence protected.
+
+Storage authorization, signed-grant, custom-domain, cache-generation,
+manifest-lifecycle, hold, restore, export, and erasure contracts are bounded in
+[storage governance local evidence](storage-governance-local.md). Provider
+cache timing, bucket/encryption inspection, malware, and real erasure remain
+protected rather than inferred from those local tests.
 
 ## Protected evidence
 

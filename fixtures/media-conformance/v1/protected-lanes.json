@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "plan_id": "media-conformance-protected-v1",
+  "admission_policy": {
+    "synthetic_inputs_only": true,
+    "isolated_namespace_required": true,
+    "scoped_credentials_required": true,
+    "concurrency": 1,
+    "hard_timeout_required": true,
+    "cleanup_exact_prefix_only": true,
+    "cost_approval_required": true,
+    "waiver_required_fields": ["owner", "user_impact", "expiry", "cost_security_review", "rollback"]
+  },
+  "records": [
+    {
+      "id": "native-macos-arm64-capture-and-soak",
+      "lane": "native_hardware",
+      "trigger": "manual_dedicated_runner",
+      "required_runner_labels": ["self-hosted", "media-conformance", "macos", "arm64"],
+      "minimum_soak_seconds": 3600,
+      "required_cases": ["display", "window", "region", "camera", "microphone", "system_audio", "permission_denied", "device_lost", "hardware_encoder_failure", "software_fallback"],
+      "status": "not_collected",
+      "evidence_sha256": null,
+      "observed_at": null,
+      "cost_microunits": null,
+      "promotion_effect": "blocks_release"
+    },
+    {
+      "id": "native-windows-x86-64-capture-and-soak",
+      "lane": "native_hardware",
+      "trigger": "manual_dedicated_runner",
+      "required_runner_labels": ["self-hosted", "media-conformance", "windows", "x86_64"],
+      "minimum_soak_seconds": 3600,
+      "required_cases": ["display", "window", "region", "camera", "microphone", "system_audio", "permission_denied", "device_lost", "hardware_encoder_failure", "software_fallback"],
+      "status": "not_collected",
+      "evidence_sha256": null,
+      "observed_at": null,
+      "cost_microunits": null,
+      "promotion_effect": "blocks_release"
+    },
+    {
+      "id": "native-linux-x86-64-preview-capture-and-soak",
+      "lane": "native_hardware",
+      "trigger": "manual_dedicated_runner",
+      "required_runner_labels": ["self-hosted", "media-conformance", "linux", "x86_64"],
+      "minimum_soak_seconds": 3600,
+      "required_cases": ["display", "window", "region", "camera", "microphone", "system_audio", "permission_denied", "device_lost", "hardware_encoder_failure", "software_fallback"],
+      "status": "not_collected",
+      "evidence_sha256": null,
+      "observed_at": null,
+      "cost_microunits": null,
+      "promotion_effect": "blocks_preview_promotion"
+    },
+    {
+      "id": "managed-cloudflare-media-remote",
+      "lane": "remote_managed",
+      "trigger": "scheduled_or_manual_protected_environment",
+      "required_runner_labels": ["ubuntu-24.04"],
+      "minimum_soak_seconds": 0,
+      "required_cases": ["exact_and_just_over_limits", "provider_error", "provider_outage", "provider_quota", "timeout", "cancellation", "managed_output_drift", "kill_switch", "one_logical_r2_result", "d1_reconciliation", "usage_and_cost"],
+      "status": "not_collected",
+      "evidence_sha256": null,
+      "observed_at": null,
+      "cost_microunits": null,
+      "promotion_effect": "blocks_managed_release"
+    },
+    {
+      "id": "cross-executor-generated-media-conformance",
+      "lane": "cross_executor",
+      "trigger": "scheduled_or_manual_protected_environment",
+      "required_runner_labels": ["self-hosted", "media-conformance", "representative-codec-path"],
+      "minimum_soak_seconds": 0,
+      "required_cases": ["metadata", "playback", "frame_perceptual", "audio_waveform", "av_sync", "caption_timing", "deterministic_key", "fallback", "cost"],
+      "status": "not_collected",
+      "evidence_sha256": null,
+      "observed_at": null,
+      "cost_microunits": null,
+      "promotion_effect": "blocks_release"
+    },
+    {
+      "id": "external-provider-adapter-conformance",
+      "lane": "external_provider",
+      "trigger": "manual_protected_environment",
+      "required_runner_labels": ["ubuntu-24.04"],
+      "minimum_soak_seconds": 0,
+      "required_cases": ["transcription_quality", "caption_timing", "ai_cleanup_product_review", "provider_error", "provider_outage", "provider_quota", "timeout", "cancellation", "idempotency", "usage_and_cost"],
+      "status": "not_collected",
+      "evidence_sha256": null,
+      "observed_at": null,
+      "cost_microunits": null,
+      "promotion_effect": "blocks_external_profiles"
+    },
+    {
+      "id": "seeded-fuzz-and-crash-triage",
+      "lane": "scheduled_fuzz",
+      "trigger": "weekly_unprivileged",
+      "required_runner_labels": ["ubuntu-24.04"],
+      "minimum_soak_seconds": 0,
+      "required_cases": ["probe_manifest", "progress_trace", "resource_trace", "fault_matrix", "logical_result", "corpus_minimization", "crash_triage"],
+      "status": "not_collected",
+      "evidence_sha256": null,
+      "observed_at": null,
+      "cost_microunits": 0,
+      "promotion_effect": "blocks_fuzz_gate"
+    }
+  ]
+}

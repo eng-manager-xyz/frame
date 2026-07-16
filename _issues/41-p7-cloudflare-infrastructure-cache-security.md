@@ -242,6 +242,12 @@ explicitly test CORS preflights.
 - WAF/rate-limit observation and enforcement report.
 - Drift, remote-state restore, scoped purge, and rollback rehearsal.
 
+Local direct-upload implementation and adversarial SQLite evidence are tracked
+in [`docs/evidence/direct-upload-local.md`](../docs/evidence/direct-upload-local.md).
+That report deliberately leaves hosted R2 SigV4, checksum, CORS denial, and
+provider lifecycle behavior unchecked until protected credentials and a
+non-production bucket are available.
+
 ## Risks and open questions
 
 - A Terraform ruleset is authoritative for its whole phase, so incomplete

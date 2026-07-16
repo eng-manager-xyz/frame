@@ -1,0 +1,262 @@
+{
+  "schema": "frame.web-authenticated-route-matrix.v1",
+  "reference": "CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b",
+  "rendering": "leptos-ssr-progressive-hydration",
+  "roles": ["owner", "admin", "member"],
+  "states": ["loading", "ready", "empty", "denied", "failed", "unauthenticated"],
+  "themes": ["system", "dark", "light"],
+  "breakpoints": [
+    {"name": "mobile", "width": 390, "height": 844},
+    {"name": "tablet", "width": 768, "height": 1024},
+    {"name": "desktop", "width": 1440, "height": 1000}
+  ],
+  "budgets": {
+    "server_render_p95_ms": 750,
+    "api_p95_ms": 500,
+    "html_bytes": 131072,
+    "hydration_wasm_bytes": 2000000,
+    "hydration_javascript_bytes": 500000
+  },
+  "auth_routes": [
+    {
+      "path": "/login",
+      "component": "login-form",
+      "journey": "request-one-time-code",
+      "post_state": "adapter_pending_fail_closed"
+    },
+    {
+      "path": "/signup",
+      "component": "signup-form",
+      "journey": "create-and-verify-account",
+      "post_state": "adapter_pending_fail_closed"
+    },
+    {
+      "path": "/verify",
+      "component": "otp-form",
+      "journey": "verify-pending-challenge",
+      "post_state": "adapter_pending_fail_closed"
+    }
+  ],
+  "routes": [
+    {
+      "name": "dashboard",
+      "pattern": "/dashboard",
+      "fixture_path": "/dashboard",
+      "component": "recording-overview",
+      "journey": "inspect-recent-recordings",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "workspace.dashboard.load.v1",
+      "mutation": null,
+      "rollout_flag": "web.dashboard.v1",
+      "legacy_aliases": []
+    },
+    {
+      "name": "library",
+      "pattern": "/library",
+      "fixture_path": "/library",
+      "component": "recording-library",
+      "journey": "search-filter-and-open-recording",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "workspace.library.list.v1",
+      "mutation": null,
+      "rollout_flag": "web.library.v1",
+      "legacy_aliases": []
+    },
+    {
+      "name": "spaces",
+      "pattern": "/spaces",
+      "fixture_path": "/spaces",
+      "component": "space-list",
+      "journey": "list-and-create-space",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "organization.spaces.list.v1",
+      "mutation": "organization.spaces.create.v1",
+      "rollout_flag": "web.spaces.v1",
+      "legacy_aliases": ["/dashboard/spaces"]
+    },
+    {
+      "name": "space",
+      "pattern": "/spaces/{space_id}",
+      "fixture_path": "/spaces/fixture-space",
+      "component": "space-detail",
+      "journey": "inspect-space-members-and-recordings",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "organization.spaces.get.v1",
+      "mutation": null,
+      "rollout_flag": "web.spaces.v1",
+      "legacy_aliases": ["/dashboard/spaces/fixture-space"]
+    },
+    {
+      "name": "folders",
+      "pattern": "/folders",
+      "fixture_path": "/folders",
+      "component": "folder-list",
+      "journey": "list-and-create-folder",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "organization.folders.list.v1",
+      "mutation": "organization.folders.create.v1",
+      "rollout_flag": "web.folders.v1",
+      "legacy_aliases": ["/dashboard/folders"]
+    },
+    {
+      "name": "folder",
+      "pattern": "/folders/{folder_id}",
+      "fixture_path": "/folders/fixture-folder",
+      "component": "folder-detail",
+      "journey": "inspect-folder-recordings",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "organization.folders.get.v1",
+      "mutation": null,
+      "rollout_flag": "web.folders.v1",
+      "legacy_aliases": ["/dashboard/folders/fixture-folder"]
+    },
+    {
+      "name": "onboarding",
+      "pattern": "/onboarding",
+      "fixture_path": "/onboarding",
+      "component": "onboarding-form",
+      "journey": "complete-workspace-onboarding",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "organization.onboarding.load.v1",
+      "mutation": "organization.onboarding.complete.v1",
+      "rollout_flag": "web.onboarding.v1",
+      "legacy_aliases": []
+    },
+    {
+      "name": "imports",
+      "pattern": "/imports",
+      "fixture_path": "/imports",
+      "component": "import-progress",
+      "journey": "start-and-monitor-import",
+      "allowed_roles": ["owner", "admin"],
+      "api_operation": "business.imports.list.v1",
+      "mutation": "business.imports.start.v1",
+      "rollout_flag": "web.imports.v1",
+      "legacy_aliases": ["/dashboard/import"]
+    },
+    {
+      "name": "settings",
+      "pattern": "/settings",
+      "fixture_path": "/settings",
+      "component": "settings-index",
+      "journey": "choose-settings-surface",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "workspace.settings.load.v1",
+      "mutation": null,
+      "rollout_flag": "web.settings.v1",
+      "legacy_aliases": ["/dashboard/settings"]
+    },
+    {
+      "name": "account_settings",
+      "pattern": "/settings/account",
+      "fixture_path": "/settings/account",
+      "component": "account-form",
+      "journey": "update-account-and-revoke-sessions",
+      "allowed_roles": ["owner", "admin", "member"],
+      "api_operation": "identity.account.get.v1",
+      "mutation": "identity.account.update.v1",
+      "rollout_flag": "web.settings.account.v1",
+      "legacy_aliases": ["/dashboard/settings/account"]
+    },
+    {
+      "name": "organization_settings",
+      "pattern": "/settings/organization",
+      "fixture_path": "/settings/organization",
+      "component": "organization-form",
+      "journey": "update-organization-policy",
+      "allowed_roles": ["owner", "admin"],
+      "api_operation": "organization.settings.get.v1",
+      "mutation": "organization.settings.update.v1",
+      "rollout_flag": "web.settings.organization.v1",
+      "legacy_aliases": ["/dashboard/settings/organization"]
+    },
+    {
+      "name": "member_settings",
+      "pattern": "/settings/members",
+      "fixture_path": "/settings/members",
+      "component": "member-management",
+      "journey": "invite-and-manage-members",
+      "allowed_roles": ["owner", "admin"],
+      "api_operation": "organization.members.list.v1",
+      "mutation": "organization.members.manage.v1",
+      "rollout_flag": "web.settings.members.v1",
+      "legacy_aliases": ["/dashboard/settings/members"]
+    },
+    {
+      "name": "storage_settings",
+      "pattern": "/settings/storage",
+      "fixture_path": "/settings/storage",
+      "component": "storage-integration",
+      "journey": "configure-and-verify-storage",
+      "allowed_roles": ["owner", "admin"],
+      "api_operation": "business.storage.get.v1",
+      "mutation": "business.storage.configure.v1",
+      "rollout_flag": "web.settings.storage.v1",
+      "legacy_aliases": ["/dashboard/settings/storage"]
+    },
+    {
+      "name": "developer",
+      "pattern": "/developer",
+      "fixture_path": "/developer",
+      "component": "developer-credentials",
+      "journey": "create-and-revoke-api-credentials",
+      "allowed_roles": ["owner", "admin"],
+      "api_operation": "business.developer.list.v1",
+      "mutation": "business.developer.credentials.manage.v1",
+      "rollout_flag": "web.developer.v1",
+      "legacy_aliases": ["/dashboard/developers"]
+    },
+    {
+      "name": "billing",
+      "pattern": "/billing",
+      "fixture_path": "/billing",
+      "component": "billing-overview",
+      "journey": "inspect-plan-and-manage-billing",
+      "allowed_roles": ["owner"],
+      "api_operation": "business.billing.get.v1",
+      "mutation": "business.billing.manage.v1",
+      "rollout_flag": "web.billing.v1",
+      "legacy_aliases": ["/dashboard/billing"]
+    },
+    {
+      "name": "analytics",
+      "pattern": "/analytics",
+      "fixture_path": "/analytics",
+      "component": "analytics-overview",
+      "journey": "inspect-usage-and-consent",
+      "allowed_roles": ["owner", "admin"],
+      "api_operation": "business.analytics.get.v1",
+      "mutation": null,
+      "rollout_flag": "web.analytics.v1",
+      "legacy_aliases": ["/dashboard/analytics"]
+    },
+    {
+      "name": "admin",
+      "pattern": "/admin",
+      "fixture_path": "/admin",
+      "component": "admin-operations",
+      "journey": "inspect-and-run-audited-admin-operation",
+      "allowed_roles": ["owner", "admin"],
+      "api_operation": "business.admin.load.v1",
+      "mutation": "business.admin.execute.v1",
+      "rollout_flag": "web.admin.v1",
+      "legacy_aliases": []
+    }
+  ],
+  "local_evidence": {
+    "ssr_role_matrix": "scripts/ci/web-authenticated-parity.py",
+    "contract_checker": "scripts/ci/check-web-authenticated-parity.py",
+    "rust_tests": "cargo test --locked -p frame-web",
+    "browser_fixtures": "scripts/ci/web-authenticated-browser.py",
+    "browser_hydration": "scripts/ci/web-hydration-smoke.py"
+  },
+  "protected_evidence_pending": [
+    "production identity and session adapter journeys",
+    "production organization and business API adapter journeys",
+    "current and previous stable Firefox Safari and Edge visual journeys",
+    "manual keyboard and named screen-reader checks",
+    "protected billing provider sandbox journey",
+    "production-shaped p95 API and edge render measurements",
+    "owner-approved route-family cutover and timed rollback"
+  ]
+}

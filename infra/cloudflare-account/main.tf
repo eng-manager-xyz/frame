@@ -21,13 +21,13 @@ resource "cloudflare_r2_bucket_cors" "recordings" {
       origins = var.allowed_browser_origins
       methods = ["GET", "HEAD", "PUT"]
       headers = [
+        "content-length",
         "content-type",
         "if-match",
         "if-none-match",
         "range",
         "x-amz-checksum-sha256",
-        "x-amz-content-sha256",
-        "x-amz-date",
+        "x-amz-meta-frame-sha256",
       ]
     }
     expose_headers = [
@@ -44,8 +44,9 @@ resource "cloudflare_r2_bucket_lifecycle" "recordings" {
   account_id  = var.cloudflare_account_id
   bucket_name = cloudflare_r2_bucket.recordings.name
 
-  # Only abandoned multipart state is cleaned automatically. Published objects
-  # and user data are deleted by the manifest-driven hold/deletion workflow.
+  # The provider lifecycle aborts abandoned multipart state. The Worker uses
+  # an expiry receipt to delete browser-direct staging; published objects and
+  # user data remain manifest/hold/deletion-workflow authority.
   rules = [{
     id      = "abort-abandoned-frame-uploads"
     enabled = true

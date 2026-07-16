@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministically reject high-confidence secrets in tracked source/config.
+"""Deterministically reject high-confidence secrets in source/config.
 
 This scanner deliberately uses a small, reviewable rule set instead of entropy
-guessing. It scans the checked-out content of paths reported by ``git ls-files``
-and never prints a matched value. Run it with no arguments to execute both its
-fixture self-test and the repository scan.
+guessing. It scans the checked-out content of tracked and non-ignored untracked
+paths reported by ``git ls-files`` and never prints a matched value. Run it with
+no arguments to execute both its fixture self-test and the repository scan.
 """
 
 from __future__ import annotations
@@ -233,6 +233,12 @@ def scan_text(path: str, content: str) -> list[Finding]:
 
     for match in LITERAL_SECRET.finditer(content):
         value = match.group("value")
+        # Unquoted language identifiers such as ``PasswordGrant::Absent`` or
+        # ``secret_generator.generate`` are expressions, not embedded values.
+        # Keep scanning unquoted provider-style tokens, which contain a digit
+        # or punctuation outside an identifier path.
+        if not match.group("quote") and re.fullmatch(r"[A-Za-z_][A-Za-z_.:]*", value):
+            continue
         if is_safe_literal(value):
             continue
         findings.add(
@@ -294,6 +300,17 @@ def fixtures() -> tuple[Fixture, ...]:
             ),
             frozenset(),
         ),
+        Fixture(
+            "safe-language-expressions",
+            "\n".join(
+                (
+                    "password: PasswordGrant::Absent,",
+                    "request.password = PasswordGrant::Verified;",
+                    "let secret = secret_generator.generate();",
+                )
+            ),
+            frozenset(),
+        ),
     )
 
 
@@ -320,9 +337,18 @@ def repository_root() -> Path:
     return Path(completed.stdout.decode("utf-8").strip())
 
 
-def tracked_paths(root: Path) -> list[str]:
+def working_paths(root: Path) -> list[str]:
     completed = subprocess.run(
-        ["git", "-C", os.fspath(root), "ls-files", "--cached", "-z"],
+        [
+            "git",
+            "-C",
+            os.fspath(root),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -344,14 +370,14 @@ def is_source_or_config(path: str) -> bool:
     return bool(pure.parts and pure.parts[0] == "scripts")
 
 
-def read_tracked_text(root: Path, relative: str) -> tuple[str | None, str | None]:
+def read_working_text(root: Path, relative: str) -> tuple[str | None, str | None]:
     path = root / relative
     try:
         if path.is_symlink():
             return os.readlink(path), None
         data = path.read_bytes()
     except OSError as error:
-        return None, f"{relative}: cannot read tracked path: {error}"
+        return None, f"{relative}: cannot read working path: {error}"
 
     if len(data) > MAX_FILE_BYTES:
         return (
@@ -360,11 +386,11 @@ def read_tracked_text(root: Path, relative: str) -> tuple[str | None, str | None
             f"{MAX_FILE_BYTES} (split it or review the scanner limit)",
         )
     if b"\0" in data:
-        return None, f"{relative}: eligible tracked path is binary"
+        return None, f"{relative}: eligible working path is binary"
     try:
         return data.decode("utf-8"), None
     except UnicodeDecodeError as error:
-        return None, f"{relative}: eligible tracked path is not UTF-8: {error}"
+        return None, f"{relative}: eligible working path is not UTF-8: {error}"
 
 
 def scan_repository(root: Path) -> tuple[list[Finding], list[str], int]:
@@ -372,10 +398,10 @@ def scan_repository(root: Path) -> tuple[list[Finding], list[str], int]:
     errors: list[str] = []
     scanned = 0
 
-    for relative in tracked_paths(root):
+    for relative in working_paths(root):
         if not is_source_or_config(relative):
             continue
-        content, error = read_tracked_text(root, relative)
+        content, error = read_working_text(root, relative)
         if error is not None:
             errors.append(error)
             continue
@@ -402,7 +428,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument(
         "--scan-only",
         action="store_true",
-        help="scan tracked source/config without running fixture self-tests",
+        help="scan tracked and non-ignored untracked source/config without self-tests",
     )
     return parser.parse_args()
 
@@ -424,7 +450,7 @@ def main() -> int:
         root = repository_root()
         findings, scan_errors, scanned = scan_repository(root)
     except (OSError, subprocess.CalledProcessError, UnicodeDecodeError) as error:
-        print(f"secret scan failed: cannot enumerate tracked paths: {error}", file=sys.stderr)
+        print(f"secret scan failed: cannot enumerate working paths: {error}", file=sys.stderr)
         return 1
 
     print_errors("secret scan failed", scan_errors)
@@ -438,7 +464,7 @@ def main() -> int:
     if scan_errors or findings:
         return 1
 
-    print(f"secret scan passed ({scanned} tracked source/config files)")
+    print(f"secret scan passed ({scanned} working source/config files)")
     return 0
 
 

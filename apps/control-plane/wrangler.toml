@@ -7,6 +7,11 @@ workers_dev = false
 FRAME_DEPLOYMENT = "production"
 FRAME_PUBLIC_HOST = "frame.engmanager.xyz"
 FRAME_MEDIA_MODE = "remote"
+FRAME_R2_BUCKET_NAME = "frame-recordings"
+
+# Direct PUT signing also requires FRAME_R2_ACCOUNT_ID,
+# FRAME_R2_ACCESS_KEY_ID, and FRAME_R2_SECRET_ACCESS_KEY from the protected
+# Worker environment. Never commit them or expose them through Render.
 
 # Cloudflare matches the full URL, so the intentionally broad pattern catches
 # `/api?query` as well as `/api/*`. Raw-path and canonical-host checks narrow it.
@@ -34,3 +39,6 @@ preview_bucket_name = "frame-recordings-preview"
 [media]
 binding = "MEDIA"
 remote = true
+
+[triggers]
+crons = ["* * * * *"]

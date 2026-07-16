@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "fixture_id": "synthetic_segment_set_v1",
+  "license": {
+    "spdx": "CC0-1.0",
+    "customer_media": false
+  },
+  "sources": [
+    {
+      "ordinal": 0,
+      "media_fixture_id": "frame-synthetic-h264-aac-v1",
+      "sha256": "7e63a1e00ad2f12b52d0b68fd017a615501ab529f666839e1b6c491df4943dd0",
+      "bytes": 292382,
+      "content_type": "video/mp4",
+      "trim_start_ms": 0,
+      "trim_end_ms": 1000
+    },
+    {
+      "ordinal": 1,
+      "media_fixture_id": "frame-synthetic-h264-aac-v1",
+      "sha256": "7e63a1e00ad2f12b52d0b68fd017a615501ab529f666839e1b6c491df4943dd0",
+      "bytes": 292382,
+      "content_type": "video/mp4",
+      "trim_start_ms": 1000,
+      "trim_end_ms": 2000
+    }
+  ],
+  "expected": {
+    "dense_ordinals": true,
+    "duration_ms": 2000,
+    "content_type": "video/mp4",
+    "disposition": "protected_multisource_transport_gate"
+  }
+}

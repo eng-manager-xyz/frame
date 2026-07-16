@@ -8,18 +8,21 @@
 use frame_domain::{
     ApiKeyId, ApiKeyScope, AuthAuditAction, AuthAuditReason, AuthClientKind, AuthSessionRecord,
     AuthSessionState, CorrelationId, DeliveryDestinationRef, DurationMillis, HashKeyVersion,
-    IdentityProvisioningGrantId, ManagedApiKeyRecord, MultiRateLimitPolicy, OrganizationRole,
-    PrincipalSnapshot, RateLimitPolicy, SealedDeliveryEnvelope, SecretDigest,
-    SecretDigestCandidates, SessionFamilyId, SessionId, SessionMutationGrantId,
+    IdentityProvisioningGrantId, ManagedApiKeyRecord, MultiRateLimitPolicy, OAuthFlowId,
+    OAuthFlowPurpose, OAuthFlowRecord, OAuthProvider, OrganizationRole, PrincipalSnapshot,
+    RateLimitPolicy, SealedDeliveryEnvelope, SecretDigest, SecretDigestCandidates,
+    SessionContinuationBinding, SessionFamilyId, SessionId, SessionMutationGrantId,
     SessionRevocationReason, TenantGrant, TimestampMillis, UserId, VerificationChannel,
     VerificationPurpose, VersionedSecretDigest,
 };
 use frame_ports::{
     AbuseDigestSet, ApiKeyAuthenticationCommand, ApiKeyAuthenticationOutcome, ApiKeyIssueCommand,
     ApiKeyIssueOutcome, ApiKeyRevokeCommand, AuthDeliveryAcknowledgeOutcome,
-    AuthDeliveryRetryOutcome, AuthStateRepository, DecisionAudit, IdentityProvisionCommand,
-    IdentityProvisionOutcome, IdentityProvisioningGrant, LogoutAllOutcome, PortError,
-    PrincipalIssuanceGrant, SessionAuthenticationCommand, SessionIssueAuthority,
+    AuthDeliveryRetryOutcome, AuthStateRepository, DecisionAudit, ExternalIdentityAssertion,
+    IdentityProvisionCommand, IdentityProvisionOutcome, IdentityProvisioningGrant,
+    LogoutAllOutcome, OAuthBeginCommand, OAuthBeginOutcome, OAuthExchangeOutcome,
+    OAuthFinalizeCommand, OAuthPreflightCommand, OAuthPreflightOutcome, OAuthProviderResult,
+    PortError, PrincipalIssuanceGrant, SessionAuthenticationCommand, SessionIssueAuthority,
     SessionIssueCommand, SessionMutationGrant, SessionPresentation, SessionRevokeCommand,
     SessionRotationOutcome, SessionRotationRequest, VerificationAtomicOutcome,
     VerificationAttemptCommand, VerificationIssueAtomicOutcome, VerificationIssueCommand,
@@ -45,12 +48,14 @@ const USER_LOGOUT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690a501";
 const USER_PROVISION: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690a901";
 const USER_ROLLBACK: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690aa01";
 const USER_FENCE: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690a701";
+const USER_OAUTH: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690ac01";
 
 const SESSION_FOUND: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690b101";
 const SESSION_SINGLE_LOGOUT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690b102";
 const SESSION_LOGOUT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690b501";
 const SESSION_ROLLBACK: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690ba01";
 const SESSION_FENCE: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690b701";
+const SESSION_OAUTH: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690bc01";
 const FAMILY_ROLLBACK: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690ca01";
 const ROTATE_GRANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690d101";
 const SINGLE_LOGOUT_GRANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690d102";
@@ -58,6 +63,9 @@ const LOGOUT_GRANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690d501";
 const PROVISION_GRANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690d901";
 const ROLLBACK_GRANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690da01";
 const FENCE_GRANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690d701";
+const OAUTH_GRANT: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690dc01";
+const OAUTH_SIGN_IN_FLOW: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690fc01";
+const OAUTH_LINK_FLOW: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690fc02";
 const TENANT_API: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690e601";
 const TENANT_FENCE: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690e701";
 const DELIVERY_EXHAUST: &str = "018f47a6-7b1c-7f55-8f39-8f8a8690f102";
@@ -86,6 +94,7 @@ enum Scenario {
     DeliveryLeaseCleanup,
     ClaimRace,
     ContentionRetries,
+    OauthSignInLinkReplay,
 }
 
 impl Scenario {
@@ -104,6 +113,7 @@ impl Scenario {
             Self::DeliveryLeaseCleanup => "delivery_lease_cleanup",
             Self::ClaimRace => "claim_race",
             Self::ContentionRetries => "contention_retries",
+            Self::OauthSignInLinkReplay => "oauth_sign_in_link_replay",
         }
     }
 }
@@ -140,6 +150,14 @@ struct VerificationIssueArtifactRow {
     pending_count: i64,
     challenge_count: i64,
     delivery_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthArtifactRow {
+    consumed_flows: i64,
+    consumed_reservations: i64,
+    external_accounts: i64,
+    oauth_operations: i64,
 }
 
 pub async fn response(mut request: Request, env: &Env) -> Result<Response> {
@@ -217,6 +235,7 @@ async fn run_scenario(database: &D1Database, scenario: Scenario) -> Result<Value
         Scenario::DeliveryLeaseCleanup => delivery_lease_cleanup(database, &repository).await,
         Scenario::ClaimRace => claim_race(&repository).await,
         Scenario::ContentionRetries => contention_retries(&repository).await,
+        Scenario::OauthSignInLinkReplay => oauth_sign_in_link_replay(database, &repository).await,
     }
 }
 
@@ -1190,6 +1209,241 @@ async fn contention_retries(repository: &D1AuthStateRepository<'_>) -> Result<Va
         "verification": [verification_name(&first_verified), verification_name(&second_verified)],
         "api_key": [api_name(&first_authenticated), api_name(&second_authenticated)],
     }))
+}
+
+async fn oauth_sign_in_link_replay(
+    database: &D1Database,
+    repository: &D1AuthStateRepository<'_>,
+) -> Result<Value> {
+    let cleanup = database
+        .prepare("DELETE FROM auth_rate_limit_buckets_v2 WHERE action = 'oauth_begin'")
+        .run()
+        .await?;
+    if !cleanup.success() {
+        return Err(fixed_failure());
+    }
+
+    let sign_in_flow = oauth_flow(
+        OAUTH_SIGN_IN_FLOW,
+        OAuthProvider::Google,
+        OAuthFlowPurpose::SignIn,
+        None,
+        1_203,
+    )?;
+    let sign_in_begin = OAuthBeginCommand {
+        flow: sign_in_flow.clone(),
+        initiator: None,
+        abuse: abuse(1_220)?,
+        rate_policy: rate_policy()?,
+        audit: audit(AuthAuditAction::OAuthBegin)?,
+    };
+    let sign_in_started = repository.begin_oauth(sign_in_begin.clone()).await;
+    let sign_in_started_retry = repository.begin_oauth(sign_in_begin).await;
+    if !matches!(sign_in_started, Ok(OAuthBeginOutcome::Started))
+        || !matches!(sign_in_started_retry, Ok(OAuthBeginOutcome::Started))
+    {
+        return Err(fixed_failure());
+    }
+
+    let sign_in_preflight = OAuthPreflightCommand {
+        provider: OAuthProvider::Google,
+        state_digests: candidates(sign_in_flow.state_digest.clone(), Vec::new())?,
+        pkce_digests: candidates(sign_in_flow.pkce_digest.clone(), Vec::new())?,
+        redirect_digests: candidates(sign_in_flow.redirect_digest.clone(), Vec::new())?,
+        audience_digests: candidates(sign_in_flow.audience_digest.clone(), Vec::new())?,
+        abuse: abuse(1_240)?,
+        rate_policy: rate_policy()?,
+        audit: audit(AuthAuditAction::OAuthExchangePreflight)?,
+    };
+    let sign_in_ready = repository
+        .preflight_oauth_exchange(sign_in_preflight.clone())
+        .await;
+    let sign_in_ready_retry = repository.preflight_oauth_exchange(sign_in_preflight).await;
+    let sign_in_reservation = match (&sign_in_ready, &sign_in_ready_retry) {
+        (Ok(OAuthPreflightOutcome::Ready(first)), Ok(OAuthPreflightOutcome::Ready(second)))
+            if first == second =>
+        {
+            first.clone()
+        }
+        _ => return Err(fixed_failure()),
+    };
+    let sign_in_result = OAuthProviderResult::Verified(ExternalIdentityAssertion {
+        provider: OAuthProvider::Google,
+        subject_digests: candidates(digest(2, 1_208)?, vec![digest(1, 1_207)?])?,
+        verified_identifier_digests: Some(candidates(digest(1, 1_201)?, Vec::new())?),
+    });
+    let sign_in_finalize = OAuthFinalizeCommand {
+        reservation: sign_in_reservation.clone(),
+        provider_result: sign_in_result.clone(),
+        audit: audit(AuthAuditAction::OAuthExchange)?,
+    };
+    let sign_in_verified = repository
+        .finalize_oauth_exchange(sign_in_finalize.clone())
+        .await;
+    let sign_in_verified_retry = repository.finalize_oauth_exchange(sign_in_finalize).await;
+    let stable_sign_in = matches!(
+        (&sign_in_verified, &sign_in_verified_retry),
+        (
+            Ok(OAuthExchangeOutcome::Verified {
+                principal: first_principal,
+                issuance_grant: first_grant,
+            }),
+            Ok(OAuthExchangeOutcome::Verified {
+                principal: second_principal,
+                issuance_grant: second_grant,
+            }),
+        ) if first_principal.user_id == parse_user(USER_OAUTH)?
+            && first_principal == second_principal
+            && first_grant == second_grant
+    );
+    if !stable_sign_in {
+        return Err(fixed_failure());
+    }
+    let consumed_replay = repository
+        .finalize_oauth_exchange(OAuthFinalizeCommand {
+            reservation: sign_in_reservation,
+            provider_result: sign_in_result,
+            audit: audit(AuthAuditAction::OAuthExchange)?,
+        })
+        .await;
+    if !matches!(
+        consumed_replay,
+        Ok(OAuthExchangeOutcome::Rejected(
+            AuthAuditReason::ReplayDetected
+        ))
+    ) {
+        return Err(fixed_failure());
+    }
+
+    let binding = SessionContinuationBinding {
+        session_id: parse_session(SESSION_OAUTH)?,
+        user_id: parse_user(USER_OAUTH)?,
+        generation: 0,
+    };
+    let link_flow = oauth_flow(
+        OAUTH_LINK_FLOW,
+        OAuthProvider::Github,
+        OAuthFlowPurpose::AccountLink,
+        Some(binding),
+        1_210,
+    )?;
+    let link_begin = OAuthBeginCommand {
+        flow: link_flow.clone(),
+        initiator: Some(SessionMutationGrant::from_repository(
+            parse_session_mutation_grant(OAUTH_GRANT)?,
+            binding.session_id,
+            binding.user_id,
+            binding.generation,
+            digest(1, 1_202)?,
+        )),
+        abuse: abuse(1_230)?,
+        rate_policy: rate_policy()?,
+        audit: audit(AuthAuditAction::OAuthBegin)?,
+    };
+    let link_started = repository.begin_oauth(link_begin.clone()).await;
+    let link_started_retry = repository.begin_oauth(link_begin).await;
+    if !matches!(link_started, Ok(OAuthBeginOutcome::Started))
+        || !matches!(link_started_retry, Ok(OAuthBeginOutcome::Started))
+    {
+        return Err(fixed_failure());
+    }
+    let link_preflight = OAuthPreflightCommand {
+        provider: OAuthProvider::Github,
+        state_digests: candidates(link_flow.state_digest.clone(), Vec::new())?,
+        pkce_digests: candidates(link_flow.pkce_digest.clone(), Vec::new())?,
+        redirect_digests: candidates(link_flow.redirect_digest.clone(), Vec::new())?,
+        audience_digests: candidates(link_flow.audience_digest.clone(), Vec::new())?,
+        abuse: abuse(1_250)?,
+        rate_policy: rate_policy()?,
+        audit: audit(AuthAuditAction::OAuthExchangePreflight)?,
+    };
+    let link_ready = repository
+        .preflight_oauth_exchange(link_preflight.clone())
+        .await;
+    let link_ready_retry = repository.preflight_oauth_exchange(link_preflight).await;
+    let link_reservation = match (&link_ready, &link_ready_retry) {
+        (Ok(OAuthPreflightOutcome::Ready(first)), Ok(OAuthPreflightOutcome::Ready(second)))
+            if first == second =>
+        {
+            first.clone()
+        }
+        _ => return Err(fixed_failure()),
+    };
+    let link_finalize = OAuthFinalizeCommand {
+        reservation: link_reservation,
+        provider_result: OAuthProviderResult::Verified(ExternalIdentityAssertion {
+            provider: OAuthProvider::Github,
+            subject_digests: candidates(digest(1, 1_214)?, Vec::new())?,
+            verified_identifier_digests: None,
+        }),
+        audit: audit(AuthAuditAction::OAuthExchange)?,
+    };
+    let linked = repository
+        .finalize_oauth_exchange(link_finalize.clone())
+        .await;
+    let linked_retry = repository.finalize_oauth_exchange(link_finalize).await;
+    if !matches!(
+        (&linked, &linked_retry),
+        (
+            Ok(OAuthExchangeOutcome::Linked { user_id: first }),
+            Ok(OAuthExchangeOutcome::Linked { user_id: second }),
+        ) if first == second && *first == parse_user(USER_OAUTH)?
+    ) {
+        return Err(fixed_failure());
+    }
+
+    let artifacts = database
+        .prepare(
+            "SELECT (SELECT COUNT(*) FROM auth_oauth_flows_v2 WHERE id IN (?1, ?2) AND consumed_at_ms IS NOT NULL) AS consumed_flows, \
+             (SELECT COUNT(*) FROM auth_oauth_reservations_v2 WHERE flow_id IN (?1, ?2) AND consumed_at_ms IS NOT NULL) AS consumed_reservations, \
+             (SELECT COUNT(*) FROM auth_external_accounts_v2 WHERE user_id = ?3) AS external_accounts, \
+             (SELECT COUNT(*) FROM auth_oauth_operations_v2) AS oauth_operations",
+        )
+        .bind(&[
+            JsValue::from_str(OAUTH_SIGN_IN_FLOW),
+            JsValue::from_str(OAUTH_LINK_FLOW),
+            JsValue::from_str(USER_OAUTH),
+        ])?
+        .first::<OAuthArtifactRow>(None)
+        .await?
+        .ok_or_else(fixed_failure)?;
+    if artifacts.consumed_flows != 2
+        || artifacts.consumed_reservations != 2
+        || artifacts.external_accounts != 2
+        || artifacts.oauth_operations != 7
+    {
+        return Err(fixed_failure());
+    }
+    Ok(json!({
+        "sign_in": "verified",
+        "link": "linked",
+        "exact_replay": true,
+        "consumed_replay": "replay_detected",
+        "external_accounts": 2,
+    }))
+}
+
+fn oauth_flow(
+    id: &str,
+    provider: OAuthProvider,
+    purpose: OAuthFlowPurpose,
+    initiator: Option<SessionContinuationBinding>,
+    seed: u64,
+) -> Result<OAuthFlowRecord> {
+    Ok(OAuthFlowRecord {
+        id: OAuthFlowId::parse(id).map_err(|_| fixed_failure())?,
+        provider,
+        purpose,
+        initiator,
+        state_digest: digest(1, seed)?,
+        pkce_digest: digest(1, seed + 1)?,
+        redirect_digest: digest(1, seed + 2)?,
+        audience_digest: digest(1, seed + 3)?,
+        created_at: time(NOW_MS)?,
+        expires_at: time(NOW_MS + 10_000)?,
+        consumed_at: None,
+        revoked: false,
+    })
 }
 
 async fn provision_race(repository: &D1AuthStateRepository<'_>) -> Result<Value> {

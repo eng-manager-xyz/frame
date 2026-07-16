@@ -1,0 +1,231 @@
+{
+  "schema_version": 1,
+  "catalog_version": 1,
+  "cap_reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "vendor_contract_revision": "cloudflare-media-binding-2026-06-10",
+  "inventory_method": "Pinned source routes, exported media functions, and web workflows were enumerated; composite Cap process/edit flows are decomposed into independently retryable Frame jobs.",
+  "jobs": [
+    {
+      "id": "optimized_clip",
+      "input_role": "source_original",
+      "output_role": "preview",
+      "profile": "optimized_clip_v1",
+      "disposition": "hybrid_managed_native",
+      "preferred": "cloudflare_media",
+      "fallback": "native_gstreamer",
+      "cap_sources": [
+        "apps/media-server/src/routes/video.ts#/process",
+        "apps/media-server/src/lib/media-video.ts#processVideo"
+      ]
+    },
+    {
+      "id": "frame",
+      "input_role": "source_original",
+      "output_role": "thumbnail",
+      "profile": "thumbnail_v1",
+      "disposition": "hybrid_managed_native",
+      "preferred": "cloudflare_media",
+      "fallback": "native_gstreamer",
+      "cap_sources": [
+        "apps/media-server/src/routes/video.ts#/thumbnail",
+        "apps/media-server/src/lib/media-video.ts#generateThumbnail"
+      ]
+    },
+    {
+      "id": "spritesheet",
+      "input_role": "source_original",
+      "output_role": "spritesheet",
+      "profile": "spritesheet_v1",
+      "disposition": "hybrid_managed_native",
+      "preferred": "cloudflare_media",
+      "fallback": "native_gstreamer",
+      "cap_sources": [
+        "apps/media-server/src/lib/media-video.ts#generatePreviewGif",
+        "target:replace-animated-preview-sampling"
+      ]
+    },
+    {
+      "id": "audio_extract",
+      "input_role": "source_original",
+      "output_role": "extracted_audio",
+      "profile": "audio_extract_v1",
+      "disposition": "hybrid_managed_native",
+      "preferred": "cloudflare_media",
+      "fallback": "native_gstreamer",
+      "cap_sources": [
+        "apps/media-server/src/routes/audio.ts#/extract",
+        "apps/media-server/src/lib/media-audio.ts#extractAudio"
+      ]
+    },
+    {
+      "id": "probe",
+      "input_role": "source_original",
+      "output_role": "probe_manifest",
+      "profile": "probe_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/routes/video.ts#/probe",
+        "apps/media-server/src/lib/media-probe.ts#probeVideo"
+      ]
+    },
+    {
+      "id": "audio_presence",
+      "input_role": "source_original",
+      "output_role": "probe_manifest",
+      "profile": "audio_presence_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/routes/audio.ts#/check",
+        "apps/media-server/src/lib/media-audio.ts#checkHasAudioTrack"
+      ]
+    },
+    {
+      "id": "distribution_master",
+      "input_role": "source_original",
+      "output_role": "distribution_master",
+      "profile": "distribution_master_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/routes/video.ts#/process",
+        "apps/media-server/src/lib/media-video.ts#processVideo"
+      ]
+    },
+    {
+      "id": "animated_preview",
+      "input_role": "distribution_master",
+      "output_role": "animated_preview",
+      "profile": "animated_preview_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/lib/media-video.ts#generatePreviewGif",
+        "apps/web/app/api/video/preview/route.ts"
+      ]
+    },
+    {
+      "id": "audio_normalize",
+      "input_role": "extracted_audio",
+      "output_role": "normalized_audio",
+      "profile": "audio_normalize_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/routes/audio.ts#/convert",
+        "apps/media-server/src/lib/media-audio.ts#extractAudioStream"
+      ]
+    },
+    {
+      "id": "remux_repair",
+      "input_role": "source_original",
+      "output_role": "repaired_media",
+      "profile": "remux_repair_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/lib/media-video.ts#repairContainer"
+      ]
+    },
+    {
+      "id": "segment_mux",
+      "input_role": "recording_segments",
+      "output_role": "muxed_media",
+      "profile": "segment_mux_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/routes/video.ts#/mux-segments",
+        "apps/media-server/src/lib/media-video.ts#muxMediaTracksToMp4"
+      ]
+    },
+    {
+      "id": "waveform",
+      "input_role": "extracted_audio",
+      "output_role": "waveform",
+      "profile": "waveform_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "target:retained-editor-waveform"
+      ]
+    },
+    {
+      "id": "composition",
+      "input_role": "edit_timeline",
+      "output_role": "composition",
+      "profile": "composition_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/routes/video.ts#/edit",
+        "apps/media-server/src/lib/media-edit.ts#renderEditedVideo"
+      ]
+    },
+    {
+      "id": "normalize",
+      "input_role": "source_original",
+      "output_role": "normalized_media",
+      "profile": "normalize_v1",
+      "disposition": "native_only",
+      "preferred": "native_gstreamer",
+      "fallback": null,
+      "cap_sources": [
+        "apps/media-server/src/routes/video.ts#/convert",
+        "apps/media-server/src/lib/media-video.ts#processVideo"
+      ]
+    },
+    {
+      "id": "transcription",
+      "input_role": "extracted_audio",
+      "output_role": "captions",
+      "profile": "transcription_v1",
+      "disposition": "external_provider_adapter",
+      "preferred": "external_provider",
+      "fallback": null,
+      "cap_sources": [
+        "apps/web/workflows/transcribe.ts#transcribeWithDeepgram"
+      ]
+    },
+    {
+      "id": "ai_cleanup",
+      "input_role": "captions",
+      "output_role": "ai_metadata",
+      "profile": "ai_cleanup_v1",
+      "disposition": "external_provider_adapter",
+      "preferred": "external_provider",
+      "fallback": null,
+      "cap_sources": [
+        "apps/web/workflows/transcribe.ts#queueAiGeneration"
+      ]
+    }
+  ],
+  "delegated_surfaces": [
+    {
+      "cap_source": "apps/media-server/src/routes/video.ts#/process/:jobId/status",
+      "disposition": "durable_media_job_protocol_issue_07"
+    },
+    {
+      "cap_source": "apps/media-server/src/routes/video.ts#/process/:jobId/cancel",
+      "disposition": "durable_media_job_protocol_issue_07"
+    },
+    {
+      "cap_source": "apps/web/app/api/webhooks/media-server/progress/route.ts",
+      "disposition": "lease_fenced_progress_and_completion_issue_07"
+    },
+    {
+      "cap_source": "apps/web/app/api/webhooks/media-server/multipart/[action]/route.ts",
+      "disposition": "multipart_protocol_issue_19"
+    }
+  ]
+}

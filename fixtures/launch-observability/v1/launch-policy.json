@@ -1,0 +1,304 @@
+{
+  "schema_version": 1,
+  "policy_id": "frame-subdomain-launch-v1",
+  "canonical_origin": "https://frame.engmanager.xyz",
+  "portfolio_origin": "https://engmanager.xyz",
+  "production_authority_changed": false,
+  "local_evidence_authorizes_launch": false,
+  "decision": {
+    "mode": "advisory_only",
+    "missing_stale_failed_or_unsigned": "NO_GO",
+    "all_p7_dependencies_required": [34, 35, 37, 38, 39, 40, 41, 42, 43],
+    "critical_or_high_open_allowed": 0,
+    "irreversible_gate_requires_independent_approval": true
+  },
+  "owners": {
+    "release_decision": "repository_owner_role",
+    "release_sequence": "release_commander_role",
+    "rollback_decision": "incident_commander_role",
+    "portfolio": "portfolio_owner_role",
+    "cloudflare_edge": "edge_operator_role",
+    "render_web": "render_operator_role",
+    "worker_api": "worker_operator_role",
+    "d1_r2": "data_recovery_operator_role",
+    "media": "media_operations_owner_role",
+    "security_privacy": "security_approver_role",
+    "capacity_cost": "cost_approver_role",
+    "support": "support_lead_role"
+  },
+  "contact_registry": {
+    "source": "protected_incident_contact_registry",
+    "repository_contains_personal_contacts": false,
+    "acknowledgement_status": "not_collected"
+  },
+  "service_catalog": [
+    {"id": "portfolio", "boundary": "portfolio", "owner": "portfolio_owner_role", "dependencies": [], "slo_ids": ["portfolio_link_success"], "runbook": "docs/operations/subdomain-launch.md#portfolio"},
+    {"id": "cloudflare_edge", "boundary": "dns_tls_edge", "owner": "edge_operator_role", "dependencies": ["render_web", "worker_api"], "slo_ids": ["edge_availability", "edge_latency", "cache_privacy_correctness"], "runbook": "docs/operations/subdomain-launch.md#dns-tls-and-edge"},
+    {"id": "render_web", "boundary": "render_web", "owner": "render_operator_role", "dependencies": [], "slo_ids": ["render_landing_availability", "render_startup"], "runbook": "docs/operations/subdomain-launch.md#render"},
+    {"id": "worker_api", "boundary": "worker_api", "owner": "worker_operator_role", "dependencies": ["d1_metadata", "r2_objects", "managed_media"], "slo_ids": ["api_availability", "api_latency", "upload_finalize_success"], "runbook": "docs/operations/subdomain-launch.md#worker-api"},
+    {"id": "d1_metadata", "boundary": "d1", "owner": "data_recovery_operator_role", "dependencies": [], "slo_ids": ["upload_finalize_success"], "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "r2_objects", "boundary": "r2", "owner": "data_recovery_operator_role", "dependencies": [], "slo_ids": ["upload_finalize_success", "public_playback_success"], "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "managed_media", "boundary": "managed_media", "owner": "media_operations_owner_role", "dependencies": ["r2_objects"], "slo_ids": ["processing_time_to_share"], "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "native_media", "boundary": "native_media", "owner": "media_operations_owner_role", "dependencies": ["r2_objects"], "slo_ids": ["processing_time_to_share", "native_queue_age"], "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "public_playback", "boundary": "public_playback", "owner": "worker_operator_role", "dependencies": ["cloudflare_edge", "worker_api", "r2_objects", "render_web"], "slo_ids": ["public_playback_success"], "runbook": "docs/operations/subdomain-launch.md#public-playback"},
+    {"id": "auth_privacy", "boundary": "auth_privacy", "owner": "security_approver_role", "dependencies": ["cloudflare_edge", "worker_api", "render_web"], "slo_ids": ["auth_privacy_correctness", "cache_privacy_correctness"], "runbook": "docs/operations/subdomain-launch.md#privacy-cache-and-credentials"},
+    {"id": "release_contract", "boundary": "release_contract", "owner": "release_commander_role", "dependencies": ["portfolio", "render_web", "worker_api"], "slo_ids": ["release_freshness"], "runbook": "docs/operations/subdomain-launch.md#release-identity"}
+  ],
+  "telemetry": {
+    "required_dimensions": [
+      "service",
+      "boundary",
+      "release",
+      "environment",
+      "operation",
+      "result_class"
+    ],
+    "correlation_id": "random_uuid_v4_mapped_server_side",
+    "retention_days": 30,
+    "forbidden_fields": [
+      "media",
+      "captions",
+      "private_title",
+      "email",
+      "tenant_id",
+      "user_id",
+      "object_key",
+      "cookie",
+      "authorization",
+      "token",
+      "credential",
+      "signed_url",
+      "request_body",
+      "response_body",
+      "provider_message",
+      "filesystem_path"
+    ],
+    "dashboard_status": "not_collected"
+  },
+  "slos": [
+    {
+      "id": "portfolio_link_success",
+      "boundary": "portfolio",
+      "indicator": "accessible_static_link_success_ratio",
+      "objective": 0.999,
+      "window_seconds": 2592000,
+      "error_budget_basis_points": 10
+    },
+    {
+      "id": "edge_availability",
+      "boundary": "dns_tls_edge",
+      "indicator": "dns_tls_http_success_ratio",
+      "objective": 0.999,
+      "window_seconds": 2592000,
+      "error_budget_basis_points": 10
+    },
+    {
+      "id": "edge_latency",
+      "boundary": "dns_tls_edge",
+      "indicator": "edge_request_p95_ms",
+      "maximum": 750,
+      "window_seconds": 3600
+    },
+    {
+      "id": "render_landing_availability",
+      "boundary": "render_web",
+      "indicator": "ssr_asset_and_readiness_success_ratio",
+      "objective": 0.999,
+      "window_seconds": 2592000,
+      "error_budget_basis_points": 10
+    },
+    {
+      "id": "render_startup",
+      "boundary": "render_web",
+      "indicator": "deploy_to_ready_p95_ms",
+      "maximum": 300000,
+      "window_seconds": 86400
+    },
+    {
+      "id": "api_availability",
+      "boundary": "worker_api",
+      "indicator": "successful_non_rate_limited_request_ratio",
+      "objective": 0.999,
+      "window_seconds": 2592000,
+      "error_budget_basis_points": 10
+    },
+    {
+      "id": "api_latency",
+      "boundary": "worker_api",
+      "indicator": "worker_request_p95_ms",
+      "maximum": 500,
+      "window_seconds": 3600
+    },
+    {
+      "id": "upload_finalize_success",
+      "boundary": "d1_r2",
+      "indicator": "direct_put_finalize_success_ratio",
+      "objective": 0.999,
+      "window_seconds": 86400,
+      "error_budget_basis_points": 10
+    },
+    {
+      "id": "processing_time_to_share",
+      "boundary": "media",
+      "indicator": "accepted_generated_60s_1080p_to_share_p95_ms",
+      "maximum": 30000,
+      "window_seconds": 3600
+    },
+    {
+      "id": "public_playback_success",
+      "boundary": "public_playback",
+      "indicator": "descriptor_head_range_caption_success_ratio",
+      "objective": 0.999,
+      "window_seconds": 86400,
+      "error_budget_basis_points": 10
+    },
+    {
+      "id": "cache_privacy_correctness",
+      "boundary": "cache_privacy",
+      "indicator": "private_bypass_deletion_cookie_variance_correctness_ratio",
+      "objective": 1.0,
+      "window_seconds": 300,
+      "error_budget_basis_points": 0
+    },
+    {
+      "id": "auth_privacy_correctness",
+      "boundary": "auth_privacy",
+      "indicator": "session_csrf_private_outcome_correctness_ratio",
+      "objective": 1.0,
+      "window_seconds": 300,
+      "error_budget_basis_points": 0
+    },
+    {
+      "id": "native_queue_age",
+      "boundary": "native_media",
+      "indicator": "oldest_ready_job_age_p95_ms",
+      "maximum": 30000,
+      "window_seconds": 300
+    },
+    {
+      "id": "release_freshness",
+      "boundary": "release_contract",
+      "indicator": "joined_release_fields_compatible_ratio",
+      "objective": 1.0,
+      "window_seconds": 300,
+      "error_budget_basis_points": 0
+    }
+  ],
+  "dashboards": [
+    {
+      "id": "portfolio_and_edge",
+      "boundaries": ["portfolio", "dns_tls_edge", "edge_route_cache"],
+      "panels": ["availability", "latency", "certificate", "route_owner", "cache_correctness"]
+    },
+    {
+      "id": "render_and_worker",
+      "boundaries": ["render_web", "worker_api"],
+      "panels": ["readiness", "startup", "deploy_health", "availability", "latency", "rate_limit"]
+    },
+    {
+      "id": "data_and_media",
+      "boundaries": ["d1", "r2", "managed_media", "native_media", "public_playback"],
+      "panels": ["dependency_state", "upload", "finalize", "queue_age", "processing", "fallback", "reconciliation"]
+    },
+    {
+      "id": "security_and_release",
+      "boundaries": ["auth_privacy", "cache_privacy", "release_contract"],
+      "panels": ["auth_outcomes", "private_bypass", "deletion_revocation", "cookie_variance", "version_drift"]
+    },
+    {
+      "id": "capacity_and_cost",
+      "boundaries": ["render_web", "worker_api", "d1", "r2", "managed_media", "native_media"],
+      "panels": ["request_headroom", "upload_headroom", "queue_headroom", "quota", "usage", "estimated_cost"]
+    }
+  ],
+  "alerts": [
+    {"id": "portfolio_link_failed", "symptom": "static_link_or_navigation_failed", "boundary": "portfolio", "target_ms": 60000, "owner": "portfolio_owner_role", "runbook": "docs/operations/subdomain-launch.md#portfolio"},
+    {"id": "dns_tls_failed", "symptom": "dns_tls_or_certificate_failed", "boundary": "dns_tls_edge", "target_ms": 60000, "owner": "edge_operator_role", "runbook": "docs/operations/subdomain-launch.md#dns-tls-and-edge"},
+    {"id": "edge_route_or_cache_failed", "symptom": "route_owner_or_cache_correctness_failed", "boundary": "edge_route_cache", "target_ms": 60000, "owner": "edge_operator_role", "runbook": "docs/operations/subdomain-launch.md#dns-tls-and-edge"},
+    {"id": "render_failed", "symptom": "ssr_asset_readiness_or_deploy_failed", "boundary": "render_web", "target_ms": 60000, "owner": "render_operator_role", "runbook": "docs/operations/subdomain-launch.md#render"},
+    {"id": "worker_failed", "symptom": "api_error_latency_or_rate_limit_failed", "boundary": "worker_api", "target_ms": 60000, "owner": "worker_operator_role", "runbook": "docs/operations/subdomain-launch.md#worker-api"},
+    {"id": "d1_failed", "symptom": "metadata_dependency_or_reconciliation_failed", "boundary": "d1", "target_ms": 60000, "owner": "data_recovery_operator_role", "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "r2_failed", "symptom": "direct_upload_finalize_or_range_failed", "boundary": "r2", "target_ms": 60000, "owner": "data_recovery_operator_role", "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "managed_media_failed", "symptom": "provider_processing_quota_or_output_failed", "boundary": "managed_media", "target_ms": 60000, "owner": "media_operations_owner_role", "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "native_media_failed", "symptom": "queue_age_capacity_or_fallback_failed", "boundary": "native_media", "target_ms": 60000, "owner": "media_operations_owner_role", "runbook": "docs/operations/subdomain-launch.md#d1-r2-and-processing"},
+    {"id": "public_playback_failed", "symptom": "descriptor_head_range_or_caption_failed", "boundary": "public_playback", "target_ms": 60000, "owner": "worker_operator_role", "runbook": "docs/operations/subdomain-launch.md#public-playback"},
+    {"id": "privacy_failed", "symptom": "auth_private_cache_or_deletion_correctness_failed", "boundary": "auth_privacy", "target_ms": 30000, "owner": "security_approver_role", "runbook": "docs/operations/subdomain-launch.md#privacy-cache-and-credentials"},
+    {"id": "release_drift", "symptom": "paired_release_or_contract_incompatible", "boundary": "release_contract", "target_ms": 60000, "owner": "release_commander_role", "runbook": "docs/operations/subdomain-launch.md#release-identity"}
+  ],
+  "synthetics": [
+    {"id": "portfolio_link", "steps": ["render_portfolio_without_frame_dependency", "find_accessible_absolute_link", "navigate_top_level", "return_to_portfolio"]},
+    {"id": "landing", "steps": ["dns", "tls", "edge_http", "ssr", "fingerprinted_asset", "readiness"]},
+    {"id": "api", "steps": ["api_health", "version_negotiate", "rate_limit_classification"]},
+    {"id": "auth_boundary", "steps": ["anonymous_denied", "session_cookie_host_only", "csrf_required", "private_not_found_equivalence"]},
+    {"id": "upload_process", "steps": ["upload_intent", "direct_r2_put", "finalize", "process", "deterministic_derivative", "retention_cleanup"]},
+    {"id": "public_playback", "steps": ["share_descriptor", "head", "full_get", "bounded_range", "suffix_range", "unsatisfiable_range", "caption"]},
+    {"id": "cache_privacy", "steps": ["api_bypass", "auth_bypass", "private_bypass", "immutable_miss_then_hit", "stale_delete_revoked", "cookie_variance_safe"]},
+    {"id": "portfolio_degradation", "steps": ["frame_dns_down", "render_down", "worker_down", "d1_down", "r2_down", "managed_media_down", "native_media_down", "portfolio_still_available"]}
+  ],
+  "release_join": {
+    "required_fields": [
+      "source_git_sha",
+      "contract_major",
+      "worker_release",
+      "render_deploy",
+      "migration_level",
+      "portfolio_consumer"
+    ],
+    "current_and_n_minus_1_required": true,
+    "unknown_or_incompatible": "NO_GO",
+    "public_values_must_be_nonsensitive": true,
+    "production_endpoint_or_header_evidence": "not_collected"
+  },
+  "capacity": {
+    "minimum_headroom_basis_points": 3000,
+    "dimensions": ["startup", "ssr_requests", "concurrent_requests", "upload_intents", "queued_jobs", "playback_bytes"],
+    "sustained_seconds": 1800,
+    "burst_seconds": 300,
+    "protected_cost_budget_microunits": null,
+    "scaling_action_required_below_headroom": true,
+    "provider_budget_classes": [
+      {"id": "render", "owner": "render_operator_role", "units": ["fixed_plan_month", "instance_count", "build_minutes"], "numeric_cap": null, "quota_status": "not_collected"},
+      {"id": "cloudflare_worker", "owner": "edge_operator_role", "units": ["requests", "cpu_ms"], "numeric_cap": null, "quota_status": "not_collected"},
+      {"id": "d1", "owner": "data_recovery_operator_role", "units": ["rows_read", "rows_written", "storage_bytes"], "numeric_cap": null, "quota_status": "not_collected"},
+      {"id": "r2", "owner": "data_recovery_operator_role", "units": ["class_a_operations", "class_b_operations", "storage_bytes", "egress_bytes"], "numeric_cap": null, "quota_status": "not_collected"},
+      {"id": "managed_media", "owner": "media_operations_owner_role", "units": ["transformations", "input_minutes", "output_bytes"], "numeric_cap": null, "quota_status": "not_collected"},
+      {"id": "native_media", "owner": "media_operations_owner_role", "units": ["worker_seconds", "cpu_seconds", "scratch_bytes"], "numeric_cap": null, "quota_status": "not_collected"}
+    ]
+  },
+  "portfolio_independence": {
+    "required_faults": ["frame_dns", "render", "worker", "d1", "r2", "managed_media", "native_media"],
+    "minimum_availability": 0.999,
+    "maximum_latency_regression_basis_points": 500
+  },
+  "launch_sequence": [
+    "approve_owners_slos_capacity_cost_and_rollback_authority",
+    "prove_contracts_staging_provider_and_preview_suites",
+    "deploy_compatible_worker_and_render_default_host",
+    "attach_dns_only_and_wait_for_render_certificate",
+    "enable_proxy_full_strict_then_broad_api_route_with_strict_validation",
+    "run_internal_synthetics_then_observe_waf_and_rate_limits",
+    "add_flagged_portfolio_link_then_normal_placement",
+    "enable_each_optional_integration_separately",
+    "hold_observation_window_before_default_hostname_or_legacy_changes"
+  ],
+  "rollback_layers": [
+    {"id": "portfolio_status_off", "owner": "portfolio_owner_role", "maximum_ms": 300000, "action": "disable_optional_status_poller", "verification": "static_portfolio_and_frame_link_usable", "data_effect": "none"},
+    {"id": "portfolio_link_remove", "owner": "portfolio_owner_role", "maximum_ms": 300000, "action": "remove_flagged_link_or_card", "verification": "portfolio_available_without_frame_request", "data_effect": "none"},
+    {"id": "optional_browser_off", "owner": "security_approver_role", "maximum_ms": 300000, "action": "disable_embed_handoff_and_browser_cors_flags", "verification": "base_link_ui_api_and_playback_unchanged", "data_effect": "none"},
+    {"id": "edge_rules_off", "owner": "edge_operator_role", "maximum_ms": 300000, "action": "disable_exact_waf_rate_cache_rule_and_purge_only_exact_frame_urls_or_tags", "verification": "private_bypass_and_unrelated_zone_resources_unchanged", "data_effect": "none"},
+    {"id": "worker_route_remove", "owner": "worker_operator_role", "maximum_ms": 300000, "action": "deploy_previous_compatible_worker_or_remove_exact_frame_api_route", "verification": "non_api_render_traffic_works_and_d1_is_not_reverted", "data_effect": "preserve_d1_r2_media"},
+    {"id": "render_rollback", "owner": "render_operator_role", "maximum_ms": 300000, "action": "select_named_previous_compatible_deploy_and_reenable_default_hostname", "verification": "readiness_ssr_assets_and_api_origin", "data_effect": "stateless"},
+    {"id": "proxy_dns_restore", "owner": "edge_operator_role", "maximum_ms": 300000, "action": "return_exact_frame_record_to_dns_only_then_restore_or_remove_it", "verification": "apex_www_shop_and_portfolio_records_unchanged", "data_effect": "none"},
+    {"id": "d1_forward_fix", "owner": "data_recovery_operator_role", "maximum_ms": 900000, "action": "preserve_expand_schema_and_apply_compatible_forward_fix", "verification": "acknowledged_writes_and_reconciliation_preserved", "data_effect": "preserve_all_data"},
+    {"id": "media_fallback", "owner": "media_operations_owner_role", "maximum_ms": 300000, "action": "disable_exact_managed_profile_revision_and_select_one_fenced_native_or_legacy_fallback", "verification": "one_publication_one_billable_effect_and_source_preserved", "data_effect": "preserve_source_and_committed_outputs"},
+    {"id": "credential_rotation", "owner": "security_approver_role", "maximum_ms": 900000, "action": "issue_scoped_replacement_redeploy_revoke_old_and_probe_denial", "verification": "capability_inventory_health_and_old_key_denial", "data_effect": "none"}
+  ],
+  "post_launch_decisions": [
+    "default_render_hostname",
+    "portfolio_status",
+    "auth_handoff",
+    "browser_cors",
+    "public_embed",
+    "legacy_paths"
+  ]
+}

@@ -57,7 +57,7 @@ jobs:
           expected_sha=""
           if [[ "${EVENT_NAME}" == workflow_run ]]; then
             expected_sha="$(git log -1 --format=%H "${RELEASE_HEAD_SHA}" -- \
-              apps/web crates Cargo.toml Cargo.lock rust-toolchain.toml render.yaml)"
+              apps/web crates scripts/ci Cargo.toml Cargo.lock rust-toolchain.toml render.yaml)"
           elif [[ "${EVENT_NAME}" == workflow_dispatch && -n "${MANUAL_EXPECTED_SHA}" ]]; then
             [[ "${MANUAL_EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
               echo "expected_release_sha must be a full Git SHA" >&2

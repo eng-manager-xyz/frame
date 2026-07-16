@@ -60,6 +60,8 @@
     {"factory": "audioconvert", "capability": "audio_mixing", "requirement": "required", "platform": "native_desktop"},
     {"factory": "audioresample", "capability": "audio_mixing", "requirement": "required", "platform": "native_desktop"},
     {"factory": "audiomixer", "capability": "audio_mixing", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "volume", "capability": "audio_mixing", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "level", "capability": "audio_metering", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "compositor", "capability": "camera_composition", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "splitmuxsink", "capability": "instant_segmentation", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "playbin3", "capability": "studio_preview", "requirement": "optional", "platform": "native_desktop"},
@@ -68,6 +70,14 @@
     {"factory": "qtmux", "capability": "quicktime_muxing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "x264enc", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "avenc_aac", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "h264parse", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "aacparse", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "wavenc", "capability": "studio_multitrack", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "videorate", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "jpegenc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "gifenc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "lamemp3enc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "concat", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "opusenc", "capability": "software_opus", "requirement": "required", "platform": "native_desktop"}
   ],
   "targets": [

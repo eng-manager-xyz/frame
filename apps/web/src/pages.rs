@@ -2,10 +2,14 @@ use axum::http::StatusCode;
 use frame_client::{PublicShareSummary, ShareAvailability};
 use leptos::prelude::*;
 
+use crate::authenticated::{RecordingFilter, RouteViewQuery};
 use crate::config::{Deployment, RuntimeConfig};
-use crate::hydration::{HydrationBoundary, PLAYER_HELP_ROOT_ID, PlayerKeyboardHelp, ROOT_ID};
+use crate::hydration::{
+    HydrationBoundary, PLAYER_HELP_ROOT_ID, PUBLIC_COLLABORATION_ROOT_ID, PlayerKeyboardHelp,
+    PublicCollaborationPanel, ROOT_ID,
+};
 use crate::product::{
-    AuthenticatedRoute, AuthenticatedState, RecordingState, ShareView, WorkspaceView,
+    AuthenticatedRoute, AuthenticatedState, RecordingState, ShareView, WorkspaceRole, WorkspaceView,
 };
 
 pub const NO_STORE: &str = "no-store";
@@ -20,6 +24,7 @@ pub struct Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInState {
     Ready,
+    Invalid,
     Failed,
 }
 
@@ -119,6 +124,25 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
                             <button class="button" type="submit">"Continue securely"</button>
                         </form>
                     }.into_any(),
+                    SignInState::Invalid => view! {
+                        <div id="signin-error" class="notice error" role="alert" tabindex="-1">
+                            "Enter a valid email address. Nothing was submitted."
+                        </div>
+                        <form class="stack" method="post" action="/login" aria-describedby="signin-help signin-error">
+                            <label for="email">"Email address"</label>
+                            <input
+                                id="email"
+                                name="email"
+                                type="email"
+                                inputmode="email"
+                                autocomplete="email"
+                                maxlength="254"
+                                aria-invalid="true"
+                                required
+                            />
+                            <button class="button" type="submit">"Continue securely"</button>
+                        </form>
+                    }.into_any(),
                     SignInState::Failed => view! {
                         <div class="notice error" role="alert" tabindex="-1">
                             "Sign-in is temporarily unavailable. No session was created. Try again later."
@@ -126,6 +150,9 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
                         <a class="button secondary" href="/login">"Try again"</a>
                     }.into_any(),
                 }}
+                <p class="form-help">
+                    "New to Frame? " <a href="/signup">"Create an account"</a>
+                </p>
             </section>
         </main>
     }
@@ -145,12 +172,140 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
     }
 }
 
+pub fn signup(config: &RuntimeConfig, state: SignInState) -> Page {
+    let canonical = format!("{}/signup", config.public_origin().as_str());
+    let body = view! {
+        <main id="main" class="narrow" tabindex="-1">
+            <a class="back" href="/login">"← Sign in instead"</a>
+            <section class="panel" aria-labelledby="page-title">
+                <p class="eyebrow">"Authentication boundary"</p>
+                <h1 id="page-title">"Create your Frame account"</h1>
+                <p id="signup-help">
+                    "Account creation is same-origin, rate-limited, and enumeration-safe. Verification material never appears in a URL."
+                </p>
+                {match state {
+                    SignInState::Ready => view! {
+                        <form class="stack" method="post" action="/signup" aria-describedby="signup-help">
+                            <label for="signup-name">"Display name"</label>
+                            <input id="signup-name" name="display_name" maxlength="120" autocomplete="name" required/>
+                            <label for="signup-email">"Email address"</label>
+                            <input id="signup-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required/>
+                            <button class="button" type="submit">"Create account securely"</button>
+                        </form>
+                    }.into_any(),
+                    SignInState::Invalid => view! {
+                        <div class="notice error" role="alert" tabindex="-1">
+                            "Check the highlighted account details. Nothing was submitted."
+                        </div>
+                        <a class="button secondary" href="/signup">"Try again"</a>
+                    }.into_any(),
+                    SignInState::Failed => view! {
+                        <div class="notice error" role="alert" tabindex="-1">
+                            "Account creation is temporarily unavailable. No partial account is shown."
+                        </div>
+                        <a class="button secondary" href="/signup">"Try again later"</a>
+                    }.into_any(),
+                }}
+            </section>
+        </main>
+    }
+    .to_html();
+    Page {
+        status: StatusCode::OK,
+        body: document(
+            "Create account · Frame",
+            "Create a Frame account.",
+            &canonical,
+            "noindex,nofollow",
+            body,
+        ),
+        cache_control: NO_STORE,
+        robots: "noindex,nofollow",
+    }
+}
+
+pub fn verify(config: &RuntimeConfig, state: SignInState) -> Page {
+    let canonical = format!("{}/verify", config.public_origin().as_str());
+    let body = view! {
+        <main id="main" class="narrow" tabindex="-1">
+            <a class="back" href="/login">"← Start sign in again"</a>
+            <section class="panel" aria-labelledby="page-title">
+                <p class="eyebrow">"Verification boundary"</p>
+                <h1 id="page-title">"Enter your one-time code"</h1>
+                <p id="verify-help">
+                    "Use the code from your verification message. The pending challenge is held in a secure same-origin cookie, not this page or URL."
+                </p>
+                {match state {
+                    SignInState::Ready => view! {
+                        <form class="stack" method="post" action="/verify" aria-describedby="verify-help">
+                            <label for="otp">"Six-digit code"</label>
+                            <input
+                                id="otp"
+                                name="otp"
+                                inputmode="numeric"
+                                autocomplete="one-time-code"
+                                minlength="6"
+                                maxlength="6"
+                                pattern="[0-9]{6}"
+                                required
+                            />
+                            <button class="button" type="submit">"Verify securely"</button>
+                        </form>
+                    }.into_any(),
+                    SignInState::Invalid => view! {
+                        <div class="notice error" role="alert" tabindex="-1">
+                            "The code must contain exactly six digits. No verification was attempted."
+                        </div>
+                        <a class="button secondary" href="/verify">"Try the code again"</a>
+                    }.into_any(),
+                    SignInState::Failed => view! {
+                        <div class="notice error" role="alert" tabindex="-1">
+                            "Verification is unavailable or the code cannot be accepted. Start sign in again."
+                        </div>
+                        <a class="button secondary" href="/login">"Restart sign in"</a>
+                    }.into_any(),
+                }}
+            </section>
+        </main>
+    }
+    .to_html();
+    Page {
+        status: StatusCode::OK,
+        body: document(
+            "Verify sign in · Frame",
+            "Verify your Frame sign in.",
+            &canonical,
+            "noindex,nofollow",
+            body,
+        ),
+        cache_control: NO_STORE,
+        robots: "noindex,nofollow",
+    }
+}
+
+#[cfg(test)]
 pub fn authenticated(
     config: &RuntimeConfig,
     route: AuthenticatedRoute,
     state: AuthenticatedState,
 ) -> Page {
-    let canonical = format!("{}{}", config.public_origin().as_str(), route.path());
+    authenticated_at(
+        config,
+        route,
+        state,
+        route.path(),
+        &RouteViewQuery::default(),
+    )
+}
+
+pub fn authenticated_at(
+    config: &RuntimeConfig,
+    route: AuthenticatedRoute,
+    state: AuthenticatedState,
+    canonical_path: &str,
+    query: &RouteViewQuery,
+) -> Page {
+    let canonical = format!("{}{canonical_path}", config.public_origin().as_str());
     let state = match state {
         AuthenticatedState::Ready(workspace) if !route.permitted_for(workspace.role) => {
             AuthenticatedState::Denied
@@ -191,11 +346,15 @@ pub fn authenticated(
             ),
         ),
         AuthenticatedState::Ready(workspace) => {
-            (StatusCode::OK, workspace_shell(route, &workspace))
+            (StatusCode::OK, workspace_shell(route, &workspace, query))
         }
     };
     let body = view! {
-        <main id="main" class="workspace-page" tabindex="-1">
+        <main
+            id="main"
+            class="workspace-page"
+            tabindex="-1"
+        >
             {content}
         </main>
     }
@@ -203,12 +362,13 @@ pub fn authenticated(
 
     Page {
         status,
-        body: document(
+        body: themed_private_document(
             &format!("{} · Frame", route.label()),
             "Private Frame workspace.",
             &canonical,
             "noindex,nofollow",
             body,
+            query.theme().as_str(),
         ),
         cache_control: NO_STORE,
         robots: "noindex,nofollow",
@@ -216,6 +376,11 @@ pub fn authenticated(
 }
 
 pub fn share(config: &RuntimeConfig, video_id: &str, view: ShareView) -> Page {
+    let view = if view.matches_route(video_id) {
+        view
+    } else {
+        ShareView::Unavailable
+    };
     let fallback_canonical = format!(
         "{}/s/{}",
         config.public_origin().as_str(),
@@ -239,7 +404,7 @@ pub fn share(config: &RuntimeConfig, video_id: &str, view: ShareView) -> Page {
                 .canonical_url
                 .clone()
                 .unwrap_or_else(|| fallback_canonical.clone());
-            let content = public_player_shell(&summary);
+            let content = public_player_shell(&summary, None);
             (
                 StatusCode::OK,
                 format!("{title} · Frame"),
@@ -307,6 +472,11 @@ pub fn share(config: &RuntimeConfig, video_id: &str, view: ShareView) -> Page {
 }
 
 pub fn embed(config: &RuntimeConfig, video_id: &str, share: ShareView) -> Page {
+    let share = if share.matches_route(video_id) {
+        share
+    } else {
+        ShareView::Unavailable
+    };
     let public = matches!(
         &share,
         ShareView::Validated(summary) if summary.availability == ShareAvailability::Public
@@ -316,17 +486,31 @@ pub fn embed(config: &RuntimeConfig, video_id: &str, share: ShareView) -> Page {
     } else {
         safe_id(video_id)
     };
-    let canonical = format!("{}/embed/{}", config.public_origin().as_str(), canonical_id);
+    let unavailable_canonical = format!("{}/embed/{canonical_id}", config.public_origin().as_str());
     if !config.embed_policy().enabled() || !public {
-        return unavailable_embed(&canonical);
+        return unavailable_embed(&unavailable_canonical);
     }
 
     let ShareView::Validated(summary) = share else {
-        return unavailable_embed(&canonical);
+        return unavailable_embed(&unavailable_canonical);
     };
+    let canonical = summary
+        .canonical_url
+        .clone()
+        .unwrap_or_else(|| format!("{}/s/{canonical_id}", config.public_origin().as_str()));
+    let embed_origins = config
+        .embed_policy()
+        .ancestors()
+        .iter()
+        .map(|origin| origin.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let body = view! {
         <main id="main" class="embed-page" tabindex="-1">
-            {public_player_shell(&summary)}
+            {public_player_shell(
+                &summary,
+                Some((canonical_id.to_owned(), embed_origins)),
+            )}
         </main>
     }
     .to_html();
@@ -434,12 +618,16 @@ fn private_status_shell(label: &'static str, message: &'static str, role: &'stat
     .into_any()
 }
 
-fn workspace_shell(route: AuthenticatedRoute, workspace: &WorkspaceView) -> AnyView {
-    let navigation = AuthenticatedRoute::ALL
+fn workspace_shell(
+    route: AuthenticatedRoute,
+    workspace: &WorkspaceView,
+    query: &RouteViewQuery,
+) -> AnyView {
+    let navigation = AuthenticatedRoute::NAVIGATION
         .into_iter()
         .filter(|candidate| candidate.permitted_for(workspace.role))
         .map(|candidate| {
-            let current = candidate == route;
+            let current = candidate == route.navigation_parent();
             view! {
                 <li>
                     <a
@@ -452,7 +640,7 @@ fn workspace_shell(route: AuthenticatedRoute, workspace: &WorkspaceView) -> AnyV
             }
         })
         .collect_view();
-    let content = surface_content(route, workspace);
+    let content = surface_content(route, workspace, query);
 
     view! {
         <header class="workspace-header">
@@ -481,29 +669,64 @@ fn workspace_shell(route: AuthenticatedRoute, workspace: &WorkspaceView) -> AnyV
     .into_any()
 }
 
-fn surface_content(route: AuthenticatedRoute, workspace: &WorkspaceView) -> AnyView {
+fn surface_content(
+    route: AuthenticatedRoute,
+    workspace: &WorkspaceView,
+    query: &RouteViewQuery,
+) -> AnyView {
     match route {
         AuthenticatedRoute::Dashboard | AuthenticatedRoute::Library => {
-            recording_library(workspace)
+            recording_library(workspace, query)
         }
         AuthenticatedRoute::Imports => import_surface(workspace),
-        AuthenticatedRoute::Spaces | AuthenticatedRoute::Folders => view! {
-            <section class="panel empty-state" aria-labelledby="collection-title">
-                <h2 id="collection-title">{format!("No {} yet", route.label().to_lowercase())}</h2>
-                <p>
-                    "This deterministic empty state is ready for a policy-authorized create action. No optimistic resource is shown before the server accepts it."
-                </p>
-            </section>
+        AuthenticatedRoute::Spaces | AuthenticatedRoute::Folders => {
+            collection_surface(route, workspace.role)
         }
-        .into_any(),
-        AuthenticatedRoute::Settings => view! {
+        AuthenticatedRoute::Space | AuthenticatedRoute::Folder => detail_surface(route),
+        AuthenticatedRoute::Onboarding => form_surface(
+            "onboarding-title",
+            "Complete onboarding",
+            "Workspace details are validated before the server creates or selects an organization.",
+            "/onboarding",
+            "Workspace name",
+            "workspace_name",
+            true,
+        ),
+        AuthenticatedRoute::Settings => settings_index(workspace),
+        AuthenticatedRoute::AccountSettings => form_surface(
+            "account-title",
+            "Account profile",
+            "Unsaved changes are announced before navigation. Session revocation requires a separate fresh authorization.",
+            "/settings/account",
+            "Display name",
+            "display_name",
+            false,
+        ),
+        AuthenticatedRoute::OrganizationSettings => form_surface(
+            "organization-title",
+            "Organization settings",
+            "Organization policy changes use an expected revision and a server-side role decision.",
+            "/settings/organization",
+            "Organization name",
+            "organization_name",
+            false,
+        ),
+        AuthenticatedRoute::MemberSettings => restricted_surface(
+            "Members and invites",
+            "Member rows, invitations, seat state, and role changes remain server-authorized. Unknown and forbidden identities are indistinguishable.",
+        ),
+        AuthenticatedRoute::StorageSettings => restricted_surface(
+            "Storage integrations",
+            "Provider credentials never enter rendered HTML. Connection, verification, rollback, and deletion are separate audited actions.",
+        ),
+        AuthenticatedRoute::Analytics => view! {
             <section class="panel" aria-labelledby="settings-title">
-                <h2 id="settings-title">"Organization settings"</h2>
+                <h2 id="settings-title">"Usage analytics"</h2>
                 <dl class="detail-list">
                     <div><dt>"Workspace"</dt><dd>{workspace.organization_name.clone()}</dd></div>
                     <div><dt>"Your role"</dt><dd>{workspace.role.label()}</dd></div>
                 </dl>
-                <p>"Mutation controls remain unavailable until CSRF-protected same-origin actions are connected."</p>
+                <p>"Product telemetry remains off until a recorded consent decision exists. Operational measurements contain no private titles or identities."</p>
             </section>
         }
         .into_any(),
@@ -522,6 +745,116 @@ fn surface_content(route: AuthenticatedRoute, workspace: &WorkspaceView) -> AnyV
     }
 }
 
+fn collection_surface(route: AuthenticatedRoute, role: WorkspaceRole) -> AnyView {
+    let singular = if route == AuthenticatedRoute::Spaces {
+        "space"
+    } else {
+        "folder"
+    };
+    let can_create = matches!(role, WorkspaceRole::Owner | WorkspaceRole::Admin);
+    view! {
+        <section class="panel empty-state" aria-labelledby="collection-title">
+            <h2 id="collection-title">{format!("No {singular}s yet")}</h2>
+            <p>
+                "No optimistic resource is shown before the server accepts a tenant-scoped create command."
+            </p>
+            {can_create.then(|| view! {
+                <button
+                    class="button secondary"
+                    type="button"
+                    disabled
+                    aria-describedby="collection-action-status"
+                >
+                    {format!("Create {singular}")}
+                </button>
+            })}
+            <p id="collection-action-status" class="form-help">
+                "Creation remains disabled until the CSRF-protected typed action adapter is available."
+            </p>
+        </section>
+    }
+    .into_any()
+}
+
+fn detail_surface(route: AuthenticatedRoute) -> AnyView {
+    let label = route.label().to_lowercase();
+    view! {
+        <section class="panel" aria-labelledby="detail-title">
+            <h2 id="detail-title">{format!("{label} details")}</h2>
+            <div class="notice" role="status">
+                "The local fixture proves the routed, authorized detail boundary. Production identifiers and resources load only through the typed tenant-scoped API."
+            </div>
+        </section>
+    }
+    .into_any()
+}
+
+fn settings_index(workspace: &WorkspaceView) -> AnyView {
+    view! {
+        <section class="panel" aria-labelledby="settings-title">
+            <h2 id="settings-title">"Settings surfaces"</h2>
+            <dl class="detail-list">
+                <div><dt>"Workspace"</dt><dd>{workspace.organization_name.clone()}</dd></div>
+                <div><dt>"Your role"</dt><dd>{workspace.role.label()}</dd></div>
+            </dl>
+            <ul class="settings-links">
+                <li><a href="/settings/account">"Account"</a></li>
+                {AuthenticatedRoute::OrganizationSettings.permitted_for(workspace.role).then(|| view! {
+                    <li><a href="/settings/organization">"Organization"</a></li>
+                })}
+                {AuthenticatedRoute::MemberSettings.permitted_for(workspace.role).then(|| view! {
+                    <li><a href="/settings/members">"Members"</a></li>
+                })}
+                {AuthenticatedRoute::StorageSettings.permitted_for(workspace.role).then(|| view! {
+                    <li><a href="/settings/storage">"Storage"</a></li>
+                })}
+            </ul>
+        </section>
+    }
+    .into_any()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn form_surface(
+    title_id: &'static str,
+    title: &'static str,
+    description: &'static str,
+    action: &'static str,
+    field_label: &'static str,
+    field_name: &'static str,
+    required: bool,
+) -> AnyView {
+    view! {
+        <section class="panel" aria-labelledby=title_id>
+            <h2 id=title_id>{title}</h2>
+            <p id="form-contract-help">{description}</p>
+            <form
+                class="stack"
+                method="post"
+                action=action
+                data-form-contract="revision-fenced-v1"
+                data-unsaved-guard="required"
+                aria-describedby="form-contract-help form-authority-status"
+            >
+                <label for=field_name>{field_label}</label>
+                <input
+                    id=field_name
+                    name=field_name
+                    maxlength="120"
+                    autocomplete="off"
+                    required=required
+                    disabled
+                />
+                <button class="button" type="submit" disabled>"Save changes"</button>
+            </form>
+            <div id="form-authority-status" class="notice" role="status">
+                "The form contract covers validation, pending state, duplicate suppression, retry, stale completion, and unsaved changes. Submission stays disabled until the server action adapter is connected."
+            </div>
+        </section>
+    }
+    .into_any()
+}
+
 fn restricted_surface(title: &'static str, message: &'static str) -> AnyView {
     view! {
         <section class="panel" aria-labelledby="restricted-title">
@@ -532,10 +865,28 @@ fn restricted_surface(title: &'static str, message: &'static str) -> AnyView {
     .into_any()
 }
 
-fn recording_library(workspace: &WorkspaceView) -> AnyView {
-    let recordings = workspace
+fn recording_library(workspace: &WorkspaceView, query: &RouteViewQuery) -> AnyView {
+    let filtered = workspace
         .recordings
         .iter()
+        .filter(|recording| {
+            query.search().is_none_or(|search| {
+                recording
+                    .title
+                    .to_lowercase()
+                    .contains(&search.to_lowercase())
+            })
+        })
+        .filter(|recording| match query.filter() {
+            RecordingFilter::All => true,
+            RecordingFilter::Ready => recording.state == RecordingState::Ready,
+            RecordingFilter::Processing => recording.state == RecordingState::Processing,
+            RecordingFilter::Failed => recording.state == RecordingState::Failed,
+        })
+        .collect::<Vec<_>>();
+    let empty = filtered.is_empty();
+    let recordings = filtered
+        .into_iter()
         .map(|recording| {
             let identifier = safe_id(&recording.public_id);
             let ready = recording.state == RecordingState::Ready && identifier != "unavailable";
@@ -575,15 +926,24 @@ fn recording_library(workspace: &WorkspaceView) -> AnyView {
                     type="search"
                     maxlength="120"
                     autocomplete="off"
+                    value=query.search().unwrap_or_default()
                 />
+                <label class="visually-hidden" for="recording-filter">"Filter by status"</label>
+                <select id="recording-filter" name="filter">
+                    <option value="all" selected={query.filter() == RecordingFilter::All}>"All statuses"</option>
+                    <option value="ready" selected={query.filter() == RecordingFilter::Ready}>"Ready"</option>
+                    <option value="processing" selected={query.filter() == RecordingFilter::Processing}>"Processing"</option>
+                    <option value="failed" selected={query.filter() == RecordingFilter::Failed}>"Needs attention"</option>
+                </select>
                 <button class="button" type="submit">"Search"</button>
             </div>
+            <input type="hidden" name="page" value="1"/>
         </form>
-        {if workspace.recordings.is_empty() {
+        {if empty {
             view! {
                 <section class="panel empty-state" aria-labelledby="empty-title">
-                    <h2 id="empty-title">"Your library is empty"</h2>
-                    <p>"Record in the desktop app or begin an authorized import to add a video."</p>
+                    <h2 id="empty-title">"No recordings match"</h2>
+                    <p>"Clear search and filters, record in the desktop app, or begin an authorized import."</p>
                 </section>
             }.into_any()
         } else {
@@ -626,7 +986,7 @@ fn import_surface(workspace: &WorkspaceView) -> AnyView {
     .into_any()
 }
 
-fn public_player_shell(summary: &PublicShareSummary) -> AnyView {
+fn public_player_shell(summary: &PublicShareSummary, embed: Option<(String, String)>) -> AnyView {
     let title = summary
         .title
         .clone()
@@ -656,6 +1016,28 @@ fn public_player_shell(summary: &PublicShareSummary) -> AnyView {
         .iter()
         .map(|caption| view! { <li>{caption.label.clone()}</li> })
         .collect_view();
+    let transcript_links = playback
+        .captions
+        .iter()
+        .map(|caption| {
+            view! {
+                <li>
+                    <a href=caption.path.clone()>
+                        {format!("{} transcript (WebVTT)", caption.label)}
+                    </a>
+                </li>
+            }
+        })
+        .collect_view();
+    let (embed_share, embed_origins) = embed
+        .map(|(share, origins)| (Some(share), Some(origins)))
+        .unwrap_or((None, None));
+    let collaboration_share = summary
+        .canonical_url
+        .as_deref()
+        .and_then(|value| value.strip_prefix("/s/"))
+        .filter(|value| !value.is_empty() && !value.contains('/'))
+        .map(str::to_owned);
 
     view! {
         <article class="player-shell" aria-labelledby="page-title">
@@ -665,9 +1047,15 @@ fn public_player_shell(summary: &PublicShareSummary) -> AnyView {
             {duration.map(|duration| view! { <p class="duration-summary">{duration}</p> })}
             <div class="video-frame">
                 <video
+                    id="frame-public-player"
                     controls
                     playsinline
                     preload="metadata"
+                    controlslist="nodownload noremoteplayback"
+                    disableremoteplayback
+                    data-allow-fullscreen="true"
+                    data-allow-picture-in-picture="true"
+                    aria-describedby="player-privacy-description"
                     aria-label=format!("Video: {title}")
                 >
                     <source src=playback.path.clone() type=playback.content_type.clone()/>
@@ -686,13 +1074,37 @@ fn public_player_shell(summary: &PublicShareSummary) -> AnyView {
                 </section>
                 <section aria-labelledby="privacy-title">
                     <h2 id="privacy-title">"Privacy"</h2>
-                    <p>"Analytics stay off in this server-rendered player unless a separate consent flow records a choice."</p>
+                    <p id="player-privacy-description">"Analytics stay off unless a separate, same-share consent flow records a choice. This page does not fingerprint the browser or infer consent."</p>
+                </section>
+                <section aria-labelledby="transcript-title">
+                    <h2 id="transcript-title">"Transcript"</h2>
+                    {if playback.captions.is_empty() {
+                        view! { <p>"No transcript is available."</p> }.into_any()
+                    } else {
+                        view! { <ul>{transcript_links}</ul> }.into_any()
+                    }}
+                </section>
+                <section aria-labelledby="comments-title">
+                    <h2 id="comments-title">"Comments"</h2>
+                    <p>"Comments appear only after the same-origin collaboration service authorizes this exact share. No comment mutation is attempted by the server-rendered fallback."</p>
                 </section>
             </div>
             <p class="player-help">
                 "Playback and caption paths come from a validated provider-neutral public descriptor. Storage keys and signed provider URLs are never rendered."
             </p>
-            <div id=PLAYER_HELP_ROOT_ID data-frame-hydration-scope="interaction-island">
+            <div
+                id=PUBLIC_COLLABORATION_ROOT_ID
+                data-frame-hydration-scope="interaction-island"
+                data-frame-public-share=collaboration_share
+            >
+                <PublicCollaborationPanel/>
+            </div>
+            <div
+                id=PLAYER_HELP_ROOT_ID
+                data-frame-hydration-scope="interaction-island"
+                data-frame-embed-share=embed_share
+                data-frame-embed-origins=embed_origins
+            >
                 <PlayerKeyboardHelp/>
             </div>
         </article>
@@ -732,7 +1144,26 @@ fn safe_id(value: &str) -> &str {
 }
 
 fn document(title: &str, description: &str, canonical: &str, robots: &str, app: String) -> String {
-    document_with_head(title, description, canonical, robots, app, false)
+    document_with_head(title, description, canonical, robots, app, false, None)
+}
+
+fn themed_private_document(
+    title: &str,
+    description: &str,
+    canonical: &str,
+    robots: &str,
+    app: String,
+    theme: &str,
+) -> String {
+    document_with_head(
+        title,
+        description,
+        canonical,
+        robots,
+        app,
+        false,
+        Some(theme),
+    )
 }
 
 fn public_document(
@@ -742,7 +1173,7 @@ fn public_document(
     robots: &str,
     app: String,
 ) -> String {
-    document_with_head(title, description, canonical, robots, app, true)
+    document_with_head(title, description, canonical, robots, app, true, None)
 }
 
 fn document_with_head(
@@ -752,6 +1183,7 @@ fn document_with_head(
     robots: &str,
     app: String,
     public_open_graph: bool,
+    body_theme: Option<&str>,
 ) -> String {
     let head = view! {
         <meta charset="utf-8"/>
@@ -779,13 +1211,17 @@ fn document_with_head(
         </div>
     }
     .to_html();
+    let body_theme = match body_theme {
+        Some(theme @ ("system" | "dark" | "light")) => format!(" data-theme=\"{theme}\""),
+        _ => String::new(),
+    };
     format!(
-        "<!doctype html><html lang=\"en\"><head>{head}<!--FRAME_HYDRATION_HEAD--></head><body><a class=\"skip-link\" href=\"#main\">Skip to content</a>{app}{hydration}<!--FRAME_HYDRATION_SCRIPT--></body></html>"
+        "<!doctype html><html lang=\"en\"><head>{head}<!--FRAME_HYDRATION_HEAD--></head><body{body_theme}><a class=\"skip-link\" href=\"#main\">Skip to content</a>{app}{hydration}<!--FRAME_HYDRATION_SCRIPT--></body></html>"
     )
 }
 
 const STYLE: &str = r#"
-:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #090b10; color: #f3f5f7; }
+:root { color-scheme: dark light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #090b10; color: #f3f5f7; }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 75% 15%, #253150 0, transparent 30rem), #090b10; }
@@ -816,8 +1252,9 @@ article p:last-child, .panel p, .player-help { color: #b2bbc8; line-height: 1.6;
 .notice.error { border-color: #fca5a5; }
 .stack { display: grid; gap: 10px; margin-top: 24px; }
 label { font-weight: 750; }
-input { width: 100%; min-height: 44px; padding: 10px 12px; color: #f3f5f7; background: #090b10; border: 1px solid #697386; border-radius: 8px; font: inherit; }
+input, select { width: 100%; min-height: 44px; padding: 10px 12px; color: #f3f5f7; background: #090b10; border: 1px solid #697386; border-radius: 8px; font: inherit; }
 button { border: 0; font: inherit; cursor: pointer; }
+button:disabled, input:disabled { cursor: not-allowed; opacity: .62; }
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .workspace-page { width: min(1280px, calc(100% - 32px)); padding-bottom: 72px; }
 .workspace-header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #303846; }
@@ -832,7 +1269,7 @@ button { border: 0; font: inherit; cursor: pointer; }
 .workspace-content { min-width: 0; }
 .workspace-content > h1 { margin-top: 8px; font-size: clamp(40px, 6vw, 68px); }
 .search-form { margin: 18px 0 36px; }
-.search-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; margin-top: 8px; }
+.search-form > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .35fr) auto; gap: 10px; margin-top: 8px; }
 .search-form .button { margin-top: 0; }
 .recording-list { display: grid; gap: 10px; padding: 0; list-style: none; }
 .recording-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px; background: rgba(18, 22, 30, .9); border: 1px solid #394354; border-radius: 12px; }
@@ -846,6 +1283,8 @@ button { border: 0; font: inherit; cursor: pointer; }
 .detail-list > div { display: grid; grid-template-columns: 140px 1fr; gap: 20px; padding: 12px 0; border-bottom: 1px solid #303846; }
 .detail-list dt { color: #b2bbc8; }
 .detail-list dd { margin: 0; font-weight: 750; }
+.settings-links { display: grid; gap: 8px; padding-left: 20px; }
+.form-help { font-size: 14px; }
 progress { width: 100%; height: 18px; accent-color: #a7f3d0; }
 .player-shell { overflow: hidden; }
 .compact-lede { font-size: 17px; }
@@ -856,12 +1295,36 @@ video { display: block; width: 100%; min-height: 280px; max-height: 70vh; backgr
 .player-grid section { padding: 0 4px; }
 .player-grid h2 { font-size: 18px; }
 .player-keyboard-help { margin-top: 22px; padding-top: 2px; border-top: 1px solid #303846; }
+.player-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+.player-controls label { margin-left: 4px; }
+.player-controls select { width: auto; min-width: 84px; }
+.player-controls .button { min-height: 44px; }
+.player-status { min-height: 1.5em; color: #b2bbc8; }
 .player-keyboard-help-panel { margin-top: 12px; padding: 14px; background: #0d1118; border: 1px solid #394354; border-radius: 10px; }
 .player-keyboard-help:not([data-frame-enhanced="true"]) .hydration-only { display: none; }
 .player-keyboard-help[data-frame-enhanced="true"] .player-keyboard-help-fallback { display: none; }
+.public-collaboration:not([data-frame-enhanced="true"]) .hydration-only { display: none; }
+.public-collaboration[data-frame-enhanced="true"] .collaboration-fallback { display: none; }
+.collaboration-grid { display: grid; gap: 1rem; }
+.comment-form { display: grid; gap: .65rem; }
+.transcript-cues, .public-comments { display: grid; gap: .7rem; padding-left: 1.4rem; }
+.transcript-cues li, .public-comments li { padding-left: .25rem; }
 .embed-page { display: grid; min-height: 100vh; place-items: center; padding: 16px; }
+[data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; min-height: 100vh; color: #172033; background: #f6f8fb; }
+[data-theme="light"] article, [data-theme="light"] .panel, [data-theme="light"] .recording-row { background: #fff; border-color: #b8c2d2; }
+[data-theme="light"] .workspace-header, [data-theme="light"] .detail-list > div { border-color: #c9d1dc; }
+[data-theme="light"] .workspace-nav li a, [data-theme="light"] article p:last-child, [data-theme="light"] .panel p { color: #46536a; }
+[data-theme="light"] .recording-row p { color: #46536a; }
+[data-theme="light"] .workspace-nav li a:hover, [data-theme="light"] .workspace-nav li a[aria-current="page"] { background: #dce5f1; color: #111827; }
+[data-theme="light"] input, [data-theme="light"] select { color: #111827; background: #fff; border-color: #526074; }
+[data-theme="light"] .notice { color: #172033; background: #e8eef6; }
+[data-theme="light"] .session-summary, [data-theme="light"] .role-badge, [data-theme="light"] .state { color: #26344b; border-color: #526074; }
+[data-theme="light"] .eyebrow { color: #047857; }
+[data-theme="light"] .button.secondary { color: #172033; background: #eef2f7; border-color: #697386; }
 @media (max-width: 760px) { .grid, .player-grid { grid-template-columns: 1fr; } .hero { padding-top: 52px; } .workspace-layout { grid-template-columns: 1fr; gap: 24px; } .workspace-nav ul { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 520px) { .actions, .recording-row { align-items: stretch; flex-direction: column; } .nav-links { gap: 10px; font-size: 14px; } .session-summary > span:first-child { display: none; } .workspace-nav ul { grid-template-columns: 1fr; } .search-form > div { grid-template-columns: 1fr; } .detail-list > div { grid-template-columns: 1fr; gap: 4px; } }
+@media (prefers-color-scheme: light) { [data-theme="system"] { color-scheme: light; min-height: 100vh; color: #172033; background: #f6f8fb; } [data-theme="system"] article, [data-theme="system"] .panel, [data-theme="system"] .recording-row { background: #fff; border-color: #b8c2d2; } [data-theme="system"] .workspace-header, [data-theme="system"] .detail-list > div { border-color: #c9d1dc; } [data-theme="system"] .workspace-nav li a, [data-theme="system"] article p:last-child, [data-theme="system"] .panel p, [data-theme="system"] .recording-row p { color: #46536a; } [data-theme="system"] .workspace-nav li a:hover, [data-theme="system"] .workspace-nav li a[aria-current="page"] { color: #111827; background: #dce5f1; } [data-theme="system"] input, [data-theme="system"] select { color: #111827; background: #fff; border-color: #526074; } [data-theme="system"] .notice { color: #172033; background: #e8eef6; } [data-theme="system"] .session-summary, [data-theme="system"] .role-badge, [data-theme="system"] .state { color: #26344b; border-color: #526074; } [data-theme="system"] .eyebrow { color: #047857; } [data-theme="system"] .button.secondary { color: #172033; background: #eef2f7; border-color: #697386; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
 "#;
 
@@ -876,6 +1339,15 @@ mod tests {
 
     fn config() -> RuntimeConfig {
         RuntimeConfig::from_values(ConfigValues::default()).expect("local config")
+    }
+
+    fn embed_config() -> RuntimeConfig {
+        RuntimeConfig::from_values(ConfigValues {
+            public_embed_enabled: Some("true".into()),
+            embed_ancestors: Some("https://engmanager.xyz".into()),
+            ..ConfigValues::default()
+        })
+        .expect("local embed config")
     }
 
     #[test]
@@ -982,14 +1454,67 @@ mod tests {
         assert_eq!(page.cache_control, NO_STORE);
         assert!(page.body.contains("<video"));
         assert!(page.body.contains("kind=\"captions\""));
+        assert!(page.body.contains("id=\"frame-public-player\""));
+        assert!(
+            page.body
+                .contains("controlslist=\"nodownload noremoteplayback\"")
+        );
+        assert!(page.body.contains("Play or pause"));
+        assert!(page.body.contains("Back 10 seconds"));
+        assert!(page.body.contains("Forward 10 seconds"));
+        assert!(page.body.contains("Picture in picture"));
+        assert!(page.body.contains("Retry playback"));
+        assert!(page.body.contains("transcript (WebVTT)"));
         assert!(page.body.contains("property=\"og:title\""));
         assert!(
             page.body
-                .contains("/api/v1/public/shares/fixture-public/playback")
+                .contains("/api/v1/public/shares/fixture-public/media")
         );
         for forbidden in ["object_key", "x-amz", "X-Amz", "signed="] {
             assert!(!page.body.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn route_scope_confusion_collapses_to_the_generic_unavailable_page() {
+        let config = config();
+        let page = share(
+            &config,
+            "another-share",
+            local_share_fixture(&config, "fixture-public"),
+        );
+        assert_eq!(page.status, StatusCode::NOT_FOUND);
+        assert!(!page.body.contains("Local public recording"));
+        assert!(!page.body.contains("fixture-public"));
+        assert!(!page.body.contains("another-share"));
+        assert!(!page.body.contains("property=\"og:title\""));
+    }
+
+    #[test]
+    fn enabled_embed_is_noindex_exact_origin_scoped_and_uses_share_canonical() {
+        let config = embed_config();
+        let page = embed(
+            &config,
+            "fixture-public",
+            local_share_fixture(&config, "fixture-public"),
+        );
+        assert_eq!(page.status, StatusCode::OK);
+        assert_eq!(page.cache_control, NO_STORE);
+        assert_eq!(page.robots, "noindex,follow");
+        assert!(
+            page.body
+                .contains("data-frame-embed-share=\"fixture-public\"")
+        );
+        assert!(
+            page.body
+                .contains("data-frame-embed-origins=\"https://engmanager.xyz\"")
+        );
+        assert!(
+            page.body
+                .contains("rel=\"canonical\" href=\"http://127.0.0.1:3000/s/fixture-public\"")
+        );
+        assert!(!page.body.contains("property=\"og:title\""));
+        assert!(!page.body.contains("object_key"));
     }
 
     #[test]
@@ -1039,7 +1564,10 @@ mod tests {
             organization_name: "<script>tenant()</script>".into(),
             member_label: "Member & owner".into(),
             role: WorkspaceRole::Owner,
+            revision: 1,
             recordings: vec![],
+            spaces: vec![],
+            folders: vec![],
             import: None,
         };
         let page = authenticated(
@@ -1058,5 +1586,83 @@ mod tests {
         assert!(page.body.contains("autocomplete=\"email\""));
         assert!(!page.body.contains("token="));
         assert_eq!(page.cache_control, NO_STORE);
+    }
+
+    #[test]
+    fn every_authenticated_route_enforces_every_role_before_rendering() {
+        let config = config();
+        for route in AuthenticatedRoute::ALL {
+            for (role, fixture) in [
+                (WorkspaceRole::Owner, "owner"),
+                (WorkspaceRole::Admin, "admin"),
+                (WorkspaceRole::Member, "member"),
+            ] {
+                let page = authenticated_at(
+                    &config,
+                    route,
+                    local_authenticated_fixture(&config, Some(fixture)),
+                    route.path(),
+                    &RouteViewQuery::default(),
+                );
+                assert_eq!(page.cache_control, NO_STORE, "{} cache", route.name());
+                assert!(page.body.contains("noindex,nofollow"));
+                assert!(page.body.contains("id=\"page-title\""));
+                if route.permitted_for(role) {
+                    assert_eq!(page.status, StatusCode::OK, "{} {fixture}", route.name());
+                    assert!(page.body.contains("Local Frame workspace"));
+                    assert!(page.body.contains(route.label()));
+                } else {
+                    assert_eq!(
+                        page.status,
+                        StatusCode::FORBIDDEN,
+                        "{} {fixture}",
+                        route.name()
+                    );
+                    assert!(page.body.contains("Access denied"));
+                    assert!(!page.body.contains("Local Frame workspace"));
+                    assert!(!page.body.contains("Product walkthrough"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn auth_forms_are_post_only_bounded_and_non_reflective() {
+        for page in [
+            login(&config(), SignInState::Ready),
+            signup(&config(), SignInState::Ready),
+            verify(&config(), SignInState::Ready),
+        ] {
+            assert_eq!(page.status, StatusCode::OK);
+            assert_eq!(page.cache_control, NO_STORE);
+            assert!(page.body.contains("method=\"post\""));
+            assert!(page.body.contains("required"));
+            assert!(page.body.contains("noindex,nofollow"));
+            assert!(!page.body.contains("token="));
+            assert!(!page.body.contains("otp="));
+        }
+        let failed = verify(&config(), SignInState::Failed);
+        assert!(failed.body.contains("role=\"alert\""));
+        assert!(!failed.body.contains("123456"));
+    }
+
+    #[test]
+    fn library_query_filters_server_rendered_fixture_and_preserves_theme() {
+        let config = config();
+        let query = RouteViewQuery::parse(Some("Product"), Some("ready"), Some("1"), Some("light"))
+            .expect("valid view query");
+        let page = authenticated_at(
+            &config,
+            AuthenticatedRoute::Library,
+            local_authenticated_fixture(&config, Some("owner")),
+            "/library",
+            &query,
+        );
+        assert_eq!(page.status, StatusCode::OK);
+        assert!(page.body.contains("Product walkthrough"));
+        assert!(!page.body.contains("Weekly update"));
+        assert!(!page.body.contains("Interrupted import"));
+        assert!(page.body.contains("data-theme=\"light\""));
+        assert!(page.body.contains("value=\"Product\""));
     }
 }

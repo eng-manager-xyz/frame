@@ -67,13 +67,32 @@ jobs:
       - name: Validate release policy and configuration
         run: |
           python3 scripts/ci/check-workflow-policy.py
+          python3 -I scripts/ci/test-workflow-policy.py
           ruby scripts/ci/check-yaml-syntax.rb
           ruby scripts/ci/check-render-blueprint.rb
           python3 scripts/ci/check-fixtures.py
+          python3 -I scripts/ci/check-frame-client-contract.py
+          python3 -I scripts/ci/check-cross-repo-contract.py
+          python3 -I scripts/ci/check-engmanager-portfolio-integration.py
           python3 scripts/ci/check-migrations.py
+          python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
+          python3 -I scripts/ci/direct-upload-sqlite-conformance.py
           python3 scripts/ci/check-cloudflare-zone-contract.py
+          python3 -I scripts/ci/check-cloudflare-edge-policy.py
+          python3 -I scripts/ci/test-frame-cache-purge.py
+          python3 -I scripts/ci/check-browser-security.py
+          python3 -I scripts/ci/check-launch-observability.py
+          python3 -I scripts/ci/check-issue-closure.py
           python3 scripts/ci/test-migration.py
+          python3 scripts/ci/cutover-authority-conformance.py
+          python3 -I scripts/migration/test_cap_id_map.py
+          python3 -I scripts/migration/test_etl_cap_id_map.py
+          python3 -I scripts/migration/test_cap_business_plan_contract.py
           python3 -I scripts/migration/test_local.py
+          python3 -I scripts/migration/test_mysql_snapshot.py
+          python3 -I scripts/migration/test_mysql_cdc.py
+          python3 -I scripts/migration/test_d1_target.py
+          python3 -I scripts/ci/check-media-conformance.py
           python3 scripts/ci/check-parity-evidence.py --require-full
           python3 scripts/ci/check-secrets.py
           python3 scripts/ci/generate-cyclonedx.py --self-test

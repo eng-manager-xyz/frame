@@ -57,6 +57,9 @@ TELEMETRY_OPERATIONS = frozenset(
         "delivery_claim",
         "delivery_acknowledge",
         "delivery_retry",
+        "oauth_begin",
+        "oauth_preflight",
+        "oauth_finalize",
     }
 )
 EXERCISED_TELEMETRY_COUNTS = {
@@ -75,6 +78,9 @@ EXERCISED_TELEMETRY_COUNTS = {
     "delivery_claim": 7,
     "delivery_acknowledge": 3,
     "delivery_retry": 4,
+    "oauth_begin": 4,
+    "oauth_preflight": 4,
+    "oauth_finalize": 5,
 }
 
 USER_FOUND = "018f47a6-7b1c-7f55-8f39-8f8a8690a101"
@@ -90,6 +96,7 @@ USER_ROLLBACK = "018f47a6-7b1c-7f55-8f39-8f8a8690aa01"
 USER_FENCE = "018f47a6-7b1c-7f55-8f39-8f8a8690a701"
 USER_VERIFY_TWO = "018f47a6-7b1c-7f55-8f39-8f8a8690a802"
 USER_VERIFY_THREE = "018f47a6-7b1c-7f55-8f39-8f8a8690a803"
+USER_OAUTH = "018f47a6-7b1c-7f55-8f39-8f8a8690ac01"
 
 SESSION_FOUND = "018f47a6-7b1c-7f55-8f39-8f8a8690b101"
 SESSION_SINGLE_LOGOUT = "018f47a6-7b1c-7f55-8f39-8f8a8690b102"
@@ -100,6 +107,7 @@ SESSION_LOGOUT = "018f47a6-7b1c-7f55-8f39-8f8a8690b501"
 SESSION_LOGOUT_TWO = "018f47a6-7b1c-7f55-8f39-8f8a8690b502"
 SESSION_ROLLBACK = "018f47a6-7b1c-7f55-8f39-8f8a8690ba01"
 SESSION_FENCE = "018f47a6-7b1c-7f55-8f39-8f8a8690b701"
+SESSION_OAUTH = "018f47a6-7b1c-7f55-8f39-8f8a8690bc01"
 
 ROTATE_GRANT = "018f47a6-7b1c-7f55-8f39-8f8a8690d101"
 SINGLE_LOGOUT_GRANT = "018f47a6-7b1c-7f55-8f39-8f8a8690d102"
@@ -107,6 +115,9 @@ LOGOUT_GRANT = "018f47a6-7b1c-7f55-8f39-8f8a8690d501"
 PROVISION_GRANT = "018f47a6-7b1c-7f55-8f39-8f8a8690d901"
 ROLLBACK_GRANT = "018f47a6-7b1c-7f55-8f39-8f8a8690da01"
 FENCE_GRANT = "018f47a6-7b1c-7f55-8f39-8f8a8690d701"
+OAUTH_GRANT = "018f47a6-7b1c-7f55-8f39-8f8a8690dc01"
+OAUTH_SIGN_IN_FLOW = "018f47a6-7b1c-7f55-8f39-8f8a8690fc01"
+OAUTH_LINK_FLOW = "018f47a6-7b1c-7f55-8f39-8f8a8690fc02"
 TENANT_API = "018f47a6-7b1c-7f55-8f39-8f8a8690e601"
 TENANT_FENCE = "018f47a6-7b1c-7f55-8f39-8f8a8690e701"
 DELIVERY_ID = "018f47a6-7b1c-7f55-8f39-8f8a8690f101"
@@ -178,6 +189,7 @@ def fixture_statements() -> list[str]:
         (USER_FENCE, "fence"),
         (USER_VERIFY_TWO, "verify-two"),
         (USER_VERIFY_THREE, "verify-three"),
+        (USER_OAUTH, "oauth"),
     ]
     for user_id, label in users:
         values.extend(user_statements(user_id, label))
@@ -203,6 +215,19 @@ def fixture_statements() -> list[str]:
     values.append(
         "INSERT INTO auth_session_mutation_grants_v2(id,session_id,user_id,generation,token_key_version,token_digest,created_at_ms,last_operation_id) VALUES "
         f"({sql_literal(FENCE_GRANT)},{sql_literal(SESSION_FENCE)},{sql_literal(USER_FENCE)},0,1,{sql_literal(digest(72))},{NOW_MS - 1},{sql_literal(OPERATION_ID)})"
+    )
+    values.extend(
+        session_statements(
+            SESSION_OAUTH,
+            "018f47a6-7b1c-7f55-8f39-8f8a8690cc01",
+            USER_OAUTH,
+            1202,
+            idle_expires_at=NOW_MS + 10_000,
+        )
+    )
+    values.append(
+        "INSERT INTO auth_session_mutation_grants_v2(id,session_id,user_id,generation,token_key_version,token_digest,created_at_ms,last_operation_id) VALUES "
+        f"({sql_literal(OAUTH_GRANT)},{sql_literal(SESSION_OAUTH)},{sql_literal(USER_OAUTH)},0,1,{sql_literal(digest(1202))},{NOW_MS - 1},{sql_literal(OPERATION_ID)})"
     )
     values.append(
         "INSERT INTO auth_session_mutation_grants_v2(id,session_id,user_id,generation,token_key_version,token_digest,created_at_ms,last_operation_id) VALUES "
@@ -324,6 +349,8 @@ def fixture_statements() -> list[str]:
         [
             "INSERT INTO auth_identifier_digests_v2(key_version,digest,user_id,created_at_ms,last_operation_id) VALUES "
             f"(1,{sql_literal(digest(111))},{sql_literal(USER_FOUND)},{NOW_MS - 1_000},{sql_literal(OPERATION_ID)})",
+            "INSERT INTO auth_identifier_digests_v2(key_version,digest,user_id,created_at_ms,last_operation_id) VALUES "
+            f"(1,{sql_literal(digest(1201))},{sql_literal(USER_OAUTH)},{NOW_MS - 1_000},{sql_literal(OPERATION_ID)})",
             "INSERT INTO auth_pending_verifications_v2(delivery_id,identifier_candidates_json,active_identifier_key_version,active_identifier_digest,secret_key_version,secret_digest,purpose,channel,initiator_session_id,initiator_user_id,initiator_generation,provisioning_user_id,provisioning_revision,max_attempts,created_at_ms,expires_at_ms,sealed_payload_hex,revision,last_operation_id) VALUES "
             f"({sql_literal(DELIVERY_ID)},{sql_literal(identifier_json)},1,{sql_literal(digest(111))},1,{sql_literal(digest(112))},'sign_in','one_time_code',NULL,NULL,NULL,NULL,NULL,5,{NOW_MS},{NOW_MS + 10_000},{sql_literal('ab' * 32)},0,{sql_literal(OPERATION_ID)})",
             "INSERT INTO auth_delivery_outbox_v2(delivery_id,sealed_payload_hex,suppress,created_at_ms,expires_at_ms,next_attempt_at_ms,attempt,lease_id,lease_expires_at_ms,initiator_session_id,revision,last_operation_id) VALUES "
@@ -410,11 +437,11 @@ def verify_compiled_surface() -> None:
     surface = "\n".join(
         path.read_text(encoding="utf-8") for path in (SURFACE, ROUTING, LIB)
     )
-    if source.count("Err(unsupported_oauth())") != 3:
-        raise ConformanceFailure("protected OAuth boundary drifted")
     for forbidden in (
         "d1_verification_repository_not_initialized",
         "d1_delivery_repository_not_initialized",
+        "unsupported_oauth",
+        "d1_oauth_provider_flow_pending_protected_evidence",
         "todo!",
         "unimplemented!",
     ):
@@ -794,6 +821,13 @@ def exercise_worker(server: WorkerServer) -> None:
             "verification": ["verified", "verified"],
             "api_key": ["authenticated", "authenticated"],
         },
+        "oauth_sign_in_link_replay": {
+            "sign_in": "verified",
+            "link": "linked",
+            "exact_replay": True,
+            "consumed_replay": "replay_detected",
+            "external_accounts": 2,
+        },
     }
     for scenario, values in expected.items():
         observed = expect_scenario(server, scenario)
@@ -880,6 +914,11 @@ def assert_final_state(d1: WranglerD1) -> None:
         f"(SELECT COUNT(*) FROM auth_delivery_outbox_v2 WHERE delivery_id={sql_literal(DELIVERY_EXHAUST)}) AS exhausted_delivery_count,"
         f"(SELECT COUNT(*) FROM auth_delivery_ack_tombstones_v2 WHERE delivery_id={sql_literal(DELIVERY_EXHAUST)}) AS exhausted_tombstone_count,"
         f"(SELECT COUNT(*) FROM auth_delivery_outbox_v2 WHERE delivery_id={sql_literal(DELIVERY_RACE)} AND attempt=1 AND lease_id IS NOT NULL) AS claim_race_owner_count,"
+        f"(SELECT COUNT(*) FROM auth_oauth_flows_v2 WHERE id IN ({sql_literal(OAUTH_SIGN_IN_FLOW)},{sql_literal(OAUTH_LINK_FLOW)}) AND consumed_at_ms IS NOT NULL) AS oauth_consumed_flows,"
+        f"(SELECT COUNT(*) FROM auth_oauth_reservations_v2 WHERE flow_id IN ({sql_literal(OAUTH_SIGN_IN_FLOW)},{sql_literal(OAUTH_LINK_FLOW)}) AND consumed_at_ms IS NOT NULL) AS oauth_consumed_reservations,"
+        f"(SELECT COUNT(*) FROM auth_external_accounts_v2 WHERE user_id={sql_literal(USER_OAUTH)}) AS oauth_external_accounts,"
+        "(SELECT COUNT(*) FROM auth_oauth_operations_v2) AS oauth_operations,"
+        f"(SELECT COUNT(*) FROM auth_session_mutation_grants_v2 WHERE id={sql_literal(OAUTH_GRANT)}) AS oauth_grant,"
         "(SELECT COUNT(*) FROM auth_repository_assertions_v2) AS assertion_count",
         command_class="final_continuations",
     )
@@ -916,6 +955,11 @@ def assert_final_state(d1: WranglerD1) -> None:
         "exhausted_delivery_count": 0,
         "exhausted_tombstone_count": 1,
         "claim_race_owner_count": 1,
+        "oauth_consumed_flows": 2,
+        "oauth_consumed_reservations": 2,
+        "oauth_external_accounts": 2,
+        "oauth_operations": 7,
+        "oauth_grant": 0,
         "assertion_count": 0,
     }
     if invariants != expected:
@@ -942,6 +986,11 @@ def assert_final_state(d1: WranglerD1) -> None:
         ("verification_issue", "deny", "rate_limited"),
         ("verification_consume", "allow", "verification_completed"),
         ("verification_consume", "deny", "replay_detected"),
+        ("oauth_begin", "allow", "issued"),
+        ("oauth_exchange_preflight", "allow", "issued"),
+        ("oauth_exchange", "allow", "authenticated"),
+        ("oauth_exchange", "allow", "linked"),
+        ("oauth_exchange", "deny", "replay_detected"),
     }
     observed = {(row["action"], row["outcome"], row["reason"]) for row in audit}
     if not required.issubset(observed):
@@ -1028,6 +1077,7 @@ def write_evidence(path: pathlib.Path, telemetry: Sequence[dict[str, Any]]) -> N
             "attempt_twelve_active_lease_cleanup_and_retry_tombstone",
             "two_dispatcher_single_delivery_claim_race",
             "same_bucket_api_and_verification_fresh_plan_cas_retry",
+            "oauth_sign_in_account_link_exact_replay_and_consumed_reservation_rejection",
             "exact_operation_receipt_replay_reconstruction",
             "structured_cas_sentinel_spoof_fails_closed",
             "mutation_promise_settlement_without_local_deadline_source_gate",
@@ -1037,9 +1087,8 @@ def write_evidence(path: pathlib.Path, telemetry: Sequence[dict[str, Any]]) -> N
         "telemetry_record_count": len(telemetry),
         "result": "pass",
         "protected_boundaries": {
-            "oauth_begin": "unsupported_pending_protected_provider_evidence",
-            "oauth_exchange_preflight": "unsupported_pending_protected_provider_evidence",
-            "oauth_exchange_finalize": "unsupported_pending_protected_provider_evidence",
+            "oauth_repository": "provider_free_digest_only_local_d1_conformance",
+            "oauth_provider_exchange": "protected_outside_repository_conformance",
         },
         "not_claimed": [
             "remote_d1_contention_or_replication",

@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frame.engmanager.xyz/schema/frame-api-v1.json",
+  "title": "Frame public API v1",
+  "oneOf": [
+    { "$ref": "#/$defs/health" },
+    { "$ref": "#/$defs/publicShareSummary" },
+    { "$ref": "#/$defs/apiError" }
+  ],
+  "$defs": {
+    "apiVersion": {
+      "type": "object",
+      "required": ["major"],
+      "properties": {
+        "major": { "const": 1 }
+      },
+      "additionalProperties": true
+    },
+    "health": {
+      "type": "object",
+      "required": ["api_version", "service", "status", "release", "capabilities"],
+      "properties": {
+        "api_version": { "$ref": "#/$defs/apiVersion" },
+        "service": { "const": "frame" },
+        "status": { "enum": ["ok", "degraded", "maintenance"] },
+        "release": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z0-9._-]+$"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "captionTrack": {
+      "type": "object",
+      "required": ["path", "language", "label", "default"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/api/v1/public/shares/[A-Za-z0-9_-]+/captions/[A-Za-z0-9_-]+$"
+        },
+        "language": { "type": "string", "minLength": 1, "maxLength": 35 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "default": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "playbackDescriptor": {
+      "type": "object",
+      "required": ["path", "content_type", "supports_range", "captions"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/api/v1/public/shares/[A-Za-z0-9_-]+/media$"
+        },
+        "content_type": {
+          "type": "string",
+          "pattern": "^(video/[A-Za-z0-9.+-]+|application/vnd\\.apple\\.mpegurl)$"
+        },
+        "supports_range": { "type": "boolean" },
+        "captions": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/captionTrack" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "publicShareSummary": {
+      "type": "object",
+      "required": [
+        "api_version",
+        "availability",
+        "title",
+        "description",
+        "canonical_url",
+        "duration_ms",
+        "playback"
+      ],
+      "properties": {
+        "api_version": { "$ref": "#/$defs/apiVersion" },
+        "availability": { "enum": ["public", "processing", "unavailable"] },
+        "title": { "type": ["string", "null"], "maxLength": 200 },
+        "description": { "type": ["string", "null"], "maxLength": 2000 },
+        "canonical_url": {
+          "type": ["string", "null"],
+          "pattern": "^https://frame\\.engmanager\\.xyz/s/[A-Za-z0-9_-]+$"
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "playback": {
+          "oneOf": [
+            { "$ref": "#/$defs/playbackDescriptor" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "availability": { "const": "public" } } },
+          "then": {
+            "properties": {
+              "title": { "type": "string", "minLength": 1 },
+              "canonical_url": { "type": "string" },
+              "playback": { "$ref": "#/$defs/playbackDescriptor" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "availability": { "const": "processing" } } },
+          "then": {
+            "properties": {
+              "title": { "type": "null" },
+              "description": { "type": "null" },
+              "duration_ms": { "type": "null" },
+              "playback": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "availability": { "const": "unavailable" } } },
+          "then": {
+            "properties": {
+              "title": { "type": "null" },
+              "description": { "type": "null" },
+              "canonical_url": { "type": "null" },
+              "duration_ms": { "type": "null" },
+              "playback": { "type": "null" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "apiError": {
+      "type": "object",
+      "required": ["code", "message", "request_id", "retry"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "request_id": {
+          "type": ["string", "null"],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "retry": { "enum": ["never", "later"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

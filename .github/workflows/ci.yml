@@ -34,7 +34,15 @@ jobs:
       - run: scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
       - run: cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
       - name: Deterministic ETL and reversible cutover proof
-        run: python3 -I scripts/migration/test_local.py
+        run: |
+          python3 -I scripts/migration/test_cap_id_map.py
+          python3 -I scripts/migration/test_etl_cap_id_map.py
+          python3 -I scripts/migration/test_cap_business_plan_contract.py
+          python3 -I scripts/migration/test_local.py
+          python3 -I scripts/migration/test_mysql_snapshot.py
+          python3 -I scripts/migration/test_mysql_cdc.py
+          python3 -I scripts/migration/test_d1_target.py
+          python3 scripts/ci/cutover-authority-conformance.py
       - name: Supply-chain and credential policy
         run: |
           cargo install cargo-deny --version 0.20.2 --locked

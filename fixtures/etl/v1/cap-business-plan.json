@@ -1,0 +1,439 @@
+{
+  "schema_version": 1,
+  "run_id": "cap-business-v1-template",
+  "source_schema": "cap_6ba6956",
+  "target_migration": "0011_business_authority_expand",
+  "mapping_contract_sha256": "d52a984861a3cdae224a016bbab4a38349f38fd2ae44464b78f38ff7a69ce98c",
+  "code_sha": "7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9",
+  "window": {"start_ms": 0, "end_ms": 9007199254740991},
+  "mysql_snapshot": {
+    "database_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "server_uuid_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "server_version_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "tables_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "columns_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "indexes_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "constraints_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "scope_contract": {
+    "table": "frame_business_tenant_scope_v1",
+    "primary_key": "sourceId",
+    "tenant_column": "organizationId",
+    "requirement": "one approved organization for every owner-scoped source root"
+  },
+  "tables": [
+    {
+      "name": "s3_buckets",
+      "source_table": "s3_buckets",
+      "source_fields": {
+        "id": {"alias":"source","column":"id"},
+        "tenant_org": {"alias":"scope","column":"organizationId"},
+        "owner_id": {"alias":"source","column":"ownerId"},
+        "provider": {"alias":"source","column":"provider"},
+        "state": {"alias":"source","column":"active"},
+        "capability_a": {"alias":"source","column":"region"},
+        "capability_b": {"alias":"source","column":"endpoint"},
+        "capability_c": {"alias":"source","column":"bucketName"},
+        "credential_a": {"alias":"source","column":"accessKeyId"},
+        "credential_b": {"alias":"source","column":"secretAccessKey"},
+        "created_at": {"alias":"source","column":"createdAt"},
+        "updated_at": {"alias":"source","column":"updatedAt"}
+      },
+      "joins": [{"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"source","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}],
+      "target_table": "storage_integrations",
+      "tenant_column": "organization_id",
+      "tenant_source": "tenant_org",
+      "tenant_transform": "cap_nanoid_uuid_v1",
+      "primary_key": ["id"],
+      "columns": [
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"owner_id","target":"owner_user_id","transform":"cap_nanoid_uuid_v1","nullable":true},
+        {"target":"provider","transform":"constant","default":"s3_compatible"},
+        {"source":"state","target":"state","transform":"enum","options":{"mapping":{"0":"disabled","1":"active"}}},
+        {"source":["capability_a","capability_b","capability_c"],"target":"capabilities_json","transform":"canonical_object","options":{"labels":["region","endpoint","bucket"],"schema_version":1}},
+        {"source":["credential_a","credential_b"],"target":"credential_ciphertext","transform":"canonical_object","options":{"labels":["access_key_ciphertext","secret_key_ciphertext"]}},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"target":"revision","transform":"constant","default":0},
+        {"target":"authority_version","transform":"constant","default":0},
+        {"target":"capabilities_schema_version","transform":"constant","default":1},
+        {"source":["capability_a","capability_b","capability_c"],"target":"capabilities_checksum","transform":"canonical_object_sha256","options":{"labels":["region","endpoint","bucket"],"schema_version":1}}
+      ]
+    },
+    {
+      "name": "storage_integrations",
+      "source_table": "storage_integrations",
+      "source_fields": {
+        "id": {"alias":"source","column":"id"},
+        "tenant_org": {"alias":"scope","column":"organizationId"},
+        "owner_id": {"alias":"source","column":"ownerId"},
+        "provider": {"alias":"source","column":"provider"},
+        "state": {"alias":"source","column":"status"},
+        "capability_a": {"alias":"source","column":"displayName"},
+        "capability_b": {"alias":"source","column":"googleDriveStorageQuotaCache"},
+        "capability_c": {"alias":"source","column":"googleDriveAccessTokenExpiresAt"},
+        "credential_a": {"alias":"source","column":"encryptedConfig"},
+        "credential_b": {"alias":"source","column":"googleDriveAccessToken"},
+        "created_at": {"alias":"source","column":"createdAt"},
+        "updated_at": {"alias":"source","column":"updatedAt"}
+      },
+      "joins": [{"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"source","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}],
+      "target_table": "storage_integrations",
+      "tenant_column": "organization_id",
+      "tenant_source": "tenant_org",
+      "tenant_transform": "cap_nanoid_uuid_v1",
+      "primary_key": ["id"],
+      "columns": [
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"owner_id","target":"owner_user_id","transform":"cap_nanoid_uuid_v1","nullable":true},
+        {"source":"provider","target":"provider","transform":"enum","options":{"mapping":{"s3":"s3_compatible","s3_compatible":"s3_compatible","minio":"minio","google_drive":"google_drive"}}},
+        {"source":"state","target":"state","transform":"enum","options":{"mapping":{"pending":"pending","active":"active","disabled":"disabled","revoked":"revoked"}}},
+        {"source":["capability_a","capability_b","capability_c"],"target":"capabilities_json","transform":"canonical_object","options":{"labels":["display_name","quota_cache","token_expires_at"],"schema_version":1}},
+        {"source":["credential_a","credential_b"],"target":"credential_ciphertext","transform":"canonical_object","options":{"labels":["config_ciphertext","token_ciphertext"]}},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"target":"revision","transform":"constant","default":0},
+        {"target":"authority_version","transform":"constant","default":0},
+        {"target":"capabilities_schema_version","transform":"constant","default":1},
+        {"source":["capability_a","capability_b","capability_c"],"target":"capabilities_checksum","transform":"canonical_object_sha256","options":{"labels":["display_name","quota_cache","token_expires_at"],"schema_version":1}}
+      ]
+    },
+    {
+      "name": "videos",
+      "source_table": "videos",
+      "source_fields": {
+        "id":{"alias":"source","column":"id"},"owner_id":{"alias":"source","column":"ownerId"},"tenant_org":{"alias":"source","column":"orgId"},
+        "title":{"alias":"source","column":"name"},"duration":{"alias":"source","column":"duration"},"privacy":{"alias":"source","column":"public"},
+        "metadata":{"alias":"source","column":"metadata"},"folder_id":{"alias":"source","column":"folderId"},
+        "created_at":{"alias":"source","column":"createdAt"},"updated_at":{"alias":"source","column":"updatedAt"}
+      },
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"owner_id","target":"owner_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"title","target":"title"},{"target":"state","transform":"constant","default":"ready"},
+        {"target":"source_object_key","transform":"constant","default":null,"nullable":true},{"target":"playback_object_key","transform":"constant","default":null,"nullable":true},
+        {"source":"duration","target":"duration_ms","transform":"milliseconds","nullable":true},{"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},{"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"folder_id","target":"folder_id","transform":"cap_nanoid_uuid_v1","nullable":true},
+        {"source":"privacy","target":"privacy","transform":"enum","options":{"mapping":{"0":"private","1":"public"}}},
+        {"source":"metadata","target":"metadata_json","transform":"versioned_json","options":{"schema_version":1},"nullable":true},
+        {"target":"revision","transform":"constant","default":0},{"target":"deleted_at_ms","transform":"constant","default":null,"nullable":true},
+        {"target":"metadata_schema_version","transform":"constant","default":1},
+        {"source":"metadata","target":"metadata_checksum","transform":"versioned_json_sha256","options":{"schema_version":1},"nullable":true},
+        {"target":"comments_enabled","transform":"constant","default":1}
+      ]
+    },
+    {
+      "name":"video_edits","source_table":"video_edits",
+      "source_fields":{"video_id":{"alias":"source","column":"videoId"},"edit_spec":{"alias":"source","column":"editSpec"},"created_at":{"alias":"source","column":"createdAt"},"updated_at":{"alias":"source","column":"updatedAt"},"tenant_org":{"alias":"video","column":"orgId"},"owner_id":{"alias":"video","column":"ownerId"}},
+      "joins":[{"table":"videos","alias":"video","on":[{"left":{"alias":"source","column":"videoId"},"right":{"alias":"video","column":"id"}}]}],
+      "tenant_column":null,"tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"video_id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"video_id","target":"video_id","transform":"cap_nanoid_uuid_v1"},
+        {"target":"document_version","transform":"constant","default":1},{"source":"edit_spec","target":"edit_spec_json","transform":"versioned_json","options":{"schema_version":1}},
+        {"source":"owner_id","target":"created_by_user_id","transform":"cap_nanoid_uuid_v1"},{"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},{"target":"revision","transform":"constant","default":0},
+        {"source":"edit_spec","target":"document_checksum","transform":"versioned_json_sha256","options":{"schema_version":1}}
+      ],
+      "foreign_keys":[{"columns":["video_id"],"references":{"table":"videos","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"shared_videos","source_table":"shared_videos",
+      "source_fields":{"id":{"alias":"source","column":"id"},"video_id":{"alias":"source","column":"videoId"},"folder_id":{"alias":"source","column":"folderId"},"tenant_org":{"alias":"source","column":"organizationId"},"shared_by":{"alias":"source","column":"sharedByUserId"},"shared_at":{"alias":"source","column":"sharedAt"}},
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"video_id","target":"video_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},{"source":"folder_id","target":"folder_id","transform":"cap_nanoid_uuid_v1","nullable":true},
+        {"source":"shared_by","target":"shared_by_user_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"folder_id","target":"sharing_mode","transform":"presence_enum","options":{"missing":"organization","present":"space"}},
+        {"source":"shared_at","target":"shared_at_ms","transform":"timestamp_ms"},{"target":"revoked_at_ms","transform":"constant","default":null,"nullable":true},
+        {"target":"revision","transform":"constant","default":0}
+      ],
+      "foreign_keys":[{"columns":["video_id"],"references":{"table":"videos","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"comments","source_table":"comments",
+      "source_fields":{"id":{"alias":"source","column":"id"},"kind":{"alias":"source","column":"type"},"body":{"alias":"source","column":"content"},"timeline":{"alias":"source","column":"timestamp"},"author_id":{"alias":"source","column":"authorId"},"video_id":{"alias":"source","column":"videoId"},"created_at":{"alias":"source","column":"createdAt"},"updated_at":{"alias":"source","column":"updatedAt"},"parent_id":{"alias":"source","column":"parentCommentId"},"tenant_org":{"alias":"video","column":"orgId"}},
+      "joins":[{"table":"videos","alias":"video","on":[{"left":{"alias":"source","column":"videoId"},"right":{"alias":"video","column":"id"}}]}],
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"video_id","target":"video_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"parent_id","target":"parent_comment_id","transform":"cap_nanoid_uuid_v1","nullable":true},{"source":"author_id","target":"author_user_id","transform":"cap_nanoid_uuid_v1"},
+        {"target":"anonymous_author_digest","transform":"constant","default":null,"nullable":true},{"source":"body","target":"body"},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},{"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"target":"deleted_at_ms","transform":"constant","default":null,"nullable":true},{"target":"revision","transform":"constant","default":0},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"kind","target":"comment_kind","transform":"enum","options":{"mapping":{"text":"text","emoji":"emoji"}}},
+        {"source":"timeline","target":"timeline_micros","transform":"microseconds","nullable":true}
+      ],
+      "foreign_keys":[{"columns":["video_id"],"references":{"table":"videos","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"notifications","source_table":"notifications",
+      "source_fields":{"id":{"alias":"source","column":"id"},"tenant_org":{"alias":"source","column":"orgId"},"recipient_id":{"alias":"source","column":"recipientId"},"kind":{"alias":"source","column":"type"},"data":{"alias":"source","column":"data"},"read_at":{"alias":"source","column":"readAt"},"created_at":{"alias":"source","column":"createdAt"}},
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"recipient_id","target":"recipient_user_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"kind","target":"type","transform":"enum","options":{"mapping":{"view":"view","comment":"comment","reply":"reply","reaction":"reaction","anon_view":"anon_view"}}},
+        {"source":"id","target":"deduplication_key","transform":"sha256_digest","options":{"domain":"frame-cap-notification-dedup-v1"}},
+        {"source":"data","target":"data_json","transform":"versioned_json","options":{"schema_version":1}},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},{"source":"read_at","target":"read_at_ms","transform":"timestamp_ms","nullable":true},
+        {"target":"payload_schema_version","transform":"constant","default":1},{"source":"data","target":"payload_checksum","transform":"versioned_json_sha256","options":{"schema_version":1}}
+      ]
+    },
+    {
+      "name":"notifications_outbox","source_table":"notifications",
+      "source_fields":{"id":{"alias":"source","column":"id"},"tenant_org":{"alias":"source","column":"orgId"},"data":{"alias":"source","column":"data"},"created_at":{"alias":"source","column":"createdAt"}},
+      "target_table":"outbox_events","tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"target":"aggregate_type","transform":"constant","default":"notification"},{"source":"id","target":"aggregate_id","transform":"cap_nanoid_uuid_v1"},
+        {"target":"event_type","transform":"constant","default":"notification.migrated"},{"source":"id","target":"deduplication_key","transform":"sha256_digest","options":{"domain":"frame-cap-outbox-dedup-v1"}},
+        {"source":"data","target":"payload_json","transform":"versioned_json","options":{"schema_version":1}},{"target":"state","transform":"constant","default":"pending"},
+        {"target":"attempt","transform":"constant","default":0},{"source":"created_at","target":"available_at_ms","transform":"timestamp_ms"},
+        {"target":"lease_expires_at_ms","transform":"constant","default":null,"nullable":true},{"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"target":"delivered_at_ms","transform":"constant","default":null,"nullable":true},{"target":"event_sequence","transform":"constant","default":0},
+        {"target":"event_fingerprint","transform":"constant","default":"daf2d49bd689dfe48d2c4e168137808de05d76d9766c3cb98ab5da27e7c378b9"},
+        {"target":"payload_schema_version","transform":"constant","default":1},{"source":"data","target":"payload_checksum","transform":"versioned_json_sha256","options":{"schema_version":1}},
+        {"target":"revision","transform":"constant","default":0}
+      ]
+    },
+    {
+      "name":"messenger_conversations","source_table":"messenger_conversations",
+      "source_primary_key":["id"],
+      "source_fields":{"id":{"alias":"source","column":"id"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[{"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"source","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}],
+      "target_table":"business_messenger_legacy_quarantine_v1","tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["source_table","source_id"],
+      "columns":[
+        {"target":"source_table","transform":"constant","default":"messenger_conversations"},{"source":"id","target":"source_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},{"target":"disposition","transform":"constant","default":"quarantined"},
+        {"target":"quarantined_at_ms","transform":"constant","default":1700000000000},{"target":"purge_after_ms","transform":"constant","default":1702592000000},
+        {"target":"purged_at_ms","transform":"constant","default":null,"nullable":true},{"target":"last_operation_id","transform":"constant","default":null,"nullable":true}
+      ]
+    },
+    {
+      "name":"messenger_messages","source_table":"messenger_messages",
+      "source_primary_key":["id"],
+      "source_fields":{"id":{"alias":"source","column":"id"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"messenger_conversations","alias":"conversation","on":[{"left":{"alias":"source","column":"conversationId"},"right":{"alias":"conversation","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"conversation","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "target_table":"business_messenger_legacy_quarantine_v1","tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["source_table","source_id"],
+      "columns":[
+        {"target":"source_table","transform":"constant","default":"messenger_messages"},{"source":"id","target":"source_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},{"target":"disposition","transform":"constant","default":"quarantined"},
+        {"target":"quarantined_at_ms","transform":"constant","default":1700000000000},{"target":"purge_after_ms","transform":"constant","default":1702592000000},
+        {"target":"purged_at_ms","transform":"constant","default":null,"nullable":true},{"target":"last_operation_id","transform":"constant","default":null,"nullable":true}
+      ]
+    },
+    {
+      "name":"messenger_support_emails","source_table":"messenger_support_emails",
+      "source_primary_key":["id"],
+      "source_fields":{"id":{"alias":"source","column":"id"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"messenger_conversations","alias":"conversation","on":[{"left":{"alias":"source","column":"conversationId"},"right":{"alias":"conversation","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"conversation","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "target_table":"business_messenger_legacy_quarantine_v1","tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["source_table","source_id"],
+      "columns":[
+        {"target":"source_table","transform":"constant","default":"messenger_support_emails"},{"source":"id","target":"source_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},{"target":"disposition","transform":"constant","default":"quarantined"},
+        {"target":"quarantined_at_ms","transform":"constant","default":1700000000000},{"target":"purge_after_ms","transform":"constant","default":1702592000000},
+        {"target":"purged_at_ms","transform":"constant","default":null,"nullable":true},{"target":"last_operation_id","transform":"constant","default":null,"nullable":true}
+      ]
+    },
+    {
+      "name":"storage_objects","source_table":"storage_objects",
+      "source_fields":{"id":{"alias":"source","column":"id"},"integration_id":{"alias":"source","column":"integrationId"},"video_id":{"alias":"source","column":"videoId"},"object_key":{"alias":"source","column":"objectKey"},"bytes":{"alias":"source","column":"contentLength"},"content_type":{"alias":"source","column":"contentType"},"provider_etag":{"alias":"source","column":"providerObjectId"},"created_at":{"alias":"source","column":"createdAt"},"updated_at":{"alias":"source","column":"updatedAt"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"storage_integrations","alias":"integration","on":[{"left":{"alias":"source","column":"integrationId"},"right":{"alias":"integration","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"integration","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"integration_id","target":"integration_id","transform":"cap_nanoid_uuid_v1"},{"source":"video_id","target":"video_id","transform":"cap_nanoid_uuid_v1","nullable":true},
+        {"source":"object_key","target":"object_key"},{"target":"role","transform":"constant","default":"source"},{"target":"object_version","transform":"constant","default":1},
+        {"target":"state","transform":"constant","default":"available"},{"source":"bytes","target":"bytes","transform":"wire_integer"},
+        {"source":"content_type","target":"content_type"},{"source":"object_key","target":"checksum_sha256","transform":"sha256_digest","options":{"domain":"frame-cap-storage-object-v1"}},
+        {"source":"provider_etag","target":"provider_etag","nullable":true},{"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"target":"deleted_at_ms","transform":"constant","default":null,"nullable":true},{"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"target":"revision","transform":"constant","default":0}
+      ],
+      "foreign_keys":[
+        {"columns":["integration_id"],"references":{"table":"storage_integrations","columns":["id"]},"same_tenant":true},
+        {"columns":["video_id"],"references":{"table":"videos","columns":["id"]},"same_tenant":true}
+      ]
+    },
+    {
+      "name":"video_uploads","source_table":"video_uploads",
+      "source_fields":{"video_id":{"alias":"source","column":"videoId"},"expected":{"alias":"source","column":"total"},"source_key":{"alias":"source","column":"rawFileKey"},"created_at":{"alias":"source","column":"startedAt"},"updated_at":{"alias":"source","column":"updatedAt"},"tenant_org":{"alias":"video","column":"orgId"}},
+      "joins":[{"table":"videos","alias":"video","on":[{"left":{"alias":"source","column":"videoId"},"right":{"alias":"video","column":"id"}}]}],
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"video_id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"video_id","target":"video_id","transform":"cap_nanoid_uuid_v1"},{"target":"state","transform":"constant","default":"initiated"},
+        {"source":"expected","target":"expected_bytes","transform":"wire_integer"},{"target":"received_bytes","transform":"constant","default":0},
+        {"source":"video_id","target":"idempotency_key","transform":"sha256_digest","options":{"domain":"frame-cap-upload-idempotency-v1"}},
+        {"source":"source_key","target":"source_object_key"},{"target":"source_version","transform":"constant","default":1},
+        {"target":"content_type","transform":"constant","default":"video/mp4"},{"target":"checksum_sha256","transform":"constant","default":null,"nullable":true},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},{"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"target":"revision","transform":"constant","default":0},{"target":"event_sequence","transform":"constant","default":0},
+        {"target":"event_fingerprint","transform":"constant","default":"daf2d49bd689dfe48d2c4e168137808de05d76d9766c3cb98ab5da27e7c378b9"}
+      ],
+      "foreign_keys":[{"columns":["video_id"],"references":{"table":"videos","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"imported_videos","source_table":"imported_videos",
+      "source_fields":{"id":{"alias":"source","column":"id"},"tenant_org":{"alias":"source","column":"orgId"},"provider":{"alias":"source","column":"source"},"external_id":{"alias":"source","column":"sourceId"}},
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},
+        {"target":"video_id","transform":"constant","default":null,"nullable":true},
+        {"source":"provider","target":"provider","transform":"enum","options":{"mapping":{"loom":"loom","file":"file","google_drive":"google_drive","youtube":"other","other":"other"}}},
+        {"source":"external_id","target":"external_id_digest","transform":"sha256_digest","options":{"domain":"frame-cap-import-external-v1"}},
+        {"target":"state","transform":"constant","default":"queued"},
+        {"source":["provider","external_id"],"target":"idempotency_key","transform":"canonical_checksum","options":{"domain":"frame-cap-import-idempotency-v1","labels":["provider","external_id"]}},
+        {"target":"error_class","transform":"constant","default":null,"nullable":true},{"target":"created_at_ms","transform":"constant","default":1700000000000},
+        {"target":"updated_at_ms","transform":"constant","default":1700000000000},{"target":"event_sequence","transform":"constant","default":0},
+        {"target":"event_fingerprint","transform":"constant","default":"daf2d49bd689dfe48d2c4e168137808de05d76d9766c3cb98ab5da27e7c378b9"},
+        {"target":"revision","transform":"constant","default":0}
+      ]
+    },
+    {
+      "name":"developer_apps","source_table":"developer_apps",
+      "source_fields":{"id":{"alias":"source","column":"id"},"owner_id":{"alias":"source","column":"ownerId"},"name":{"alias":"source","column":"name"},"environment":{"alias":"source","column":"environment"},"deleted_at":{"alias":"source","column":"deletedAt"},"created_at":{"alias":"source","column":"createdAt"},"updated_at":{"alias":"source","column":"updatedAt"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[{"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"source","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}],
+      "tenant_column":"organization_id","tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"owner_id","target":"owner_user_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"tenant_org","target":"organization_id","transform":"cap_nanoid_uuid_v1"},{"source":"name","target":"name"},
+        {"source":"environment","target":"environment","transform":"enum","options":{"mapping":{"development":"test","production":"live","test":"test","live":"live"}}},
+        {"source":"deleted_at","target":"status","transform":"presence_enum","options":{"missing":"active","present":"deleted"}},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},{"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"source":"deleted_at","target":"deleted_at_ms","transform":"timestamp_ms","nullable":true},{"target":"revision","transform":"constant","default":0},
+        {"target":"authority_version","transform":"constant","default":0}
+      ]
+    },
+    {
+      "name":"developer_app_domains","source_table":"developer_app_domains",
+      "source_fields":{"app_id":{"alias":"source","column":"appId"},"domain":{"alias":"source","column":"domain"},"created_at":{"alias":"source","column":"createdAt"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"developer_apps","alias":"app","on":[{"left":{"alias":"source","column":"appId"},"right":{"alias":"app","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"app","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "tenant_column":null,"tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["app_id","domain_ascii"],
+      "columns":[
+        {"source":"app_id","target":"app_id","transform":"cap_nanoid_uuid_v1"},{"source":"domain","target":"domain_ascii","transform":"casefold_nfkc"},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},{"target":"verified_at_ms","transform":"constant","default":null,"nullable":true},
+        {"target":"revision","transform":"constant","default":0}
+      ],
+      "foreign_keys":[{"columns":["app_id"],"references":{"table":"developer_apps","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"developer_api_keys","source_table":"developer_api_keys",
+      "source_fields":{"id":{"alias":"source","column":"id"},"app_id":{"alias":"source","column":"appId"},"key_type":{"alias":"source","column":"keyType"},"prefix":{"alias":"source","column":"keyPrefix"},"digest":{"alias":"source","column":"keyHash"},"last_used":{"alias":"source","column":"lastUsedAt"},"revoked_at":{"alias":"source","column":"revokedAt"},"created_at":{"alias":"source","column":"createdAt"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"developer_apps","alias":"app","on":[{"left":{"alias":"source","column":"appId"},"right":{"alias":"app","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"app","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "tenant_column":null,"tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"app_id","target":"app_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"digest","target":"key_digest"},{"source":"key_type","target":"key_type","transform":"enum","options":{"mapping":{"public":"publishable","publishable":"publishable","secret":"secret"}}},
+        {"source":"prefix","target":"name"},{"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"source":"last_used","target":"last_used_at_ms","transform":"timestamp_ms","nullable":true},{"source":"revoked_at","target":"revoked_at_ms","transform":"timestamp_ms","nullable":true},
+        {"source":"prefix","target":"display_prefix"},{"target":"revision","transform":"constant","default":0}
+      ],
+      "foreign_keys":[{"columns":["app_id"],"references":{"table":"developer_apps","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"developer_videos","source_table":"developer_videos",
+      "source_fields":{"id":{"alias":"source","column":"id"},"app_id":{"alias":"source","column":"appId"},"external_user":{"alias":"source","column":"externalUserId"},"metadata":{"alias":"source","column":"metadata"},"deleted_at":{"alias":"source","column":"deletedAt"},"created_at":{"alias":"source","column":"createdAt"},"updated_at":{"alias":"source","column":"updatedAt"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"developer_apps","alias":"app","on":[{"left":{"alias":"source","column":"appId"},"right":{"alias":"app","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"app","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "tenant_column":null,"tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"app_id","target":"app_id","transform":"cap_nanoid_uuid_v1"},
+        {"target":"video_id","transform":"constant","default":null,"nullable":true},
+        {"source":"external_user","target":"external_user_id","transform":"sha256_digest","options":{"domain":"frame-cap-developer-user-v1"}},
+        {"source":"metadata","target":"metadata_json","transform":"versioned_json","options":{"schema_version":1},"nullable":true},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},{"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"source":"deleted_at","target":"deleted_at_ms","transform":"timestamp_ms","nullable":true},{"target":"metadata_schema_version","transform":"constant","default":1},
+        {"source":"metadata","target":"metadata_checksum","transform":"versioned_json_sha256","options":{"schema_version":1},"nullable":true},
+        {"target":"revision","transform":"constant","default":0},
+        {"source":"external_user","target":"external_user_digest","transform":"sha256_digest","options":{"domain":"frame-cap-developer-user-v1"}}
+      ],
+      "foreign_keys":[{"columns":["app_id"],"references":{"table":"developer_apps","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"developer_credit_accounts","source_table":"developer_credit_accounts",
+      "source_fields":{"id":{"alias":"source","column":"id"},"app_id":{"alias":"source","column":"appId"},"balance":{"alias":"source","column":"balanceMicroCredits"},"auto_top_up":{"alias":"source","column":"autoTopUpEnabled"},"threshold":{"alias":"source","column":"autoTopUpThresholdMicroCredits"},"created_at":{"alias":"source","column":"createdAt"},"updated_at":{"alias":"source","column":"updatedAt"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"developer_apps","alias":"app","on":[{"left":{"alias":"source","column":"appId"},"right":{"alias":"app","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"app","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "tenant_column":null,"tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"app_id","target":"app_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"balance","target":"balance_microcredits","transform":"wire_integer"},{"source":"auto_top_up","target":"auto_top_up_enabled","transform":"boolean"},
+        {"source":"threshold","target":"auto_top_up_threshold_microcredits","transform":"wire_integer","nullable":true},
+        {"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},{"source":"updated_at","target":"updated_at_ms","transform":"timestamp_ms"},
+        {"target":"revision","transform":"constant","default":0},{"target":"ledger_sequence","transform":"constant","default":0}
+      ],
+      "foreign_keys":[{"columns":["app_id"],"references":{"table":"developer_apps","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"developer_credit_transactions","source_table":"developer_credit_transactions",
+      "source_fields":{
+        "id":{"alias":"source","column":"id"},"account_id":{"alias":"source","column":"accountId"},"kind":{"alias":"source","column":"type"},
+        "amount":{"alias":"source","column":"amountMicroCredits"},"balance_after":{"alias":"source","column":"balanceAfterMicroCredits"},
+        "reference_id":{"alias":"source","column":"referenceId"},"reference_type":{"alias":"source","column":"referenceType"},"metadata":{"alias":"source","column":"metadata"},
+        "created_at":{"alias":"source","column":"createdAt"},"tenant_org":{"alias":"scope","column":"organizationId"},
+        "sequence":{"kind":"row_number","partition_by":[{"alias":"source","column":"accountId"}],"order_by":[{"alias":"source","column":"createdAt"},{"alias":"source","column":"id"}]}
+      },
+      "joins":[
+        {"table":"developer_credit_accounts","alias":"account","on":[{"left":{"alias":"source","column":"accountId"},"right":{"alias":"account","column":"id"}}]},
+        {"table":"developer_apps","alias":"app","on":[{"left":{"alias":"account","column":"appId"},"right":{"alias":"app","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"app","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "tenant_column":null,"tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["id"],"import_order":["account_id","ledger_sequence","id"],
+      "columns":[
+        {"source":"id","target":"id","transform":"cap_nanoid_uuid_v1"},{"source":"account_id","target":"account_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":"kind","target":"transaction_type","transform":"enum","options":{"mapping":{"purchase":"purchase","usage":"usage","refund":"refund","adjustment":"adjustment"}}},
+        {"source":"amount","target":"amount_microcredits","transform":"wire_integer"},{"source":"balance_after","target":"balance_after_microcredits","transform":"wire_integer"},
+        {"source":"reference_type","target":"reference_type"},{"source":"reference_id","target":"reference_id","transform":"sha256_digest","options":{"domain":"frame-cap-credit-reference-v1"}},
+        {"source":"id","target":"idempotency_key","transform":"sha256_digest","options":{"domain":"frame-cap-credit-idempotency-v1"}},
+        {"source":"metadata","target":"metadata_json","transform":"canonical_json","nullable":true},{"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"source":"sequence","target":"ledger_sequence","transform":"wire_integer"},{"source":"reference_id","target":"reference_digest","transform":"sha256_digest","options":{"domain":"frame-cap-credit-reference-v1"}},
+        {"source":"id","target":"operation_id","transform":"cap_nanoid_uuid_v1"},
+        {"source":["id","account_id","amount","balance_after"],"target":"request_fingerprint","transform":"canonical_checksum","options":{"domain":"frame-cap-credit-request-v1","labels":["id","account_id","amount","balance_after"]}}
+      ],
+      "foreign_keys":[{"columns":["account_id"],"references":{"table":"developer_credit_accounts","columns":["id"]},"same_tenant":true}]
+    },
+    {
+      "name":"developer_daily_storage_snapshots","source_table":"developer_daily_storage_snapshots",
+      "source_fields":{"app_id":{"alias":"source","column":"appId"},"snapshot_day":{"alias":"source","column":"snapshotDate"},"duration_minutes":{"alias":"source","column":"totalDurationMinutes"},"video_count":{"alias":"source","column":"videoCount"},"charged":{"alias":"source","column":"microCreditsCharged"},"processed_at":{"alias":"source","column":"processedAt"},"created_at":{"alias":"source","column":"createdAt"},"tenant_org":{"alias":"scope","column":"organizationId"}},
+      "joins":[
+        {"table":"developer_apps","alias":"app","on":[{"left":{"alias":"source","column":"appId"},"right":{"alias":"app","column":"id"}}]},
+        {"table":"frame_business_tenant_scope_v1","alias":"scope","on":[{"left":{"alias":"app","column":"id"},"right":{"alias":"scope","column":"sourceId"}}]}
+      ],
+      "tenant_column":null,"tenant_source":"tenant_org","tenant_transform":"cap_nanoid_uuid_v1","primary_key":["app_id","snapshot_day"],
+      "columns":[
+        {"source":"app_id","target":"app_id","transform":"cap_nanoid_uuid_v1"},{"source":"snapshot_day","target":"snapshot_day","transform":"date_utc"},
+        {"target":"total_bytes","transform":"constant","default":0},{"source":"charged","target":"microcredits_charged","transform":"wire_integer"},
+        {"source":["duration_minutes","video_count","charged"],"target":"source_checksum","transform":"canonical_checksum","options":{"domain":"frame-cap-daily-storage-v1","labels":["duration_minutes","video_count","microcredits_charged"]}},
+        {"source":"processed_at","target":"processed_at_ms","transform":"timestamp_ms","nullable":true},{"source":"created_at","target":"created_at_ms","transform":"timestamp_ms"},
+        {"target":"revision","transform":"constant","default":0}
+      ],
+      "foreign_keys":[{"columns":["app_id"],"references":{"table":"developer_apps","columns":["id"]},"same_tenant":true}]
+    }
+  ],
+  "semantic_rules": []
+}

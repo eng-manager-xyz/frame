@@ -2,7 +2,9 @@
 
 This document specifies the provider-neutral, locally testable storage core used by issues 02 and
 18. ADR 0002 selects Cloudflare R2 and the `RECORDINGS` Worker binding for hosted Frame storage.
-This contract does **not** implement or validate that R2 adapter and does not close either issue.
+The production Worker-binding adapter is implemented and exercised against Wrangler's isolated
+local R2 runtime. That credential-free report does not validate a hosted bucket or close the
+protected product, security, compliance, and provider gates listed below.
 
 ## Canonical key grammar
 
@@ -35,10 +37,12 @@ The manifest records which executor actually produced the bytes.
 | --- | --- | --- |
 | `source` | `source.<ext>` | source |
 | `segment` | `segment-<8 digit index>.<ext>` | source |
+| `screenshot` | `screenshot.<ext>` | source |
 | `thumbnail` | `thumbnail.<ext>` | derivative |
 | `preview` | `preview.<ext>` | derivative |
 | `spritesheet` | `spritesheet.<ext>` | derivative |
 | `audio` | `audio.<ext>` | derivative |
+| `caption` | `caption.<ext>` | derivative |
 | `export` | `export.<ext>` | derivative |
 | `manifest` | `manifest.json` | profile-bound manifest (never a media output) |
 
@@ -53,6 +57,51 @@ tenant request context; mismatches return the same `not_found` class as an absen
 always constrained to one exact tenant and video. Server-side copy is limited to the same tenant and
 video. Application immutable-put orchestration applies this tenant fence before inspecting provider
 capabilities or object-size limits and before invoking the adapter.
+
+### User-scoped avatar grammar
+
+Avatars use a distinct, immutable user namespace rather than pretending a user is a video:
+
+```text
+tenants/<tenant_uuid>/users/<user_uuid>/v1/avatar/r<revision>/avatar.<ext>
+```
+
+`UserScopedObjectKey` retains the tenant, user, revision, and closed `avatar` role as typed values.
+The same canonical UUID, positive revision, lowercase extension, exact-reproduction, generated-name,
+and redacted-debug rules apply. A new avatar publishes a new revision; no API overwrites a mutable
+`avatar` key. This grammar cannot parse as `ScopedObjectKey`, and the video grammar cannot parse as
+`UserScopedObjectKey`.
+
+### Typed legacy inventory and deterministic mapping
+
+`LegacyObjectMappingV1` is the bounded migration manifest for the Cap storage inventory. It accepts
+only five named source providers (`cap_managed_s3`, `s3_compatible`, `minio`, `google_drive`, and
+`user_owned_bucket`) and eight named roles. Legacy locators reject absolute paths, empty/dot
+segments, traversal, backslashes, control characters, and keys over 1,024 bytes; debug output never
+prints the legacy key.
+
+| Legacy role | Representative legacy locator | Required v1 target |
+| --- | --- | --- |
+| `recording` | `recordings/<id>/source.webm` | video `source` |
+| `recording_segment` | `recordings/<id>/segments/00000007.webm` | video `segment` |
+| `thumbnail` | `screenshots/<id>/thumbnail.webp` | video `thumbnail` derivative |
+| `screenshot` | `drive-object-id/screenshot.png` | video `screenshot` source |
+| `avatar` | `users/<id>/avatar.webp` | user `avatar` revision |
+| `generated_media` | `generated/<id>/preview.webm` | any closed video derivative |
+| `caption` | `captions/<id>/en.vtt` | video `caption` derivative |
+| `manifest` | `generated/<id>/manifest.json` | video profile manifest |
+
+The retained metadata is intentionally closed: content type, positive byte count, optional SHA-256,
+bounded printable provider etag, lowercase provider region, and a SHA-256 of the original filename
+when reconciliation requires it. Raw filenames, arbitrary provider tags, credentials, endpoints,
+and signed URLs are not retained.
+
+The schema-version-1 mapping digest is SHA-256 over unambiguously length-framed domain label,
+provider, legacy role/key, target scope/key, and every retained metadata field. Optional fields have
+explicit presence markers. Construction and deserialization both recompute the digest, validate the
+metadata, enforce the role-to-scope mapping above, and reject unknown fields or forged digests. A
+metadata change therefore cannot silently reuse a prior migration decision. A fixed UUID/key and
+metadata vector pins the digest for independent migration tooling in other runtimes.
 
 ## Immutable derivative manifest
 
@@ -109,7 +158,35 @@ The workspace still contains the earlier minimal `ObjectStore`/`AdvancedObjectSt
 used by pre-existing multipart and backfill scaffolding. This slice leaves those callers untouched
 to avoid silently changing in-flight issue 19/20 work. `ObjectStoreV1` is the issue 18 contract for
 new provider adapters; migrating or removing the earlier interfaces requires their callers to pass
-this contract suite and is not evidence that an R2 adapter exists.
+this contract suite and is separate from the Worker-binding adapter described next.
+
+## Cloudflare R2 Worker-binding adapter
+
+`R2ObjectStoreV1` implements `ObjectStoreV1` directly over `worker::Bucket`, the production
+`RECORDINGS` binding selected by ADR 0002. It does not use S3 credentials or an HTTP endpoint.
+Create-only puts send R2's `etagDoesNotMatch: *` conditional and a provider SHA-256, then accept an
+existing object only when size, content type, SHA-256, cache policy, and correlation ID exactly
+match the request. Head/get/range reconstruct the complete typed receipt from R2 HTTP/custom
+metadata. Copy is same-video and create-only; delete honors an optional provider-version fence;
+list is prefix-scoped to one tenant/video and keeps the provider cursor opaque.
+
+Every operation checks the request context before invoking R2. A context/key or context/list-tenant
+mismatch returns `not_found`, including put, head, get, range, copy, delete, and list, so callers
+cannot distinguish a foreign object from an absent object. Provider diagnostics are reduced to the
+stable storage taxonomy and never included in the public error string.
+
+The route `/__frame/local/r2-storage-conformance` compiles this adapter into the actual Rust/Wasm
+Worker and runs immutable put/replay/conflict, full metadata, head/get/range, conditional copy,
+cursor pagination, version-fenced and idempotent delete, plus every cross-tenant operation against
+Wrangler's isolated local R2 binding. The route is an exact path, accepts only POST, requires an
+IPv4 loopback URL with an explicit port, and is hidden as 404 in production.
+
+`scripts/ci/r2-storage-conformance.py` starts that Worker with Wrangler 4.111.0, refuses Cloudflare
+credentials and production authority variables, verifies route lookalikes and authority lookalikes
+fail closed, runs the contract twice, and emits a source-bound JSON report. The required untrusted
+quality-gate job retains that report. This proves the compiled adapter and local binding contract;
+it does not claim hosted R2 durability, network, quota, version/etag, lifecycle, residency, cost, or
+performance behavior.
 
 ## Upload-broker boundary
 
@@ -145,22 +222,18 @@ before capabilities or queued failures, so a cross-tenant probe cannot learn a d
 or consume a fault intended for an authorized request. Raw put/body/range bytes and upload paths are
 redacted from debug output.
 
-## Local issue 18 contract gaps
+## Locally completed issue 18 slice
 
-These are local contract-design gaps, not Cloudflare/R2 deployment gates, and this slice does not
-claim to resolve them:
+The local contract now covers immutable video keys, user-scoped avatar keys, the eight-role legacy
+inventory, bounded migration metadata, deterministic old-to-v1 mappings, the production
+Worker-binding adapter, and a compiled credential-free local R2 conformance lane. Unit tests use a
+representative key from every declared legacy role/provider shape and prove canonical round trips,
+scope/revision/profile collision separation, hostile locator rejection, redacted formatting,
+metadata-bound digest changes, and forged-wire rejection.
 
-- avatar storage needs a user-scoped key grammar and ownership boundary; the current grammar is
-  intentionally video-scoped;
-- screenshots and any other legacy object roles still need an authoritative role inventory and a
-  preserve/map/retire decision;
-- arbitrary legacy metadata and tags still need a typed, bounded contract or an explicit retirement
-  decision;
-- a representative legacy key sample and deterministic old-to-v1 key mapping have not been attached
-  or exercised.
-
-These gaps must be reconciled with real legacy data before issue 18 can close, independently of the
-protected/provider gates below.
+This closes the locally achievable design and adapter slice. Reconciliation against the complete
+private Cap object inventory and the protected hosted/provider decisions remain explicit gates; the
+representative sample is not evidence that every production legacy key has been discovered.
 
 ## Compatibility and protected gates still pending
 
@@ -169,19 +242,21 @@ inputs. No retained compatibility adapter is approved or implemented by this sli
 preserve/change/defer/retire decisions, owners, migration impact, and rollback implications remain
 an issue 02 product/security approval gate.
 
-The following evidence is also still required before issues 02 or 18 can close:
+The following protected evidence is still required before issues 02 or 18 can close completely:
 
 - accepted approval record for ADR 0002, production/non-production bucket names and ownership, and
   the `RECORDINGS` binding configuration;
 - security-owner approval of credentials, direct-upload signing, tenant isolation, Media
   Transformations access to private inputs, lifecycle, legal hold, residency, and data deletion;
 - capability, compliance, residency, retention-cost, pricing, and egress models;
-- an actual R2 Worker adapter and local plus hosted bucket contract reports for put, head, get,
-  range, copy, delete, list, conditions, checksums, and provider-version/etag behavior;
+- a hosted non-production R2 bucket contract report for put, head, get, range, copy, delete, list,
+  conditions, checksums, and real provider-version/etag behavior (the adapter and credential-free
+  local report are present);
 - private R2-to-Media Transformations feasibility evidence;
 - approved compatibility-adapter reports where parity is retained;
 - production backfill/reconciliation, lifecycle/security, multipart, rollout, and rollback evidence
   owned by issues 19–21.
 
-Until those protected/provider gates are attached, legacy reads remain authoritative and this v1
-contract is a locally proven foundation only.
+Until those protected/provider gates are attached, legacy reads remain authoritative. The v1
+contract and R2 implementation are locally proven but are not a hosted migration or production
+cutover claim.

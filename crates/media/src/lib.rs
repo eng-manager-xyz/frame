@@ -4,10 +4,13 @@
 //! GStreamer process. Its public types model bounded media lifecycle,
 //! capture timing, recording recovery, executor routing, and conformance checks.
 
+mod av_capture;
 mod capture;
 mod conformance;
 mod instant;
+mod instant_spool;
 mod jobs;
+mod native_execution;
 mod pipeline;
 mod runtime;
 mod screen_capture;
@@ -20,10 +23,13 @@ use gst::prelude::*;
 use gstreamer as gst;
 use thiserror::Error;
 
+pub use av_capture::*;
 pub use capture::*;
 pub use conformance::*;
 pub use instant::*;
+pub use instant_spool::*;
 pub use jobs::*;
+pub use native_execution::*;
 pub use pipeline::*;
 pub use runtime::*;
 pub use screen_capture::*;

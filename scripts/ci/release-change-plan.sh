@@ -23,7 +23,7 @@ while IFS= read -r path; do
       ;;
   esac
   case "${path}" in
-    apps/web/* | crates/application/* | crates/domain/* | crates/frame-client/* | crates/ports/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | render.yaml)
+    apps/web/* | crates/* | scripts/ci/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | render.yaml)
       web_changed=true
       ;;
   esac
