@@ -124,6 +124,8 @@ pub enum Route {
     ApiHealth,
     PublicShare { share_id: String },
     PublicMedia { share_id: String },
+    VideoCreate,
+    VideoPrivacy { video_id: String },
     UploadIntent,
     UploadStatus { upload_id: String },
     UploadContent { upload_id: String },
@@ -156,6 +158,7 @@ pub fn classify_raw_path(path: &str) -> Route {
         "/api" | "/api/" => Route::Discovery,
         "/api/v1" | "/api/v1/" => Route::Capabilities,
         "/api/v1/health" => Route::ApiHealth,
+        "/api/v1/videos" => Route::VideoCreate,
         "/api/v1/uploads/intents" => Route::UploadIntent,
         "/api/v1/media-jobs" => Route::MediaJobCreate,
         "/api/v1/operations/authority" => Route::AuthorityStatus,
@@ -171,6 +174,9 @@ fn dynamic_route(path: &str) -> Route {
         },
         ["", "api", "v1", "public", "shares", share_id, "media"] => Route::PublicMedia {
             share_id: (*share_id).to_owned(),
+        },
+        ["", "api", "v1", "videos", video_id, "privacy"] => Route::VideoPrivacy {
+            video_id: (*video_id).to_owned(),
         },
         ["", "api", "v1", "uploads", upload_id] => Route::UploadStatus {
             upload_id: (*upload_id).to_owned(),
@@ -335,6 +341,13 @@ mod tests {
             }
         );
         assert_eq!(classify_raw_path("/api/v2/health"), Route::UnknownApi);
+        assert_eq!(classify_raw_path("/api/v1/videos"), Route::VideoCreate);
+        assert_eq!(
+            classify_raw_path("/api/v1/videos/018f47a6-7b1c-7f55-8f39-8f8a86900111/privacy"),
+            Route::VideoPrivacy {
+                video_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
         assert_eq!(
             classify_raw_path("/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/content"),
             Route::UploadContent {

@@ -13,6 +13,9 @@ pub enum ValidationCode {
     ObjectRole,
     ObjectVersion,
     Profile,
+    Title,
+    Privacy,
+    Revision,
 }
 
 impl ValidationCode {
@@ -26,7 +29,64 @@ impl ValidationCode {
             Self::ObjectRole => "invalid_object_role",
             Self::ObjectVersion => "invalid_object_version",
             Self::Profile => "invalid_profile",
+            Self::Title => "invalid_title",
+            Self::Privacy => "invalid_privacy",
+            Self::Revision => "invalid_revision",
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateVideoRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+    pub title: String,
+}
+
+impl CreateVideoRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        if self.schema_version != API_SCHEMA_VERSION {
+            return Err(ValidationCode::SchemaVersion);
+        }
+        if !valid_uuid(&self.tenant_id) {
+            return Err(ValidationCode::Identifier);
+        }
+        if self.title.trim().is_empty()
+            || self.title.trim() != self.title
+            || self.title.chars().count() > 160
+            || self.title.chars().any(char::is_control)
+        {
+            return Err(ValidationCode::Title);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatePrivacyRequest {
+    pub schema_version: u16,
+    pub tenant_id: String,
+    pub privacy: String,
+    pub expected_revision: u64,
+}
+
+impl UpdatePrivacyRequest {
+    pub fn validate(&self) -> Result<(), ValidationCode> {
+        if self.schema_version != API_SCHEMA_VERSION {
+            return Err(ValidationCode::SchemaVersion);
+        }
+        if !valid_uuid(&self.tenant_id) {
+            return Err(ValidationCode::Identifier);
+        }
+        if !matches!(self.privacy.as_str(), "private" | "public") {
+            return Err(ValidationCode::Privacy);
+        }
+        if self.expected_revision > MAX_SAFE_INTEGER {
+            return Err(ValidationCode::Revision);
+        }
+        Ok(())
     }
 }
 
@@ -121,6 +181,7 @@ pub struct CapabilitiesResponse {
     pub schema_version: u16,
     pub api_version: &'static str,
     pub public_share_read: &'static str,
+    pub video_lifecycle: &'static str,
     pub upload_intents: &'static str,
     pub media_jobs: &'static str,
     pub media_executor_selection: &'static str,
@@ -137,6 +198,7 @@ impl Default for CapabilitiesResponse {
             schema_version: API_SCHEMA_VERSION,
             api_version: "v1",
             public_share_read: "read_only",
+            video_lifecycle: "authenticated_d1_revision_fenced",
             upload_intents: "authenticated_d1_r2_single_put",
             media_jobs: "fail_closed_pending_runtime_selection",
             media_executor_selection: "server_controlled",
@@ -307,6 +369,28 @@ mod tests {
         assert_eq!(request.validate(), Ok(()));
         request.profile = "cloudflare_media".into();
         assert_eq!(request.validate(), Err(ValidationCode::Profile));
+    }
+
+    #[test]
+    fn video_lifecycle_contracts_are_bounded_and_revision_fenced() {
+        let mut create = CreateVideoRequest {
+            schema_version: 1,
+            tenant_id: TENANT.into(),
+            title: "Synthetic recording".into(),
+        };
+        assert_eq!(create.validate(), Ok(()));
+        create.title = " padded ".into();
+        assert_eq!(create.validate(), Err(ValidationCode::Title));
+
+        let mut privacy = UpdatePrivacyRequest {
+            schema_version: 1,
+            tenant_id: TENANT.into(),
+            privacy: "public".into(),
+            expected_revision: 7,
+        };
+        assert_eq!(privacy.validate(), Ok(()));
+        privacy.privacy = "unlisted".into();
+        assert_eq!(privacy.validate(), Err(ValidationCode::Privacy));
     }
 
     #[test]

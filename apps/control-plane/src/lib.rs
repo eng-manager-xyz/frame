@@ -5,14 +5,15 @@ mod routing;
 use commands::{
     ApiKeyRow, COMMAND_TTL_MS, IntegrationRow, MAX_SINGLE_UPLOAD_BYTES, MediaJobResponse,
     MediaJobRow, MembershipRow, SourceObjectRow, StoredCommandRow, UploadIntentResponse, UploadRow,
-    UploadStatusResponse, VideoScopeRow, derivative_object_key, digest_credential,
-    digest_identifier, parse_sha256, profile_kind, request_digest, source_object_key,
+    UploadStatusResponse, VideoMutationRow, VideoResponse, VideoScopeRow, derivative_object_key,
+    digest_credential, digest_identifier, parse_sha256, profile_kind, request_digest,
+    source_object_key,
 };
 use contracts::{
-    API_SCHEMA_VERSION, AuthorityResponse, CapabilitiesResponse, DiscoveryResponse,
-    MAX_COMMAND_BODY_BYTES, MAX_SAFE_INTEGER, MediaJobRequest, UploadIntentRequest,
-    normalize_cf_ray, origin_allowed, sanitized_public_title, valid_content_type,
-    valid_idempotency_key, valid_uuid,
+    API_SCHEMA_VERSION, AuthorityResponse, CapabilitiesResponse, CreateVideoRequest,
+    DiscoveryResponse, MAX_COMMAND_BODY_BYTES, MAX_SAFE_INTEGER, MediaJobRequest,
+    UpdatePrivacyRequest, UploadIntentRequest, normalize_cf_ray, origin_allowed,
+    sanitized_public_title, valid_content_type, valid_idempotency_key, valid_uuid,
 };
 use frame_client::{
     ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
@@ -78,6 +79,27 @@ struct AuthorityRow {
     phase: String,
     authority: String,
     epoch: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MutationAuthorityFence {
+    /// Local deployments deliberately bypass the cutover table. Production
+    /// epochs are always non-negative, so -1 is an unambiguous SQL sentinel.
+    sql_epoch: i64,
+}
+
+impl MutationAuthorityFence {
+    const LOCAL_SQL_EPOCH: i64 = -1;
+
+    const fn local() -> Self {
+        Self {
+            sql_epoch: Self::LOCAL_SQL_EPOCH,
+        }
+    }
+
+    const fn production(epoch: i64) -> Self {
+        Self { sql_epoch: epoch }
+    }
 }
 
 #[derive(Debug)]
@@ -330,6 +352,89 @@ async fn dispatch(
                     config.production(),
                 )
                 .await?
+            }
+        }
+        Route::VideoCreate => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Write,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_json_command_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<CreateVideoRequest>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                if let Err(code) = body.validate() {
+                    return failure_response(
+                        invalid_body_failure(code.as_str()),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                video_create_response(env, config, &request, &actor, body, request_id).await?
+            }
+        }
+        Route::VideoPrivacy { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Patch], "PATCH")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&video_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Write,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_json_command_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<UpdatePrivacyRequest>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                if let Err(code) = body.validate() {
+                    return failure_response(
+                        invalid_body_failure(code.as_str()),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                video_privacy_response(env, config, &request, &actor, &video_id, body, request_id)
+                    .await?
             }
         }
         Route::UploadIntent => {
@@ -624,6 +729,263 @@ fn health_contract(status: ServiceStatus) -> Result<Health> {
         .validate()
         .map_err(|_| Error::RustError("health contract is invalid".into()))?;
     Ok(contract)
+}
+
+async fn video_create_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    body: CreateVideoRequest,
+    request_id: &str,
+) -> Result<Response> {
+    if !mutation_authority_enabled(env, config).await? {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    }
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Write).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let idempotency_key = idempotency_header(request)?;
+    let digest = request_digest("video_create", &body)
+        .map_err(|()| Error::RustError("video command could not be digested".into()))?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "video_create",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+
+    let video_id = new_id();
+    let response = VideoResponse::new(video_id.clone());
+    let response_json = serde_json::to_string(&response)
+        .map_err(|_| Error::RustError("video response could not be serialized".into()))?;
+    let now = current_time_ms()?;
+    let outbox_id = new_id();
+    let outbox_payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "video_id": video_id,
+        "state": "pending",
+        "privacy": "private",
+    })
+    .to_string();
+    let statements = vec![
+        database
+            .prepare(
+                "INSERT INTO videos(\
+                   id, owner_id, title, state, source_object_key, playback_object_key, duration_ms, \
+                   created_at_ms, updated_at_ms, organization_id, privacy, metadata_json, revision\
+                 ) VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL, ?4, ?4, ?5, 'private', '{}', 0)",
+            )
+            .bind(&[
+                JsValue::from_str(&video_id),
+                JsValue::from_str(&actor.user_id),
+                JsValue::from_str(&body.title),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(&tenant_id),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO command_idempotency(\
+                   organization_id, idempotency_key, command_type, request_digest, \
+                   response_status, response_json, created_at_ms, expires_at_ms\
+                 ) VALUES (?1, ?2, 'video_create', ?3, 201, ?4, ?5, ?6)",
+            )
+            .bind(&[
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&response_json),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64((now + COMMAND_TTL_MS) as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(\
+                   id, organization_id, aggregate_type, aggregate_id, event_type, \
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                 ) VALUES (?1, ?2, 'video', ?3, 'video.created', ?4, ?5, 'pending', 0, ?6, ?6)",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&video_id),
+                JsValue::from_str(&format!("video-created:{video_id}")),
+                JsValue::from_str(&outbox_payload),
+                JsValue::from_f64(now as f64),
+            ])?,
+    ];
+    require_batch_success(database.batch(statements).await?)?;
+    json_response(&response, 201, None)
+}
+
+async fn video_privacy_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    video_id: &str,
+    body: UpdatePrivacyRequest,
+    request_id: &str,
+) -> Result<Response> {
+    if !mutation_authority_enabled(env, config).await? {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    }
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Write).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let idempotency_key = idempotency_header(request)?;
+    let digest = request_digest("video_privacy", &(video_id, &body))
+        .map_err(|()| Error::RustError("privacy command could not be digested".into()))?;
+    match command_replay(
+        &database,
+        &tenant_id,
+        &idempotency_key,
+        "video_privacy",
+        &digest,
+    )
+    .await?
+    {
+        CommandReplay::Stored { status, json } => return stored_json_response(status, &json),
+        CommandReplay::Conflict => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        CommandReplay::New => {}
+    }
+    let Some(existing) = load_video_mutation(&database, &tenant_id, video_id).await? else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if body.privacy == "public"
+        && (existing.state != "ready"
+            || !video_has_shareable_media(&database, &tenant_id, video_id).await?)
+    {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "video_not_shareable",
+                "The video is not ready to be shared.",
+                true,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let expected_revision = i64::try_from(body.expected_revision)
+        .map_err(|_| Error::RustError("privacy revision is invalid".into()))?;
+    let updated = if existing.revision == expected_revision {
+        database
+            .prepare(
+                "UPDATE videos SET privacy = ?3, updated_at_ms = ?5, revision = revision + 1 \
+                 WHERE id = ?1 AND organization_id = ?2 AND revision = ?4 \
+                   AND deleted_at_ms IS NULL \
+                 RETURNING id, state, privacy, revision",
+            )
+            .bind(&[
+                JsValue::from_str(video_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&body.privacy),
+                JsValue::from_f64(expected_revision as f64),
+                JsValue::from_f64(current_time_ms()? as f64),
+            ])?
+            .first::<VideoMutationRow>(None)
+            .await?
+    } else if existing.revision == expected_revision.saturating_add(1)
+        && existing.privacy == body.privacy
+    {
+        Some(existing)
+    } else {
+        None
+    };
+    let Some(updated) = updated else {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "revision_conflict",
+                "The video changed before the privacy update was applied.",
+                true,
+            ),
+            request_id,
+            config.production(),
+        );
+    };
+    let response = updated
+        .public_response()
+        .ok_or_else(|| Error::RustError("privacy response is invalid".into()))?;
+    let response_json = serde_json::to_string(&response)
+        .map_err(|_| Error::RustError("privacy response could not be serialized".into()))?;
+    let now = current_time_ms()?;
+    let outbox_id = new_id();
+    let payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "video_id": video_id,
+        "privacy": body.privacy,
+        "revision": response.revision,
+    })
+    .to_string();
+    let statements = vec![
+        database
+            .prepare(
+                "INSERT INTO command_idempotency(\
+                   organization_id, idempotency_key, command_type, request_digest, \
+                   response_status, response_json, created_at_ms, expires_at_ms\
+                 ) VALUES (?1, ?2, 'video_privacy', ?3, 200, ?4, ?5, ?6)",
+            )
+            .bind(&[
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&digest),
+                JsValue::from_str(&response_json),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64((now + COMMAND_TTL_MS) as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(\
+                   id, organization_id, aggregate_type, aggregate_id, event_type, \
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                 ) VALUES (?1, ?2, 'video', ?3, 'video.privacy.changed', ?4, ?5, \
+                           'pending', 0, ?6, ?6) \
+                 ON CONFLICT(deduplication_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(&tenant_id),
+                JsValue::from_str(video_id),
+                JsValue::from_str(&format!("video-privacy:{video_id}:{}", response.revision)),
+                JsValue::from_str(&payload),
+                JsValue::from_f64(now as f64),
+            ])?,
+    ];
+    require_batch_success(database.batch(statements).await?)?;
+    json_response(&response, 200, response.public_share_path.as_deref())
 }
 
 async fn upload_intent_response(
@@ -1851,6 +2213,41 @@ async fn video_is_scoped(database: &D1Database, tenant_id: &str, video_id: &str)
         .is_some_and(|row| row.id == video_id))
 }
 
+async fn load_video_mutation(
+    database: &D1Database,
+    tenant_id: &str,
+    video_id: &str,
+) -> Result<Option<VideoMutationRow>> {
+    database
+        .prepare(
+            "SELECT id, state, privacy, revision FROM videos \
+             WHERE id = ?1 AND organization_id = ?2 AND deleted_at_ms IS NULL LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(video_id), JsValue::from_str(tenant_id)])?
+        .first::<VideoMutationRow>(None)
+        .await
+}
+
+async fn video_has_shareable_media(
+    database: &D1Database,
+    tenant_id: &str,
+    video_id: &str,
+) -> Result<bool> {
+    Ok(database
+        .prepare(
+            "SELECT 1 AS ready FROM videos v \
+             JOIN object_manifests m ON m.object_key = v.playback_object_key \
+             WHERE v.id = ?1 AND v.organization_id = ?2 AND v.state = 'ready' \
+               AND v.deleted_at_ms IS NULL AND m.organization_id = ?2 \
+               AND m.state = 'available' AND m.bytes > 0 \
+               AND m.content_type LIKE 'video/%' LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(video_id), JsValue::from_str(tenant_id)])?
+        .first::<ReadyRow>(None)
+        .await?
+        .is_some_and(|row| row.ready == 1))
+}
+
 async fn load_upload(
     database: &D1Database,
     tenant_id: &str,
@@ -2016,6 +2413,7 @@ fn stored_json_response(status: u16, json: &str) -> Result<Response> {
     let location = value
         .get("upload_path")
         .or_else(|| value.get("status_path"))
+        .or_else(|| value.get("public_share_path"))
         .and_then(serde_json::Value::as_str);
     json_response(&value, status, location)
 }
@@ -2730,6 +3128,9 @@ mod tests {
             ValidationCode::ObjectRole,
             ValidationCode::ObjectVersion,
             ValidationCode::Profile,
+            ValidationCode::Title,
+            ValidationCode::Privacy,
+            ValidationCode::Revision,
         ] {
             let failure = invalid_body_failure(code.as_str());
             assert_eq!(failure.status, 400);

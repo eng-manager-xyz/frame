@@ -79,6 +79,31 @@ pub struct MediaJobStatusResponse {
     pub updated_at_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoResponse {
+    pub schema_version: u16,
+    pub video_id: String,
+    pub state: String,
+    pub privacy: String,
+    pub revision: u64,
+    pub upload_intents_path: String,
+    pub public_share_path: Option<String>,
+}
+
+impl VideoResponse {
+    pub fn new(video_id: String) -> Self {
+        Self {
+            schema_version: API_SCHEMA_VERSION,
+            upload_intents_path: "/api/v1/uploads/intents".into(),
+            video_id,
+            state: "pending".into(),
+            privacy: "private".into(),
+            revision: 0,
+            public_share_path: None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct StoredCommandRow {
     pub command_type: String,
@@ -97,6 +122,39 @@ pub struct ApiKeyRow {
 #[derive(Deserialize)]
 pub struct MembershipRow {
     pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct VideoMutationRow {
+    pub id: String,
+    pub owner_id: String,
+    pub state: String,
+    pub privacy: String,
+    pub revision: i64,
+    pub actor_role: String,
+    pub actor_manages_space: i64,
+}
+
+impl VideoMutationRow {
+    pub fn actor_can_update(&self, actor_id: &str) -> bool {
+        matches!(self.actor_role.as_str(), "owner" | "admin")
+            || (self.actor_role == "member"
+                && (self.owner_id == actor_id || self.actor_manages_space == 1))
+    }
+
+    pub fn public_response(&self) -> Option<VideoResponse> {
+        let revision = u64::try_from(self.revision).ok()?;
+        Some(VideoResponse {
+            schema_version: API_SCHEMA_VERSION,
+            video_id: self.id.clone(),
+            state: self.state.clone(),
+            privacy: self.privacy.clone(),
+            revision,
+            upload_intents_path: "/api/v1/uploads/intents".into(),
+            public_share_path: (self.privacy == "public")
+                .then(|| format!("/api/v1/public/shares/{}", self.id)),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -311,6 +369,30 @@ mod tests {
         assert!(!json.contains("object_key"));
         assert!(!json.contains("tenants/"));
         assert!(json.contains("x-content-sha256"));
+    }
+
+    #[test]
+    fn video_update_policy_requires_ownership_or_space_management_for_members() {
+        let actor = "018f47a6-7b1c-7f55-8f39-8f8a86900101";
+        let mut row = VideoMutationRow {
+            id: "018f47a6-7b1c-7f55-8f39-8f8a86900104".into(),
+            owner_id: "018f47a6-7b1c-7f55-8f39-8f8a86900109".into(),
+            state: "ready".into(),
+            privacy: "private".into(),
+            revision: 3,
+            actor_role: "member".into(),
+            actor_manages_space: 0,
+        };
+        assert!(!row.actor_can_update(actor));
+        row.owner_id = actor.into();
+        assert!(row.actor_can_update(actor));
+        row.owner_id = "018f47a6-7b1c-7f55-8f39-8f8a86900109".into();
+        row.actor_manages_space = 1;
+        assert!(row.actor_can_update(actor));
+        row.actor_role = "viewer".into();
+        assert!(!row.actor_can_update(actor));
+        row.actor_role = "admin".into();
+        assert!(row.actor_can_update(actor));
     }
 
     #[test]
