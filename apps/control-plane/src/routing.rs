@@ -141,12 +141,16 @@ pub enum Route {
     WorkerMediaJobFail { job_id: String },
     AuthorityStatus,
     LocalRepositoryConformance,
+    LocalAuthRepositoryConformance,
     InvalidApiPath,
     UnknownApi,
     NotApi,
 }
 
 pub fn classify_raw_path(path: &str) -> Route {
+    if path == "/__frame/local/auth-repository-conformance" {
+        return Route::LocalAuthRepositoryConformance;
+    }
     if path == "/__frame/local/repository-conformance" {
         return Route::LocalRepositoryConformance;
     }
@@ -372,6 +376,17 @@ mod tests {
             parse_raw_request_target("http://127.0.0.1:8787/__frame/local/repository-conformance")
                 .expect("target");
         assert!(valid_repository_conformance_target(&allowed));
+        assert_eq!(
+            classify_raw_path("/__frame/local/auth-repository-conformance"),
+            Route::LocalAuthRepositoryConformance
+        );
+        for path in [
+            "/__frame/local/auth-repository-conformance/",
+            "/__frame/local/auth-repository-conformance%2f",
+            "/__frame/local/auth-repository-conformance/session",
+        ] {
+            assert_eq!(classify_raw_path(path), Route::NotApi);
+        }
         for denied in [
             "http://localhost:8787/__frame/local/repository-conformance",
             "https://127.0.0.1:8787/__frame/local/repository-conformance",

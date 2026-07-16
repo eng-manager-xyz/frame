@@ -1,3 +1,5 @@
+pub mod auth_repository;
+mod auth_repository_conformance;
 mod commands;
 mod contracts;
 pub mod repository;
@@ -962,6 +964,13 @@ async fn dispatch(
                 repository_conformance::response(request, env).await?
             }
         }
+        Route::LocalAuthRepositoryConformance => {
+            if config.production() || !valid_repository_conformance_target(&target) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                auth_repository_conformance::response(request, env).await?
+            }
+        }
         Route::InvalidApiPath => failure_response(
             ApiFailure::new(400, "invalid_api_path", "The API path is invalid.", false),
             request_id,
@@ -985,7 +994,11 @@ async fn dispatch(
 }
 
 fn local_repository_conformance_hidden(route: &Route, production: bool) -> bool {
-    production && matches!(route, Route::LocalRepositoryConformance)
+    production
+        && matches!(
+            route,
+            Route::LocalRepositoryConformance | Route::LocalAuthRepositoryConformance
+        )
 }
 
 fn method_guard(

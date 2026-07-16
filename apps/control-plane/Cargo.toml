@@ -10,6 +10,9 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+async-trait.workspace = true
+frame-domain = { path = "../../crates/domain" }
+frame-ports = { path = "../../crates/ports" }
 frame-client = { path = "../../crates/frame-client" }
 futures = "0.3"
 js-sys.workspace = true
