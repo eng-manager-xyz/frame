@@ -1,0 +1,56 @@
+# Local development
+
+The local stack is isolated from production by configuration and by the
+command guard in `scripts/frame`. It uses local Wrangler D1/R2 state and the
+deterministic Media fake; the production-only remote Media binding is absent.
+No checked-in value can address the production database or bucket.
+
+## First run
+
+```sh
+scripts/frame doctor
+scripts/frame reset
+scripts/frame start
+```
+
+The web service listens on `http://127.0.0.1:3000`; the Worker listens on
+`http://127.0.0.1:8787`. `Ctrl-C` stops both, and `scripts/frame stop` is safe to
+run after an interrupted shell. Logs are kept under ignored `.tmp/` and can be
+tailed with `scripts/frame logs`.
+
+`reset` deletes only `.wrangler/state` inside this checkout, reapplies every
+migration, and loads synthetic `*.invalid` seed identities. It refuses to run
+when `FRAME_DEPLOYMENT=production`, `CLOUDFLARE_API_TOKEN`, or `DATABASE_URL` is
+present. It never contacts or deletes a remote bucket.
+
+## Focused commands
+
+```sh
+scripts/frame check
+scripts/frame test
+scripts/frame migrate
+scripts/frame seed
+scripts/frame media-smoke
+```
+
+The Media Transformations binding cannot be faithfully emulated. Offline
+development tests the same capability, idempotency, output-key, fallback, and
+publication contracts through the fake and native GStreamer. Real R2-to-Media-
+to-R2 checks run only in the protected CI environment with separate staging
+resources, hard cost/time limits, synthetic fixtures, and explicit cleanup.
+
+## Troubleshooting
+
+- Missing `wasm32-unknown-unknown`: run
+  `rustup target add wasm32-unknown-unknown`.
+- Missing GStreamer: install the runtime, development headers, and base/good
+  plugin sets for the OS, then rerun `scripts/frame doctor`.
+- Port collision: set `FRAME_ADDR=127.0.0.1:<port>` for the web service or pass
+  a different Wrangler port while running the components separately.
+- Stale or broken local schema: run `scripts/frame reset`. This is intentionally
+  unavailable for remote resources.
+- Worker bundle failure: install `worker-build` at the version used by CI and
+  rerun the Wrangler dry-run command from `CONTRIBUTING.md`.
+- macOS/Windows/Linux capture, permission, camera, audio, and hardware-codec
+  evidence belongs to the representative-device lanes; a local synthetic
+  smoke does not claim those gates.

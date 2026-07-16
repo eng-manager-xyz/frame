@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT"
+
+WRANGLER_VERSION=4.111.0
+LOCAL_CONFIG=apps/control-plane/wrangler.local.toml
+LOCAL_DB=frame-local
+PID_FILE=.tmp/frame-local.pids
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/frame <command>
+
+  doctor       verify the local Rust, Wasm, GStreamer, Node, and migration tools
+  check        run formatting, Clippy, Wasm, boundary, fixture, and migration gates
+  test         run the complete workspace test suite
+  migrate      apply all D1 migrations to the isolated local database
+  seed         load deterministic synthetic local data
+  reset        remove only local Wrangler state, then migrate and seed
+  start        run the web, Worker, and native media doctor until interrupted
+  stop         stop processes started by scripts/frame start
+  logs         tail the local web and Worker logs
+  media-smoke  create a synthetic WebM artifact under target/
+EOF
+}
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'missing required tool: %s\n' "$1" >&2
+    return 1
+  fi
+}
+
+refuse_production() {
+  if [[ ${FRAME_DEPLOYMENT:-local} == production ]] ||
+    [[ -n ${CLOUDFLARE_API_TOKEN:-} ]] ||
+    [[ -n ${DATABASE_URL:-} ]]; then
+    printf 'local command refused while production/provider credentials are present\n' >&2
+    exit 2
+  fi
+}
+
+doctor() {
+  local failed=0
+  for tool in cargo rustc rustup python3 node npx pkg-config; do
+    need "$tool" || failed=1
+  done
+  if [[ $failed -ne 0 ]]; then
+    return 1
+  fi
+
+  rustc --version
+  cargo --version
+  node --version
+  if ! rustup target list --installed | rg -qx 'wasm32-unknown-unknown'; then
+    printf 'missing Rust target: rustup target add wasm32-unknown-unknown\n' >&2
+    failed=1
+  fi
+  if ! pkg-config --atleast-version=1.20 gstreamer-1.0; then
+    printf 'GStreamer 1.20+ development/runtime files are required\n' >&2
+    failed=1
+  fi
+  python3 scripts/ci/check-migrations.py || failed=1
+  cargo run --quiet -p frame-media-worker -- doctor || failed=1
+  npx --yes "wrangler@${WRANGLER_VERSION}" --version || failed=1
+  return "$failed"
+}
+
+migrate() {
+  refuse_production
+  npx --yes "wrangler@${WRANGLER_VERSION}" d1 migrations apply "$LOCAL_DB" \
+    --local --config "$LOCAL_CONFIG"
+}
+
+seed() {
+  refuse_production
+  npx --yes "wrangler@${WRANGLER_VERSION}" d1 execute "$LOCAL_DB" \
+    --local --config "$LOCAL_CONFIG" --file dev/seed.sql
+}
+
+stop_local() {
+  if [[ ! -f $PID_FILE ]]; then
+    printf 'local Frame processes are not recorded as running\n'
+    return 0
+  fi
+  while IFS= read -r pid; do
+    if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid"
+    fi
+  done < "$PID_FILE"
+  rm -f "$PID_FILE"
+}
+
+start_local() {
+  refuse_production
+  mkdir -p .tmp
+  stop_local >/dev/null
+  : > "$PID_FILE"
+
+  cargo run -p frame-web > .tmp/frame-web.log 2>&1 &
+  printf '%s\n' "$!" >> "$PID_FILE"
+  npx --yes "wrangler@${WRANGLER_VERSION}" dev --config "$LOCAL_CONFIG" \
+    --port 8787 > .tmp/frame-worker.log 2>&1 &
+  printf '%s\n' "$!" >> "$PID_FILE"
+
+  trap 'stop_local' EXIT INT TERM
+  cargo run --quiet -p frame-media-worker -- doctor
+  printf 'Frame local web: http://127.0.0.1:3000\n'
+  printf 'Frame local API: http://127.0.0.1:8787/api/v1/health\n'
+  printf 'Press Ctrl-C to stop.\n'
+  wait
+}
+
+command=${1:-}
+case "$command" in
+  doctor)
+    doctor
+    ;;
+  check)
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    scripts/ci/check-workspace-boundaries.sh
+    python3 scripts/ci/check-fixtures.py
+    python3 scripts/ci/check-migrations.py
+    ;;
+  test)
+    cargo test --workspace
+    ;;
+  migrate)
+    migrate
+    ;;
+  seed)
+    seed
+    ;;
+  reset)
+    refuse_production
+    if [[ -d .wrangler/state ]]; then
+      rm -rf .wrangler/state
+    fi
+    migrate
+    seed
+    ;;
+  start)
+    start_local
+    ;;
+  stop)
+    stop_local
+    ;;
+  logs)
+    mkdir -p .tmp
+    touch .tmp/frame-web.log .tmp/frame-worker.log
+    tail -n 100 -f .tmp/frame-web.log .tmp/frame-worker.log
+    ;;
+  media-smoke)
+    cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
