@@ -16,9 +16,11 @@ use frame_domain::{
 use thiserror::Error;
 
 mod identity;
+mod multipart;
 mod storage;
 
 pub use identity::*;
+pub use multipart::*;
 pub use storage::*;
 
 #[derive(Error, PartialEq, Eq)]

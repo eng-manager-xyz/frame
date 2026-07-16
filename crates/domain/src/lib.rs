@@ -6,10 +6,12 @@ use uuid::Uuid;
 
 mod contracts;
 mod identity;
+mod multipart;
 mod storage;
 
 pub use contracts::*;
 pub use identity::*;
+pub use multipart::*;
 pub use storage::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -8,6 +8,7 @@ mod cutover;
 mod idempotency;
 mod identity;
 mod media_router;
+mod multipart;
 mod storage;
 mod upload;
 
@@ -29,6 +30,7 @@ pub use identity::{
     VerificationIssueReceipt, VerifiedIdentityProvisioning, VerifiedPrincipal,
 };
 pub use media_router::{MediaRoute, MediaRouter, MediaRoutingPolicy, RoutedTransform};
+pub use multipart::*;
 pub use storage::{ImmutableStorageService, ImmutableWriteOutcome};
 pub use upload::{BeginUpload, MultipartUploadCoordinator, UploadPartReceipt, UploadSession};
 
