@@ -1,0 +1,23 @@
+# This file is intentionally synthetic. It exercises lockfile checksum import.
+version = 4
+
+[[package]]
+name = "demo-app"
+version = "1.2.3"
+dependencies = [
+ "demo-core",
+ "serde",
+]
+
+[[package]]
+name = "demo-core"
+version = "1.2.3"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

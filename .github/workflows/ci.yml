@@ -29,6 +29,12 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
       - run: cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
+      - name: Supply-chain and credential policy
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check advisories bans licenses sources
+          python3 scripts/ci/check-secrets.py
+          python3 scripts/ci/generate-cyclonedx.py --self-test
       - name: Install Worker packager
         run: cargo install worker-build --version 0.8.5 --locked
       - name: Worker bundle dry run

@@ -1,0 +1,88 @@
+{
+  "packages": [
+    {
+      "name": "demo-app",
+      "version": "1.2.3",
+      "id": "path+file:///workspace/demo/apps/demo#demo-app@1.2.3",
+      "license": "MIT/Apache-2.0",
+      "license_file": "/workspace/demo/LICENSE",
+      "description": "Fixture application",
+      "source": null,
+      "targets": [
+        {
+          "kind": ["bin"]
+        }
+      ],
+      "manifest_path": "/workspace/demo/apps/demo/Cargo.toml",
+      "repository": "https://example.test/demo.git",
+      "homepage": null,
+      "documentation": null,
+      "rust_version": "1.96"
+    },
+    {
+      "name": "demo-core",
+      "version": "1.2.3",
+      "id": "path+file:///workspace/demo/crates/core#demo-core@1.2.3",
+      "license": "Apache-2.0",
+      "license_file": null,
+      "description": "Fixture library",
+      "source": null,
+      "targets": [
+        {
+          "kind": ["lib"]
+        }
+      ],
+      "manifest_path": "/workspace/demo/crates/core/Cargo.toml",
+      "repository": "https://example.test/demo.git",
+      "homepage": null,
+      "documentation": "https://example.test/demo/docs",
+      "rust_version": "1.96"
+    },
+    {
+      "name": "serde",
+      "version": "1.0.228",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "description": "Serialization framework",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"]
+        }
+      ],
+      "manifest_path": "/cargo/registry/src/serde-1.0.228/Cargo.toml",
+      "repository": "https://github.com/serde-rs/serde",
+      "homepage": "https://serde.rs",
+      "documentation": "https://docs.rs/serde",
+      "rust_version": "1.56"
+    }
+  ],
+  "workspace_members": [
+    "path+file:///workspace/demo/apps/demo#demo-app@1.2.3",
+    "path+file:///workspace/demo/crates/core#demo-core@1.2.3"
+  ],
+  "resolve": {
+    "nodes": [
+      {
+        "id": "path+file:///workspace/demo/apps/demo#demo-app@1.2.3",
+        "dependencies": [
+          "path+file:///workspace/demo/crates/core#demo-core@1.2.3",
+          "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228"
+        ]
+      },
+      {
+        "id": "path+file:///workspace/demo/crates/core#demo-core@1.2.3",
+        "dependencies": [
+          "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228"
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+        "dependencies": []
+      }
+    ]
+  },
+  "workspace_root": "/workspace/demo",
+  "version": 1
+}

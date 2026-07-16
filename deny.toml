@@ -1,0 +1,84 @@
+# Supply-chain policy for cargo-deny 0.20.2.
+#
+# Keep every exception narrow, versioned, and accompanied by an owner, expiry,
+# and removal plan in docs/security/dependency-policy.md. There are currently no
+# exceptions.
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+]
+
+[advisories]
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "deny"
+unmaintained = "workspace"
+unsound = "all"
+maximum-db-staleness = "P7D"
+unused-ignored-advisory = "deny"
+ignore = []
+
+[licenses]
+include-dev = true
+include-build = true
+confidence-threshold = 0.93
+unused-allowed-license = "warn"
+unused-license-exception = "deny"
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+exceptions = []
+
+# Workspace packages explicitly marked `publish = false` are private
+# application components. Third-party crates, including development and build
+# dependencies, remain in scope above.
+[licenses.private]
+ignore = true
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "simplest-path"
+allow-workspace = true
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = [
+    { crate = "git2", reason = "Use pure-Rust or command-line Git integrations; do not add libgit2 to shipped binaries." },
+    { crate = "libgit2-sys", reason = "Native libgit2 expands the binary and patching surface." },
+    { crate = "native-tls", reason = "Network clients must use the explicitly configured rustls stack." },
+    { crate = "openssl", reason = "Network clients must use the explicitly configured rustls stack." },
+    { crate = "openssl-sys", reason = "Do not introduce an implicit system OpenSSL dependency." },
+]
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+unused-allowed-source = "allow"
+unused-allowed-org = "allow"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

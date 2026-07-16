@@ -64,9 +64,13 @@ def main() -> int:
 
     quality = texts.get("quality-gates.yml", "")
     require("pull_request:" in quality and "push:" in quality, "quality-gates.yml: must run for pull requests and main pushes", errors)
-    require("secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
+    require("${{ secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
     require("check-parity-evidence.py" in quality,
             "quality-gates.yml: the fast parity evidence lane must be required", errors)
+    require("check-secrets.py" in quality and "cargo deny check" in quality,
+            "quality-gates.yml: secret and dependency policy must be required", errors)
+    require("generate-cyclonedx.py" in quality and "hermetic-journey.py" in quality,
+            "quality-gates.yml: SBOM and provider-free walking-slice checks must be required", errors)
     require("macos-14" in quality and "windows-2022" in quality,
             "quality-gates.yml: portable core checks must cover macOS and Windows", errors)
     require(re.search(r"^  quality-gate:\n(?:.|\n)*?if:\s*\$\{\{\s*always\(\)\s*\}\}", quality, re.MULTILINE) is not None,
@@ -86,7 +90,7 @@ def main() -> int:
             "production-gate.yml: provider job must consume and verify the built artifact", errors)
     production_untrusted = production.split("\n  provider_release:\n", maxsplit=1)[0]
     production_provider = production.split("\n  provider_release:\n", maxsplit=1)[-1]
-    require("secrets." not in production_untrusted,
+    require("${{ secrets." not in production_untrusted,
             "production-gate.yml: secrets may appear only in the protected provider job", errors)
     require("target/provider-worker/wrangler-release/index.js --no-bundle" in production_provider,
             "production-gate.yml: protected deploy must upload the verified Worker artifact", errors)
@@ -97,11 +101,17 @@ def main() -> int:
     require("workflow_run:" not in production, "production-gate.yml: delayed workflow_run sentinels are forbidden", errors)
     require("check-parity-evidence.py --require-full" in production_untrusted,
             "production-gate.yml: protected parity records must block provider mutation", errors)
+    require("check-secrets.py" in production_untrusted and "cargo deny check" in production_untrusted,
+            "production-gate.yml: release preflight must enforce secret and dependency policy", errors)
+    require("generate-cyclonedx.py" in production_untrusted and "hermetic-journey.py" in production_untrusted,
+            "production-gate.yml: release preflight must validate SBOM and hermetic journey", errors)
+    require("package-release.sh" in production and "verify-release-bundle.sh" in production,
+            "production-gate.yml: release must create and verify the immutable SBOM-bearing handoff", errors)
 
     smoke = texts.get("production-smoke.yml", "")
     require("schedule:" in smoke and "workflow_dispatch:" in smoke and "workflow_run:" in smoke,
             "production-smoke.yml: requires scheduled, manual, and post-gate entrypoints", errors)
-    require("secrets." not in smoke, "production-smoke.yml: canonical smoke must be secret-free", errors)
+    require("${{ secrets." not in smoke, "production-smoke.yml: canonical smoke must be secret-free", errors)
     require("https://frame.engmanager.xyz" in smoke and "https://frame-staging.engmanager.xyz" in smoke,
             "production-smoke.yml: smoke origins must be a fixed allowlist", errors)
     require("github.event.workflow_run.conclusion == 'success'" in smoke and "expected_release_sha" in smoke,
@@ -113,7 +123,7 @@ def main() -> int:
     require("github.event_name == 'workflow_dispatch'" in terraform,
             "cloudflare-account.yml: credentialed job must be unreachable from pull_request", errors)
     terraform_untrusted = terraform.split("\n  terraform:\n", maxsplit=1)[0]
-    require("secrets." not in terraform_untrusted,
+    require("${{ secrets." not in terraform_untrusted,
             "cloudflare-account.yml: pull-request validation must not reference secrets", errors)
     require("environment:\n      name: cloudflare-${{ inputs.environment }}" in terraform,
             "cloudflare-account.yml: credentials must come from the selected protected environment", errors)

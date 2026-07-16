@@ -61,6 +61,12 @@ jq '{
     dependencies: [.dependencies[] | {name, req, source, kind, optional, target}]
   }] | sort_by(.name, .version, (.source // "workspace")))
 }' "${metadata_raw}" > "${output}/cargo-metadata.json"
+python3 scripts/ci/generate-cyclonedx.py \
+  --metadata "${metadata_raw}" \
+  --cargo-lock Cargo.lock \
+  --workspace-name frame \
+  --require-registry-checksums \
+  --output "${output}/frame.cdx.json"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -73,6 +79,7 @@ sha256_file() {
 web_sha="$(sha256_file "${output}/frame-web")"
 worker_sha="$(sha256_file "${output}/frame-worker.tar.gz")"
 metadata_sha="$(sha256_file "${output}/cargo-metadata.json")"
+sbom_sha="$(sha256_file "${output}/frame.cdx.json")"
 migration_level="$(find apps/control-plane/migrations -maxdepth 1 -type f -name '*.sql' -print | sort | tail -n 1 | xargs basename)"
 
 jq -n \
@@ -84,6 +91,7 @@ jq -n \
   --arg web_sha256 "${web_sha}" \
   --arg worker_sha256 "${worker_sha}" \
   --arg cargo_metadata_sha256 "${metadata_sha}" \
+  --arg sbom_sha256 "${sbom_sha}" \
   '{
     schema_version: ($schema_version | tonumber),
     git_sha: $git_sha,
@@ -94,16 +102,17 @@ jq -n \
     artifacts: {
       web: {path: "frame-web", sha256: $web_sha256},
       worker: {path: "frame-worker.tar.gz", sha256: $worker_sha256},
-      cargo_metadata: {path: "cargo-metadata.json", sha256: $cargo_metadata_sha256}
+      cargo_metadata: {path: "cargo-metadata.json", sha256: $cargo_metadata_sha256},
+      sbom: {path: "frame.cdx.json", format: "CycloneDX", spec_version: "1.6", sha256: $sbom_sha256}
     }
   }' > "${output}/release-manifest.json"
 
 (
   cd "${output}"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum frame-web frame-worker.tar.gz cargo-metadata.json release-manifest.json > SHA256SUMS
+    sha256sum frame-web frame-worker.tar.gz cargo-metadata.json frame.cdx.json release-manifest.json > SHA256SUMS
   else
-    shasum -a 256 frame-web frame-worker.tar.gz cargo-metadata.json release-manifest.json > SHA256SUMS
+    shasum -a 256 frame-web frame-worker.tar.gz cargo-metadata.json frame.cdx.json release-manifest.json > SHA256SUMS
   fi
 )
 

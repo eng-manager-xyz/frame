@@ -9,7 +9,7 @@ expected_sha="${EXPECTED_SHA:?EXPECTED_SHA must be a full Git commit SHA}"
   exit 1
 }
 
-for required in frame-web frame-worker.tar.gz cargo-metadata.json release-manifest.json SHA256SUMS; do
+for required in frame-web frame-worker.tar.gz cargo-metadata.json frame.cdx.json release-manifest.json SHA256SUMS; do
   [[ -f "${bundle}/${required}" ]] || {
     echo "release bundle is missing ${required}" >&2
     exit 1
@@ -33,7 +33,10 @@ jq -e --arg sha "${expected_sha}" '
   (.migration_level | test("^[0-9]{4}_[a-z0-9_]+\\.sql$")) and
   .artifacts.web.path == "frame-web" and
   .artifacts.worker.path == "frame-worker.tar.gz" and
-  .artifacts.cargo_metadata.path == "cargo-metadata.json"
+  .artifacts.cargo_metadata.path == "cargo-metadata.json" and
+  .artifacts.sbom.path == "frame.cdx.json" and
+  .artifacts.sbom.format == "CycloneDX" and
+  .artifacts.sbom.spec_version == "1.6"
 ' "${bundle}/release-manifest.json" >/dev/null
 
 sha256_file() {
@@ -44,7 +47,7 @@ sha256_file() {
   fi
 }
 
-for artifact in web worker cargo_metadata; do
+for artifact in web worker cargo_metadata sbom; do
   path="$(jq -r --arg artifact "${artifact}" '.artifacts[$artifact].path' "${bundle}/release-manifest.json")"
   expected="$(jq -r --arg artifact "${artifact}" '.artifacts[$artifact].sha256' "${bundle}/release-manifest.json")"
   actual="$(sha256_file "${bundle}/${path}")"
@@ -53,6 +56,14 @@ for artifact in web worker cargo_metadata; do
     exit 1
   fi
 done
+
+jq -e '
+  .bomFormat == "CycloneDX" and
+  .specVersion == "1.6" and
+  .version == 1 and
+  (.components | type == "array" and length > 0) and
+  (.dependencies | type == "array" and length > 0)
+' "${bundle}/frame.cdx.json" >/dev/null
 
 python3 - "${bundle}/frame-worker.tar.gz" <<'PY'
 import pathlib

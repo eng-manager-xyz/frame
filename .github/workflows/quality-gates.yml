@@ -40,6 +40,12 @@ jobs:
           python3 scripts/ci/test-migration.py
       - name: Validate pinned Terraform installer metadata
         run: scripts/ci/install-terraform.sh --check
+      - name: Reject checked-in credentials and validate the SBOM generator
+        run: |
+          python3 scripts/ci/check-secrets.py
+          python3 scripts/ci/generate-cyclonedx.py --self-test
+      - name: Run the provider-free semantic walking slice
+        run: python3 -I scripts/ci/hermetic-journey.py --timeout 20
 
   native:
     name: Native workspace and production web
@@ -64,6 +70,18 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Enforce dependency, advisory, license, and source policy
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check advisories bans licenses sources
+      - name: Generate the release-format CycloneDX inventory
+        run: |
+          mkdir -p target/evidence
+          python3 scripts/ci/generate-cyclonedx.py \
+            --require-registry-checksums \
+            --output target/evidence/frame.cdx.json
+          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' \
+            target/evidence/frame.cdx.json >/dev/null
       - name: Test the complete workspace
         run: cargo test --locked --workspace
       - name: Enforce dependency and target boundaries
@@ -98,6 +116,13 @@ jobs:
         with:
           name: frame-web-${{ github.sha }}
           path: target/release/frame-web
+          if-no-files-found: error
+          retention-days: 5
+      - name: Retain the dependency inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frame-sbom-${{ github.sha }}
+          path: target/evidence/frame.cdx.json
           if-no-files-found: error
           retention-days: 5
 

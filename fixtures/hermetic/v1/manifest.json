@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "kind": "generated-synthetic",
+    "contains_personal_data": false,
+    "contains_production_data": false,
+    "decodable_media": false
+  },
+  "tenant_id": "018f47a6-7b1c-7f55-8f39-8f8a86900102",
+  "video_id": "018f47a6-7b1c-7f55-8f39-8f8a86900104",
+  "upload_id": "018f47a6-7b1c-7f55-8f39-8f8a86900201",
+  "job_id": "018f47a6-7b1c-7f55-8f39-8f8a86900202",
+  "object_key": "tenants/018f47a6-7b1c-7f55-8f39-8f8a86900102/videos/018f47a6-7b1c-7f55-8f39-8f8a86900104/derivatives/preview/v1/hermetic.webm",
+  "content_type": "video/webm",
+  "bytes": 127,
+  "sha256": "b9130799455c109fcf787f4a92cb39369523255f2162c72282804211bba38d3d"
+}
