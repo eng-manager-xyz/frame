@@ -4,6 +4,7 @@ members = [
     "apps/control-plane",
     "apps/media-worker",
     "apps/web",
+    "crates/application",
     "crates/domain",
     "crates/frame-client",
     "crates/media",
@@ -12,6 +13,7 @@ members = [
 default-members = [
     "apps/media-worker",
     "apps/web",
+    "crates/application",
     "crates/domain",
     "crates/frame-client",
     "crates/media",

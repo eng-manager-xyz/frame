@@ -546,6 +546,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "frame-application"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "frame-domain",
+ "frame-ports",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "frame-client"
 version = "0.1.0"
 dependencies = [
