@@ -34,6 +34,12 @@ impl ApiVersion {
 pub struct Capabilities(Vec<String>);
 
 impl Capabilities {
+    pub fn from_names(names: Vec<String>) -> Result<Self, ClientError> {
+        let capabilities = Self(names);
+        capabilities.validate()?;
+        Ok(capabilities)
+    }
+
     #[must_use]
     pub fn supports(&self, capability: &str) -> bool {
         self.0.iter().any(|candidate| candidate == capability)
@@ -320,6 +326,8 @@ mod tests {
         }
         let additive: Health = serde_json::from_str(HEALTH_ADDITIVE).expect("additive health");
         assert!(additive.capabilities.supports("future_safe_capability"));
+        assert!(Capabilities::from_names(vec!["public_share_summary".into()]).is_ok());
+        assert!(Capabilities::from_names(vec!["NOT_SAFE".into()]).is_err());
     }
 
     #[test]

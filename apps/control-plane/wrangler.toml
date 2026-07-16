@@ -1,6 +1,18 @@
 name = "frame-control-plane"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-07-15"
+workers_dev = false
+
+[vars]
+FRAME_DEPLOYMENT = "production"
+FRAME_PUBLIC_HOST = "frame.engmanager.xyz"
+FRAME_MEDIA_MODE = "remote"
+
+# Cloudflare matches the full URL, so the intentionally broad pattern catches
+# `/api?query` as well as `/api/*`. Raw-path and canonical-host checks narrow it.
+[[routes]]
+pattern = "frame.engmanager.xyz/api*"
+zone_name = "engmanager.xyz"
 
 [build]
 command = "worker-build --release apps/control-plane"

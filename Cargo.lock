@@ -570,8 +570,10 @@ dependencies = [
 name = "frame-control-plane"
 version = "0.1.0"
 dependencies = [
+ "frame-client",
  "js-sys",
  "serde",
+ "serde_json",
  "wasm-bindgen",
  "worker",
 ]
