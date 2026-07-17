@@ -6,8 +6,12 @@ use frame_authenticated_client::{
     InstantFinalizeReceiptV1, InstantFinalizeRequestV1, InstantFinalizeStateV1,
 };
 use frame_client::FrameOrigin;
+#[cfg(feature = "instant-finalize")]
+use frame_client::{InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1};
+#[cfg(feature = "instant-finalize")]
 use frame_media::{
-    InstantFinalizeReceipt, InstantFinalizeRequest, InstantOperationId, InstantPublicationId,
+    INSTANT_PROGRESS_VERSION, InstantFinalizeReceipt, InstantFinalizeRequest, InstantOperationId,
+    InstantProgress, InstantPublicErrorCode, InstantPublicationId, InstantReadiness,
 };
 use reqwest::{
     Client,
@@ -19,6 +23,7 @@ use thiserror::Error;
 const FINALIZE_DEADLINE: Duration = Duration::from_secs(15);
 const MAX_FINALIZE_RESPONSE_BYTES: usize = 64 * 1024;
 
+#[cfg(feature = "instant-finalize")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstantFinalizeDispatchOutcome {
     Pending,
@@ -49,13 +54,9 @@ pub enum DesktopInstantFinalizeError {
     InvalidResponse,
 }
 
-/// Concrete native caller available to the desktop command layer. Redirects
+/// Hardened native caller available to the desktop service layer. Redirects
 /// and ambient proxies are disabled so authorization cannot be forwarded
 /// outside the validated Frame origin.
-///
-/// The current Tauri command surface does not invoke this adapter yet. Keeping
-/// that wiring boundary explicit prevents the loopback contract tests below
-/// from being mistaken for an end-to-end production finalize journey.
 #[derive(Clone)]
 pub struct DesktopInstantFinalizeClient {
     origin: FrameOrigin,
@@ -82,34 +83,35 @@ impl DesktopInstantFinalizeClient {
         Ok(Self { origin, client })
     }
 
-    /// Reconciles one sealed native finalize request. The operation ID is also
-    /// the retry identity: retries must reuse it, while a new logical attempt
-    /// must provide a new CSPRNG identity.
-    pub async fn dispatch(
+    /// Sends one already validated, native-owned wire request. The bearer and
+    /// request never originate in WebView IPC. The returned receipt is bound
+    /// to the exact request before this method returns.
+    pub async fn dispatch_wire(
         &self,
-        tenant_id: &str,
-        video_id: &str,
         bearer_token: &str,
-        operation_id: InstantOperationId,
-        request: &InstantFinalizeRequest,
-    ) -> Result<InstantFinalizeDispatchOutcome, DesktopInstantFinalizeError> {
+        wire: &InstantFinalizeRequestV1,
+    ) -> Result<InstantFinalizeReceiptV1, DesktopInstantFinalizeError> {
         if !valid_bearer_token(bearer_token) {
             return Err(DesktopInstantFinalizeError::InvalidCredential);
         }
-        let wire = instant_finalize_wire_request(tenant_id, video_id, operation_id, request)?;
+        wire.validate()
+            .map_err(|_| DesktopInstantFinalizeError::InvalidContract)?;
         let body =
-            serde_json::to_vec(&wire).map_err(|_| DesktopInstantFinalizeError::InvalidContract)?;
+            serde_json::to_vec(wire).map_err(|_| DesktopInstantFinalizeError::InvalidContract)?;
         let endpoint = self
             .origin
             .api_v1_url(&format!("instant-recordings/{}/finalize", wire.session_id))
             .map_err(|_| DesktopInstantFinalizeError::InvalidContract)?;
-        let authorization = HeaderValue::from_str(&format!("Bearer {bearer_token}"))
+        let mut authorization = HeaderValue::from_str(&format!("Bearer {bearer_token}"))
             .map_err(|_| DesktopInstantFinalizeError::InvalidCredential)?;
-        let tenant = HeaderValue::from_str(&wire.tenant_id)
+        authorization.set_sensitive(true);
+        let mut tenant = HeaderValue::from_str(&wire.tenant_id)
             .map_err(|_| DesktopInstantFinalizeError::InvalidContract)?;
         let operation_key = format!("instant-finalize:{}", wire.operation_id);
-        let idempotency = HeaderValue::from_str(&operation_key)
+        let mut idempotency = HeaderValue::from_str(&operation_key)
             .map_err(|_| DesktopInstantFinalizeError::InvalidContract)?;
+        tenant.set_sensitive(true);
+        idempotency.set_sensitive(true);
 
         let mut response = self
             .client
@@ -143,12 +145,34 @@ impl DesktopInstantFinalizeClient {
         let receipt = serde_json::from_slice::<InstantFinalizeReceiptV1>(&response_body)
             .map_err(|_| DesktopInstantFinalizeError::MalformedResponse)?;
         receipt
-            .validate_for(&wire)
+            .validate_for(wire)
             .map_err(|_| DesktopInstantFinalizeError::InvalidResponse)?;
 
         match (status, receipt.state) {
-            (202, InstantFinalizeStateV1::Pending) => Ok(InstantFinalizeDispatchOutcome::Pending),
-            (200, InstantFinalizeStateV1::Published) => {
+            (202, InstantFinalizeStateV1::Pending) | (200, InstantFinalizeStateV1::Published) => {
+                Ok(receipt)
+            }
+            _ => Err(DesktopInstantFinalizeError::InvalidResponse),
+        }
+    }
+
+    /// Maps a sealed native request into the portable wire contract, sends it,
+    /// and reconstructs the native receipt. This bridge stays optional so a
+    /// normal Tauri build cannot acquire the media/GStreamer dependency tree.
+    #[cfg(feature = "instant-finalize")]
+    pub async fn dispatch(
+        &self,
+        tenant_id: &str,
+        video_id: &str,
+        bearer_token: &str,
+        operation_id: InstantOperationId,
+        request: &InstantFinalizeRequest,
+    ) -> Result<InstantFinalizeDispatchOutcome, DesktopInstantFinalizeError> {
+        let wire = instant_finalize_wire_request(tenant_id, video_id, operation_id, request)?;
+        let receipt = self.dispatch_wire(bearer_token, &wire).await?;
+        match receipt.state {
+            InstantFinalizeStateV1::Pending => Ok(InstantFinalizeDispatchOutcome::Pending),
+            InstantFinalizeStateV1::Published => {
                 let publication_id = receipt
                     .publication_id
                     .as_deref()
@@ -161,11 +185,11 @@ impl DesktopInstantFinalizeClient {
                     .map_err(|_| DesktopInstantFinalizeError::InvalidResponse)?;
                 Ok(InstantFinalizeDispatchOutcome::Published(Box::new(receipt)))
             }
-            _ => Err(DesktopInstantFinalizeError::InvalidResponse),
         }
     }
 }
 
+#[cfg(feature = "instant-finalize")]
 pub fn instant_finalize_wire_request(
     tenant_id: &str,
     video_id: &str,
@@ -187,11 +211,76 @@ pub fn instant_finalize_wire_request(
     .map_err(|_| DesktopInstantFinalizeError::InvalidContract)
 }
 
-fn valid_bearer_token(value: &str) -> bool {
+pub(crate) fn valid_bearer_token(value: &str) -> bool {
     (32..=512).contains(&value.len())
         && value
             .bytes()
             .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'"' | b'\\'))
+}
+
+/// Projects the native journal status into the exact public-safe UI contract.
+/// Native identifiers, hashes, byte totals, and credentials cannot cross this
+/// adapter because the target type has no fields for them.
+#[cfg(feature = "instant-finalize")]
+pub fn project_instant_progress(
+    progress: InstantProgress,
+) -> Result<InstantUiProgressV1, DesktopInstantFinalizeError> {
+    let expected_basis_points = if progress.segment_count == 0 {
+        0
+    } else {
+        u16::try_from(
+            u64::from(progress.verified_segment_count) * 10_000 / u64::from(progress.segment_count),
+        )
+        .map_err(|_| DesktopInstantFinalizeError::InvalidContract)?
+    };
+    if progress.version != INSTANT_PROGRESS_VERSION
+        || progress.upload_basis_points > 10_000
+        || progress.verified_segment_count > progress.segment_count
+        || progress.upload_basis_points != expected_basis_points
+        || (matches!(
+            progress.readiness,
+            InstantReadiness::Finalizing | InstantReadiness::ShareReady
+        ) && (progress.segment_count == 0
+            || progress.verified_segment_count != progress.segment_count
+            || progress.upload_basis_points != 10_000))
+    {
+        return Err(DesktopInstantFinalizeError::InvalidContract);
+    }
+    let phase = match progress.readiness {
+        InstantReadiness::Recording => InstantUiPhaseV1::Recording,
+        InstantReadiness::LocallyRecoverable => InstantUiPhaseV1::LocallyRecoverable,
+        InstantReadiness::Uploading => InstantUiPhaseV1::Uploading,
+        InstantReadiness::Finalizing => InstantUiPhaseV1::Finalizing,
+        InstantReadiness::ShareReady => InstantUiPhaseV1::ShareReady,
+        InstantReadiness::Cancelled => InstantUiPhaseV1::Cancelled,
+        InstantReadiness::RecoveryRequired => InstantUiPhaseV1::RecoveryRequired,
+    };
+    let error = progress.public_error.map(|error| match error {
+        InstantPublicErrorCode::LocalStorageFull => InstantUiErrorCodeV1::LocalStorageFull,
+        InstantPublicErrorCode::LocalStorageUnavailable => {
+            InstantUiErrorCodeV1::LocalStorageUnavailable
+        }
+        InstantPublicErrorCode::NetworkOffline => InstantUiErrorCodeV1::NetworkOffline,
+        InstantPublicErrorCode::UploadDelayed => InstantUiErrorCodeV1::UploadDelayed,
+        InstantPublicErrorCode::UploadExpired => InstantUiErrorCodeV1::UploadExpired,
+        InstantPublicErrorCode::FinalizeDelayed => InstantUiErrorCodeV1::FinalizeDelayed,
+        InstantPublicErrorCode::RecordingRecoveryRequired => {
+            InstantUiErrorCodeV1::RecordingRecoveryRequired
+        }
+        InstantPublicErrorCode::RecordingCancelled => InstantUiErrorCodeV1::RecordingCancelled,
+        InstantPublicErrorCode::RecordingFailed => InstantUiErrorCodeV1::RecordingFailed,
+    });
+    let progress_basis_points = match phase {
+        InstantUiPhaseV1::Uploading
+        | InstantUiPhaseV1::Finalizing
+        | InstantUiPhaseV1::ShareReady => Some(progress.upload_basis_points),
+        InstantUiPhaseV1::Recording
+        | InstantUiPhaseV1::LocallyRecoverable
+        | InstantUiPhaseV1::Cancelled
+        | InstantUiPhaseV1::RecoveryRequired => None,
+    };
+    InstantUiProgressV1::new(phase, progress_basis_points, progress.retrying, error)
+        .map_err(|_| DesktopInstantFinalizeError::InvalidContract)
 }
 
 fn validate_response_headers(headers: &HeaderMap) -> Result<(), DesktopInstantFinalizeError> {
@@ -231,6 +320,7 @@ mod tests {
         time::Duration,
     };
 
+    #[cfg(feature = "instant-finalize")]
     use frame_media::{
         InstantCodec, InstantContainer, InstantFence, InstantJobId, InstantManifest,
         InstantMultipartBinding, InstantMultipartCompleteReceipt, InstantObjectId,
@@ -239,15 +329,33 @@ mod tests {
     };
 
     use super::*;
+    #[cfg(feature = "instant-finalize")]
     use frame_authenticated_client::INSTANT_FINALIZE_SCHEMA_VERSION;
 
     const TENANT_ID: &str = "018f47a6-7b1c-7f55-8f39-8f8a86900001";
     const VIDEO_ID: &str = "018f47a6-7b1c-7f55-8f39-8f8a86900005";
 
+    fn wire_request() -> InstantFinalizeRequestV1 {
+        InstantFinalizeRequestV1::new(
+            TENANT_ID.into(),
+            "018f47a6-7b1c-7f55-8f39-8f8a86900002".into(),
+            "018f47a6-7b1c-7f55-8f39-8f8a86900003".into(),
+            "018f47a6-7b1c-7f55-8f39-8f8a86900004".into(),
+            VIDEO_ID.into(),
+            "a".repeat(64),
+            "b".repeat(64),
+            "018f47a6-7b1c-7f55-8f39-8f8a86900007".into(),
+            1,
+        )
+        .expect("wire request")
+    }
+
+    #[cfg(feature = "instant-finalize")]
     fn id(marker: u8) -> [u8; 16] {
         [marker; 16]
     }
 
+    #[cfg(feature = "instant-finalize")]
     fn finalize_request() -> InstantFinalizeRequest {
         let session_id = InstantSessionId::from_csprng(id(2)).expect("session");
         let segment_bytes = b"bounded-instant-fragment";
@@ -310,6 +418,7 @@ mod tests {
         .expect("request")
     }
 
+    #[cfg(feature = "instant-finalize")]
     #[test]
     fn native_request_maps_to_shared_wire_contract_without_runtime_handles() {
         let request = finalize_request();
@@ -334,11 +443,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_http_caller_sends_bound_headers_and_accepts_published_receipt() {
-        let request = finalize_request();
-        let operation = InstantOperationId::from_csprng(id(3)).expect("operation");
-        let wire = instant_finalize_wire_request(TENANT_ID, VIDEO_ID, operation, &request)
-            .expect("wire request");
+    async fn wire_http_caller_sends_bound_headers_and_accepts_published_receipt() {
+        let wire = wire_request();
         let publication_id = "08080808-0808-0808-0808-080808080808";
         let receipt = InstantFinalizeReceiptV1 {
             schema_version: 1,
@@ -356,6 +462,7 @@ mod tests {
         listener.set_nonblocking(false).expect("blocking listener");
         let address = listener.local_addr().expect("address");
         let expected_path = format!("/api/v1/instant-recordings/{}/finalize", wire.session_id);
+        let expected_operation_id = wire.operation_id.clone();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             stream
@@ -382,7 +489,7 @@ mod tests {
             );
             assert!(request_text.contains(&format!(
                 "idempotency-key: instant-finalize:{}",
-                operation.to_canonical_uuid()
+                expected_operation_id
             )));
             let headers = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
@@ -395,24 +502,15 @@ mod tests {
         let origin =
             FrameOrigin::for_local_testing(&format!("http://{address}")).expect("local origin");
         let client = DesktopInstantFinalizeClient::new(origin).expect("client");
-        let outcome = client
-            .dispatch(
-                TENANT_ID,
-                VIDEO_ID,
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                operation,
-                &request,
-            )
+        let returned = client
+            .dispatch_wire("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &wire)
             .await
-            .expect("published outcome");
+            .expect("published receipt");
         server.join().expect("server");
-        let InstantFinalizeDispatchOutcome::Published(native_receipt) = outcome else {
-            panic!("expected published receipt");
-        };
-        assert_eq!(native_receipt.job_id, request.job_id());
-        assert_eq!(native_receipt.object, request.multipart().object);
+        assert_eq!(returned, receipt);
     }
 
+    #[cfg(feature = "instant-finalize")]
     #[test]
     fn canonical_uuid_rehydration_rejects_aliases_and_nil() {
         let digest = Sha256Digest::from_hex(&"a".repeat(64)).expect("digest");
@@ -429,5 +527,76 @@ mod tests {
             InstantPublicationId::from_canonical_uuid("00000000-0000-0000-0000-000000000000")
                 .is_err()
         );
+    }
+
+    #[cfg(feature = "instant-finalize")]
+    #[test]
+    fn native_progress_projection_cannot_expose_native_identity_or_byte_counts() {
+        let progress = InstantProgress {
+            version: 1,
+            readiness: InstantReadiness::Uploading,
+            segment_count: 9,
+            verified_segment_count: 4,
+            retained_spool_bytes: 9_876_543,
+            total_media_bytes: 12_345_678,
+            upload_basis_points: 4_444,
+            network_available: true,
+            retrying: true,
+            public_error: Some(InstantPublicErrorCode::UploadDelayed),
+        };
+        let projected = project_instant_progress(progress).expect("public projection");
+        assert_eq!(projected.phase, InstantUiPhaseV1::Uploading);
+        assert_eq!(projected.progress_basis_points, Some(4_444));
+        let json = serde_json::to_string(&projected).expect("projection JSON");
+        assert!(!json.contains("9876543"));
+        assert!(!json.contains("12345678"));
+        assert!(!json.contains("segment"));
+    }
+
+    #[cfg(feature = "instant-finalize")]
+    #[test]
+    fn native_progress_projection_rejects_future_versions_and_false_share_ready() {
+        let mut progress = InstantProgress {
+            version: INSTANT_PROGRESS_VERSION + 1,
+            readiness: InstantReadiness::Uploading,
+            segment_count: 2,
+            verified_segment_count: 1,
+            retained_spool_bytes: 10,
+            total_media_bytes: 20,
+            upload_basis_points: 5_000,
+            network_available: true,
+            retrying: false,
+            public_error: None,
+        };
+        assert_eq!(
+            project_instant_progress(progress),
+            Err(DesktopInstantFinalizeError::InvalidContract)
+        );
+
+        progress.version = INSTANT_PROGRESS_VERSION;
+        progress.upload_basis_points = 9_000;
+        assert_eq!(
+            project_instant_progress(progress),
+            Err(DesktopInstantFinalizeError::InvalidContract)
+        );
+
+        progress.upload_basis_points = 5_000;
+        progress.readiness = InstantReadiness::Finalizing;
+        assert_eq!(
+            project_instant_progress(progress),
+            Err(DesktopInstantFinalizeError::InvalidContract)
+        );
+
+        progress.readiness = InstantReadiness::ShareReady;
+        assert_eq!(
+            project_instant_progress(progress),
+            Err(DesktopInstantFinalizeError::InvalidContract)
+        );
+
+        progress.verified_segment_count = 2;
+        progress.upload_basis_points = 10_000;
+        let projected = project_instant_progress(progress).expect("truthful share ready");
+        assert_eq!(projected.phase, InstantUiPhaseV1::ShareReady);
+        assert_eq!(projected.progress_basis_points, Some(10_000));
     }
 }

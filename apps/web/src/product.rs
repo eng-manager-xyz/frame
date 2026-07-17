@@ -1,6 +1,6 @@
 use frame_client::{
-    ApiVersion, CaptionTrack, FrameOrigin, PlaybackDescriptor, PublicShareSummary,
-    ShareAvailability,
+    ApiVersion, CaptionTrack, FrameOrigin, InstantUiPhaseV1, InstantUiProgressV1,
+    PlaybackDescriptor, PublicShareSummary, ShareAvailability,
 };
 
 use crate::config::{Deployment, RuntimeConfig};
@@ -466,6 +466,7 @@ pub fn local_share_fixture(config: &RuntimeConfig, identifier: &str) -> ShareVie
                     default: true,
                 }],
             }),
+            processing_status: None,
         },
         "fixture-processing" => PublicShareSummary {
             api_version: ApiVersion::current(),
@@ -475,6 +476,13 @@ pub fn local_share_fixture(config: &RuntimeConfig, identifier: &str) -> ShareVie
             canonical_url: Some(canonical_url),
             duration_ms: None,
             playback: None,
+            processing_status: Some(InstantUiProgressV1 {
+                schema_version: 1,
+                phase: InstantUiPhaseV1::Finalizing,
+                progress_basis_points: None,
+                retrying: false,
+                error: None,
+            }),
         },
         _ => return ShareView::Unavailable,
     };
@@ -589,6 +597,7 @@ mod tests {
                 supports_range: true,
                 captions: Vec::new(),
             }),
+            processing_status: None,
         };
         assert!(matches!(
             ShareView::from_summary(&config, summary),

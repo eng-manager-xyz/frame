@@ -14,7 +14,8 @@ mod origin;
 mod transport;
 
 pub use dto::{
-    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
+    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+    InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1, PlaybackDescriptor,
     PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
 };
 pub use error::{ClientError, ClientErrorCode};

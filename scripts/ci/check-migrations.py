@@ -514,6 +514,58 @@ def verify_media_service_invariants(database: sqlite3.Connection) -> None:
     database.rollback()
 
 
+def verify_instant_finalize_public_share_query_plan(database: sqlite3.Connection) -> None:
+    index_name = "instant_finalize_requests_v1_public_share_latest_idx"
+    index_columns = [
+        (row[2], row[3])
+        for row in database.execute(f"PRAGMA index_xinfo('{index_name}')")
+        if row[5] == 1
+    ]
+    expected_columns = [
+        ("organization_id", 0),
+        ("video_id", 0),
+        ("updated_at_ms", 1),
+        ("session_id", 1),
+        ("state", 0),
+        ("last_failure_class", 0),
+    ]
+    if index_columns != expected_columns:
+        raise ValueError(
+            "instant-finalize public-share index shape drifted: "
+            f"expected {expected_columns}, found {index_columns}"
+        )
+
+    query_plan = database.execute(
+        """EXPLAIN QUERY PLAN
+           SELECT
+             (SELECT f.state FROM instant_finalize_requests_v1 f
+               WHERE f.video_id=v.id AND f.organization_id=v.organization_id
+               ORDER BY f.updated_at_ms DESC,f.session_id DESC LIMIT 1),
+             (SELECT f.last_failure_class FROM instant_finalize_requests_v1 f
+               WHERE f.video_id=v.id AND f.organization_id=v.organization_id
+               ORDER BY f.updated_at_ms DESC,f.session_id DESC LIMIT 1)
+           FROM videos v
+           WHERE v.id = ?1 AND v.deleted_at_ms IS NULL LIMIT 1""",
+        ("018f47a6-7b1c-7f55-8f39-8f8a8690a003",),
+    ).fetchall()
+    details = [str(row[3]) for row in query_plan]
+    covering_lookups = [
+        detail
+        for detail in details
+        if index_name in detail and "COVERING INDEX" in detail.upper()
+    ]
+    if len(covering_lookups) != 2:
+        raise ValueError(
+            "instant-finalize public-share projection must use the covering index twice: "
+            + " | ".join(details)
+        )
+    if any("USE TEMP B-TREE" in detail.upper() for detail in details):
+        raise ValueError(
+            "instant-finalize public-share projection requires a temporary sort: "
+            + " | ".join(details)
+        )
+
+
 def main() -> int:
     try:
         expand_files = discover()
@@ -535,6 +587,7 @@ def main() -> int:
             raise ValueError(f"required tables missing after migration: {', '.join(missing)}")
         verify_scoped_cutover_invariants(database)
         verify_media_service_invariants(database)
+        verify_instant_finalize_public_share_query_plan(database)
 
         # The only released baseline before this change is migration 0001. Apply
         # it independently, then prove the complete ordered upgrade path.
@@ -544,6 +597,7 @@ def main() -> int:
         violations = baseline.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise ValueError("0001 upgrade path has foreign-key violations")
+        verify_instant_finalize_public_share_query_plan(baseline)
     except (OSError, ValueError, sqlite3.Error) as error:
         print(f"migration validation failed: {error}", file=sys.stderr)
         return 1

@@ -3,5 +3,5 @@
   "service": "frame",
   "status": "ok",
   "release": "fixture-release-1",
-  "capabilities": ["public_share_summary", "range_playback"]
+  "capabilities": ["instant_processing_status", "public_share_summary", "range_playback"]
 }

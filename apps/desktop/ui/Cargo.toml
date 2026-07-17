@@ -18,6 +18,7 @@ csr = [
 
 [dependencies]
 frame-desktop-core = { path = ".." }
+frame-client = { path = "../../../crates/frame-client" }
 js-sys = { workspace = true, optional = true }
 leptos = { workspace = true, optional = true, features = ["csr"] }
 serde.workspace = true

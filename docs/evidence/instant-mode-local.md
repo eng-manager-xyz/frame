@@ -1,9 +1,10 @@
 # Instant Mode local evidence
 
 Status: local contract, filesystem-encryption, native GStreamer segmentation,
-and offline D1 reconciliation evidence. This record does not claim physical-capture behavior,
-live OS-credential-store behavior, hosted R2/D1/job behavior, browser
-playback, wall-clock performance, or production completion.
+offline D1 reconciliation, and fail-closed desktop command/UI evidence. This
+record does not claim physical-capture behavior, live OS-credential-store
+behavior, hosted R2/D1/job behavior, browser playback, wall-clock performance,
+or production completion.
 
 ## Implemented contract surface
 
@@ -35,7 +36,16 @@ playback, wall-clock performance, or production completion.
 - exactly one publication/master, duplicate callback stability, derivative
   selection after publish, terminal tombstone, abort/job-cancel/spool-wipe
   reconciliation, and late-resurrection rejection; and
-- stable redacted desktop/share progress plus bounded time-to-share arithmetic.
+- one exact shared, versioned desktop/share progress and error projection;
+  accessible determinate/indeterminate desktop rendering; and bounded
+  time-to-share arithmetic;
+- a strict main-window Tauri finalize envelope containing only an opaque
+  native-minted handle and monotonic sequence, backed by native-owned
+  credential/request authority, cancellation reconciliation, digest/generation
+  revalidation, terminal credential disposal, and bounded registry storage;
+  and
+- an explicit release `NotConfigured` provider that constructs no network
+  path and keeps retry disabled until native authenticated authority exists.
 
 ## Hostile local matrix
 
@@ -63,15 +73,16 @@ adapters and do not prove Cloudflare execution.
 
 ## Control-plane server-finalize integration
 
-The exact server-finalize slice is wired on the Worker side through a versioned Wasm-safe DTO,
-authenticated route, retained D1 request/operation/job rows, multipart/probe postconditions, and
-scheduled reconciliation. The desktop side below is a tested adapter boundary, not a currently
-registered Tauri command and not a completed progress/error UI integration:
+The exact server-finalize slice is wired on the Worker side through a versioned
+Wasm-safe DTO, authenticated route, retained D1 request/operation/job rows,
+multipart/probe postconditions, and scheduled reconciliation. The desktop side
+now includes the production command boundary and shared progress UI, while its
+release provider remains deliberately unconfigured:
 
 ```text
-sealed desktop Instant request (contract fixture)
-  -> frame-desktop-core conversion to frame-authenticated-client InstantFinalizeRequestV1
-     (canonical digest; retry operation excluded from semantic identity)
+native-owned credential + validated sealed Instant request registry
+  -> opaque-handle, monotonic-sequence Tauri command (no identity or secret)
+  -> frame-desktop-core wire transport using InstantFinalizeRequestV1
   -> POST /api/v1/instant-recordings/{session_id}/finalize
   -> retained instant_finalize_requests/jobs/operations rows
   -> exact r2_multipart_completions_v1 + verified native probe postconditions
@@ -86,7 +97,7 @@ the native journal revision/fence, manifest digest, and native object ID because
 independent authority for those values. They remain covered by the `frame-media` journal and are
 not copied into the DTO merely to echo client assertions. The wire receipt also omits the internal
 playable storage key; D1 keeps that identity behind its relational publication assertion. The
-desktop adapter can map the exact
+optional native-media projection can map the exact
 session/upload/ordered-part/object-version/job identities from the sealed native request, adds
 tenant/video and a typed retry operation, and validates the bound receipt before reconstructing
 the native publication receipt. A missing multipart completion or trusted probe remains `pending`; an
@@ -99,16 +110,19 @@ retryable multipart-abort retention, and the final relational publication postco
 locally satisfies the server-finalize/D1-reconciliation deliverable. The concrete desktop caller
 disables redirects and ambient proxies, bounds deadline and response bytes, sends bearer, tenant,
 and deterministic idempotency headers, validates the shared DTO, and is covered by a real loopback
-HTTP test. It is not yet connected to `apps/desktop/src/main.rs`, and the repository therefore does
-not cite this test as a production desktop publication path. The bounded journal remains inside
-`frame-media` because the control plane cannot import its native GStreamer dependency. The native
-`InstantProgress` contract likewise has no desktop or share-UI consumer. This is Issue 26 checkbox
-6's repository-local gap, not protected evidence. Closing it first requires a native-owned
-authenticated credential/session context and sealed Instant journal/request registry so the native
-backend can dispatch finalize and project bounded progress/errors without sending a bearer token or
-native request through WebView IPC. Hosted D1 contention, R2 execution, callback ordering, and the
-resulting real command-to-journal desktop journey remain protected evidence after that local wiring
-exists.
+HTTP test. The always-native wire transport and registry do not import
+`frame-media`; only the optional projection feature imports its GStreamer tree.
+The Leptos UI consumes the exact shared projection, renders active determinate
+or indeterminate progress, announces stable status/errors, and removes the
+opaque handle on terminal state. Non-retryable native failures become a stable
+recovery-required projection rather than leaving a dead retry button.
+
+The production composition intentionally has no credential/session/journal
+owner yet, so it reports `NotConfigured` before request parsing or network
+dispatch. This is a fail-closed release state, not a publication success claim.
+Hosted D1 contention, R2 execution, callback ordering, native registration from
+a real capture journal, and the resulting real command-to-journal desktop
+journey remain protected evidence.
 
 ## Reproduction commands
 

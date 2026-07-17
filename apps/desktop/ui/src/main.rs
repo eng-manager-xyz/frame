@@ -8,12 +8,16 @@ mod browser {
         },
     };
 
+    use frame_client::{InstantUiPhaseV1, InstantUiProgressV1};
     use frame_desktop_core::{
-        CaptureTargetKind, CommandOutcome, DesktopAdapterKind, DesktopBootstrap, DesktopDispatch,
-        DesktopRuntimeSnapshot, DesktopWindowContext, DeviceClass, DeviceState, EditorMutation,
-        EditorState, ExportProfile, ExportState, IPC_PROTOCOL_VERSION, IpcCommand, LifecycleAction,
+        CaptureTargetKind, CommandOutcome, DESKTOP_RUNTIME_VERSION, DesktopAdapterKind,
+        DesktopBootstrap, DesktopDispatch, DesktopRuntimeSnapshot, DesktopWindowContext,
+        DeviceClass, DeviceState, EditorMutation, EditorState, ExportProfile, ExportState,
+        IPC_PROTOCOL_VERSION, InstantFinalizeCapabilityState, InstantFinalizeCommandV1,
+        InstantFinalizeHandle, InstantFinalizeUiUpdate, IpcCommand, LifecycleAction,
         PublicErrorCode, RecorderMode, RecorderState, RequestEnvelope, RequestId,
         ShellCapabilities, UpdateAction, UpdateState, UploadState, WindowRole,
+        instant_error_message, instant_progress_announcement,
     };
     use js_sys::Reflect;
     use leptos::prelude::*;
@@ -44,19 +48,27 @@ mod browser {
         request_json: &'a str,
     }
 
+    #[derive(Serialize)]
+    struct InstantFinalizeArgs<'a> {
+        #[serde(rename = "commandJson")]
+        command_json: &'a str,
+    }
+
     #[derive(Clone)]
     struct DesktopClient {
         contexts: Arc<Vec<DesktopWindowContext>>,
         sequences: Arc<Mutex<HashMap<WindowRole, u64>>>,
         next_identifier: Arc<AtomicU64>,
+        instant_next_sequence: Arc<AtomicU64>,
     }
 
     impl DesktopClient {
-        fn new(contexts: Vec<DesktopWindowContext>) -> Self {
+        fn new(contexts: Vec<DesktopWindowContext>, instant_next_sequence: Option<u64>) -> Self {
             Self {
                 contexts: Arc::new(contexts),
                 sequences: Arc::new(Mutex::new(HashMap::new())),
                 next_identifier: Arc::new(AtomicU64::new(0)),
+                instant_next_sequence: Arc::new(AtomicU64::new(instant_next_sequence.unwrap_or(0))),
             }
         }
 
@@ -107,6 +119,48 @@ mod browser {
                 .map_err(|_| ())?;
             serde_wasm_bindgen::from_value(value).map_err(|_| ())
         }
+
+        async fn finalize_instant(
+            &self,
+            handle: InstantFinalizeHandle,
+        ) -> Result<InstantFinalizeUiUpdate, ()> {
+            let sequence = self.instant_next_sequence.load(Ordering::Relaxed);
+            if sequence == 0 {
+                return Err(());
+            }
+            let command = InstantFinalizeCommandV1::new(handle, sequence).map_err(|_| ())?;
+            let command_json = serde_json::to_string(&command).map_err(|_| ())?;
+            let args = serde_wasm_bindgen::to_value(&InstantFinalizeArgs {
+                command_json: &command_json,
+            })
+            .map_err(|_| ())?;
+            let value = invoke_with_args("finalize_instant", args)
+                .await
+                .map_err(|_| ())?;
+            let update: InstantFinalizeUiUpdate =
+                serde_wasm_bindgen::from_value(value).map_err(|_| ())?;
+            if update.runtime_version != DESKTOP_RUNTIME_VERSION
+                || update.command_protocol_version
+                    != frame_desktop_core::INSTANT_FINALIZE_COMMAND_PROTOCOL_VERSION
+                || update.command_sequence != sequence
+                || update.progress.validate().is_err()
+            {
+                return Err(());
+            }
+            let next_sequence = if matches!(
+                update.progress.phase,
+                InstantUiPhaseV1::ShareReady
+                    | InstantUiPhaseV1::Cancelled
+                    | InstantUiPhaseV1::RecoveryRequired
+            ) {
+                0
+            } else {
+                sequence.checked_add(1).ok_or(())?
+            };
+            self.instant_next_sequence
+                .store(next_sequence, Ordering::Relaxed);
+            Ok(update)
+        }
     }
 
     async fn bootstrap_native() -> Result<(ShellCapabilities, DesktopBootstrap), ()> {
@@ -128,7 +182,9 @@ mod browser {
             .map_err(|_| ())?;
         let desktop: DesktopBootstrap =
             serde_wasm_bindgen::from_value(desktop_value).map_err(|_| ())?;
-        (desktop.runtime_version == 1)
+        (desktop.runtime_version == DESKTOP_RUNTIME_VERSION
+            && desktop.snapshot.version == DESKTOP_RUNTIME_VERSION
+            && shell.instant_finalize == desktop.snapshot.instant_finalize)
             .then_some((shell, desktop))
             .ok_or(())
     }
@@ -167,6 +223,70 @@ mod browser {
                             .into(),
                     ));
                     status.set("Native backend unavailable.".into());
+                }
+            }
+            busy.set(false);
+        });
+    }
+
+    fn retry_instant_finalize(
+        client: RwSignal<Option<DesktopClient>>,
+        snapshot: RwSignal<Option<DesktopRuntimeSnapshot>>,
+        status: RwSignal<String>,
+        error: RwSignal<Option<String>>,
+        busy: RwSignal<bool>,
+    ) {
+        let Some(client) = client.get_untracked() else {
+            error.set(Some("The native backend is unavailable.".into()));
+            return;
+        };
+        let Some(handle) = snapshot
+            .get_untracked()
+            .and_then(|state| state.instant_finalize_handle)
+        else {
+            error.set(Some("Instant sharing is not configured.".into()));
+            return;
+        };
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        spawn_local(async move {
+            match client.finalize_instant(handle).await {
+                Ok(update) => {
+                    snapshot.update(|current| {
+                        if let Some(state) = current {
+                            state.operation_revision = update.operation_revision;
+                            state.instant_progress = Some(update.progress);
+                            if matches!(
+                                update.progress.phase,
+                                InstantUiPhaseV1::ShareReady
+                                    | InstantUiPhaseV1::Cancelled
+                                    | InstantUiPhaseV1::RecoveryRequired
+                            ) {
+                                state.instant_finalize_handle = None;
+                                state.instant_finalize_next_sequence = None;
+                            } else {
+                                state.instant_finalize_next_sequence =
+                                    update.command_sequence.checked_add(1);
+                            }
+                            state.announcement =
+                                instant_progress_announcement(update.progress).into();
+                        }
+                    });
+                    status.set(instant_progress_announcement(update.progress).into());
+                    error.set(
+                        update
+                            .progress
+                            .error
+                            .map(|code| instant_error_message(code).into()),
+                    );
+                }
+                Err(()) => {
+                    error.set(Some(
+                        "The native Instant command was rejected. Refresh before retrying.".into(),
+                    ));
+                    status.set("Instant sharing status was not changed.".into());
                 }
             }
             busy.set(false);
@@ -227,6 +347,31 @@ mod browser {
         }
     }
 
+    fn instant_phase_label(progress: Option<InstantUiProgressV1>) -> &'static str {
+        match progress.map(|progress| progress.phase) {
+            Some(InstantUiPhaseV1::Recording) => "Recording locally",
+            Some(InstantUiPhaseV1::LocallyRecoverable) => "Safe on this device",
+            Some(InstantUiPhaseV1::Uploading) => "Uploading",
+            Some(InstantUiPhaseV1::Finalizing) => "Finalizing",
+            Some(InstantUiPhaseV1::ShareReady) => "Ready to share",
+            Some(InstantUiPhaseV1::Cancelled) => "Cancelled",
+            Some(InstantUiPhaseV1::RecoveryRequired) => "Recovery required",
+            None => "Unavailable",
+        }
+    }
+
+    fn show_instant_progress(progress: Option<InstantUiProgressV1>) -> bool {
+        progress.is_some_and(|progress| {
+            matches!(
+                progress.phase,
+                InstantUiPhaseV1::Recording
+                    | InstantUiPhaseV1::Uploading
+                    | InstantUiPhaseV1::Finalizing
+                    | InstantUiPhaseV1::ShareReady
+            )
+        })
+    }
+
     #[component]
     fn App() -> impl IntoView {
         let client = RwSignal::new(None::<DesktopClient>);
@@ -244,7 +389,10 @@ mod browser {
                     Ok((_shell, desktop)) => {
                         status.set(desktop.snapshot.announcement.clone());
                         snapshot.set(Some(desktop.snapshot.clone()));
-                        client.set(Some(DesktopClient::new(desktop.contexts.clone())));
+                        client.set(Some(DesktopClient::new(
+                            desktop.contexts.clone(),
+                            desktop.snapshot.instant_finalize_next_sequence,
+                        )));
                         bootstrap.set(Some(desktop));
                     }
                     Err(()) => {
@@ -461,6 +609,109 @@ mod browser {
                             }
                         }>"Cancel recording"</button>
                     </div>
+
+                    <section class="instant-sharing" aria-labelledby="instant-sharing-heading">
+                        <div class="section-heading compact">
+                            <div>
+                                <p class="eyebrow">"Native publication"</p>
+                                <h3 id="instant-sharing-heading">"Instant sharing"</h3>
+                            </div>
+                            <output class="state-badge" aria-label="Instant sharing phase">
+                                {move || instant_phase_label(snapshot.get().and_then(|state| state.instant_progress))}
+                            </output>
+                        </div>
+
+                        <Show
+                            when=move || snapshot.get().and_then(|state| state.instant_progress).is_some()
+                            fallback=move || view! {
+                                <p class="instant-unavailable" role="status" aria-live="polite">
+                                    "Native Instant finalization is not configured in this release. No network request can start."
+                                </p>
+                            }
+                        >
+                            <Show when=move || show_instant_progress(
+                                snapshot.get().and_then(|state| state.instant_progress)
+                            )>
+                                <Show
+                                    when=move || snapshot
+                                        .get()
+                                        .and_then(|state| state.instant_progress)
+                                        .and_then(|progress| progress.progress_basis_points)
+                                        .is_some()
+                                    fallback=move || view! {
+                                        <progress
+                                            class="instant-progress"
+                                            max="10000"
+                                            aria-label="Instant sharing progress"
+                                        >"In progress"</progress>
+                                    }
+                                >
+                                    <progress
+                                        class="instant-progress"
+                                        max="10000"
+                                        value=move || snapshot
+                                            .get()
+                                            .and_then(|state| state.instant_progress)
+                                            .and_then(|progress| progress.progress_basis_points)
+                                            .unwrap_or(0)
+                                        aria-label="Instant sharing progress"
+                                    >
+                                        {move || format!(
+                                            "{} percent",
+                                            snapshot
+                                                .get()
+                                                .and_then(|state| state.instant_progress)
+                                                .and_then(|progress| progress.progress_basis_points)
+                                                .unwrap_or(0) / 100
+                                        )}
+                                    </progress>
+                                </Show>
+                            </Show>
+                            <p class="instant-message" role="status" aria-live="polite">
+                                {move || snapshot
+                                    .get()
+                                    .and_then(|state| state.instant_progress)
+                                    .map_or(
+                                        "Instant sharing status is unavailable.",
+                                        instant_progress_announcement,
+                                    )}
+                            </p>
+                            <Show when=move || snapshot
+                                .get()
+                                .and_then(|state| state.instant_progress)
+                                .and_then(|progress| progress.error)
+                                .is_some()
+                            >
+                                <p class="instant-error" role="alert">
+                                    {move || snapshot
+                                        .get()
+                                        .and_then(|state| state.instant_progress)
+                                        .and_then(|progress| progress.error)
+                                        .map_or("Instant sharing needs attention.", instant_error_message)}
+                                </p>
+                            </Show>
+                        </Show>
+
+                        <button
+                            type="button"
+                            disabled=move || !snapshot.get().is_some_and(|state| {
+                                state.instant_finalize == InstantFinalizeCapabilityState::Available
+                                    && state.instant_finalize_handle.is_some()
+                                    && state.instant_finalize_next_sequence.is_some()
+                                    && state.instant_progress.is_some_and(|progress| progress.retrying)
+                            }) || busy.get()
+                            on:click=move |_| retry_instant_finalize(
+                                client,
+                                snapshot,
+                                status,
+                                error,
+                                busy,
+                            )
+                        >"Retry sharing"</button>
+                        <p class="privacy-note">
+                            "The WebView receives only coarse progress, stable error codes, and an opaque native handle. Credentials and recording identities stay in Rust."
+                        </p>
+                    </section>
                     <p class="shortcut-help">"Keyboard: Control+Shift+R starts or stops; Control+Shift+P pauses or resumes. Global registration is backend-owned."</p>
                 </section>
 

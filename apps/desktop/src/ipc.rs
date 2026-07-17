@@ -7,6 +7,8 @@ use std::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+use crate::instant_finalize_service::InstantFinalizeCapabilityState;
+
 pub const IPC_PROTOCOL_VERSION: u16 = 1;
 const MAX_PATH_BYTES: usize = 4_096;
 
@@ -35,6 +37,7 @@ pub struct ShellCapabilities {
     pub backend_truth: bool,
     pub recorder_adapter: RecorderAdapterState,
     pub editor_adapter: EditorAdapterState,
+    pub instant_finalize: InstantFinalizeCapabilityState,
 }
 
 impl ShellCapabilities {
@@ -46,6 +49,7 @@ impl ShellCapabilities {
             backend_truth: true,
             recorder_adapter: RecorderAdapterState::NotSelected,
             editor_adapter: EditorAdapterState::RevisionFencedCore,
+            instant_finalize: InstantFinalizeCapabilityState::NotConfigured,
         }
     }
 

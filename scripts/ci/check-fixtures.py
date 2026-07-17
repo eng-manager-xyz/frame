@@ -96,6 +96,7 @@ def main() -> int:
         "apiVersion",
         "captionTrack",
         "health",
+        "instantUiProgress",
         "playbackDescriptor",
         "publicShareSummary",
     }:

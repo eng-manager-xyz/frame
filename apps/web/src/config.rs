@@ -736,7 +736,7 @@ mod tests {
         complete.release_id = Some("1".repeat(40));
         complete.worker_release = Some("worker-1111111".into());
         complete.render_deploy = Some("render-deploy-1".into());
-        complete.migration_level = Some("0034_compatibility_rate_limits.sql".into());
+        complete.migration_level = Some("0035_instant_finalize_public_share_index.sql".into());
         complete.portfolio_consumer = Some("portfolio-aaaaaaa".into());
         let config = RuntimeConfig::from_values(complete).expect("complete safe release join");
         let release = config.release_join().expect("configured release join");
@@ -745,7 +745,7 @@ mod tests {
         assert_eq!(release.render_deploy(), "render-deploy-1");
         assert_eq!(
             release.migration_level(),
-            "0034_compatibility_rate_limits.sql"
+            "0035_instant_finalize_public_share_index.sql"
         );
         assert_eq!(release.portfolio_consumer(), "portfolio-aaaaaaa");
 
@@ -753,7 +753,7 @@ mod tests {
         unsafe_value.release_id = Some("1".repeat(40));
         unsafe_value.worker_release = Some("worker?secret".into());
         unsafe_value.render_deploy = Some("render-deploy-1".into());
-        unsafe_value.migration_level = Some("0034_compatibility_rate_limits.sql".into());
+        unsafe_value.migration_level = Some("0035_instant_finalize_public_share_index.sql".into());
         unsafe_value.portfolio_consumer = Some("portfolio-aaaaaaa".into());
         assert_eq!(
             RuntimeConfig::from_values(unsafe_value).expect_err("unsafe release join"),

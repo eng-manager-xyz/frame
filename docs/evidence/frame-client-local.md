@@ -14,6 +14,12 @@ deployment, production traffic, or a protected GitHub check.
   while legacy `/health` diagnostics remain outside the public contract;
 - public/private/deleted/failed/processing fixtures, an additive v1 fixture,
   malicious input tests, and a draft-2020-12 schema are checked in;
+- `InstantUiProgressV1` is a versioned, Serde-backed projection with closed
+  phase/error/retry invariants. Public shares admit only coarse upload/finalize
+  state, while desktop-only local recovery and storage errors are rejected;
+- the Worker derives optional processing state from retained D1 finalize truth
+  without inventing percentages, and the Leptos page renders determinate or
+  indeterminate progress without requesting media or exposing private fields;
 - public media is served only from clean, active, public governed derivatives,
   and public DTOs never contain an object key or signed URL.
 
@@ -36,11 +42,13 @@ its Rustls HTTP stack. The workspace boundary gate rejects Axum, Leptos,
 Worker, GStreamer, `frame-media`, `frame-domain`, and `frame-ports` from this
 crate.
 
-Last local run: all 23 `frame-client` tests passed; strict all-target/all-feature
+Last local run: all 26 `frame-client` tests passed; strict all-target/all-feature
 Clippy, native core check, wasm core check, nine-fixture/schema validation, and
 the six-source/three-core-dependency boundary checker all passed. The focused
-Worker serialization test also passed and proved the public health object has
-exactly `api_version`, `capabilities`, `release`, `service`, and `status`.
+Worker serialization tests also passed and proved the public health object has
+exactly `api_version`, `capabilities`, `release`, `service`, and `status`, and
+that processing output is either a validated coarse D1-backed projection or
+the existing indistinguishable unavailable representation.
 
 ## Protected completion boundary
 

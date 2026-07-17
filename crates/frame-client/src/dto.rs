@@ -6,6 +6,7 @@ use url::Url;
 use crate::{ClientError, ClientErrorCode, FrameOrigin};
 
 pub const CONTRACT_MAJOR: u16 = 1;
+pub const INSTANT_UI_PROGRESS_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiVersion {
@@ -112,6 +113,193 @@ pub enum ShareAvailability {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstantUiPhaseV1 {
+    Recording,
+    LocallyRecoverable,
+    Uploading,
+    Finalizing,
+    ShareReady,
+    Cancelled,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstantUiErrorCodeV1 {
+    LocalStorageFull,
+    LocalStorageUnavailable,
+    NetworkOffline,
+    UploadDelayed,
+    UploadExpired,
+    FinalizeDelayed,
+    RecordingRecoveryRequired,
+    RecordingCancelled,
+    RecordingFailed,
+}
+
+impl InstantUiErrorCodeV1 {
+    const fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::NetworkOffline
+                | Self::UploadDelayed
+                | Self::UploadExpired
+                | Self::FinalizeDelayed
+        )
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstantUiProgressV1 {
+    pub schema_version: u16,
+    pub phase: InstantUiPhaseV1,
+    pub progress_basis_points: Option<u16>,
+    pub retrying: bool,
+    pub error: Option<InstantUiErrorCodeV1>,
+}
+
+impl InstantUiProgressV1 {
+    pub fn new(
+        phase: InstantUiPhaseV1,
+        progress_basis_points: Option<u16>,
+        retrying: bool,
+        error: Option<InstantUiErrorCodeV1>,
+    ) -> Result<Self, ClientError> {
+        let progress = Self {
+            schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+            phase,
+            progress_basis_points,
+            retrying,
+            error,
+        };
+        progress.validate()?;
+        Ok(progress)
+    }
+
+    pub fn validate(&self) -> Result<(), ClientError> {
+        if self.schema_version != INSTANT_UI_PROGRESS_SCHEMA_VERSION
+            || self
+                .progress_basis_points
+                .is_some_and(|basis_points| basis_points > 10_000)
+            || self.retrying != self.error.is_some_and(InstantUiErrorCodeV1::retryable)
+            || !self.phase_accepts_error()
+        {
+            return Err(ClientError::new(ClientErrorCode::InvalidContract));
+        }
+
+        match self.phase {
+            InstantUiPhaseV1::ShareReady
+                if self.progress_basis_points == Some(10_000)
+                    && !self.retrying
+                    && self.error.is_none() =>
+            {
+                Ok(())
+            }
+            InstantUiPhaseV1::Cancelled
+                if self.progress_basis_points.is_none()
+                    && !self.retrying
+                    && self.error == Some(InstantUiErrorCodeV1::RecordingCancelled) =>
+            {
+                Ok(())
+            }
+            InstantUiPhaseV1::RecoveryRequired
+                if self.progress_basis_points.is_none()
+                    && !self.retrying
+                    && matches!(
+                        self.error,
+                        Some(
+                            InstantUiErrorCodeV1::LocalStorageFull
+                                | InstantUiErrorCodeV1::LocalStorageUnavailable
+                                | InstantUiErrorCodeV1::RecordingRecoveryRequired
+                                | InstantUiErrorCodeV1::RecordingFailed
+                        )
+                    ) =>
+            {
+                Ok(())
+            }
+            InstantUiPhaseV1::Recording
+            | InstantUiPhaseV1::LocallyRecoverable
+            | InstantUiPhaseV1::Uploading
+            | InstantUiPhaseV1::Finalizing => Ok(()),
+            InstantUiPhaseV1::ShareReady
+            | InstantUiPhaseV1::Cancelled
+            | InstantUiPhaseV1::RecoveryRequired => {
+                Err(ClientError::new(ClientErrorCode::InvalidContract))
+            }
+        }
+    }
+
+    pub fn validate_for_public_share(&self) -> Result<(), ClientError> {
+        self.validate()?;
+        let safe = matches!(
+            (self.phase, self.retrying, self.error),
+            (InstantUiPhaseV1::Uploading, false, None)
+                | (InstantUiPhaseV1::Finalizing, false, None)
+                | (
+                    InstantUiPhaseV1::Uploading,
+                    true,
+                    Some(InstantUiErrorCodeV1::UploadDelayed)
+                )
+                | (
+                    InstantUiPhaseV1::Finalizing,
+                    true,
+                    Some(InstantUiErrorCodeV1::FinalizeDelayed)
+                )
+        );
+        if safe {
+            Ok(())
+        } else {
+            Err(ClientError::new(ClientErrorCode::PrivacyViolation))
+        }
+    }
+
+    fn phase_accepts_error(&self) -> bool {
+        match (self.phase, self.error) {
+            (_, None) => !matches!(
+                self.phase,
+                InstantUiPhaseV1::Cancelled | InstantUiPhaseV1::RecoveryRequired
+            ),
+            (InstantUiPhaseV1::Recording, Some(InstantUiErrorCodeV1::UploadDelayed))
+            | (
+                InstantUiPhaseV1::LocallyRecoverable,
+                Some(InstantUiErrorCodeV1::NetworkOffline | InstantUiErrorCodeV1::UploadDelayed),
+            )
+            | (
+                InstantUiPhaseV1::Uploading,
+                Some(
+                    InstantUiErrorCodeV1::NetworkOffline
+                    | InstantUiErrorCodeV1::UploadDelayed
+                    | InstantUiErrorCodeV1::UploadExpired,
+                ),
+            )
+            | (InstantUiPhaseV1::Finalizing, Some(InstantUiErrorCodeV1::FinalizeDelayed))
+            | (InstantUiPhaseV1::Cancelled, Some(InstantUiErrorCodeV1::RecordingCancelled))
+            | (
+                InstantUiPhaseV1::RecoveryRequired,
+                Some(
+                    InstantUiErrorCodeV1::LocalStorageFull
+                    | InstantUiErrorCodeV1::LocalStorageUnavailable
+                    | InstantUiErrorCodeV1::RecordingRecoveryRequired
+                    | InstantUiErrorCodeV1::RecordingFailed,
+                ),
+            ) => true,
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Debug for InstantUiProgressV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InstantUiProgressV1")
+            .field("schema_version", &self.schema_version)
+            .field("public_status", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaybackDescriptor {
     pub path: String,
@@ -139,6 +327,8 @@ pub struct PublicShareSummary {
     pub canonical_url: Option<String>,
     pub duration_ms: Option<u64>,
     pub playback: Option<PlaybackDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_status: Option<InstantUiProgressV1>,
 }
 
 impl PublicShareSummary {
@@ -158,6 +348,7 @@ impl PublicShareSummary {
                     || self
                         .duration_ms
                         .is_some_and(|duration| duration > 24 * 60 * 60 * 1_000)
+                    || self.processing_status.is_some()
                 {
                     return Err(ClientError::new(ClientErrorCode::InvalidContract));
                 }
@@ -177,6 +368,9 @@ impl PublicShareSummary {
                 {
                     return Err(ClientError::new(ClientErrorCode::PrivacyViolation));
                 }
+                if let Some(status) = self.processing_status.as_ref() {
+                    status.validate_for_public_share()?;
+                }
             }
             ShareAvailability::Unavailable => {
                 if self.title.is_some()
@@ -184,6 +378,7 @@ impl PublicShareSummary {
                     || self.canonical_url.is_some()
                     || self.duration_ms.is_some()
                     || self.playback.is_some()
+                    || self.processing_status.is_some()
                 {
                     return Err(ClientError::new(ClientErrorCode::PrivacyViolation));
                 }
@@ -494,6 +689,226 @@ mod tests {
         let processing: PublicShareSummary =
             serde_json::from_str(SHARE_PROCESSING).expect("processing fixture");
         processing.validate(&origin()).expect("processing contract");
+        assert_eq!(
+            processing.processing_status,
+            Some(InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Finalizing,
+                progress_basis_points: None,
+                retrying: false,
+                error: None,
+            })
+        );
+    }
+
+    #[test]
+    fn instant_ui_progress_enforces_closed_phase_error_and_terminal_states() {
+        let valid = [
+            InstantUiProgressV1::new(InstantUiPhaseV1::Recording, Some(10_000), false, None),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::LocallyRecoverable,
+                Some(2_500),
+                true,
+                Some(InstantUiErrorCodeV1::NetworkOffline),
+            ),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::Uploading,
+                Some(10_000),
+                true,
+                Some(InstantUiErrorCodeV1::UploadDelayed),
+            ),
+            InstantUiProgressV1::new(InstantUiPhaseV1::Finalizing, Some(10_000), false, None),
+            InstantUiProgressV1::new(InstantUiPhaseV1::ShareReady, Some(10_000), false, None),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::Cancelled,
+                None,
+                false,
+                Some(InstantUiErrorCodeV1::RecordingCancelled),
+            ),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::RecoveryRequired,
+                None,
+                false,
+                Some(InstantUiErrorCodeV1::RecordingRecoveryRequired),
+            ),
+        ];
+        assert!(valid.into_iter().all(|result| result.is_ok()));
+
+        let invalid = [
+            InstantUiProgressV1 {
+                schema_version: 2,
+                phase: InstantUiPhaseV1::Uploading,
+                progress_basis_points: None,
+                retrying: false,
+                error: None,
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Uploading,
+                progress_basis_points: Some(10_001),
+                retrying: false,
+                error: None,
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Uploading,
+                progress_basis_points: None,
+                retrying: true,
+                error: None,
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Uploading,
+                progress_basis_points: None,
+                retrying: false,
+                error: Some(InstantUiErrorCodeV1::UploadDelayed),
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Finalizing,
+                progress_basis_points: None,
+                retrying: true,
+                error: Some(InstantUiErrorCodeV1::UploadDelayed),
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::ShareReady,
+                progress_basis_points: None,
+                retrying: false,
+                error: None,
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::ShareReady,
+                progress_basis_points: Some(10_000),
+                retrying: true,
+                error: Some(InstantUiErrorCodeV1::FinalizeDelayed),
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Cancelled,
+                progress_basis_points: Some(10_000),
+                retrying: false,
+                error: Some(InstantUiErrorCodeV1::RecordingCancelled),
+            },
+            InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::RecoveryRequired,
+                progress_basis_points: None,
+                retrying: false,
+                error: None,
+            },
+        ];
+        assert!(invalid.into_iter().all(|status| status.validate().is_err()));
+    }
+
+    #[test]
+    fn public_processing_projection_is_coarse_additive_and_debug_redacted() {
+        let valid = [
+            InstantUiProgressV1::new(InstantUiPhaseV1::Uploading, None, false, None)
+                .expect("uploading"),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::Uploading,
+                Some(7_500),
+                true,
+                Some(InstantUiErrorCodeV1::UploadDelayed),
+            )
+            .expect("delayed upload"),
+            InstantUiProgressV1::new(InstantUiPhaseV1::Finalizing, Some(10_000), false, None)
+                .expect("finalizing"),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::Finalizing,
+                None,
+                true,
+                Some(InstantUiErrorCodeV1::FinalizeDelayed),
+            )
+            .expect("delayed finalize"),
+        ];
+        assert!(
+            valid
+                .iter()
+                .all(|status| status.validate_for_public_share().is_ok())
+        );
+
+        for status in [
+            InstantUiProgressV1::new(InstantUiPhaseV1::Recording, None, false, None)
+                .expect("recording"),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::LocallyRecoverable,
+                None,
+                true,
+                Some(InstantUiErrorCodeV1::NetworkOffline),
+            )
+            .expect("offline"),
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::RecoveryRequired,
+                None,
+                false,
+                Some(InstantUiErrorCodeV1::LocalStorageFull),
+            )
+            .expect("storage"),
+        ] {
+            assert_eq!(
+                status
+                    .validate_for_public_share()
+                    .expect_err("private phase or error must fail")
+                    .code(),
+                ClientErrorCode::PrivacyViolation
+            );
+        }
+
+        let debug = format!("{:?}", valid[1]);
+        for private in ["Uploading", "7500", "UploadDelayed"] {
+            assert!(!debug.contains(private));
+        }
+
+        let mut additive: serde_json::Value =
+            serde_json::from_str(SHARE_PROCESSING).expect("processing fixture");
+        additive["processing_status"]["future_safe_hint"] = serde_json::json!("ignored");
+        let additive: PublicShareSummary =
+            serde_json::from_value(additive).expect("additive nested field");
+        additive.validate(&origin()).expect("additive contract");
+    }
+
+    #[test]
+    fn processing_status_cannot_cross_public_or_unavailable_privacy_boundaries() {
+        let processing: PublicShareSummary =
+            serde_json::from_str(SHARE_PROCESSING).expect("processing fixture");
+        let status = processing.processing_status.expect("processing status");
+
+        let mut public: PublicShareSummary =
+            serde_json::from_str(SHARE_PUBLIC).expect("public fixture");
+        public.processing_status = Some(status);
+        assert_eq!(
+            public
+                .validate(&origin())
+                .expect_err("ready share cannot carry processing state")
+                .code(),
+            ClientErrorCode::InvalidContract
+        );
+
+        let mut unavailable: PublicShareSummary =
+            serde_json::from_str(SHARE_UNAVAILABLE).expect("unavailable fixture");
+        unavailable.processing_status = Some(status);
+        assert_eq!(
+            unavailable
+                .validate(&origin())
+                .expect_err("unavailable share cannot carry processing state")
+                .code(),
+            ClientErrorCode::PrivacyViolation
+        );
+
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(SHARE_PROCESSING).expect("processing fixture");
+        legacy
+            .as_object_mut()
+            .expect("processing object")
+            .remove("processing_status");
+        let legacy: PublicShareSummary =
+            serde_json::from_value(legacy).expect("legacy processing body");
+        legacy
+            .validate(&origin())
+            .expect("missing additive status remains compatible");
     }
 
     #[test]

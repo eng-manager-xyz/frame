@@ -1,12 +1,13 @@
 {
   "identifier": "frame-desktop-windows",
-  "description": "Allow only the versioned Frame bootstrap and fail-closed desktop dispatcher in the main window.",
+  "description": "Allow only versioned Frame bootstrap, dispatch, and fail-closed Instant finalize commands in the main window.",
   "local": true,
   "windows": ["main"],
   "permissions": [
     "allow-bootstrap-main",
     "allow-bootstrap-desktop",
-    "allow-dispatch-main"
+    "allow-dispatch-main",
+    "allow-finalize-instant"
   ],
   "platforms": ["macOS", "windows"]
 }

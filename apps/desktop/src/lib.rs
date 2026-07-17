@@ -5,8 +5,9 @@
 //! thin Tauri command layer can call after workspace integration.
 
 pub mod accessibility;
-#[cfg(feature = "instant-finalize")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod instant_finalize;
+pub mod instant_finalize_service;
 pub mod ipc;
 pub mod migration;
 pub mod runtime;
@@ -14,8 +15,9 @@ pub mod surface;
 pub mod workflow;
 
 pub use accessibility::*;
-#[cfg(feature = "instant-finalize")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use instant_finalize::*;
+pub use instant_finalize_service::*;
 pub use ipc::*;
 pub use migration::*;
 pub use runtime::*;

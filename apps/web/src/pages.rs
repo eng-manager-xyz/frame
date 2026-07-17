@@ -1,5 +1,8 @@
 use axum::http::StatusCode;
-use frame_client::{PublicShareSummary, ShareAvailability};
+use frame_client::{
+    InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1, PublicShareSummary,
+    ShareAvailability,
+};
 use leptos::prelude::*;
 
 use crate::authenticated::{RecordingFilter, RouteViewQuery};
@@ -495,21 +498,21 @@ pub fn share(config: &RuntimeConfig, video_id: &str, view: ShareView) -> Page {
                 true,
             )
         }
-        ShareView::Validated(summary) if summary.availability == ShareAvailability::Processing => (
-            StatusCode::ACCEPTED,
-            "Recording processing · Frame".into(),
-            "This recording is still processing.".into(),
-            summary
-                .canonical_url
-                .unwrap_or_else(|| fallback_canonical.clone()),
-            NO_STORE,
-            "noindex,nofollow",
-            status_shell(
-                "Recording processing",
-                "The recording is not available yet. Refresh later; no media request has been made.",
-            ),
-            false,
-        ),
+        ShareView::Validated(summary) if summary.availability == ShareAvailability::Processing => {
+            let content = processing_status_shell(summary.processing_status.as_ref());
+            (
+                StatusCode::ACCEPTED,
+                "Recording processing · Frame".into(),
+                "This recording is still processing.".into(),
+                summary
+                    .canonical_url
+                    .unwrap_or_else(|| fallback_canonical.clone()),
+                NO_STORE,
+                "noindex,nofollow",
+                content,
+                false,
+            )
+        }
         _ => {
             let (status, title, description, cache, robots, content) = unavailable_share();
             (
@@ -1209,6 +1212,51 @@ fn status_shell(label: &'static str, message: &'static str) -> AnyView {
     .into_any()
 }
 
+fn processing_status_shell(status: Option<&InstantUiProgressV1>) -> AnyView {
+    let phase = match status.map(|status| status.phase) {
+        Some(InstantUiPhaseV1::Uploading) => "Uploading verified recording parts.",
+        Some(InstantUiPhaseV1::Finalizing) => "Finalizing the playable recording.",
+        _ => "Processing the recording.",
+    };
+    let message = match status.and_then(|status| status.error) {
+        Some(InstantUiErrorCodeV1::UploadDelayed) => {
+            "The upload is delayed. Frame is retrying from its durable checkpoint."
+        }
+        Some(InstantUiErrorCodeV1::FinalizeDelayed) => {
+            "Finalization is delayed. Frame is retrying without requesting media in this page."
+        }
+        _ => "The recording is not available yet. No media request has been made.",
+    };
+    let progress = match status.and_then(|status| status.progress_basis_points) {
+        Some(basis_points) => view! {
+            <progress
+                max="10000"
+                value=basis_points
+                aria-labelledby="processing-progress-label"
+            >{format!("{} percent", basis_points / 100)}</progress>
+        }
+        .into_any(),
+        None => view! {
+            <progress max="10000" aria-labelledby="processing-progress-label">
+                "Processing"
+            </progress>
+        }
+        .into_any(),
+    };
+
+    view! {
+        <section class="panel" aria-labelledby="page-title">
+            <p class="eyebrow">"Instant recording"</p>
+            <h1 id="page-title">"Recording processing"</h1>
+            <p id="processing-progress-label">{phase}</p>
+            {progress}
+            <div class="notice" role="status">{message}</div>
+            <a class="button secondary" href="/">"Frame home"</a>
+        </section>
+    }
+    .into_any()
+}
+
 fn safe_id(value: &str) -> &str {
     if !value.is_empty()
         && value.len() <= 128
@@ -1409,7 +1457,10 @@ video { display: block; width: 100%; min-height: 280px; max-height: 70vh; backgr
 
 #[cfg(test)]
 mod tests {
-    use frame_client::{ApiVersion, PlaybackDescriptor, PublicShareSummary, ShareAvailability};
+    use frame_client::{
+        ApiVersion, InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1,
+        PlaybackDescriptor, PublicShareSummary, ShareAvailability,
+    };
 
     use crate::config::ConfigValues;
     use crate::product::{WorkspaceRole, local_authenticated_fixture, local_share_fixture};
@@ -1612,6 +1663,7 @@ mod tests {
                 supports_range: true,
                 captions: Vec::new(),
             }),
+            processing_status: None,
         };
         let page = share(&config, "secret", ShareView::from_summary(&config, summary));
         assert_eq!(page.status, StatusCode::NOT_FOUND);
@@ -1633,8 +1685,86 @@ mod tests {
         assert_eq!(page.status, StatusCode::ACCEPTED);
         assert_eq!(page.cache_control, NO_STORE);
         assert!(page.body.contains("Recording processing"));
+        assert!(page.body.contains("Finalizing the playable recording."));
+        assert!(page.body.contains("<progress max=\"10000\""));
+        assert!(!page.body.contains("value=\""));
         assert!(!page.body.contains("<video"));
         assert!(!page.body.contains("property=\"og:title\""));
+    }
+
+    #[test]
+    fn processing_page_consumes_only_public_safe_progress_and_delayed_errors() {
+        let config = config();
+        let summary = |status| PublicShareSummary {
+            api_version: ApiVersion::current(),
+            availability: ShareAvailability::Processing,
+            title: None,
+            description: None,
+            canonical_url: Some("http://127.0.0.1:3000/s/progress-demo".into()),
+            duration_ms: None,
+            playback: None,
+            processing_status: Some(status),
+        };
+
+        let uploading = share(
+            &config,
+            "progress-demo",
+            ShareView::from_summary(
+                &config,
+                summary(
+                    InstantUiProgressV1::new(InstantUiPhaseV1::Uploading, Some(4_200), false, None)
+                        .expect("uploading status"),
+                ),
+            ),
+        );
+        assert_eq!(uploading.status, StatusCode::ACCEPTED);
+        assert!(
+            uploading
+                .body
+                .contains("Uploading verified recording parts.")
+        );
+        assert!(uploading.body.contains("value=\"4200\""));
+        assert!(uploading.body.contains("42 percent"));
+        assert!(!uploading.body.contains("<video"));
+
+        let delayed = share(
+            &config,
+            "progress-demo",
+            ShareView::from_summary(
+                &config,
+                summary(
+                    InstantUiProgressV1::new(
+                        InstantUiPhaseV1::Finalizing,
+                        None,
+                        true,
+                        Some(InstantUiErrorCodeV1::FinalizeDelayed),
+                    )
+                    .expect("delayed status"),
+                ),
+            ),
+        );
+        assert_eq!(delayed.status, StatusCode::ACCEPTED);
+        assert!(delayed.body.contains("Finalization is delayed."));
+        for private in ["LocalStorage", "NetworkOffline", "object_key", "tenant_id"] {
+            assert!(!delayed.body.contains(private));
+        }
+
+        let private_status = summary(
+            InstantUiProgressV1::new(
+                InstantUiPhaseV1::RecoveryRequired,
+                None,
+                false,
+                Some(InstantUiErrorCodeV1::LocalStorageFull),
+            )
+            .expect("desktop-only status"),
+        );
+        let rejected = share(
+            &config,
+            "progress-demo",
+            ShareView::from_summary(&config, private_status),
+        );
+        assert_eq!(rejected.status, StatusCode::NOT_FOUND);
+        assert!(!rejected.body.contains("storage"));
     }
 
     #[test]

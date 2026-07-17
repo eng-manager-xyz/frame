@@ -1275,22 +1275,26 @@ dependencies = [
 name = "frame-desktop-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "frame-authenticated-client",
  "frame-client",
  "frame-media",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "thiserror 2.0.18",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
 name = "frame-desktop-ui"
 version = "0.1.0"
 dependencies = [
+ "frame-client",
  "frame-desktop-core",
  "js-sys",
  "leptos",

@@ -85,8 +85,10 @@ evidence.
 
 The web process now consumes a bounded, provider-neutral public-share summary
 from the configured Worker API through `frame-client`; an unavailable or invalid
-upstream still collapses to the generic fail-closed share shell. This does not
-provide the missing Instant-specific progress/error projection. The D1 grant,
+upstream still collapses to the generic fail-closed share shell. Processing
+shares consume the exact shared, privacy-safe Instant progress/error projection
+when retained D1 truth supports it and otherwise keep the static fail-closed
+shell. The D1 grant,
 comment, transcript, consent, analytics, moderation, rate, replay, retention,
 and audit adapters are implemented. The hydrated Leptos island now loads
 bounded comments/transcript cues, seeks from exact cue positions, submits

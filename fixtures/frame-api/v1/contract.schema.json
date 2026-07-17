@@ -77,6 +77,53 @@
       },
       "additionalProperties": true
     },
+    "instantUiProgress": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "phase",
+        "progress_basis_points",
+        "retrying",
+        "error"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "phase": { "enum": ["uploading", "finalizing"] },
+        "progress_basis_points": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "retrying": { "type": "boolean" },
+        "error": {
+          "enum": [null, "upload_delayed", "finalize_delayed"]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "phase": { "const": "uploading" } } },
+          "then": {
+            "properties": {
+              "error": { "enum": [null, "upload_delayed"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "phase": { "const": "finalizing" } } },
+          "then": {
+            "properties": {
+              "error": { "enum": [null, "finalize_delayed"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "error": { "type": "null" } } },
+          "then": { "properties": { "retrying": { "const": false } } },
+          "else": { "properties": { "retrying": { "const": true } } }
+        }
+      ],
+      "additionalProperties": true
+    },
     "publicShareSummary": {
       "type": "object",
       "required": [
@@ -107,6 +154,12 @@
             { "$ref": "#/$defs/playbackDescriptor" },
             { "type": "null" }
           ]
+        },
+        "processing_status": {
+          "oneOf": [
+            { "$ref": "#/$defs/instantUiProgress" },
+            { "type": "null" }
+          ]
         }
       },
       "allOf": [
@@ -116,7 +169,8 @@
             "properties": {
               "title": { "type": "string", "minLength": 1 },
               "canonical_url": { "type": "string" },
-              "playback": { "$ref": "#/$defs/playbackDescriptor" }
+              "playback": { "$ref": "#/$defs/playbackDescriptor" },
+              "processing_status": { "type": "null" }
             }
           }
         },
@@ -127,7 +181,8 @@
               "title": { "type": "null" },
               "description": { "type": "null" },
               "duration_ms": { "type": "null" },
-              "playback": { "type": "null" }
+              "playback": { "type": "null" },
+              "processing_status": { "$ref": "#/$defs/instantUiProgress" }
             }
           }
         },
@@ -139,7 +194,8 @@
               "description": { "type": "null" },
               "canonical_url": { "type": "null" },
               "duration_ms": { "type": "null" },
-              "playback": { "type": "null" }
+              "playback": { "type": "null" },
+              "processing_status": { "type": "null" }
             }
           }
         }

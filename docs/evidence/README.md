@@ -6,7 +6,13 @@ attached to the immutable release record rather than fabricated in source.
 The [checkbox closure inventory](../../fixtures/closure/v1/README.md) assigns
 all 554 issue deliverable/acceptance checkboxes to locally satisfied,
 protected-pending, or true local-gap status. Its checker pins the complete
-requirement text and fails on missing evidence or classification drift:
+requirement text and fails on missing evidence or classification drift.
+
+The current exact partition is 363 locally satisfied, 190 protected pending,
+and one true repository-local gap. Protected rows remain pending; this count
+does not authorize production promotion.
+
+Run:
 
 ```sh
 python3 -I scripts/ci/check-issue-closure.py

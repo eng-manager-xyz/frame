@@ -1393,6 +1393,7 @@ mod tests {
                     default: true,
                 }],
             ),
+            processing_status: None,
         };
         assert!(summary_is_scope_safe(&summary));
         assert!(summary_matches_route(&summary, "public-demo"));

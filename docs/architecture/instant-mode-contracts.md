@@ -41,11 +41,13 @@ unknown tags or versions, impossible states, and oversized journals before a
 snapshot can re-enter the CAS boundary. This checksum detects accidental
 corruption; storage authenticity remains an adapter/D1 obligation. Adapters
 must not derive a general-purpose debug/JSON representation of runtime key
-handles, opaque provider identities, checksums, or operation receipts. Stable
-desktop and share readiness is intended to use `InstantProgress` and
-`InstantPublicErrorCode`, which contain counts, bounded byte totals, coarse
-state, and stable codes only. No desktop or share adapter currently consumes
-that projection; this remains the repository-local Issue 26 checkbox 6 gap.
+handles, opaque provider identities, checksums, or operation receipts. Native
+journal state is projected into the shared, versioned
+`frame-client::InstantUiProgressV1` contract before it reaches a consumer. The
+desktop and public share surfaces both consume its coarse phase, optional
+basis-point progress, retry flag, and closed error-code vocabulary. Native
+counts, byte totals, identities, hashes, credentials, and receipts are not
+fields in the shared projection and cannot cross either UI boundary.
 
 ## Segment and manifest identity
 
@@ -237,14 +239,31 @@ revision/fence, native manifest digest, or native object ID because those values
 have no independent D1 authority and would only be echoed client assertions.
 The DTO lives in `frame-authenticated-client`, not the anonymous public
 `frame-client`, and its receipt never exposes an R2 or governed-object key.
-The production-shaped desktop HTTP adapter maps the exact transportable
-identities from a sealed native request and retains the omitted authority
-inside the native journal. It is not yet invoked by the Tauri command surface;
-therefore the repository does not claim an end-to-end production desktop
-finalize journey. A real integration first needs a native-owned authenticated
-credential/session context and sealed journal/request registry; neither the
-bearer credential nor native request may be supplied by the WebView. The HTTP
-receipt binds the retained upload and server-derived object version;
+The desktop HTTP transport maps the exact transportable identities from a
+validated sealed native request and retains the omitted authority inside the
+native journal. Its wire-only path is available to native desktop code without
+importing `frame-media`; the journal projection bridge stays behind the
+optional `instant-finalize` feature so a normal Tauri/Leptos build has no
+GStreamer or GLib dependency.
+
+The production Tauri surface registers a main-window-only, bounded,
+deny-unknown-fields finalize command. WebView IPC contains only a native-minted
+256-bit opaque handle and exact monotonic sequence. A native registry owns the
+bearer credential and validated request, rechecks request digest and job
+generation after the await, never holds its mutex across network I/O, seals and
+drops credentials on terminal outcomes, and bounds retained contexts. Runtime
+preflight rejects stale handles before network access; a committed result can
+be reconciled across command-future cancellation without a second HTTP call.
+Events and responses contain only the shared public-safe progress projection.
+
+The release composition explicitly installs `NotConfigured`: it constructs no
+provider, origin, HTTP client, credential, or request context, returns
+`unavailable`, and leaves the accessible retry control disabled. A future
+native authenticated capture/journal owner may register the already-tested
+authority; neither bearer credentials nor native requests can be supplied by
+the WebView. This closes the repository-local boundary and UI integration but
+does not claim a real production desktop publication journey. The HTTP receipt
+binds the retained upload and server-derived object version;
 publication is allowed only after the immutable R2 verification receipt, exact
 trusted probe, and exact D1 object/video/job postconditions agree.
 

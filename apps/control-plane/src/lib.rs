@@ -62,7 +62,8 @@ use cutover_authority::{
 };
 use frame_application::{LegacyCallerV1, RequestSecurityContextV1, StorageGovernanceServiceError};
 use frame_client::{
-    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
+    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+    InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1, PlaybackDescriptor,
     PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
 };
 use frame_domain::{
@@ -448,6 +449,8 @@ struct PublicShareRow {
     governed_state: Option<String>,
     malware_disposition: Option<String>,
     cache_generation: Option<i64>,
+    instant_finalize_state: Option<String>,
+    instant_finalize_failure_class: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3865,6 +3868,7 @@ fn health_contract(status: ServiceStatus) -> Result<Health> {
         status,
         release: env!("CARGO_PKG_VERSION").into(),
         capabilities: Capabilities::from_names(vec![
+            "instant_processing_status".into(),
             "public_share_summary".into(),
             "range_playback".into(),
         ])
@@ -13036,7 +13040,15 @@ async fn public_share_row(env: &Env, share_id: &str) -> Result<Option<PublicShar
                     v.playback_object_key, v.duration_ms, g.content_type, g.bytes, \
                     g.checksum_sha256, g.immutable_revision AS object_version, \
                     g.role AS governed_role, g.visibility AS governed_visibility, \
-                    g.state AS governed_state, g.malware_disposition, g.cache_generation \
+                    g.state AS governed_state, g.malware_disposition, g.cache_generation, \
+                    (SELECT f.state FROM instant_finalize_requests_v1 f \
+                      WHERE f.video_id=v.id AND f.organization_id=v.organization_id \
+                      ORDER BY f.updated_at_ms DESC,f.session_id DESC LIMIT 1) \
+                      AS instant_finalize_state, \
+                    (SELECT f.last_failure_class FROM instant_finalize_requests_v1 f \
+                      WHERE f.video_id=v.id AND f.organization_id=v.organization_id \
+                      ORDER BY f.updated_at_ms DESC,f.session_id DESC LIMIT 1) \
+                      AS instant_finalize_failure_class \
              FROM videos v \
              LEFT JOIN object_manifests om \
                ON om.object_key = v.playback_object_key AND om.state = 'available' \
@@ -13059,6 +13071,7 @@ fn unavailable_share() -> PublicShareSummary {
         canonical_url: None,
         duration_ms: None,
         playback: None,
+        processing_status: None,
     }
 }
 
@@ -13068,6 +13081,30 @@ fn public_summary(row: &PublicShareRow, canonical_origin: &str) -> PublicShareSu
         return unavailable_share();
     }
     if row.state == "processing" {
+        let processing_status = match (
+            row.instant_finalize_state.as_deref(),
+            row.instant_finalize_failure_class.as_deref(),
+        ) {
+            (None, None) => None,
+            (Some("pending"), None) => Some(InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Finalizing,
+                progress_basis_points: None,
+                retrying: false,
+                error: None,
+            }),
+            (
+                Some("pending"),
+                Some("dependency_pending" | "authority_unavailable" | "persistence"),
+            ) => Some(InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Finalizing,
+                progress_basis_points: None,
+                retrying: true,
+                error: Some(InstantUiErrorCodeV1::FinalizeDelayed),
+            }),
+            _ => return unavailable_share(),
+        };
         return PublicShareSummary {
             api_version: ApiVersion::current(),
             availability: ShareAvailability::Processing,
@@ -13076,6 +13113,7 @@ fn public_summary(row: &PublicShareRow, canonical_origin: &str) -> PublicShareSu
             canonical_url: Some(canonical_url),
             duration_ms: None,
             playback: None,
+            processing_status,
         };
     }
     let Some(object) = validated_public_object(row) else {
@@ -13099,6 +13137,7 @@ fn public_summary(row: &PublicShareRow, canonical_origin: &str) -> PublicShareSu
             supports_range: true,
             captions: Vec::<CaptionTrack>::new(),
         }),
+        processing_status: None,
     }
 }
 
@@ -14580,6 +14619,8 @@ mod tests {
             governed_state: Some("active".into()),
             malware_disposition: Some("clean".into()),
             cache_generation: Some(1),
+            instant_finalize_state: None,
+            instant_finalize_failure_class: None,
         }
     }
 
@@ -14617,6 +14658,84 @@ mod tests {
             .validate(&FrameOrigin::parse_https("https://frame.engmanager.xyz").expect("origin"))
             .expect("valid client share");
         assert_eq!(decoded.availability, ShareAvailability::Public);
+        assert!(decoded.processing_status.is_none());
+    }
+
+    #[test]
+    fn public_processing_status_uses_only_retained_indeterminate_finalize_truth() {
+        let origin = FrameOrigin::parse_https("https://frame.engmanager.xyz").expect("origin");
+        let mut processing = public_row();
+        processing.state = "processing".into();
+        processing.playback_object_key = None;
+        processing.duration_ms = None;
+        processing.content_type = None;
+        processing.bytes = None;
+        processing.checksum_sha256 = None;
+        processing.object_version = None;
+        processing.governed_role = None;
+        processing.governed_visibility = None;
+        processing.governed_state = None;
+        processing.malware_disposition = None;
+        processing.cache_generation = None;
+
+        let without_finalize = public_summary(&processing, "https://frame.engmanager.xyz");
+        without_finalize
+            .validate(&origin)
+            .expect("legacy processing summary");
+        assert!(without_finalize.processing_status.is_none());
+
+        processing.instant_finalize_state = Some("pending".into());
+        let pending = public_summary(&processing, "https://frame.engmanager.xyz");
+        pending.validate(&origin).expect("pending summary");
+        assert_eq!(
+            pending.processing_status,
+            Some(InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Finalizing,
+                progress_basis_points: None,
+                retrying: false,
+                error: None,
+            })
+        );
+
+        processing.instant_finalize_failure_class = Some("persistence".into());
+        let delayed = public_summary(&processing, "https://frame.engmanager.xyz");
+        delayed.validate(&origin).expect("delayed summary");
+        assert_eq!(
+            delayed.processing_status,
+            Some(InstantUiProgressV1 {
+                schema_version: INSTANT_UI_PROGRESS_SCHEMA_VERSION,
+                phase: InstantUiPhaseV1::Finalizing,
+                progress_basis_points: None,
+                retrying: true,
+                error: Some(InstantUiErrorCodeV1::FinalizeDelayed),
+            })
+        );
+        let encoded = serde_json::to_string(&delayed).expect("delayed JSON");
+        assert!(!encoded.contains("progress_basis_points\":0"));
+        for forbidden in [
+            "object_key",
+            "provider",
+            "request_sha256",
+            "tenant_id",
+            "upload_id",
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+
+        for (state, failure) in [
+            ("dead_letter", Some("persistence")),
+            ("published", None),
+            ("pending", Some("conflict")),
+        ] {
+            processing.instant_finalize_state = Some(state.into());
+            processing.instant_finalize_failure_class = failure.map(str::to_owned);
+            assert_eq!(
+                serde_json::to_vec(&public_summary(&processing, "https://frame.engmanager.xyz"))
+                    .expect("terminal summary"),
+                serde_json::to_vec(&unavailable_share()).expect("unavailable")
+            );
+        }
     }
 
     #[test]

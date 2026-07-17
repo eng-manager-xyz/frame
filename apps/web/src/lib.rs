@@ -1521,7 +1521,7 @@ mod server {
                 diagnostic_token: Some(token.into()),
                 worker_release: Some("worker-1111111".into()),
                 render_deploy: Some("render-deploy-1".into()),
-                migration_level: Some("0034_compatibility_rate_limits.sql".into()),
+                migration_level: Some("0035_instant_finalize_public_share_index.sql".into()),
                 portfolio_consumer: Some("portfolio-aaaaaaa".into()),
                 ..ConfigValues::default()
             })
@@ -1557,7 +1557,7 @@ mod server {
             assert_eq!(value["render_deploy"], "render-deploy-1");
             assert_eq!(
                 value["migration_level"],
-                "0034_compatibility_rate_limits.sql"
+                "0035_instant_finalize_public_share_index.sql"
             );
             assert_eq!(value["portfolio_consumer"], "portfolio-aaaaaaa");
 

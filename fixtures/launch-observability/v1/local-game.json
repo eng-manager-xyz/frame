@@ -117,7 +117,7 @@
       "contract_major": 1,
       "worker_release": "worker-1111111",
       "render_deploy": "render-1111111",
-      "migration_level": "0034_compatibility_rate_limits.sql",
+      "migration_level": "0035_instant_finalize_public_share_index.sql",
       "portfolio_consumer": "portfolio-aaaaaaa",
       "consumer_contract_major": 1,
       "expected": "compatible"
@@ -128,7 +128,7 @@
       "contract_major": 1,
       "worker_release": "worker-1111111",
       "render_deploy": "render-1111111",
-      "migration_level": "0034_compatibility_rate_limits.sql",
+      "migration_level": "0035_instant_finalize_public_share_index.sql",
       "portfolio_consumer": "portfolio-9999999",
       "consumer_contract_major": 1,
       "expected": "compatible"
@@ -139,7 +139,7 @@
       "contract_major": 1,
       "worker_release": "worker-1111111",
       "render_deploy": "render-1111111",
-      "migration_level": "0034_compatibility_rate_limits.sql",
+      "migration_level": "0035_instant_finalize_public_share_index.sql",
       "portfolio_consumer": "portfolio-bbbbbbb",
       "consumer_contract_major": 2,
       "expected": "NO_GO"

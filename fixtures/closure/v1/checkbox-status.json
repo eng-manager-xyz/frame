@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 362,
+    "local_satisfied": 363,
     "protected_pending": 190,
-    "local_gap": 2
+    "local_gap": 1
   },
   "issues": {
     "01": {
@@ -192,9 +192,7 @@
         {"ordinals": [7, 8, 11], "classes": ["hardware_execution", "provider_execution"], "reason": "Real network-loss recording, crash recovery, and abort/delete cleanup need native storage plus R2/D1 execution."},
         {"ordinals": [10], "classes": ["browser_accessibility_execution", "provider_execution"], "reason": "Playback-start and manifest-replacement behavior need real encoded media, delivery, and supported browsers."}
       ],
-      "local_gaps": [
-        {"ordinals": [6], "reason": "The native Instant progress/error type has no desktop or share-UI consumer, and the tested desktop finalize adapter is not registered at a production Tauri boundary. Closing this locally first requires a native-owned authenticated credential/session context plus a sealed Instant journal/request registry; bearer credentials and native finalize requests must not cross the WebView IPC boundary."}
-      ]
+      "local_gaps": []
     },
     "27": {
       "count": 11,

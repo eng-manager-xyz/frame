@@ -146,12 +146,42 @@ main {
 fieldset,
 .permission-card,
 .legacy-note,
+.instant-sharing,
 .split-grid > section {
   margin: 1rem 0;
   padding: 1rem;
   border: 1px solid var(--border);
   border-radius: 0.75rem;
   background: var(--surface-raised);
+}
+
+.instant-sharing {
+  margin-block: 1rem;
+}
+
+.section-heading.compact {
+  align-items: flex-start;
+}
+
+.instant-progress {
+  margin-block: 0.35rem 0.8rem;
+}
+
+.instant-message,
+.instant-unavailable,
+.privacy-note {
+  color: var(--muted);
+}
+
+.instant-error {
+  padding-inline-start: 0.75rem;
+  border-inline-start: 0.2rem solid var(--danger);
+  color: var(--danger);
+}
+
+.privacy-note {
+  margin-block: 0.75rem 0;
+  font-size: 0.9rem;
 }
 
 legend {
@@ -308,6 +338,7 @@ progress {
   fieldset,
   .permission-card,
   .legacy-note,
+  .instant-sharing,
   .status {
     border: 1px solid CanvasText;
   }

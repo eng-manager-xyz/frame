@@ -18,14 +18,29 @@ The v1 allowlist is deliberately small:
 | Classification | Public v1 fields | Never public |
 | --- | --- | --- |
 | Service | `service`, coarse `status`, release identifier, contract major, coarse capability names | binding IDs, database or bucket names, regions, counts, dependency status, stack traces |
-| Share | explicitly public title and description, availability, duration, canonical share URL | owner identity, tenant/organization ID, comments, transcript, session state, private/deleted/failed existence |
+| Share | explicitly public title and description, availability, duration, canonical share URL, and the versioned coarse public processing projection described below | owner identity, tenant/organization ID, comments, transcript, local recovery state, provider state, session identifiers, private/deleted/failed existence |
 | Playback | same-origin capability paths, approved media type, range support, reviewed caption descriptors | R2 keys, signed URLs, provider IDs, checksums, credentials, ungoverned objects |
 | Error | stable safe code/message, opaque request ID, retry advice | response body excerpts, internal causes, queries, cookies, authorization values |
 
 Anything not named in the allowlist is internal. An anonymous private,
 deleted, failed, unknown, malformed, or policy-invalid share is the same
 byte-for-byte `unavailable` representation. Processing may expose only its
-canonical public page; it exposes no title, metadata, or media path.
+canonical public page and an optional `processing_status`; it exposes no title,
+metadata, or media path. The v1 status can report only `uploading` or
+`finalizing`, an optional real progress value in basis points, a retry flag,
+and the matching coarse `upload_delayed` or `finalize_delayed` code. Local
+storage, recovery, cancellation, raw network/provider errors, byte counts,
+object keys, and identifiers remain private.
+
+The Worker publishes this projection only from retained D1 truth. A current
+finalize row may produce an indeterminate `finalizing` status or the coarse
+retrying/delayed variant. Missing legacy detail leaves the optional field
+absent; contradictory, terminal, or otherwise unsafe state fails closed to
+the same unavailable representation. Migration
+`0035_instant_finalize_public_share_index.sql` keeps both latest-row projections
+covering and deterministic; migration conformance rejects a temporary sort or
+either missing index lookup. The Worker never invents a percentage. The richer
+desktop `frame-media` progress model is not a wire contract.
 
 ## Endpoint inventory
 
@@ -62,8 +77,10 @@ caption list.
   has moved. The v1-only launch has no predecessor to retain.
 
 Capabilities gate optional behavior; they never override the contract major.
-Consumers must degrade to a static link or last-known-good snapshot when a
-capability or Frame itself is unavailable.
+`instant_processing_status` advertises the public-safe projection, but each
+share still validates independently and legacy processing responses may omit
+the optional field. Consumers must degrade to a static link or last-known-good
+snapshot when a capability or Frame itself is unavailable.
 
 ## Transport policy
 

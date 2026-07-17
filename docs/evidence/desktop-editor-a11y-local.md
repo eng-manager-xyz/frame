@@ -12,6 +12,10 @@ Validated implementation:
 - replay/gap/duplicate-operation, cross-window, malformed-payload, and path-root rejection;
 - backend-confirmed recorder/device/recovery/editor/export/upload/settings/lifecycle/update snapshots;
 - explicit release `Unavailable` adapter and debug-only deterministic fake selection;
+- explicit release `NotConfigured` Instant provider, strict main-window opaque-handle finalize
+  command, native-only secret/request registry, and zero-network disabled state;
+- versioned shared Instant progress/error events with determinate/indeterminate accessible progress,
+  stable announcements, retry gating, and terminal handle removal;
 - fake record/pause/resume/stop, recovery, trim/save, export, verified upload, device-loss,
   crash/restart, settings/preset, and update/relaunch journeys;
 - accessible Leptos recorder, recovery, numeric timeline, export, upload, settings, and bounded error
@@ -26,6 +30,7 @@ cargo test -p frame-desktop-core
 cargo test -p frame-desktop-core --features tauri-app --bin frame-desktop
 cargo clippy -p frame-desktop-core --all-targets -- -D warnings
 cargo clippy -p frame-desktop-core --features tauri-app --bin frame-desktop -- -D warnings
+cargo clippy -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
 cargo clippy -p frame-desktop-ui --no-default-features --features csr --target wasm32-unknown-unknown -- -D warnings
 python scripts/ci/build-desktop-ui.py
 python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-local.json
@@ -42,7 +47,9 @@ project paths, session tokens, or user data.
 Local code can satisfy the typed surface, deterministic state/race behavior, fake device/pipeline
 harness, static capability/CSP review, semantic accessibility structure, legacy non-mutation, and
 rollout/rollback design. The production shell intentionally refuses capture, OS lifecycle, export,
-upload, and updater success until real adapters are selected.
+upload, updater, and Instant publication success until real adapters and a native authenticated
+journal owner are selected. The registered Instant command therefore proves a fail-closed boundary
+and accessible state model, not hosted publication.
 
 ## Protected evidence still required
 

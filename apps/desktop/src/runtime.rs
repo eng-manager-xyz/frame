@@ -11,7 +11,13 @@ use std::{fmt, path::Path};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use frame_client::{InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1};
+
 use crate::{
+    instant_finalize_service::{
+        INSTANT_FINALIZE_COMMAND_PROTOCOL_VERSION, InstantFinalizeCapabilityState,
+        InstantFinalizeHandle, InstantFinalizeRegistrationV1,
+    },
     ipc::{
         CaptureTargetKind, CommandOutcome, DeviceClass, IpcCommand, IpcError, LifecycleAction,
         PathPolicy, PublicErrorCode, RecorderMode, RequestEnvelope, ResponseEnvelope, RootAccess,
@@ -24,7 +30,7 @@ use crate::{
     },
 };
 
-pub const DESKTOP_RUNTIME_VERSION: u16 = 1;
+pub const DESKTOP_RUNTIME_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -103,6 +109,10 @@ pub struct DesktopRuntimeSnapshot {
     pub editor: EditorState,
     pub export: ExportState,
     pub upload: UploadState,
+    pub instant_finalize: InstantFinalizeCapabilityState,
+    pub instant_finalize_handle: Option<InstantFinalizeHandle>,
+    pub instant_finalize_next_sequence: Option<u64>,
+    pub instant_progress: Option<InstantUiProgressV1>,
     pub permission: PermissionState,
     pub meter: AudioMeterSnapshot,
     pub recorder_configuration: RecorderConfiguration,
@@ -171,6 +181,7 @@ pub struct DesktopEventEnvelope {
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum DesktopRuntimeEvent {
     Backend(BackendEvent),
+    InstantProgress(InstantUiProgressV1),
     StateConfirmed { operation_revision: u64 },
 }
 
@@ -179,6 +190,16 @@ pub struct DesktopDispatch {
     pub response: ResponseEnvelope,
     pub events: Vec<DesktopEventEnvelope>,
     pub snapshot: DesktopRuntimeSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstantFinalizeUiUpdate {
+    pub runtime_version: u16,
+    pub command_protocol_version: u16,
+    pub command_sequence: u64,
+    pub operation_revision: u64,
+    pub events: Vec<DesktopEventEnvelope>,
+    pub progress: InstantUiProgressV1,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -225,6 +246,10 @@ pub struct DesktopRuntime {
     event_sequence: u64,
     operation_revision: u64,
     workflow: DesktopWorkflow,
+    instant_finalize: InstantFinalizeCapabilityState,
+    instant_finalize_handle: Option<InstantFinalizeHandle>,
+    instant_finalize_last_sequence: u64,
+    instant_progress: Option<InstantUiProgressV1>,
     permission: PermissionState,
     meter: AudioMeterSnapshot,
     recorder_configuration: RecorderConfiguration,
@@ -307,6 +332,10 @@ impl DesktopRuntime {
             event_sequence: 0,
             operation_revision: 1,
             workflow: DesktopWorkflow::new(backend_session),
+            instant_finalize: InstantFinalizeCapabilityState::NotConfigured,
+            instant_finalize_handle: None,
+            instant_finalize_last_sequence: 0,
+            instant_progress: None,
             permission: PermissionState::NotDetermined,
             meter: AudioMeterSnapshot {
                 microphone_basis_points: 0,
@@ -377,6 +406,14 @@ impl DesktopRuntime {
             editor: self.workflow.editor(),
             export: self.workflow.export(),
             upload: self.workflow.upload(),
+            instant_finalize: self.instant_finalize,
+            instant_finalize_handle: self.instant_finalize_handle.clone(),
+            instant_finalize_next_sequence: (self.instant_finalize
+                == InstantFinalizeCapabilityState::Available
+                && self.instant_finalize_handle.is_some())
+            .then(|| self.instant_finalize_last_sequence.checked_add(1))
+            .flatten(),
+            instant_progress: self.instant_progress,
             permission: self.permission,
             meter: self.meter,
             recorder_configuration: self.recorder_configuration,
@@ -388,6 +425,126 @@ impl DesktopRuntime {
             legacy_desktop_selectable: true,
             announcement: self.announcement.clone(),
         }
+    }
+
+    /// Binds an opaque handle minted by the native finalize service to this
+    /// public-safe UI model. The production release does not call this method
+    /// until an authenticated native session/journal owner exists.
+    pub fn bind_native_instant_finalize(
+        &mut self,
+        registration: InstantFinalizeRegistrationV1,
+    ) -> Result<(), DesktopRuntimeError> {
+        registration
+            .progress
+            .validate()
+            .map_err(|_| DesktopRuntimeError::InvalidInstantProgress)?;
+        if self.instant_finalize_handle.is_some()
+            || registration.progress.phase != InstantUiPhaseV1::Finalizing
+        {
+            return Err(DesktopRuntimeError::InstantFinalizeAuthorityMismatch);
+        }
+        self.instant_finalize = InstantFinalizeCapabilityState::Available;
+        self.instant_finalize_handle = Some(registration.handle);
+        self.instant_finalize_last_sequence = 0;
+        self.instant_progress = Some(registration.progress);
+        self.announcement = instant_progress_announcement(registration.progress).into();
+        Ok(())
+    }
+
+    /// Checks the currently bound opaque authority and the exact next command
+    /// sequence before native network I/O. The composition root must release
+    /// its runtime lock after this check and revalidate again when applying the
+    /// result.
+    pub fn preflight_instant_finalize(
+        &self,
+        handle: &InstantFinalizeHandle,
+        command_sequence: u64,
+    ) -> Result<(), DesktopRuntimeError> {
+        if self.instant_finalize != InstantFinalizeCapabilityState::Available
+            || self.instant_finalize_handle.as_ref() != Some(handle)
+        {
+            return Err(DesktopRuntimeError::InstantFinalizeAuthorityMismatch);
+        }
+        let expected = self
+            .instant_finalize_last_sequence
+            .checked_add(1)
+            .ok_or(DesktopRuntimeError::SequenceOverflow)?;
+        if command_sequence != expected {
+            return Err(DesktopRuntimeError::InstantFinalizeAuthorityMismatch);
+        }
+        Ok(())
+    }
+
+    /// Applies only the progress returned for the already-bound opaque handle.
+    /// The service separately revalidates native request digest and generation
+    /// after network I/O; this method cannot receive those private identities.
+    pub fn apply_instant_finalize_progress(
+        &mut self,
+        handle: &InstantFinalizeHandle,
+        command_sequence: u64,
+        progress: InstantUiProgressV1,
+    ) -> Result<InstantFinalizeUiUpdate, DesktopRuntimeError> {
+        progress
+            .validate()
+            .map_err(|_| DesktopRuntimeError::InvalidInstantProgress)?;
+        self.preflight_instant_finalize(handle, command_sequence)?;
+        let mut candidate = self.clone();
+        candidate.instant_finalize_last_sequence = command_sequence;
+        candidate.instant_progress = Some(progress);
+        if matches!(
+            progress.phase,
+            InstantUiPhaseV1::ShareReady
+                | InstantUiPhaseV1::Cancelled
+                | InstantUiPhaseV1::RecoveryRequired
+        ) {
+            candidate.instant_finalize_handle = None;
+        }
+        candidate.operation_revision = candidate
+            .operation_revision
+            .checked_add(1)
+            .ok_or(DesktopRuntimeError::RevisionOverflow)?;
+        candidate.announcement = instant_progress_announcement(progress).into();
+        let events = vec![
+            candidate.wrap_event(
+                WindowRole::Recorder,
+                DesktopRuntimeEvent::InstantProgress(progress),
+            )?,
+            candidate.wrap_event(
+                WindowRole::Recorder,
+                DesktopRuntimeEvent::StateConfirmed {
+                    operation_revision: candidate.operation_revision,
+                },
+            )?,
+        ];
+        let update = InstantFinalizeUiUpdate {
+            runtime_version: DESKTOP_RUNTIME_VERSION,
+            command_protocol_version: INSTANT_FINALIZE_COMMAND_PROTOCOL_VERSION,
+            command_sequence,
+            operation_revision: candidate.operation_revision,
+            events,
+            progress,
+        };
+        *self = candidate;
+        Ok(update)
+    }
+
+    /// Commits a stable terminal projection after native authority is sealed
+    /// by a non-retryable provider/receipt failure. It consumes the expected
+    /// command sequence and removes the WebView handle so retry cannot appear
+    /// available against a permanently terminal native context.
+    pub fn disable_native_instant_finalize(
+        &mut self,
+        handle: &InstantFinalizeHandle,
+        command_sequence: u64,
+    ) -> Result<InstantFinalizeUiUpdate, DesktopRuntimeError> {
+        let progress = InstantUiProgressV1::new(
+            InstantUiPhaseV1::RecoveryRequired,
+            None,
+            false,
+            Some(InstantUiErrorCodeV1::RecordingRecoveryRequired),
+        )
+        .map_err(|_| DesktopRuntimeError::InvalidInstantProgress)?;
+        self.apply_instant_finalize_progress(handle, command_sequence, progress)
     }
 
     pub fn dispatch_json(&mut self, json: &str) -> Result<DesktopDispatch, DesktopRuntimeError> {
@@ -1120,6 +1277,53 @@ impl DesktopRuntime {
     }
 }
 
+#[must_use]
+pub const fn instant_progress_announcement(progress: InstantUiProgressV1) -> &'static str {
+    if let Some(error) = progress.error {
+        return instant_error_message(error);
+    }
+    match progress.phase {
+        InstantUiPhaseV1::Recording => "Instant recording is being captured locally.",
+        InstantUiPhaseV1::LocallyRecoverable => {
+            "Instant recording is safe locally and waiting for the network."
+        }
+        InstantUiPhaseV1::Uploading => "Instant recording is uploading.",
+        InstantUiPhaseV1::Finalizing => "Instant recording is finalizing for sharing.",
+        InstantUiPhaseV1::ShareReady => "Instant recording is ready to share.",
+        InstantUiPhaseV1::Cancelled => "Instant recording was cancelled.",
+        InstantUiPhaseV1::RecoveryRequired => "Instant recording needs recovery.",
+    }
+}
+
+#[must_use]
+pub const fn instant_error_message(error: InstantUiErrorCodeV1) -> &'static str {
+    match error {
+        InstantUiErrorCodeV1::LocalStorageFull => {
+            "Local storage is full. Free space before continuing."
+        }
+        InstantUiErrorCodeV1::LocalStorageUnavailable => "Local recording storage is unavailable.",
+        InstantUiErrorCodeV1::NetworkOffline => {
+            "The network is offline. Your recording remains stored locally."
+        }
+        InstantUiErrorCodeV1::UploadDelayed => {
+            "Upload is delayed. Frame will retry without duplicating verified data."
+        }
+        InstantUiErrorCodeV1::UploadExpired => {
+            "Upload authorization expired. Retry to request fresh authorization."
+        }
+        InstantUiErrorCodeV1::FinalizeDelayed => {
+            "Sharing is delayed. Retry is safe and will reuse the same native request."
+        }
+        InstantUiErrorCodeV1::RecordingRecoveryRequired => {
+            "The recording is safe locally and needs recovery."
+        }
+        InstantUiErrorCodeV1::RecordingCancelled => "The recording was cancelled.",
+        InstantUiErrorCodeV1::RecordingFailed => {
+            "The recording could not be completed. Open recovery for available media."
+        }
+    }
+}
+
 fn paths_for(role: WindowRole, roots: &DesktopRoots) -> Result<PathPolicy, IpcError> {
     let read = RootAccess {
         read: true,
@@ -1239,6 +1443,10 @@ pub enum DesktopRuntimeError {
     ScopeInvariant,
     #[error("the deterministic fake adapter is required")]
     FakeAdapterRequired,
+    #[error("the Instant progress contract is invalid")]
+    InvalidInstantProgress,
+    #[error("the Instant finalize handle does not match native authority")]
+    InstantFinalizeAuthorityMismatch,
 }
 
 impl DesktopRuntimeError {
@@ -1247,10 +1455,12 @@ impl DesktopRuntimeError {
         match self {
             Self::Ipc(error) => error.public_code(),
             Self::FakeAdapterRequired => PublicErrorCode::Unavailable,
+            Self::InstantFinalizeAuthorityMismatch => PublicErrorCode::Conflict,
             Self::Workflow(_)
             | Self::RevisionOverflow
             | Self::SequenceOverflow
-            | Self::ScopeInvariant => PublicErrorCode::Internal,
+            | Self::ScopeInvariant
+            | Self::InvalidInstantProgress => PublicErrorCode::Internal,
         }
     }
 }
@@ -1322,6 +1532,27 @@ mod tests {
                 .windows(2)
                 .all(|events| events[0].event_sequence < events[1].event_sequence)
         );
+    }
+
+    fn finalize_handle(marker: char) -> InstantFinalizeHandle {
+        serde_json::from_value(serde_json::Value::String(marker.to_string().repeat(64)))
+            .expect("opaque finalize handle")
+    }
+
+    fn finalizing_progress() -> InstantUiProgressV1 {
+        InstantUiProgressV1::new(InstantUiPhaseV1::Finalizing, None, false, None)
+            .expect("finalizing progress")
+    }
+
+    fn bind_finalize(runtime: &mut DesktopRuntime, marker: char) -> InstantFinalizeHandle {
+        let handle = finalize_handle(marker);
+        runtime
+            .bind_native_instant_finalize(InstantFinalizeRegistrationV1 {
+                handle: handle.clone(),
+                progress: finalizing_progress(),
+            })
+            .expect("bind native finalize");
+        handle
     }
 
     #[test]
@@ -1660,5 +1891,173 @@ mod tests {
             "candidate source selection must not leak through a rejected workflow transition"
         );
         assert_eq!(dispatch.snapshot.devices, before.devices);
+    }
+
+    #[test]
+    fn instant_finalize_requires_exact_sequence_and_never_regresses_terminal_progress() {
+        let mut runtime = runtime();
+        let handle = bind_finalize(&mut runtime, 'a');
+        runtime.instant_finalize_last_sequence = 1;
+        let ready =
+            InstantUiProgressV1::new(InstantUiPhaseV1::ShareReady, Some(10_000), false, None)
+                .expect("share ready");
+        runtime
+            .apply_instant_finalize_progress(&handle, 2, ready)
+            .expect("newest completion");
+        let terminal = runtime.snapshot();
+        assert!(matches!(
+            runtime.apply_instant_finalize_progress(&handle, 1, finalizing_progress()),
+            Err(DesktopRuntimeError::InstantFinalizeAuthorityMismatch)
+        ));
+        assert_eq!(runtime.snapshot(), terminal);
+        assert_eq!(terminal.instant_progress, Some(ready));
+        assert!(terminal.instant_finalize_handle.is_none());
+        assert!(terminal.instant_finalize_next_sequence.is_none());
+    }
+
+    #[test]
+    fn instant_finalize_bootstrap_advances_the_native_command_sequence() {
+        let mut runtime = runtime();
+        let handle = bind_finalize(&mut runtime, 'b');
+        runtime
+            .apply_instant_finalize_progress(&handle, 1, finalizing_progress())
+            .expect("pending finalize");
+        let bootstrap = runtime.bootstrap();
+        assert_eq!(bootstrap.snapshot.instant_finalize_next_sequence, Some(2));
+        assert_eq!(
+            bootstrap.snapshot.instant_finalize,
+            InstantFinalizeCapabilityState::Available
+        );
+    }
+
+    #[test]
+    fn instant_finalize_overflow_failures_leave_runtime_state_atomic() {
+        let mut revision_runtime = runtime();
+        let revision_handle = bind_finalize(&mut revision_runtime, 'c');
+        revision_runtime.operation_revision = u64::MAX;
+        let before_revision = revision_runtime.snapshot();
+        assert!(matches!(
+            revision_runtime.apply_instant_finalize_progress(
+                &revision_handle,
+                1,
+                finalizing_progress(),
+            ),
+            Err(DesktopRuntimeError::RevisionOverflow)
+        ));
+        assert_eq!(revision_runtime.snapshot(), before_revision);
+
+        let mut event_runtime = runtime();
+        let event_handle = bind_finalize(&mut event_runtime, 'd');
+        event_runtime.event_sequence = u64::MAX;
+        let before_event = event_runtime.snapshot();
+        assert!(matches!(
+            event_runtime.apply_instant_finalize_progress(&event_handle, 1, finalizing_progress(),),
+            Err(DesktopRuntimeError::SequenceOverflow)
+        ));
+        assert_eq!(event_runtime.snapshot(), before_event);
+    }
+
+    #[test]
+    fn instant_finalize_update_shape_is_versioned_and_contains_no_native_authority() {
+        let mut runtime = runtime();
+        let handle = bind_finalize(&mut runtime, 'e');
+        let update = runtime
+            .apply_instant_finalize_progress(&handle, 1, finalizing_progress())
+            .expect("UI update");
+        let json = serde_json::to_value(&update).expect("update JSON");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "runtime_version": 2,
+                "command_protocol_version": 1,
+                "command_sequence": 1,
+                "operation_revision": 2,
+                "events": [
+                    {
+                        "protocol_version": 2,
+                        "event_sequence": 1,
+                        "owner": "recorder",
+                        "event": {
+                            "event": "instant_progress",
+                            "data": {
+                                "schema_version": 1,
+                                "phase": "finalizing",
+                                "progress_basis_points": null,
+                                "retrying": false,
+                                "error": null
+                            }
+                        }
+                    },
+                    {
+                        "protocol_version": 2,
+                        "event_sequence": 2,
+                        "owner": "recorder",
+                        "event": {
+                            "event": "state_confirmed",
+                            "data": { "operation_revision": 2 }
+                        }
+                    }
+                ],
+                "progress": {
+                    "schema_version": 1,
+                    "phase": "finalizing",
+                    "progress_basis_points": null,
+                    "retrying": false,
+                    "error": null
+                }
+            })
+        );
+        let encoded = serde_json::to_string(&update).expect("encoded update");
+        assert!(!encoded.contains(&"e".repeat(64)));
+        for forbidden in [
+            "bearer",
+            "tenant_id",
+            "video_id",
+            "request_sha256",
+            "publication_id",
+            "upload_id",
+            "object_version",
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn permanent_finalize_failure_disables_retry_and_clears_webview_handle() {
+        let mut runtime = runtime();
+        let handle = bind_finalize(&mut runtime, 'f');
+        let retrying = InstantUiProgressV1::new(
+            InstantUiPhaseV1::Finalizing,
+            None,
+            true,
+            Some(InstantUiErrorCodeV1::FinalizeDelayed),
+        )
+        .expect("retrying progress");
+        runtime
+            .apply_instant_finalize_progress(&handle, 1, retrying)
+            .expect("transient status");
+        let update = runtime
+            .disable_native_instant_finalize(&handle, 2)
+            .expect("terminal status");
+        assert_eq!(update.progress.phase, InstantUiPhaseV1::RecoveryRequired);
+        assert!(!update.progress.retrying);
+        let snapshot = runtime.snapshot();
+        assert!(snapshot.instant_finalize_handle.is_none());
+        assert!(snapshot.instant_finalize_next_sequence.is_none());
+        assert_eq!(snapshot.instant_progress, Some(update.progress));
+    }
+
+    #[test]
+    fn rebinding_live_finalize_authority_is_rejected() {
+        let mut runtime = runtime();
+        bind_finalize(&mut runtime, 'a');
+        let second = InstantFinalizeRegistrationV1 {
+            handle: finalize_handle('b'),
+            progress: finalizing_progress(),
+        };
+        assert!(matches!(
+            runtime.bind_native_instant_finalize(second),
+            Err(DesktopRuntimeError::InstantFinalizeAuthorityMismatch)
+        ));
     }
 }

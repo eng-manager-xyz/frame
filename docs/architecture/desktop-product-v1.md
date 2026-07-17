@@ -12,11 +12,14 @@ upload, settings, lifecycle, and updater state. The Leptos client sends a versio
 optimistically changes a success state. Recorder start, pause, resume, stop, editor revision changes,
 verified upload parts, export progress, and recoverability all originate in checked backend events.
 
-There are three Tauri commands:
+There are four Tauri commands:
 
 - `bootstrap_main` reports the shell and protocol compatibility marker;
 - `bootstrap_desktop` returns opaque logical-window scopes and the first redacted snapshot;
-- `dispatch_main` decodes one bounded JSON envelope and emits `frame-desktop://event-v1` events.
+- `dispatch_main` decodes one bounded JSON envelope and emits `frame-desktop://event-v1` events; and
+- `finalize_instant` accepts only a strict opaque-handle/sequence envelope and returns the exact
+  shared Instant progress projection. The release provider is explicitly `NotConfigured`, so no
+  finalize network request can start until a native authenticated journal owner binds authority.
 
 All product operations are variants of the Rust `IpcCommand` enum. Unknown commands, malformed or
 oversized JSON, unsupported protocol versions, duplicate request IDs, replayed/gapped sequences,
@@ -48,8 +51,9 @@ the native roots assigned to that logical owner and only approved extensions. Va
 parent/current components and requires adapters to open using no-follow/reparse-point-safe semantics
 and re-check the resolved handle. The deterministic fake never opens these paths.
 
-`capabilities/main.json` grants only the three commands above to window `main`. The two product
-commands each have an explicit allow and deny permission file. The WebView CSP has no remote scripts,
+`capabilities/main.json` grants only the four commands above to window `main`. The product commands
+have isolated allow and deny permissions, including the generated `finalize_instant` permission.
+The WebView CSP has no remote scripts,
 general `unsafe-eval`, object embedding, base URI, ancestor framing, or broad network origin.
 
 ## Recorder and project state
@@ -58,7 +62,10 @@ The contract represents Instant/Studio mode, bounded countdown, display/window/r
 Frame-window exclusion, permission state, typed device counts and selection, microphone/system-audio
 meters, camera activity, pause/resume/stop/cancel, recovery copies, revision-fenced trim/save,
 monotonic export progress, verified multipart upload progress/pause/resume, settings/presets, and
-update/relaunch state.
+update/relaunch state. Instant publication status uses the shared versioned
+phase/progress/retry/error DTO. Active work has determinate or indeterminate
+progress, terminal states remove the opaque WebView handle, and stable error
+copy is announced without exposing credentials or recording identity.
 
 The Leptos product uses native buttons, fieldsets, labels, meters, progress elements, headings,
 landmarks, a polite atomic status region, an assertive modal error surface, visible focus, a skip
