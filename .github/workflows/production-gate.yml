@@ -124,8 +124,10 @@ jobs:
         run: |
           cargo fmt --all -- --check
           scripts/ci/gstreamer-sanitized-exec cargo clippy --locked --workspace --all-targets -- -D warnings
+          scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
           cargo clippy --locked -p frame-web --no-default-features --features hydrate --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
           scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-desktop-core --features instant-finalize
           scripts/ci/check-workspace-boundaries.sh
           python3 -I scripts/ci/build-web-hydration.py
           python3 -I scripts/ci/check-web-hydration-bundle.py

@@ -121,7 +121,7 @@ def main() -> int:
                 try:
                     with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
                         break
-                except (urllib.error.URLError, ConnectionError):
+                except (urllib.error.URLError, ConnectionError, TimeoutError):
                     require(process.poll() is None, "Chrome exited before DevTools was ready")
                     require(time.monotonic() < deadline, "Chrome DevTools did not start")
                     time.sleep(0.05)

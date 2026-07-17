@@ -548,7 +548,10 @@ def query_plans(d1: WranglerD1) -> dict[str, list[str]]:
     snapshot_video_pk_joins = [
         detail
         for detail in plans["organization_snapshot"]
-        if "sqlite_autoindex_videos_1" in detail
+        if (
+            "sqlite_autoindex_videos_1" in detail
+            or "videos_id_organization_public_collaboration_v1_idx" in detail
+        )
         and re.search(r"\bid\s*=\s*\?", detail)
     ]
     if len(snapshot_video_pk_joins) < 2:

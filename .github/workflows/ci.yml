@@ -31,7 +31,9 @@ jobs:
           echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
       - run: cargo fmt --all -- --check
       - run: scripts/ci/gstreamer-sanitized-exec cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
       - run: scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
+      - run: scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-desktop-core --features instant-finalize
       - run: cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
       - name: Deterministic ETL and reversible cutover proof
         run: |

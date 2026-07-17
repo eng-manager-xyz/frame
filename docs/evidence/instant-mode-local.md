@@ -114,7 +114,8 @@ cargo test -p frame-authenticated-client
 cargo clippy -p frame-authenticated-client --all-targets -- -D warnings
 cargo check -p frame-authenticated-client --target wasm32-unknown-unknown
 cargo test -p frame-media --test instant_mode_contract
-cargo test -p frame-desktop-core instant_finalize
+cargo test -p frame-desktop-core --features instant-finalize
+cargo clippy -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
 # On Windows, with DOCS_RS=1 in the environment:
 cargo test --locked -p frame-windows-secure-spool
 cargo clippy --locked -p frame-windows-secure-spool --all-targets -- -D warnings

@@ -160,6 +160,18 @@ def main() -> int:
                 "global docs.rs native-link bypass in desktop shell",
             ),
             (
+                quality,
+                "cargo test --locked -p frame-desktop-core --features instant-finalize",
+                "cargo test --locked -p frame-desktop-core",
+                "missing explicit Instant-finalize adapter coverage",
+            ),
+            (
+                quality,
+                "libgstreamer1.0-0 libgstreamer1.0-dev \\",
+                "'libgstreamer1.0*' \\",
+                "wildcard GStreamer package evidence",
+            ),
+            (
                 change_plan,
                 "fixtures/api-parity/*",
                 "fixtures/api-parity-disabled/*",

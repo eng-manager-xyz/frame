@@ -5,6 +5,7 @@
 //! thin Tauri command layer can call after workspace integration.
 
 pub mod accessibility;
+#[cfg(feature = "instant-finalize")]
 pub mod instant_finalize;
 pub mod ipc;
 pub mod migration;
@@ -13,6 +14,7 @@ pub mod surface;
 pub mod workflow;
 
 pub use accessibility::*;
+#[cfg(feature = "instant-finalize")]
 pub use instant_finalize::*;
 pub use ipc::*;
 pub use migration::*;

@@ -491,6 +491,15 @@ def verify_compiled_surface() -> None:
         raise ConformanceFailure("auth mutations no longer settle their D1 promise")
     if "await_d1" in mutation_batch or "Delay::from" in mutation_batch:
         raise ConformanceFailure("auth mutation batch acquired a local deadline")
+    for marker in (
+        "const DELIVERY_MATERIALIZE_LIMIT_PER_CLAIM: u32 = 1;",
+        "const DELIVERY_MATERIALIZE_CONFLICT_ATTEMPTS: usize = 1;",
+        "const DELIVERY_CLAIM_CONFLICT_ATTEMPTS: usize = 3;",
+        "for round in 0..DELIVERY_MATERIALIZE_CONFLICT_ATTEMPTS",
+        "for _ in 0..DELIVERY_CLAIM_CONFLICT_ATTEMPTS",
+    ):
+        if marker not in source:
+            raise ConformanceFailure("auth delivery work or retry bounds drifted")
 
 
 def parse_wrangler_json(output: str) -> Any:
@@ -885,7 +894,17 @@ def exercise_worker(server: WorkerServer) -> None:
         futures = [executor.submit(server.request, "claim_race", timeout=30) for _ in range(2)]
         claim_outcomes = [future.result(timeout=35) for future in futures]
     if sorted(status for status, _ in claim_outcomes) != [200, 200]:
-        raise ConformanceFailure("auth delivery claim race did not return two decisions")
+        safe = [
+            {
+                "status": status,
+                "outcome": str(payload.get("outcome", "invalid")),
+            }
+            for status, payload in claim_outcomes
+        ]
+        raise ConformanceFailure(
+            "auth delivery claim race did not return two decisions: "
+            + json.dumps(safe, sort_keys=True, separators=(",", ":"))
+        )
     claim_results = sorted(
         str(payload.get("details", {}).get("values", {}).get("result"))
         for _, payload in claim_outcomes

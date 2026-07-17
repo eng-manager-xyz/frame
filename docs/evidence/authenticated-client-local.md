@@ -25,7 +25,8 @@ cargo test --locked -p frame-authenticated-client
 cargo clippy --locked -p frame-authenticated-client --all-targets -- -D warnings
 cargo check --locked -p frame-authenticated-client
 cargo check --locked -p frame-authenticated-client --target wasm32-unknown-unknown
-cargo test --locked -p frame-desktop-core instant_finalize
+cargo test --locked -p frame-desktop-core --features instant-finalize
+cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
 cargo test --locked -p frame-control-plane --lib instant_finalize
 scripts/ci/check-workspace-boundaries.sh
 ```

@@ -269,6 +269,8 @@ jobs:
       - name: Test media contracts and runtime catalog
         run: |
           scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media -p frame-media-worker
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-desktop-core --features instant-finalize
+          scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
           scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- doctor
           scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- catalog
           scripts/ci/gstreamer-sanitized-exec cargo build --locked -p frame-media-worker
@@ -279,8 +281,10 @@ jobs:
         run: |
           mkdir -p target/evidence
           dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Status}\n' \
-            'libgstreamer1.0*' 'libgstreamer-plugins-base1.0*' \
-            'gstreamer1.0-*' \
+            libgstreamer1.0-0 libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-0 libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good \
             | sort > target/evidence/gstreamer-packages-ci.tsv
           scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_doctor \
             > target/evidence/gstreamer-doctor-ci.json
@@ -354,11 +358,6 @@ jobs:
         with:
           cache-on-failure: false
       - name: Test portable domain, clients, application, ports, and desktop core
-        env:
-          # The desktop contract adapter imports native Instant identities but
-          # these portable tests do not execute media. The gtk-rs build scripts
-          # use DOCS_RS to type-check without probing or linking GStreamer.
-          DOCS_RS: "1"
         run: >-
           cargo test --locked
           -p frame-domain -p frame-ports -p frame-application

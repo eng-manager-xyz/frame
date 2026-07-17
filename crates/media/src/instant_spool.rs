@@ -256,6 +256,7 @@ fn secret_tool_path() -> Result<&'static Path, InstantError> {
     .ok_or(InstantError::SpoolKeyUnavailable)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn decode_key_bytes(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>, InstantError> {
     if bytes.len() != 32 {
         return Err(InstantError::SpoolKeyUnavailable);

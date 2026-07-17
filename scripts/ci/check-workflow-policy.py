@@ -131,10 +131,41 @@ def main() -> int:
             and "gstreamer-packages-ci.tsv" in quality
             and "gstreamer-runtime-hostile-xdg-ci.json" in quality,
             "quality-gates.yml: trusted-root, package, hostile-env, and hostile-XDG media gates must be required", errors)
+    media_job = quality.split("\n  media:\n", maxsplit=1)[-1].split(
+        "\n  portability:\n", maxsplit=1
+    )[0]
+    runtime_step = workflow_step(media_job, "Verify the audited runtime and factory contract")
+    require(
+        bool(runtime_step)
+        and "libgstreamer1.0*" not in runtime_step
+        and "libgstreamer-plugins-base1.0*" not in runtime_step
+        and "gstreamer1.0-*" not in runtime_step
+        and all(
+            package in runtime_step
+            for package in (
+                "libgstreamer1.0-0",
+                "libgstreamer1.0-dev",
+                "libgstreamer-plugins-base1.0-0",
+                "libgstreamer-plugins-base1.0-dev",
+                "gstreamer1.0-tools",
+                "gstreamer1.0-plugins-base",
+                "gstreamer1.0-plugins-base-apps",
+                "gstreamer1.0-plugins-good",
+            )
+        ),
+        "quality-gates.yml: package evidence must query only the eight audited installed GStreamer packages",
+        errors,
+    )
     require("check-media-conformance.py" in quality
             and "media-conformance-offline.json" in quality
             and "media-conformance-dashboard.json" in quality,
             "quality-gates.yml: deterministic media conformance and dashboard evidence must be required", errors)
+    require(
+        "cargo test --locked -p frame-desktop-core --features instant-finalize" in quality
+        and "cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings" in quality,
+        "quality-gates.yml: the optional native Instant-finalize adapter must be fully tested and linted in the GStreamer lane",
+        errors,
+    )
     require("build-web-hydration.py" in quality
             and "check-web-hydration-bundle.py" in quality
             and "web-hydration-smoke.py" in quality

@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
+instant-finalize = ["dep:frame-media"]
 tauri-app = ["dep:tauri"]
 custom-protocol = ["tauri-app", "tauri/custom-protocol"]
 
@@ -19,7 +20,7 @@ required-features = ["tauri-app"]
 [dependencies]
 frame-authenticated-client = { path = "../../crates/authenticated-client" }
 frame-client = { path = "../../crates/frame-client" }
-frame-media = { path = "../../crates/media" }
+frame-media = { path = "../../crates/media", optional = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

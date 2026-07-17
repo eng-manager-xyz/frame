@@ -164,6 +164,7 @@ case "$command" in
     configure_gstreamer
     cargo fmt --all --check
     "$GSTREAMER_EXEC" cargo clippy --workspace --all-targets -- -D warnings
+    "$GSTREAMER_EXEC" cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
     cargo deny check advisories bans licenses sources
     scripts/ci/check-workspace-boundaries.sh
     python3 scripts/ci/check-secrets.py
@@ -210,6 +211,7 @@ case "$command" in
   test)
     configure_gstreamer
     "$GSTREAMER_EXEC" cargo test --workspace
+    "$GSTREAMER_EXEC" cargo test --locked -p frame-desktop-core --features instant-finalize
     python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py
     python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
     python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py

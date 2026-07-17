@@ -34,6 +34,7 @@ CONFORMANCE_PATH = "/__frame/local/organization-repository-conformance"
 TOKEN_HEADER = "x-frame-organization-repository-conformance-token"
 WRANGLER_VERSION = "4.111.0"
 NOW_MS = int(time.time() * 1_000)
+FIXTURE_VALIDITY_MS = 10 * 60 * 1_000
 PLACEHOLDER = re.compile(r"\?([1-9][0-9]*)")
 MIGRATION_NAME = re.compile(r"([0-9]{4})_[a-z0-9_]+\.sql")
 
@@ -164,7 +165,7 @@ def fixture_statements() -> list[str]:
             "INSERT INTO auth_identifier_digests_v2(key_version,digest,user_id,created_at_ms,last_operation_id) VALUES "
             f"(1,{sql_literal(digest(11))},{sql_literal(USER_INVITEE)},{NOW_MS - 10_000},{sql_literal(FIXTURE_OPERATION)})",
             "INSERT INTO organization_invites(id,organization_id,invited_email_digest,invited_email_key_version,invited_by_user_id,role,status,token_digest,created_at_ms,expires_at_ms,resolved_at_ms,revision,accepted_by_user_id,last_operation_id) VALUES "
-            f"({sql_literal(INVITE)},{sql_literal(ORG_INVITE)},{sql_literal(digest(11))},1,{sql_literal(USER_INVITE_OWNER)},'member','pending',{sql_literal(digest(21))},{NOW_MS - 1_000},{NOW_MS + 10_000},NULL,0,NULL,{sql_literal(FIXTURE_OPERATION)})",
+            f"({sql_literal(INVITE)},{sql_literal(ORG_INVITE)},{sql_literal(digest(11))},1,{sql_literal(USER_INVITE_OWNER)},'member','pending',{sql_literal(digest(21))},{NOW_MS - 1_000},{NOW_MS + FIXTURE_VALIDITY_MS},NULL,0,NULL,{sql_literal(FIXTURE_OPERATION)})",
             "INSERT INTO spaces(id,organization_id,created_by_user_id,name,is_primary,is_public,settings_json,created_at_ms,updated_at_ms,deleted_at_ms,revision,authority_version,last_operation_id) VALUES "
             f"({sql_literal(SPACE_FOLDER)},{sql_literal(ORG_FOLDER)},{sql_literal(USER_FOLDER_OWNER)},'Primary',1,0,'{{}}',{NOW_MS - 3_000},{NOW_MS - 3_000},NULL,0,0,{sql_literal(FIXTURE_OPERATION)})",
             "INSERT INTO space_members(space_id,user_id,role,created_at_ms,updated_at_ms,state,revision,last_operation_id) VALUES "
@@ -183,7 +184,7 @@ def fixture_statements() -> list[str]:
             f"({sql_literal(ORG_FOLDER)},{sql_literal(SPACE_FOLDER)},{sql_literal(FOLDER_ROOT)},{sql_literal(FOLDER_GRANDCHILD)},2),"
             f"({sql_literal(ORG_FOLDER)},{sql_literal(SPACE_FOLDER)},{sql_literal(FOLDER_CHILD)},{sql_literal(FOLDER_GRANDCHILD)},1)",
             "INSERT INTO organization_support_authorities_v1(support_actor_id,organization_id,ticket_digest,issued_at_ms,expires_at_ms,revoked_at_ms) VALUES "
-            f"({sql_literal(USER_SUPPORT)},{sql_literal(ORG_AUDIT)},{sql_literal(digest(91))},{NOW_MS - 1_000},{NOW_MS + 10_000},NULL)",
+            f"({sql_literal(USER_SUPPORT)},{sql_literal(ORG_AUDIT)},{sql_literal(digest(91))},{NOW_MS - 1_000},{NOW_MS + FIXTURE_VALIDITY_MS},NULL)",
             "INSERT INTO spaces(id,organization_id,created_by_user_id,name,is_primary,is_public,settings_json,created_at_ms,updated_at_ms,deleted_at_ms,revision,authority_version,last_operation_id) VALUES "
             f"({sql_literal(SPACE_AUTHORITY_RACE)},{sql_literal(ORG_AUTHORITY_RACE)},{sql_literal(USER_AUTHORITY_OWNER)},'Authority',1,0,'{{}}',{NOW_MS - 3_000},{NOW_MS - 3_000},NULL,0,0,{sql_literal(FIXTURE_OPERATION)})",
             "INSERT INTO space_members(space_id,user_id,role,created_at_ms,updated_at_ms,state,revision,last_operation_id) VALUES "
@@ -379,7 +380,13 @@ def exercise_worker(server: WorkerServer) -> None:
         "accepted",
         "error:stale_authority",
     ]:
-        raise ConformanceFailure("concurrent invite acceptance did not yield one winner")
+        safe = json.dumps(
+            sorted(result_code(value) for value in invite_results),
+            separators=(",", ":"),
+        )
+        raise ConformanceFailure(
+            f"concurrent invite acceptance did not yield one winner: {safe}"
+        )
     replay = expect_scenario(server, "invite_replay_and_mismatch")
     replay_values = [replay["replay_a"], replay["replay_b"]]
     mismatch_values = [replay["mismatch_a"], replay["mismatch_b"]]
