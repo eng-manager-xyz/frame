@@ -83,12 +83,15 @@ evidence.
 
 ## Honest completion boundary
 
-Production remains fail closed because the web process does not yet consume an
-authorized share summary from the Worker. The D1 grant, comment, transcript,
-consent, analytics, moderation, rate, replay, retention, and audit adapters are
-implemented. The hydrated Leptos island now loads bounded comments/transcript
-cues, seeks from exact cue positions, submits idempotent comments, records an
-explicit consent choice, and emits playback events only while the in-memory
+The web process now consumes a bounded, provider-neutral public-share summary
+from the configured Worker API through `frame-client`; an unavailable or invalid
+upstream still collapses to the generic fail-closed share shell. This does not
+provide the missing Instant-specific progress/error projection. The D1 grant,
+comment, transcript, consent, analytics, moderation, rate, replay, retention,
+and audit adapters are implemented. The hydrated Leptos island now loads
+bounded comments/transcript cues, seeks from exact cue positions, submits
+idempotent comments, records an explicit consent choice, and emits playback
+events only while the in-memory
 consent signal remains enabled; its no-JavaScript fallback performs no
 mutation. Custom-domain resolution is a pure exact-binding contract, not live
 Host routing.

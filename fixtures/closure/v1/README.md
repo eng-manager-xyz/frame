@@ -24,7 +24,7 @@ Run:
 python3 -I scripts/ci/check-issue-closure.py
 ```
 
-The checker requires an exact 553-item partition and prints every true local
+The checker requires an exact 554-item partition and prints every true local
 gap with its issue, ordinal, and source text. Protected classes are deliberately
 allowed to overlap because one checkbox can require, for example, both a real
 provider and a supported browser. The inventory does not check boxes, authorize

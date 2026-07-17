@@ -66,7 +66,7 @@ adapters and do not prove Cloudflare execution.
 The exact server-finalize slice is wired on the Worker side through a versioned Wasm-safe DTO,
 authenticated route, retained D1 request/operation/job rows, multipart/probe postconditions, and
 scheduled reconciliation. The desktop side below is a tested adapter boundary, not a currently
-registered Tauri command:
+registered Tauri command and not a completed progress/error UI integration:
 
 ```text
 sealed desktop Instant request (contract fixture)
@@ -101,9 +101,14 @@ disables redirects and ambient proxies, bounds deadline and response bytes, send
 and deterministic idempotency headers, validates the shared DTO, and is covered by a real loopback
 HTTP test. It is not yet connected to `apps/desktop/src/main.rs`, and the repository therefore does
 not cite this test as a production desktop publication path. The bounded journal remains inside
-`frame-media` because the control plane cannot import its native GStreamer dependency. Hosted D1
-contention, R2 execution, callback ordering, and a real command-to-journal desktop journey remain
-protected evidence.
+`frame-media` because the control plane cannot import its native GStreamer dependency. The native
+`InstantProgress` contract likewise has no desktop or share-UI consumer. This is Issue 26 checkbox
+6's repository-local gap, not protected evidence. Closing it first requires a native-owned
+authenticated credential/session context and sealed Instant journal/request registry so the native
+backend can dispatch finalize and project bounded progress/errors without sending a bearer token or
+native request through WebView IPC. Hosted D1 contention, R2 execution, callback ordering, and the
+resulting real command-to-journal desktop journey remain protected evidence after that local wiring
+exists.
 
 ## Reproduction commands
 

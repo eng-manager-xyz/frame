@@ -4,7 +4,7 @@ Repository checks produce reproducible evidence; provider and human gates are
 attached to the immutable release record rather than fabricated in source.
 
 The [checkbox closure inventory](../../fixtures/closure/v1/README.md) assigns
-all 553 issue deliverable/acceptance checkboxes to locally satisfied,
+all 554 issue deliverable/acceptance checkboxes to locally satisfied,
 protected-pending, or true local-gap status. Its checker pins the complete
 requirement text and fails on missing evidence or classification drift:
 
@@ -12,8 +12,8 @@ requirement text and fails on missing evidence or classification drift:
 python3 -I scripts/ci/check-issue-closure.py
 ```
 
-This audit is a ledger, not a waiver: protected records remain pending and a
-local gap remains open even when a surrounding design document or fake passes.
+This audit is a ledger, not a waiver: protected records remain pending and
+local gaps remain open even when a surrounding design document or fake passes.
 
 ## Local and CI evidence
 

@@ -42,9 +42,10 @@ snapshot can re-enter the CAS boundary. This checksum detects accidental
 corruption; storage authenticity remains an adapter/D1 obligation. Adapters
 must not derive a general-purpose debug/JSON representation of runtime key
 handles, opaque provider identities, checksums, or operation receipts. Stable
-desktop and share readiness uses `InstantProgress` and
+desktop and share readiness is intended to use `InstantProgress` and
 `InstantPublicErrorCode`, which contain counts, bounded byte totals, coarse
-state, and stable codes only.
+state, and stable codes only. No desktop or share adapter currently consumes
+that projection; this remains the repository-local Issue 26 checkbox 6 gap.
 
 ## Segment and manifest identity
 
@@ -240,10 +241,12 @@ The production-shaped desktop HTTP adapter maps the exact transportable
 identities from a sealed native request and retains the omitted authority
 inside the native journal. It is not yet invoked by the Tauri command surface;
 therefore the repository does not claim an end-to-end production desktop
-finalize journey. The HTTP receipt binds the
-retained upload and server-derived object version; publication is allowed only
-after the immutable R2 verification receipt, exact trusted probe, and exact D1
-object/video/job postconditions agree.
+finalize journey. A real integration first needs a native-owned authenticated
+credential/session context and sealed journal/request registry; neither the
+bearer credential nor native request may be supplied by the WebView. The HTTP
+receipt binds the retained upload and server-derived object version;
+publication is allowed only after the immutable R2 verification receipt, exact
+trusted probe, and exact D1 object/video/job postconditions agree.
 
 Cancel/delete first writes `Tombstoned`, which rejects every late publish or
 callback. Cleanup then attempts multipart abort, finalize-job cancellation, and

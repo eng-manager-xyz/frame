@@ -14,11 +14,16 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+PROFILE_CLEANUP_TIMEOUT_SECONDS = 5.0
+PROFILE_CLEANUP_RETRY_SECONDS = 0.1
 
 
 def fetch(origin: str, path: str) -> tuple[int, dict[str, str], bytes]:
@@ -32,6 +37,27 @@ def fetch(origin: str, path: str) -> tuple[int, dict[str, str], bytes]:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"web hydration smoke: {message}")
+
+
+def cleanup_browser_profile(profile: pathlib.Path) -> None:
+    """Best-effort removal for profile files released just after Chrome exits."""
+    deadline = time.monotonic() + PROFILE_CLEANUP_TIMEOUT_SECONDS
+    while True:
+        try:
+            shutil.rmtree(profile)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                print(
+                    "web hydration smoke: warning: Chrome profile cleanup "
+                    f"remained incomplete after {PROFILE_CLEANUP_TIMEOUT_SECONDS:g}s: "
+                    f"{error}",
+                    file=sys.stderr,
+                )
+                return
+            time.sleep(PROFILE_CLEANUP_RETRY_SECONDS)
 
 
 class DevTools:
@@ -274,7 +300,9 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
     })()"""
 
     port = reserve_loopback_port()
-    with tempfile.TemporaryDirectory(prefix="frame-chrome-") as profile:
+    with tempfile.TemporaryDirectory(
+        prefix="frame-chrome-", ignore_cleanup_errors=True
+    ) as profile:
         process = subprocess.Popen(
             [
                 browser,
@@ -298,7 +326,7 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
                 try:
                     with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
                         break
-                except (urllib.error.URLError, ConnectionError):
+                except (urllib.error.URLError, ConnectionError, TimeoutError):
                     require(process.poll() is None, "Chrome exited before DevTools was ready")
                     if time.monotonic() >= deadline:
                         raise SystemExit("web hydration smoke: Chrome DevTools did not start")
@@ -561,15 +589,20 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
                 "zero_hydration_console_diagnostics": True,
             }
         finally:
-            if devtools is not None:
-                devtools.close()
-            if process.poll() is None:
-                process.terminate()
+            try:
                 try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                    if devtools is not None:
+                        devtools.close()
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=5)
+            finally:
+                cleanup_browser_profile(pathlib.Path(profile))
 
 
 def main() -> int:

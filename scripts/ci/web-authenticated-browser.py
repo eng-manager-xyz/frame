@@ -11,6 +11,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -26,6 +27,9 @@ if SPEC is None or SPEC.loader is None:
 HELPER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(HELPER)
 DevTools = HELPER.DevTools
+
+PROFILE_CLEANUP_TIMEOUT_SECONDS = 5.0
+PROFILE_CLEANUP_RETRY_SECONDS = 0.1
 
 
 def require(condition: bool, message: str) -> None:
@@ -55,6 +59,27 @@ def wait_ready(devtools: object) -> None:
             return
         time.sleep(0.05)
     raise SystemExit("web authenticated browser: document did not become ready")
+
+
+def cleanup_browser_profile(profile: pathlib.Path) -> None:
+    """Best-effort removal for profile files released just after Chrome exits."""
+    deadline = time.monotonic() + PROFILE_CLEANUP_TIMEOUT_SECONDS
+    while True:
+        try:
+            shutil.rmtree(profile)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                print(
+                    "web authenticated browser: warning: Chrome profile cleanup "
+                    f"remained incomplete after {PROFILE_CLEANUP_TIMEOUT_SECONDS:g}s: "
+                    f"{error}",
+                    file=sys.stderr,
+                )
+                return
+            time.sleep(PROFILE_CLEANUP_RETRY_SECONDS)
 
 
 def main() -> int:
@@ -90,7 +115,9 @@ def main() -> int:
     )
     port = HELPER.reserve_loopback_port()
     records: list[dict[str, object]] = []
-    with tempfile.TemporaryDirectory(prefix="frame-authenticated-chrome-") as profile:
+    with tempfile.TemporaryDirectory(
+        prefix="frame-authenticated-chrome-", ignore_cleanup_errors=True
+    ) as profile:
         process = subprocess.Popen(
             [
                 browser,
@@ -304,15 +331,20 @@ def main() -> int:
                     diagnostics.append(event)
             require(not diagnostics, f"browser console emitted diagnostics: {diagnostics[:2]}")
         finally:
-            if devtools is not None:
-                devtools.close()
-            if process.poll() is None:
-                process.terminate()
+            try:
                 try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                    if devtools is not None:
+                        devtools.close()
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=5)
+            finally:
+                cleanup_browser_profile(pathlib.Path(profile))
 
     evidence = {
         "schema": "frame.web-authenticated-browser-evidence.v1",
