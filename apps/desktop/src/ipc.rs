@@ -1126,6 +1126,15 @@ impl IpcError {
 mod tests {
     use super::*;
 
+    fn absolute_test_path(components: &[&str]) -> String {
+        #[cfg(windows)]
+        let mut path = PathBuf::from(r"C:\");
+        #[cfg(not(windows))]
+        let mut path = PathBuf::from("/");
+        path.extend(components);
+        path.to_string_lossy().into_owned()
+    }
+
     fn request(command: IpcCommand, sequence: u64, id: &str) -> RequestEnvelope {
         RequestEnvelope {
             protocol_version: IPC_PROTOCOL_VERSION,
@@ -1140,7 +1149,7 @@ mod tests {
     fn registry() -> ScopeRegistry {
         let paths = PathPolicy::empty()
             .allow_root(
-                "/safe/projects",
+                absolute_test_path(&["safe", "projects"]),
                 RootAccess {
                     read: true,
                     write: false,
@@ -1149,7 +1158,7 @@ mod tests {
             )
             .expect("project scope")
             .allow_root(
-                "/safe/exports",
+                absolute_test_path(&["safe", "exports"]),
                 RootAccess {
                     read: true,
                     write: true,
@@ -1181,7 +1190,7 @@ mod tests {
     fn known_envelopes_round_trip_without_debugging_sensitive_payloads() {
         let original = request(
             IpcCommand::EditorOpen {
-                project_path: "/safe/projects/private-project.frame".into(),
+                project_path: absolute_test_path(&["safe", "projects", "private-project.frame"]),
             },
             1,
             "request-private",
@@ -1206,7 +1215,7 @@ mod tests {
         ));
         let accepted = request(
             IpcCommand::EditorOpen {
-                project_path: "/safe/projects/demo.frame".into(),
+                project_path: absolute_test_path(&["safe", "projects", "demo.frame"]),
             },
             1,
             "request-2",
@@ -1218,7 +1227,7 @@ mod tests {
     fn path_scope_rejects_traversal_wrong_extension_and_wrong_root() {
         let policy = PathPolicy::empty()
             .allow_root(
-                "/safe/projects",
+                absolute_test_path(&["safe", "projects"]),
                 RootAccess {
                     read: true,
                     write: false,
@@ -1227,19 +1236,31 @@ mod tests {
             )
             .expect("scope");
         assert!(matches!(
-            policy.validate("/safe/projects/../secret.frame", PathUse::ProjectRead),
+            policy.validate(
+                &absolute_test_path(&["safe", "projects", "..", "secret.frame"]),
+                PathUse::ProjectRead
+            ),
             Err(IpcError::InvalidPath)
         ));
         assert!(matches!(
-            policy.validate("/safe/projects/script.sh", PathUse::ProjectRead),
+            policy.validate(
+                &absolute_test_path(&["safe", "projects", "script.sh"]),
+                PathUse::ProjectRead
+            ),
             Err(IpcError::UnsupportedPathType)
         ));
         assert!(matches!(
-            policy.validate("/other/demo.frame", PathUse::ProjectRead),
+            policy.validate(
+                &absolute_test_path(&["other", "demo.frame"]),
+                PathUse::ProjectRead
+            ),
             Err(IpcError::PathOutOfScope)
         ));
         let accepted = policy
-            .validate("/safe/projects/demo.frame", PathUse::ProjectRead)
+            .validate(
+                &absolute_test_path(&["safe", "projects", "demo.frame"]),
+                PathUse::ProjectRead,
+            )
             .expect("path");
         assert!(accepted.requires_no_follow());
         assert!(!format!("{accepted:?}").contains("demo.frame"));

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use frame_desktop_core::{
     CaptureTargetKind, CommandOutcome, DesktopAdapterKind, DesktopRoots, DesktopRuntime,
@@ -13,12 +13,25 @@ struct Harness {
     request: u64,
 }
 
+fn absolute_test_path(components: &[&str]) -> String {
+    #[cfg(windows)]
+    let mut path = PathBuf::from(r"C:\");
+    #[cfg(not(windows))]
+    let mut path = PathBuf::from("/");
+    path.extend(components);
+    path.to_string_lossy().into_owned()
+}
+
 impl Harness {
     fn new() -> Self {
         Self {
             runtime: DesktopRuntime::new(
                 DesktopAdapterKind::DeterministicFake,
-                DesktopRoots::new("/frame/projects", "/frame/media", "/frame/exports"),
+                DesktopRoots::new(
+                    absolute_test_path(&["frame", "projects"]),
+                    absolute_test_path(&["frame", "media"]),
+                    absolute_test_path(&["frame", "exports"]),
+                ),
                 "journey",
             )
             .expect("fake runtime"),
@@ -110,13 +123,13 @@ fn keyboard_equivalent_fake_journey_reaches_every_essential_backend_state() {
     harness.dispatch(
         WindowRole::Recovery,
         IpcCommand::RecoveryOpen {
-            project_path: "/frame/projects/demo.frame".into(),
+            project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
         },
     );
     harness.dispatch(
         WindowRole::Editor,
         IpcCommand::EditorOpen {
-            project_path: "/frame/projects/demo.frame".into(),
+            project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
         },
     );
     harness.dispatch(
@@ -148,14 +161,14 @@ fn keyboard_equivalent_fake_journey_reaches_every_essential_backend_state() {
         WindowRole::Editor,
         IpcCommand::ExportStart {
             project_revision: 2,
-            output_path: "/frame/exports/demo.mp4".into(),
+            output_path: absolute_test_path(&["frame", "exports", "demo.mp4"]),
             profile: ExportProfile::DistributionMp4,
         },
     );
     harness.dispatch(
         WindowRole::Editor,
         IpcCommand::UploadStart {
-            source_path: "/frame/media/demo.mp4".into(),
+            source_path: absolute_test_path(&["frame", "media", "demo.mp4"]),
             upload_intent: "upload-start".into(),
         },
     );

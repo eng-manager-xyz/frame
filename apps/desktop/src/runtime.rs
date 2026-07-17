@@ -1257,16 +1257,31 @@ impl DesktopRuntimeError {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::ipc::{EditorMutation, ExportProfile, IPC_PROTOCOL_VERSION, RequestId};
 
-    fn runtime() -> DesktopRuntime {
-        DesktopRuntime::new(
-            DesktopAdapterKind::DeterministicFake,
-            DesktopRoots::new("/frame/projects", "/frame/media", "/frame/exports"),
-            "test-1",
+    fn absolute_test_path(components: &[&str]) -> String {
+        #[cfg(windows)]
+        let mut path = PathBuf::from(r"C:\");
+        #[cfg(not(windows))]
+        let mut path = PathBuf::from("/");
+        path.extend(components);
+        path.to_string_lossy().into_owned()
+    }
+
+    fn roots() -> DesktopRoots {
+        DesktopRoots::new(
+            absolute_test_path(&["frame", "projects"]),
+            absolute_test_path(&["frame", "media"]),
+            absolute_test_path(&["frame", "exports"]),
         )
-        .expect("runtime")
+    }
+
+    fn runtime() -> DesktopRuntime {
+        DesktopRuntime::new(DesktopAdapterKind::DeterministicFake, roots(), "test-1")
+            .expect("runtime")
     }
 
     fn context(runtime: &DesktopRuntime, role: WindowRole) -> DesktopWindowContext {
@@ -1400,7 +1415,7 @@ mod tests {
                 1,
                 "editor-open",
                 IpcCommand::EditorOpen {
-                    project_path: "/frame/projects/demo.frame".into(),
+                    project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
                 },
             ))
             .expect("open"));
@@ -1438,7 +1453,7 @@ mod tests {
                 "export-start",
                 IpcCommand::ExportStart {
                     project_revision: 2,
-                    output_path: "/frame/exports/demo.mp4".into(),
+                    output_path: absolute_test_path(&["frame", "exports", "demo.mp4"]),
                     profile: ExportProfile::DistributionMp4,
                 },
             ))
@@ -1450,7 +1465,7 @@ mod tests {
                 5,
                 "upload-start",
                 IpcCommand::UploadStart {
-                    source_path: "/frame/media/demo.mp4".into(),
+                    source_path: absolute_test_path(&["frame", "media", "demo.mp4"]),
                     upload_intent: "upload-start".into(),
                 },
             ))
@@ -1500,7 +1515,7 @@ mod tests {
                 1,
                 "cross-window-editor",
                 IpcCommand::EditorOpen {
-                    project_path: "/frame/projects/demo.frame".into(),
+                    project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
                 },
             )),
             Err(DesktopRuntimeError::Ipc(IpcError::CommandOutOfScope))
@@ -1512,7 +1527,7 @@ mod tests {
                 1,
                 "outside-root",
                 IpcCommand::EditorOpen {
-                    project_path: "/private/secret.frame".into(),
+                    project_path: absolute_test_path(&["private", "secret.frame"]),
                 },
             )),
             Err(DesktopRuntimeError::Ipc(IpcError::PathOutOfScope))
@@ -1594,12 +1609,9 @@ mod tests {
 
     #[test]
     fn release_adapter_never_claims_capture_or_os_lifecycle_success() {
-        let mut runtime = DesktopRuntime::new(
-            DesktopAdapterKind::Unavailable,
-            DesktopRoots::new("/frame/projects", "/frame/media", "/frame/exports"),
-            "release-1",
-        )
-        .expect("runtime");
+        let mut runtime =
+            DesktopRuntime::new(DesktopAdapterKind::Unavailable, roots(), "release-1")
+                .expect("runtime");
         let dispatch = runtime
             .dispatch(request(
                 &runtime,
