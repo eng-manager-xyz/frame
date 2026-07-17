@@ -44,6 +44,8 @@ assert_not_shared_cache() {
 
 request web_ready "/health/ready"
 request api_health "/api/v1/health"
+request media_server "/media-server"
+request media_server_query "/media-server?smoke=one&smoke=two"
 
 [[ "$(cat "${temporary}/web_ready.status")" == "200" ]] || {
   echo "web readiness did not return HTTP 200" >&2
@@ -51,6 +53,14 @@ request api_health "/api/v1/health"
 }
 [[ "$(cat "${temporary}/api_health.status")" == "200" ]] || {
   echo "API health did not return HTTP 200" >&2
+  exit 1
+}
+[[ "$(cat "${temporary}/media_server.status")" == "200" ]] || {
+  echo "legacy media-server metadata did not return HTTP 200" >&2
+  exit 1
+}
+[[ "$(cat "${temporary}/media_server_query.status")" == "200" ]] || {
+  echo "query-safe legacy media-server metadata did not return HTTP 200" >&2
   exit 1
 }
 
@@ -65,10 +75,27 @@ fi
 jq -e '.api_version.major == 1 and .service == "frame" and .status == "ok"' \
   "${temporary}/api_health.body" >/dev/null
 assert_not_shared_cache api_health
+assert_not_shared_cache media_server
+assert_not_shared_cache media_server_query
+
+expected_media_server='{"name":"@cap/media-server","version":"1.0.0","endpoints":["/health","/audio/status","/audio/check","/audio/extract","/audio/convert","/video/status","/video/probe","/video/thumbnail","/video/convert","/video/process","/video/edit","/video/process/:jobId/status","/video/process/:jobId/cancel","/video/cleanup","/video/force-cleanup"]}'
+[[ "$(cat "${temporary}/media_server.body")" == "${expected_media_server}" ]] || {
+  echo "legacy media-server metadata body drifted" >&2
+  exit 1
+}
+cmp -s "${temporary}/media_server.body" "${temporary}/media_server_query.body" || {
+  echo "legacy media-server query changed the exact metadata body" >&2
+  exit 1
+}
 
 content_type="$(awk 'BEGIN {IGNORECASE=1} /^content-type:/ {sub(/^[^:]+:[[:space:]]*/, ""); gsub("\\r", ""); print tolower($0)}' "${temporary}/api_health.headers" | tail -n 1)"
 [[ "${content_type}" == application/json* ]] || {
   echo "API health must return application/json" >&2
+  exit 1
+}
+media_content_type="$(awk 'BEGIN {IGNORECASE=1} /^content-type:/ {sub(/^[^:]+:[[:space:]]*/, ""); gsub("\\r", ""); print tolower($0)}' "${temporary}/media_server.headers" | tail -n 1)"
+[[ "${media_content_type}" == application/json* ]] || {
+  echo "legacy media-server metadata must return application/json" >&2
   exit 1
 }
 cache_control="$(awk 'BEGIN {IGNORECASE=1} /^cache-control:/ {sub(/^[^:]+:[[:space:]]*/, ""); gsub("\\r", ""); print tolower($0)}' "${temporary}/api_health.headers" | tail -n 1)"
@@ -78,6 +105,10 @@ if [[ "${cache_control}" != *no-store* && "${cache_control}" != *private* ]]; th
 fi
 if grep -Eiq '^set-cookie:' "${temporary}/api_health.headers"; then
   echo "API health must not set a cookie" >&2
+  exit 1
+fi
+if grep -Eiq '^set-cookie:' "${temporary}/media_server.headers"; then
+  echo "legacy media-server metadata must not set a cookie" >&2
   exit 1
 fi
 
@@ -92,6 +123,8 @@ jq -n \
   --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg web_ready "$(cat "${temporary}/web_ready.status")" \
   --arg api_health "$(cat "${temporary}/api_health.status")" \
+  --arg media_server "$(cat "${temporary}/media_server.status")" \
+  --arg media_server_query "$(cat "${temporary}/media_server_query.status")" \
   --arg actual_release "${actual_release}" \
   --arg expected_release "${expected_release}" \
   '{
@@ -105,7 +138,13 @@ jq -n \
         expected_release_sha: (if $expected_release == "" then null else $expected_release end),
         release_match: (if $expected_release == "" then null else $actual_release == $expected_release end)
       },
-      api_health: {status: ($api_health | tonumber), contract_major: 1, shared_cache: false}
+      api_health: {status: ($api_health | tonumber), contract_major: 1, shared_cache: false},
+      media_server: {
+        status: ($media_server | tonumber),
+        query_status: ($media_server_query | tonumber),
+        exact_contract: true,
+        shared_cache: false
+      }
     }
   }' > "${report}"
 

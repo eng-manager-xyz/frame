@@ -9,7 +9,7 @@
 
 use frame_application::{
     AuthFailure, AuthHashKey, AuthHashKeyRing, AuthPolicy, AuthService, BrowserMutationRequest,
-    OAuthProviderPolicy, ValidatedBrowserMutationProof,
+    OAuthProviderPolicy, RateLimitDecisionV1, ValidatedBrowserMutationProof,
 };
 use frame_domain::{
     ApiKeySecret, AuthClientKind, CorrelationId, CsrfToken, DurationMillis, ExactBrowserOrigin,
@@ -24,13 +24,19 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 use worker::{D1Database, D1PreparedStatement, Env, Error, Request, Result, send::IntoSendFuture};
+use zeroize::Zeroize;
 
-use crate::{auth_repository::D1AuthStateRepository, authenticated_web_runtime};
+use crate::{
+    auth_repository::D1AuthStateRepository,
+    authenticated_web_runtime,
+    compatibility_rate_limit::{self, CompatibilityRateLimitBucketV1},
+};
 
 pub const WEB_ACTION_REQUEST_SCHEMA_V1: &str = "frame.web-action-request.v1";
 pub const WEB_ACTION_RECEIPT_SCHEMA_V1: &str = "frame.web-action-receipt.v1";
 pub const SESSION_COOKIE_NAME: &str = "__Host-frame_session";
 pub const CSRF_COOKIE_NAME: &str = "__Host-frame_csrf";
+pub(crate) const AUTH_DELIVERY_ADMISSION_PER_MINUTE: u32 = 8;
 
 const AUTH_KEYRING_SECRET: &str = "FRAME_AUTH_HASH_KEYRING_V1";
 const MAX_ACTION_VALUE_BYTES: usize = 120;
@@ -42,6 +48,7 @@ pub enum BrowserWebFailure {
     Forbidden,
     Invalid,
     Conflict,
+    RateLimited,
     NotFound,
     Unavailable,
 }
@@ -75,6 +82,7 @@ impl WebActionRequestV1 {
                     || value.chars().any(char::is_control)
                     || value.contains(['<', '>'])
             })
+            || (action == WebAction::SetActiveOrganization && !value.is_some_and(valid_uuid))
             || self
                 .resource_id
                 .as_deref()
@@ -136,6 +144,7 @@ impl WebActionEffectState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebAction {
+    SetActiveOrganization,
     CompleteOnboarding,
     CreateSpace,
     CreateFolder,
@@ -152,6 +161,7 @@ pub enum WebAction {
 impl WebAction {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "organization.active-selection.update.v1" => Some(Self::SetActiveOrganization),
             "organization.onboarding.complete.v1" => Some(Self::CompleteOnboarding),
             "organization.spaces.create.v1" => Some(Self::CreateSpace),
             "organization.folders.create.v1" => Some(Self::CreateFolder),
@@ -170,6 +180,7 @@ impl WebAction {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::SetActiveOrganization => "organization.active-selection.update.v1",
             Self::CompleteOnboarding => "organization.onboarding.complete.v1",
             Self::CreateSpace => "organization.spaces.create.v1",
             Self::CreateFolder => "organization.folders.create.v1",
@@ -187,7 +198,7 @@ impl WebAction {
     #[must_use]
     pub fn permitted_for(self, role: &str) -> bool {
         match self {
-            Self::CompleteOnboarding | Self::UpdateAccount => {
+            Self::SetActiveOrganization | Self::CompleteOnboarding | Self::UpdateAccount => {
                 matches!(role, "owner" | "admin" | "member")
             }
             Self::CreateSpace
@@ -206,13 +217,18 @@ impl WebAction {
     const fn requires_value(self) -> bool {
         matches!(
             self,
-            Self::CreateSpace | Self::CreateFolder | Self::UpdateAccount | Self::UpdateOrganization
+            Self::SetActiveOrganization
+                | Self::CreateSpace
+                | Self::CreateFolder
+                | Self::UpdateAccount
+                | Self::UpdateOrganization
         )
     }
 
     #[must_use]
     pub fn invalidated(self) -> Vec<String> {
         let values: &[&str] = match self {
+            Self::SetActiveOrganization => &["dashboard"],
             Self::CompleteOnboarding => &["session", "workspace"],
             Self::CreateSpace => &["spaces", "workspace"],
             Self::CreateFolder => &["folders", "library"],
@@ -231,7 +247,8 @@ impl WebAction {
     #[must_use]
     pub const fn effect_state(self) -> WebActionEffectState {
         match self {
-            Self::CreateSpace
+            Self::SetActiveOrganization
+            | Self::CreateSpace
             | Self::CreateFolder
             | Self::StartImport
             | Self::UpdateAccount
@@ -260,9 +277,21 @@ struct MembershipRow {
     selection_revision: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct SelectionRow {
+    active_organization_id: Option<String>,
+    selection_revision: i64,
+    member_label: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RevisionRow {
     revision: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PresenceRow {
+    present: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -273,11 +302,20 @@ struct ExistingOperationRow {
 }
 
 #[derive(Debug, Deserialize)]
+struct ExistingSelectionOperationRow {
+    organization_id: String,
+    request_digest: String,
+    state: String,
+    response_json: Option<String>,
+    matching_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
 struct SpaceRow {
     id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HashKeyRingWire {
     active: HashKeyWire,
@@ -285,11 +323,17 @@ struct HashKeyRingWire {
     fallback: Vec<HashKeyWire>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HashKeyWire {
     version: u16,
     material_hex: String,
+}
+
+impl Drop for HashKeyWire {
+    fn drop(&mut self) {
+        self.material_hex.zeroize();
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -404,6 +448,9 @@ pub async fn load(
     let database = env.d1("DB")?;
     let membership = match active_membership(&database, &admission.user_id).await? {
         Some(membership) => membership,
+        None if surface == "dashboard" => {
+            return recovery_workspace(&database, &admission.user_id).await;
+        }
         None => return Ok(Err(BrowserWebFailure::NotFound)),
     };
     let selection_revision = u64::try_from(membership.selection_revision)
@@ -447,6 +494,47 @@ pub async fn load(
     }
 }
 
+async fn recovery_workspace(
+    database: &D1Database,
+    user_id: &str,
+) -> Result<BrowserWebOutcome<authenticated_web_runtime::WebWorkspaceV1>> {
+    let Some(selection) = selection_authority(database, user_id).await? else {
+        return Ok(Err(BrowserWebFailure::NotFound));
+    };
+    let selection_revision = u64::try_from(selection.selection_revision)
+        .map_err(|_| Error::RustError("browser organization selection is invalid".into()))?;
+    let organizations = authenticated_web_runtime::organization_choices(
+        database,
+        user_id,
+        selection.active_organization_id.as_deref(),
+    )
+    .await?;
+    if organizations.is_empty() || organizations.iter().any(|choice| choice.active) {
+        return Ok(Err(BrowserWebFailure::NotFound));
+    }
+    Ok(Ok(authenticated_web_runtime::WebWorkspaceV1 {
+        schema_version: authenticated_web_runtime::WEB_WORKSPACE_SCHEMA_V1.into(),
+        organization_name: "Select an organization".into(),
+        member_label: selection
+            .member_label
+            .unwrap_or_else(|| "Workspace member".into()),
+        role: "member".into(),
+        revision: 0,
+        selection_revision,
+        selection_context: selection_context(
+            user_id,
+            selection.active_organization_id.as_deref().unwrap_or(""),
+            selection_revision,
+        ),
+        selection_required: true,
+        organizations,
+        recordings: Vec::new(),
+        spaces: Vec::new(),
+        folders: Vec::new(),
+        import: None,
+    }))
+}
+
 pub async fn mutate(
     request: &Request,
     env: &Env,
@@ -469,6 +557,37 @@ pub async fn mutate(
         Err(failure) => return Ok(Err(failure)),
     };
     let database = env.d1("DB")?;
+
+    // Changing the active organization is the recovery path for a dangling or
+    // revoked current selection. Authenticate the browser session and CSRF
+    // proof first, but do not require authority in the organization being
+    // replaced. The target membership and current user-selection revision are
+    // asserted atomically by the dedicated repository path below.
+    if action == WebAction::SetActiveOrganization {
+        match compatibility_rate_limit::admit_principal(
+            env,
+            &database,
+            CompatibilityRateLimitBucketV1::OrganizationLibrary,
+            &admission.user_id,
+            now_ms,
+        )
+        .await?
+        {
+            RateLimitDecisionV1::Allowed => {}
+            RateLimitDecisionV1::Rejected { .. } => {
+                return Ok(Err(BrowserWebFailure::RateLimited));
+            }
+        }
+        let proof = match authenticate_mutation(request, env, &admission, now_ms).await? {
+            Ok(proof) => proof,
+            Err(failure) => return Ok(Err(failure)),
+        };
+        if proof.user_id().to_string() != admission.user_id {
+            return Ok(Err(BrowserWebFailure::Unavailable));
+        }
+        return execute_active_organization_action(&database, body, proof, now_ms).await;
+    }
+
     let membership = match active_membership(&database, &admission.user_id).await? {
         Some(membership) => membership,
         None => return Ok(Err(BrowserWebFailure::NotFound)),
@@ -499,6 +618,265 @@ pub async fn mutate(
     execute_action(&database, &membership, action, body, proof, now_ms).await
 }
 
+async fn execute_active_organization_action(
+    database: &D1Database,
+    body: &WebActionRequestV1,
+    proof: ValidatedBrowserMutationProof,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<WebActionReceiptV1>> {
+    let action = WebAction::SetActiveOrganization;
+    let user_id = proof.user_id().to_string();
+    let target_organization_id = body.value.as_deref().unwrap_or_default();
+    let request_digest = request_digest(action, body)?;
+
+    if let Some(existing) =
+        existing_selection_operation(database, &user_id, action, &body.idempotency_key).await?
+    {
+        if existing.matching_count != 1 {
+            if !consume_session_grant(database, &proof, now_ms).await? {
+                return Ok(Err(BrowserWebFailure::Unavailable));
+            }
+            return Ok(Err(BrowserWebFailure::Unavailable));
+        }
+        if existing.organization_id != target_organization_id
+            || existing.request_digest != request_digest
+        {
+            if !consume_session_grant(database, &proof, now_ms).await? {
+                return Ok(Err(BrowserWebFailure::Unavailable));
+            }
+            return Ok(Err(BrowserWebFailure::Conflict));
+        }
+        let Some(response_json) = existing
+            .response_json
+            .filter(|_| existing.state == "complete")
+        else {
+            if !consume_session_grant(database, &proof, now_ms).await? {
+                return Ok(Err(BrowserWebFailure::Unavailable));
+            }
+            return Ok(Err(BrowserWebFailure::Conflict));
+        };
+        let receipt = match serde_json::from_str::<WebActionReceiptV1>(&response_json) {
+            Ok(receipt) => receipt,
+            Err(_) => {
+                let _ = consume_session_grant(database, &proof, now_ms).await?;
+                return Err(Error::RustError(
+                    "stored browser action receipt is corrupt".into(),
+                ));
+            }
+        };
+        if receipt.validate(action).is_err() {
+            let _ = consume_session_grant(database, &proof, now_ms).await?;
+            return Ok(Err(BrowserWebFailure::Unavailable));
+        }
+        if !consume_selection_grant(
+            database,
+            target_organization_id,
+            receipt.revision,
+            &proof,
+            now_ms,
+        )
+        .await?
+        {
+            return Ok(Err(BrowserWebFailure::Unavailable));
+        }
+        return Ok(Ok(receipt));
+    }
+
+    let Some(selection) = selection_authority(database, &user_id).await? else {
+        return Ok(Err(BrowserWebFailure::NotFound));
+    };
+    let selection_revision = u64::try_from(selection.selection_revision)
+        .map_err(|_| Error::RustError("browser organization selection is invalid".into()))?;
+    if body.selection_revision != selection_revision
+        || body.selection_context
+            != selection_context(
+                &user_id,
+                selection.active_organization_id.as_deref().unwrap_or(""),
+                selection_revision,
+            )
+    {
+        let _ = consume_session_grant(database, &proof, now_ms).await?;
+        return Ok(Err(BrowserWebFailure::Conflict));
+    }
+    if !target_membership_exists(database, target_organization_id, &user_id).await? {
+        let _ = consume_session_grant(database, &proof, now_ms).await?;
+        return Ok(Err(BrowserWebFailure::NotFound));
+    }
+    let Some(next_revision) = selection_revision.checked_add(1) else {
+        let _ = consume_session_grant(database, &proof, now_ms).await?;
+        return Ok(Err(BrowserWebFailure::Conflict));
+    };
+
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    let receipt = WebActionReceiptV1 {
+        schema_version: WEB_ACTION_RECEIPT_SCHEMA_V1.into(),
+        action: action.as_str().into(),
+        effect_state: WebActionEffectState::Applied,
+        revision: next_revision,
+        invalidated: action.invalidated(),
+    };
+    let response_json = serde_json::to_string(&receipt)
+        .map_err(|_| Error::RustError("browser action receipt is unavailable".into()))?;
+    let value_json = serde_json::to_string(&serde_json::json!({
+        "organization_id": target_organization_id,
+    }))
+    .map_err(|_| Error::RustError("browser action effect is unavailable".into()))?;
+
+    let mut statements = Vec::with_capacity(16);
+    push_selection_action_assertions(
+        database,
+        &mut statements,
+        &operation_id,
+        target_organization_id,
+        selection.active_organization_id.as_deref(),
+        selection_revision,
+        &proof,
+        now_ms,
+    )?;
+    statements.push(
+        database
+            .prepare(
+                "INSERT INTO authenticated_web_action_operations_v1( \
+                   operation_id,organization_id,user_id,action,idempotency_key,request_digest, \
+                   state,response_json,created_at_ms,completed_at_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,'claimed',NULL,?7,NULL)",
+            )
+            .bind(&[
+                JsValue::from_str(&operation_id),
+                JsValue::from_str(target_organization_id),
+                JsValue::from_str(&user_id),
+                JsValue::from_str(action.as_str()),
+                JsValue::from_str(&body.idempotency_key),
+                JsValue::from_str(&request_digest),
+                JsValue::from_f64(now_ms as f64),
+            ])?,
+    );
+    statements.push(
+        database
+            .prepare(
+                "UPDATE users SET active_organization_id=?2, \
+                   organization_preference_revision=organization_preference_revision+1, \
+                   organization_last_operation_id=?3,updated_at_ms=?4 \
+                 WHERE id=?1 AND status='active' AND deleted_at_ms IS NULL \
+                   AND organization_preference_revision=?5 \
+                   AND COALESCE(active_organization_id,'')=?6",
+            )
+            .bind(&[
+                JsValue::from_str(&user_id),
+                JsValue::from_str(target_organization_id),
+                JsValue::from_str(&operation_id),
+                JsValue::from_f64(now_ms as f64),
+                JsValue::from_f64(selection_revision as f64),
+                JsValue::from_str(selection.active_organization_id.as_deref().unwrap_or("")),
+            ])?,
+    );
+    statements.push(change_assertion_statement(
+        database,
+        &operation_id,
+        "product_effect",
+    )?);
+    statements.push(
+        database
+            .prepare(
+                "INSERT INTO authenticated_web_action_effects_v1( \
+                   operation_id,organization_id,user_id,action,effect_state,value_json,created_at_ms) \
+                 VALUES (?1,?2,?3,?4,'applied',?5,?6)",
+            )
+            .bind(&[
+                JsValue::from_str(&operation_id),
+                JsValue::from_str(target_organization_id),
+                JsValue::from_str(&user_id),
+                JsValue::from_str(action.as_str()),
+                JsValue::from_str(&value_json),
+                JsValue::from_f64(now_ms as f64),
+            ])?,
+    );
+    statements.push(change_assertion_statement(
+        database,
+        &operation_id,
+        "action_effect",
+    )?);
+    statements.push(
+        database
+            .prepare(
+                "UPDATE authenticated_web_action_operations_v1 \
+                 SET state='complete',response_json=?2,completed_at_ms=?3 \
+                 WHERE operation_id=?1 AND state='claimed'",
+            )
+            .bind(&[
+                JsValue::from_str(&operation_id),
+                JsValue::from_str(&response_json),
+                JsValue::from_f64(now_ms as f64),
+            ])?,
+    );
+    statements.push(change_assertion_statement(
+        database,
+        &operation_id,
+        "operation_complete",
+    )?);
+    statements.push(grant_delete_statement(database, &proof)?);
+    statements.push(change_assertion_statement(
+        database,
+        &operation_id,
+        "grant_consumed",
+    )?);
+    statements.push(
+        database
+            .prepare("DELETE FROM authenticated_web_action_assertions_v1 WHERE operation_id=?1")
+            .bind(&[JsValue::from_str(&operation_id)])?,
+    );
+
+    let expected_results = statements.len();
+    let results = match database.batch(statements).into_send().await {
+        Ok(results) => results,
+        Err(_) => return Ok(Err(BrowserWebFailure::Unavailable)),
+    };
+    if results.len() != expected_results || results.iter().any(|result| !result.success()) {
+        return Ok(Err(BrowserWebFailure::Unavailable));
+    }
+    Ok(Ok(receipt))
+}
+
+/// Revoke the exact browser session after the same Origin, Fetch Metadata,
+/// double-submit CSRF, and current-generation checks used by product
+/// mutations. Cookie clearing is owned by the transport adapter and happens
+/// only after this durable revocation succeeds.
+pub async fn logout(request: &Request, env: &Env, now_ms: i64) -> Result<BrowserWebOutcome<()>> {
+    let admission = match authenticate_read(request, env, now_ms).await? {
+        Ok(admission) => admission,
+        Err(failure) => return Ok(Err(failure)),
+    };
+    let proof = match authenticate_mutation(request, env, &admission, now_ms).await? {
+        Ok(proof) => proof,
+        Err(failure) => return Ok(Err(failure)),
+    };
+    let now = TimestampMillis::new(now_ms)
+        .map_err(|_| Error::RustError("browser auth clock is invalid".into()))?;
+    let database = env.d1("DB")?;
+    let repository = D1AuthStateRepository::new(&database);
+    let clock = FixedClock(now);
+    let secrets = UnavailableSecretSource;
+    let sealer = UnavailableDeliverySealer;
+    let hash_keys = match auth_hash_keyring(env) {
+        Ok(keys) => keys,
+        Err(failure) => return Ok(Err(failure)),
+    };
+    let policy = match verifier_policy() {
+        Ok(policy) => policy,
+        Err(failure) => return Ok(Err(failure)),
+    };
+    let service = AuthService::new(&repository, &clock, &secrets, &sealer, hash_keys, policy);
+    match service.logout(proof, CorrelationId::new()).await {
+        Ok(()) => Ok(Ok(())),
+        Err(AuthFailure::Unauthenticated) => Ok(Err(BrowserWebFailure::Unauthenticated)),
+        Err(AuthFailure::RequestRejected | AuthFailure::RateLimited) => {
+            Ok(Err(BrowserWebFailure::Forbidden))
+        }
+        Err(AuthFailure::InvalidRequest) => Ok(Err(BrowserWebFailure::Invalid)),
+        Err(AuthFailure::Unavailable) => Ok(Err(BrowserWebFailure::Unavailable)),
+    }
+}
+
 async fn authenticate_read(
     request: &Request,
     env: &Env,
@@ -512,6 +890,33 @@ async fn authenticate_read(
     {
         return Ok(Err(BrowserWebFailure::Forbidden));
     }
+    authenticate_session_credential(request, env, now_ms).await
+}
+
+/// Verify only Cap's host-only browser session credential. This deliberately
+/// does not add Origin, Fetch Metadata, CSRF, organization, or API-key policy
+/// to standalone legacy GET routes whose pinned source calls `getCurrentUser`.
+pub(crate) async fn authenticate_host_only_browser_session(
+    request: &Request,
+    env: &Env,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<String>> {
+    match authenticate_session_credential(request, env, now_ms).await? {
+        Ok(admission) => Ok(Ok(admission.user_id)),
+        Err(BrowserWebFailure::Invalid) => Ok(Err(BrowserWebFailure::Unauthenticated)),
+        // The credential verifier's only `Forbidden` result is its own rate
+        // limiter. Cap does not map that infrastructure condition to the
+        // standalone route's explicit invalid-session 401.
+        Err(BrowserWebFailure::Forbidden) => Ok(Err(BrowserWebFailure::Unavailable)),
+        Err(failure) => Ok(Err(failure)),
+    }
+}
+
+async fn authenticate_session_credential(
+    request: &Request,
+    env: &Env,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<BrowserAdmission>> {
     let Some(token_text) = unique_cookie(request, SESSION_COOKIE_NAME)? else {
         return Ok(Err(BrowserWebFailure::Unauthenticated));
     };
@@ -637,6 +1042,50 @@ async fn active_membership(database: &D1Database, user_id: &str) -> Result<Optio
             && (0..=9_007_199_254_740_991).contains(&row.revision)
             && (0..=9_007_199_254_740_991).contains(&row.selection_revision)
     }))
+}
+
+async fn selection_authority(database: &D1Database, user_id: &str) -> Result<Option<SelectionRow>> {
+    let row = database
+        .prepare(
+            "SELECT active_organization_id, \
+                    organization_preference_revision AS selection_revision, \
+                    display_name AS member_label \
+             FROM users WHERE id=?1 AND status='active' AND deleted_at_ms IS NULL LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(user_id)])?
+        .first::<SelectionRow>(None)
+        .await?;
+    Ok(row.filter(|row| {
+        (0..=9_007_199_254_740_991).contains(&row.selection_revision)
+            && row.active_organization_id.as_ref().is_none_or(|value| {
+                !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+            })
+            && row.member_label.as_ref().is_none_or(|value| {
+                !value.is_empty() && value.len() <= 160 && !value.chars().any(char::is_control)
+            })
+    }))
+}
+
+async fn target_membership_exists(
+    database: &D1Database,
+    organization_id: &str,
+    user_id: &str,
+) -> Result<bool> {
+    Ok(database
+        .prepare(
+            "SELECT 1 AS present FROM organization_members m \
+             JOIN organizations o ON o.id=m.organization_id AND o.status='active' \
+             JOIN users u ON u.id=m.user_id AND u.status='active' AND u.deleted_at_ms IS NULL \
+             WHERE m.organization_id=?1 AND m.user_id=?2 AND m.state='active' \
+               AND m.role IN ('owner','admin','member') LIMIT 1",
+        )
+        .bind(&[
+            JsValue::from_str(organization_id),
+            JsValue::from_str(user_id),
+        ])?
+        .first::<PresenceRow>(None)
+        .await?
+        .is_some_and(|row| row.present == 1))
 }
 
 fn supported_browser_role(role: &str) -> bool {
@@ -1031,7 +1480,8 @@ fn push_product_effect(
                 JsValue::from_str(&membership.organization_id),
                 JsValue::from_str(body.value.as_deref().unwrap_or_default()),
             ])?,
-        WebAction::CompleteOnboarding
+        WebAction::SetActiveOrganization
+        | WebAction::CompleteOnboarding
         | WebAction::UpdateMembers
         | WebAction::UpdateStorage
         | WebAction::CreateDeveloperKey
@@ -1062,6 +1512,33 @@ async fn existing_operation(
             JsValue::from_str(idempotency_key),
         ])?
         .first::<ExistingOperationRow>(None)
+        .await
+}
+
+async fn existing_selection_operation(
+    database: &D1Database,
+    user_id: &str,
+    action: WebAction,
+    idempotency_key: &str,
+) -> Result<Option<ExistingSelectionOperationRow>> {
+    database
+        .prepare(
+            "SELECT operation.organization_id,operation.request_digest,operation.state, \
+                    operation.response_json, \
+                    (SELECT COUNT(*) FROM authenticated_web_action_operations_v1 matches \
+                     WHERE matches.user_id=?1 AND matches.action=?2 \
+                       AND matches.idempotency_key=?3) AS matching_count \
+             FROM authenticated_web_action_operations_v1 operation \
+             WHERE operation.user_id=?1 AND operation.action=?2 \
+               AND operation.idempotency_key=?3 \
+             ORDER BY operation.created_at_ms,operation.operation_id LIMIT 1",
+        )
+        .bind(&[
+            JsValue::from_str(user_id),
+            JsValue::from_str(action.as_str()),
+            JsValue::from_str(idempotency_key),
+        ])?
+        .first::<ExistingSelectionOperationRow>(None)
         .await
 }
 
@@ -1128,6 +1605,142 @@ async fn consume_grant(
         }
         Err(_) => Ok(false),
     }
+}
+
+async fn consume_session_grant(
+    database: &D1Database,
+    proof: &ValidatedBrowserMutationProof,
+    now_ms: i64,
+) -> Result<bool> {
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    let statements = vec![
+        grant_assertion_statement(database, &operation_id, proof, now_ms)?,
+        grant_delete_statement(database, proof)?,
+        change_assertion_statement(database, &operation_id, "grant_consumed")?,
+        database
+            .prepare("DELETE FROM authenticated_web_action_assertions_v1 WHERE operation_id=?1")
+            .bind(&[JsValue::from_str(&operation_id)])?,
+    ];
+    let expected_results = statements.len();
+    match database.batch(statements).into_send().await {
+        Ok(results) => {
+            Ok(results.len() == expected_results && results.iter().all(|result| result.success()))
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+async fn consume_selection_grant(
+    database: &D1Database,
+    organization_id: &str,
+    selection_revision: u64,
+    proof: &ValidatedBrowserMutationProof,
+    now_ms: i64,
+) -> Result<bool> {
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    let statements = vec![
+        database
+            .prepare(
+                "INSERT INTO authenticated_web_action_assertions_v1( \
+                   operation_id,assertion_kind,expected_count,actual_count) \
+                 VALUES (?1,'selection_authority',1,(SELECT COUNT(*) FROM users \
+                   WHERE id=?2 AND status='active' AND deleted_at_ms IS NULL \
+                     AND active_organization_id=?3 \
+                     AND organization_preference_revision=?4))",
+            )
+            .bind(&[
+                JsValue::from_str(&operation_id),
+                JsValue::from_str(&proof.user_id().to_string()),
+                JsValue::from_str(organization_id),
+                JsValue::from_f64(selection_revision as f64),
+            ])?,
+        target_membership_assertion_statement(
+            database,
+            &operation_id,
+            organization_id,
+            &proof.user_id().to_string(),
+        )?,
+        grant_assertion_statement(database, &operation_id, proof, now_ms)?,
+        grant_delete_statement(database, proof)?,
+        change_assertion_statement(database, &operation_id, "grant_consumed")?,
+        database
+            .prepare("DELETE FROM authenticated_web_action_assertions_v1 WHERE operation_id=?1")
+            .bind(&[JsValue::from_str(&operation_id)])?,
+    ];
+    let expected_results = statements.len();
+    match database.batch(statements).into_send().await {
+        Ok(results) => {
+            Ok(results.len() == expected_results && results.iter().all(|result| result.success()))
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_selection_action_assertions(
+    database: &D1Database,
+    statements: &mut Vec<D1PreparedStatement>,
+    operation_id: &str,
+    target_organization_id: &str,
+    current_organization_id: Option<&str>,
+    selection_revision: u64,
+    proof: &ValidatedBrowserMutationProof,
+    now_ms: i64,
+) -> Result<()> {
+    statements.push(
+        database
+            .prepare(
+                "INSERT INTO authenticated_web_action_assertions_v1( \
+                   operation_id,assertion_kind,expected_count,actual_count) \
+                 VALUES (?1,'selection_authority',1,(SELECT COUNT(*) FROM users \
+                   WHERE id=?2 AND status='active' AND deleted_at_ms IS NULL \
+                     AND organization_preference_revision=?3 \
+                     AND COALESCE(active_organization_id,'')=?4))",
+            )
+            .bind(&[
+                JsValue::from_str(operation_id),
+                JsValue::from_str(&proof.user_id().to_string()),
+                JsValue::from_f64(selection_revision as f64),
+                JsValue::from_str(current_organization_id.unwrap_or("")),
+            ])?,
+    );
+    statements.push(target_membership_assertion_statement(
+        database,
+        operation_id,
+        target_organization_id,
+        &proof.user_id().to_string(),
+    )?);
+    statements.push(grant_assertion_statement(
+        database,
+        operation_id,
+        proof,
+        now_ms,
+    )?);
+    Ok(())
+}
+
+fn target_membership_assertion_statement(
+    database: &D1Database,
+    operation_id: &str,
+    organization_id: &str,
+    user_id: &str,
+) -> Result<D1PreparedStatement> {
+    database
+        .prepare(
+            "INSERT INTO authenticated_web_action_assertions_v1( \
+               operation_id,assertion_kind,expected_count,actual_count) \
+             VALUES (?1,'membership_authority',1,(SELECT COUNT(*) \
+               FROM organization_members m \
+               JOIN organizations o ON o.id=m.organization_id AND o.status='active' \
+               JOIN users u ON u.id=m.user_id AND u.status='active' AND u.deleted_at_ms IS NULL \
+               WHERE m.organization_id=?2 AND m.user_id=?3 AND m.state='active' \
+                 AND m.role IN ('owner','admin','member')))",
+        )
+        .bind(&[
+            JsValue::from_str(operation_id),
+            JsValue::from_str(organization_id),
+            JsValue::from_str(user_id),
+        ])
 }
 
 fn grant_assertion_statement(
@@ -1248,11 +1861,14 @@ fn unique_cookie(request: &Request, name: &str) -> Result<Option<String>> {
     Ok(found)
 }
 
-fn auth_hash_keyring(env: &Env) -> BrowserWebOutcome<AuthHashKeyRing> {
+pub(crate) fn auth_hash_keyring(env: &Env) -> BrowserWebOutcome<AuthHashKeyRing> {
     let secret = env
         .secret(AUTH_KEYRING_SECRET)
         .map_err(|_| BrowserWebFailure::Unavailable)?;
-    parse_hash_keyring(&secret.to_string())
+    let mut encoded = secret.to_string();
+    let parsed = parse_hash_keyring(&encoded);
+    encoded.zeroize();
+    parsed
 }
 
 fn parse_hash_keyring(value: &str) -> BrowserWebOutcome<AuthHashKeyRing> {
@@ -1299,7 +1915,7 @@ const fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-fn verifier_policy() -> BrowserWebOutcome<AuthPolicy> {
+pub(crate) fn verifier_policy() -> BrowserWebOutcome<AuthPolicy> {
     let duration = |value| DurationMillis::new(value).map_err(|_| BrowserWebFailure::Unavailable);
     let rate = |maximum| -> BrowserWebOutcome<MultiRateLimitPolicy> {
         let policy = RateLimitPolicy::new(maximum, duration(60_000)?, duration(60_000)?)
@@ -1316,10 +1932,10 @@ fn verifier_policy() -> BrowserWebOutcome<AuthPolicy> {
         duration(30 * 24 * 60 * 60 * 1_000)?,
         duration(15 * 60 * 1_000)?,
         10,
-        rate(100)?,
-        rate(100)?,
-        rate(100)?,
-        rate(100)?,
+        rate(AUTH_DELIVERY_ADMISSION_PER_MINUTE)?,
+        rate(AUTH_DELIVERY_ADMISSION_PER_MINUTE)?,
+        rate(AUTH_DELIVERY_ADMISSION_PER_MINUTE)?,
+        rate(AUTH_DELIVERY_ADMISSION_PER_MINUTE)?,
         duration(10 * 60 * 1_000)?,
         vec![OAuthProviderPolicy {
             provider: OAuthProvider::Github,
@@ -1359,7 +1975,8 @@ fn valid_resource_id(value: &str) -> bool {
 }
 
 fn valid_uuid(value: &str) -> bool {
-    uuid::Uuid::parse_str(value).is_ok_and(|value| !value.is_nil())
+    uuid::Uuid::parse_str(value)
+        .is_ok_and(|uuid| !uuid.is_nil() && uuid.as_hyphenated().to_string() == value)
 }
 
 #[cfg(test)]
@@ -1375,7 +1992,13 @@ mod tests {
             selection_revision: 3,
             selection_context: selection_context(user_id, organization_id, 3),
             idempotency_key: "018f47a6-7b1c-7f55-8f39-8f8a86900001".into(),
-            value: action.requires_value().then(|| "Quarterly updates".into()),
+            value: action.requires_value().then(|| {
+                if action == WebAction::SetActiveOrganization {
+                    "018f47a6-7b1c-7f55-8f39-8f8a86900004".into()
+                } else {
+                    "Quarterly updates".into()
+                }
+            }),
             resource_id: None,
         }
     }
@@ -1383,6 +2006,7 @@ mod tests {
     #[test]
     fn action_inventory_and_role_policy_are_closed() {
         for action in [
+            WebAction::SetActiveOrganization,
             WebAction::CompleteOnboarding,
             WebAction::CreateSpace,
             WebAction::CreateFolder,
@@ -1400,6 +2024,7 @@ mod tests {
             assert!(!action.invalidated().is_empty());
         }
         assert!(WebAction::UpdateAccount.permitted_for("member"));
+        assert!(WebAction::SetActiveOrganization.permitted_for("member"));
         assert!(!WebAction::CreateSpace.permitted_for("member"));
         assert!(!WebAction::UpdateBilling.permitted_for("admin"));
         assert_eq!(
@@ -1417,6 +2042,7 @@ mod tests {
     #[test]
     fn requests_are_bounded_and_deny_unknown_shapes() {
         for action in [
+            WebAction::SetActiveOrganization,
             WebAction::CompleteOnboarding,
             WebAction::CreateSpace,
             WebAction::CreateFolder,

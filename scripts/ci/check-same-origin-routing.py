@@ -23,10 +23,13 @@ RUNBOOK_PATH = ROOT / "docs" / "operations" / "same-origin-routing.md"
 EVIDENCE_PATH = ROOT / "docs" / "evidence" / "same-origin-routing-local.md"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "same-origin-routing.yml"
 LIVE_RUNNER_PATH = ROOT / "scripts" / "ci" / "same-origin-live-conformance.py"
+SMOKE_PATH = ROOT / "scripts" / "ci" / "smoke-canonical-domain.sh"
+WRANGLER_PREP_PATH = ROOT / "scripts" / "ci" / "prepare-wrangler-config.py"
 
 CANONICAL_HOST = "frame.engmanager.xyz"
 STAGING_HOST = "frame-staging.engmanager.xyz"
 ROUTE_PATTERN = f"{CANONICAL_HOST}/api*"
+COMPATIBILITY_ROUTE_PATTERN = f"{CANONICAL_HOST}/media-server*"
 
 
 class ContractError(RuntimeError):
@@ -44,25 +47,39 @@ def read_json(path: pathlib.Path) -> dict[str, Any]:
     return value
 
 
-def literal_route_matches(url: str) -> bool:
+def literal_worker_route(url: str) -> str | None:
     for scheme in ("https://", "http://"):
         prefix = f"{scheme}{CANONICAL_HOST}"
         if url.startswith(prefix):
-            return url.removeprefix(prefix).startswith("/api")
-    return False
+            suffix = url.removeprefix(prefix)
+            if suffix.startswith("/api"):
+                return "api"
+            if suffix.startswith("/media-server"):
+                return "media-server"
+    return None
 
 
 def validate_matrix(matrix: dict[str, Any]) -> dict[str, int]:
     require(matrix.get("schema") == "frame.same-origin-route-owner-matrix.v1", "matrix schema drifted")
     require(matrix.get("canonical_host") == CANONICAL_HOST, "matrix canonical host drifted")
     require(matrix.get("worker_route_pattern") == ROUTE_PATTERN, "matrix route pattern drifted")
+    require(
+        matrix.get("compatibility_worker_route_pattern") == COMPATIBILITY_ROUTE_PATTERN,
+        "matrix compatibility route pattern drifted",
+    )
     require(matrix.get("lookalike_policy") == "non_cacheable_404", "lookalike policy drifted")
 
     cases = matrix.get("cases")
     require(isinstance(cases, list) and len(cases) >= 25, "route matrix is not exhaustive")
     ids = [case.get("id") for case in cases if isinstance(case, dict)]
     require(len(ids) == len(cases) == len(set(ids)), "route matrix IDs must be unique strings")
-    allowed_owners = {"render", "worker_api", "worker_reject", "render_or_edge_reject"}
+    allowed_owners = {
+        "render",
+        "worker_api",
+        "worker_compat",
+        "worker_reject",
+        "render_or_edge_reject",
+    }
     owners: dict[str, int] = {owner: 0 for owner in allowed_owners}
     for case in cases:
         require(isinstance(case, dict), "every route case must be an object")
@@ -74,11 +91,18 @@ def validate_matrix(matrix: dict[str, Any]) -> dict[str, int]:
         require(isinstance(url, str) and isinstance(raw_path, str), f"{case.get('id')}: invalid target")
         require(url.startswith(f"https://{CANONICAL_HOST}/"), f"{case.get('id')}: host is not canonical")
         require("#" not in url and raw_path.startswith("/"), f"{case.get('id')}: invalid HTTP target")
-        intercepted = literal_route_matches(url)
+        intercepted = literal_worker_route(url)
         if owner == "render":
-            require(not intercepted, f"{case.get('id')}: Render path matches broad Worker route")
-        elif owner in {"worker_api", "worker_reject"}:
-            require(intercepted, f"{case.get('id')}: Worker path misses broad route")
+            require(intercepted is None, f"{case.get('id')}: Render path matches a Worker route")
+        elif owner == "worker_api":
+            require(intercepted == "api", f"{case.get('id')}: API path misses broad route")
+        elif owner == "worker_compat":
+            require(
+                intercepted == "media-server",
+                f"{case.get('id')}: compatibility path misses narrow route",
+            )
+        elif owner == "worker_reject":
+            require(intercepted is not None, f"{case.get('id')}: closed Worker path fell through")
 
     for required_id in {
         "api-discovery-query",
@@ -93,6 +117,12 @@ def validate_matrix(matrix: dict[str, Any]) -> dict[str, int]:
         "lookalike-double-encoded-slash",
         "lookalike-encoded-prefix",
         "lookalike-uppercase",
+        "media-server-root",
+        "media-server-root-query",
+        "media-server-trailing-slash",
+        "media-server-unpromoted-child",
+        "media-server-lookalike",
+        "render-media-server-uppercase",
     }:
         require(required_id in ids, f"route matrix is missing {required_id}")
 
@@ -141,6 +171,10 @@ def validate_inventory(inventory: dict[str, Any]) -> None:
         require(dns.get("wildcard") is False, f"{name}: wildcard must remain forbidden")
         route = entry.get("worker_route")
         require(route.get("pattern") == f"{expected_host}/api*", f"{name}: Worker pattern drifted")
+        require(
+            route.get("compatibility_patterns") == [f"{expected_host}/media-server*"],
+            f"{name}: compatibility Worker pattern drifted",
+        )
         require(route.get("workers_dev") is False, f"{name}: workers.dev exposure drifted")
     protected = set(inventory.get("protected_evidence_required", []))
     normalization = inventory.get("url_normalization", {})
@@ -169,8 +203,15 @@ def validate_declarations() -> None:
     require(wrangler.get("workers_dev") is False, "production workers.dev must be disabled")
     require(wrangler.get("name") == "frame-control-plane", "Worker script identity drifted")
     routes = wrangler.get("routes")
-    require(isinstance(routes, list) and len(routes) == 1, "Wrangler must declare one production route")
-    require(routes[0] == {"pattern": ROUTE_PATTERN, "zone_name": "engmanager.xyz"}, "Wrangler route drifted")
+    require(isinstance(routes, list) and len(routes) == 2, "Wrangler must declare two production routes")
+    require(
+        routes
+        == [
+            {"pattern": ROUTE_PATTERN, "zone_name": "engmanager.xyz"},
+            {"pattern": COMPATIBILITY_ROUTE_PATTERN, "zone_name": "engmanager.xyz"},
+        ],
+        "Wrangler routes drifted",
+    )
     variables = wrangler.get("vars", {})
     require(variables.get("FRAME_DEPLOYMENT") == "production", "Worker deployment mode drifted")
     require(variables.get("FRAME_PUBLIC_HOST") == CANONICAL_HOST, "Worker host policy drifted")
@@ -185,6 +226,11 @@ def validate_declarations() -> None:
     require(zone.get("dns", {}).get("hostname") == CANONICAL_HOST, "zone DNS host drifted")
     require(zone.get("dns", {}).get("initial_proxy") is False, "DNS must begin DNS-only")
     require(zone.get("worker_route", {}).get("pattern") == ROUTE_PATTERN, "zone handoff route drifted")
+    require(
+        zone.get("worker_route", {}).get("compatibility_patterns")
+        == [COMPATIBILITY_ROUTE_PATTERN],
+        "zone handoff compatibility route drifted",
+    )
     require(zone.get("worker_route", {}).get("lookalike_policy") == "non_cacheable_404", "zone lookalike policy drifted")
 
 
@@ -218,6 +264,8 @@ def validate_runtime_and_docs() -> None:
     normalized_evidence = " ".join(evidence.lower().split())
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     live_runner = LIVE_RUNNER_PATH.read_text(encoding="utf-8")
+    smoke = SMOKE_PATH.read_text(encoding="utf-8")
+    wrangler_prep = WRANGLER_PREP_PATH.read_text(encoding="utf-8")
     for marker in (
         "DNS-only",
         "Full (strict)",
@@ -227,6 +275,7 @@ def validate_runtime_and_docs() -> None:
         "Worker Route rollback",
         "CNAME rollback",
         "unrelated-host",
+        "media-server*",
     ):
         require(marker in runbook, f"same-origin runbook is missing {marker}")
     for marker in (
@@ -239,6 +288,18 @@ def validate_runtime_and_docs() -> None:
     require("python3 -I scripts/ci/check-same-origin-routing.py" in workflow, "workflow omits static checker")
     require("same_origin_routing_v1" in workflow, "workflow omits Rust route matrix")
     require("same-origin-live-conformance.py --self-test" in workflow, "workflow omits live-runner self-test")
+    require("bash -n scripts/ci/smoke-canonical-domain.sh" in workflow, "workflow omits smoke syntax validation")
+    for marker in (
+        'request media_server "/media-server"',
+        'request media_server_query "/media-server?smoke=one&smoke=two"',
+        "expected_media_server=",
+        "assert_not_shared_cache media_server",
+    ):
+        require(marker in smoke, f"canonical-domain smoke is missing {marker}")
+    require(
+        f'pattern = "{COMPATIBILITY_ROUTE_PATTERN}"' in wrangler_prep,
+        "artifact-only Wrangler preparation does not enforce the compatibility route",
+    )
     for marker in (
         "ALLOWED_ORIGINS",
         '"https://frame.engmanager.xyz"',

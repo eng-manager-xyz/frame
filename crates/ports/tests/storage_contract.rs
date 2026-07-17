@@ -460,6 +460,51 @@ async fn version_fences_treat_absence_as_precondition_failure() {
 }
 
 #[tokio::test]
+async fn conditional_copy_and_delete_capabilities_are_independent() {
+    let tenant = TenantId::new();
+    let video = VideoId::new();
+    let source = source_key(tenant, video, 1);
+    let destination = preview_key(tenant, video, 1);
+    let store = DeterministicObjectStore::new(
+        full_capabilities().without(ObjectStoreOperation::ConditionalDeleteVersion),
+    );
+    let written = store
+        .put(context(tenant), put_request(source.clone(), b"immutable"))
+        .await
+        .expect("put");
+    store
+        .copy(
+            context(tenant),
+            CopyObjectRequestV1::immutable(source.clone(), destination)
+                .expect("copy")
+                .if_source_version(written.metadata().provider_version().clone()),
+        )
+        .await
+        .expect("conditional copy remains supported");
+    assert_eq!(
+        store
+            .delete(
+                context(tenant),
+                DeleteObjectRequestV1::if_version(
+                    source.clone(),
+                    written.metadata().provider_version().clone(),
+                ),
+            )
+            .await
+            .expect_err("conditional delete is independently unsupported")
+            .kind(),
+        StorageFailureKind::UnsupportedCapability
+    );
+    assert_eq!(
+        store
+            .delete(context(tenant), DeleteObjectRequestV1::idempotent(source))
+            .await
+            .expect("unconditional delete remains supported"),
+        DeleteObjectDisposition::Deleted
+    );
+}
+
+#[tokio::test]
 async fn integrity_failure_is_terminal_and_leaves_no_partial_object() {
     let tenant = TenantId::new();
     let store = DeterministicObjectStore::new(full_capabilities());

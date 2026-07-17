@@ -29,6 +29,7 @@ jobs:
         run: |
           python3 scripts/ci/check-workflow-policy.py
           python3 -I scripts/ci/test-workflow-policy.py
+          python3 -I scripts/ci/test-release-change-plan.py
       - name: Validate YAML and Render authority
         run: |
           ruby scripts/ci/check-yaml-syntax.rb
@@ -56,7 +57,11 @@ jobs:
           python3 -I scripts/ci/organization-sqlite-semantic-conformance.py
           python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
           python3 -I scripts/ci/direct-upload-sqlite-conformance.py
+          python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
           python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
+          python3 -I scripts/ci/media-job-inputs-sqlite-conformance.py
+          python3 -I scripts/ci/worker-auth-sqlite-conformance.py
+          python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
           python3 -I scripts/migration/test_cap_id_map.py
           python3 -I scripts/migration/test_etl_cap_id_map.py
           python3 -I scripts/migration/test_cap_business_plan_contract.py
@@ -213,14 +218,17 @@ jobs:
       - name: Test frame-client feature and target matrix
         run: |
           cargo test --locked -p frame-client --all-features
+          cargo test --locked -p frame-authenticated-client
           cargo check --locked -p frame-client --no-default-features
+          cargo check --locked -p frame-authenticated-client
           cargo check --locked -p frame-client --no-default-features --target wasm32-unknown-unknown
+          cargo check --locked -p frame-authenticated-client --target wasm32-unknown-unknown
           cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
       - name: Build a provider-free Worker bundle
         run: >-
           npx --yes wrangler@4.111.0 deploy --dry-run
           --config apps/control-plane/wrangler.toml
-          --outdir target/wrangler-ci
+          --outdir "${GITHUB_WORKSPACE}/target/wrangler-ci"
       - name: Prove lockfile stability
         run: git diff --exit-code -- Cargo.lock
       - name: Retain the synthetic Worker build and local binding evidence
@@ -345,18 +353,26 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           cache-on-failure: false
-      - name: Test portable domain, client, application, ports, and desktop core
+      - name: Test portable domain, clients, application, ports, and desktop core
+        env:
+          # The desktop contract adapter imports native Instant identities but
+          # these portable tests do not execute media. The gtk-rs build scripts
+          # use DOCS_RS to type-check without probing or linking GStreamer.
+          DOCS_RS: "1"
         run: >-
           cargo test --locked
           -p frame-domain -p frame-ports -p frame-application
-          -p frame-client -p frame-desktop-core
+          -p frame-client -p frame-authenticated-client -p frame-desktop-core
       - name: Compile the Windows encrypted Instant spool and credential adapter
         if: runner.os == 'Windows'
         env:
           # cargo check does not link; this skips native GStreamer probing while
           # still type-checking every Windows-only Rust/Win32 code path.
           DOCS_RS: "1"
-        run: cargo check --locked -p frame-media --all-targets
+        run: |
+          cargo test --locked -p frame-windows-secure-spool
+          cargo clippy --locked -p frame-windows-secure-spool --all-targets -- -D warnings
+          cargo check --locked -p frame-media --all-targets
 
   desktop_shell:
     name: Tauri desktop shell on ${{ matrix.os }}
@@ -383,6 +399,13 @@ jobs:
       - name: Install the pinned Leptos asset bundler
         run: cargo install trunk --version 0.21.14 --locked
       - name: Lint and test the native Tauri command boundary
+        env:
+          # The shell does not execute media. Bypass only GStreamer's discovery
+          # and link metadata; DOCS_RS would also suppress unrelated native sys
+          # crates and produce an invalid Tauri executable on macOS.
+          FRAME_GSTREAMER_COMPILE_ONLY: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_LIB: ${{ runner.os == 'Windows' && 'kernel32' || 'c' }}
         run: |
           cargo test --locked -p frame-desktop-core --features tauri-app --bin frame-desktop
           cargo clippy --locked -p frame-desktop-core --features tauri-app --bin frame-desktop -- -D warnings
@@ -396,6 +419,10 @@ jobs:
           python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-${{ runner.os }}.json
           python scripts/ci/check-desktop-advisory-exception.py
       - name: Build the native desktop executable
+        env:
+          FRAME_GSTREAMER_COMPILE_ONLY: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_LIB: ${{ runner.os == 'Windows' && 'kernel32' || 'c' }}
         run: >-
           cargo build --locked --release -p frame-desktop-core
           --features tauri-app,custom-protocol --bin frame-desktop

@@ -25,6 +25,7 @@
       },
       "worker_route": {
         "pattern": "frame.engmanager.xyz/api*",
+        "compatibility_patterns": ["frame.engmanager.xyz/media-server*"],
         "zone_name": "engmanager.xyz",
         "workers_dev": false,
         "lookalike_policy": "non_cacheable_404"
@@ -54,6 +55,7 @@
       },
       "worker_route": {
         "pattern": "frame-staging.engmanager.xyz/api*",
+        "compatibility_patterns": ["frame-staging.engmanager.xyz/media-server*"],
         "zone_name": "engmanager.xyz",
         "workers_dev": false,
         "lookalike_policy": "non_cacheable_404"

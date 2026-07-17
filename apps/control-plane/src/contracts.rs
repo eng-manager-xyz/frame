@@ -190,9 +190,24 @@ pub struct MediaJobRequest {
     pub tenant_id: String,
     pub video_id: String,
     pub source_version: u32,
+    // Keep an omitted singleton source byte-for-byte compatible with the
+    // pre-0027 command digest. The runtime expands it only after replay lookup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_inputs: Vec<MediaJobSourceInputV1>,
     pub profile: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<MediaTransformRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition: Option<CompositionTimelineRequestV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaJobSourceInputV1 {
+    /// Composition v1 may repeat this immutable identity at distinct ordinals.
+    /// The ordinal, not this pair alone, is the timeline input identity.
+    pub video_id: String,
+    pub source_version: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -238,6 +253,33 @@ pub struct MediaTransformRequest {
     pub include_audio: bool,
     pub format: ManagedMediaFormat,
     pub max_output_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompositionTimelineRequestV1 {
+    pub schema_version: u16,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate_numerator: u32,
+    pub frame_rate_denominator: u32,
+    pub background_rgba: String,
+    pub clips: Vec<CompositionClipRequestV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompositionClipRequestV1 {
+    pub source_ordinal: u16,
+    pub source_start_ms: u64,
+    pub source_end_ms: u64,
+    pub timeline_start_ms: u64,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub opacity_milli: u16,
+    pub include_audio: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -394,29 +436,88 @@ impl MediaJobRequest {
         if !media_profile_supported(&self.profile) {
             return Err(ValidationCode::Profile);
         }
-        match (managed_profile(&self.profile), self.transform.as_ref()) {
-            (true, Some(transform)) => transform.validate_for(&self.profile)?,
-            (true, None) => return Err(ValidationCode::Profile),
-            (false, Some(_)) => return Err(ValidationCode::Profile),
-            (false, None) => {}
+        match (
+            managed_profile(&self.profile),
+            self.transform.as_ref(),
+            self.composition.as_ref(),
+        ) {
+            (true, Some(transform), None) => transform.validate_for(&self.profile)?,
+            (false, None, Some(composition)) if self.profile == "composition_v1" => {
+                composition.validate(self.source_inputs.len().max(1))?;
+            }
+            (false, None, None) if self.profile != "composition_v1" => {}
+            _ => return Err(ValidationCode::Profile),
+        }
+        let source_count = if self.source_inputs.is_empty() {
+            1
+        } else {
+            if self.source_inputs[0].video_id != self.video_id
+                || self.source_inputs[0].source_version != self.source_version
+                || self
+                    .source_inputs
+                    .iter()
+                    .any(|source| !valid_uuid(&source.video_id) || source.source_version == 0)
+            {
+                return Err(ValidationCode::Identifier);
+            }
+            let mut identities = self
+                .source_inputs
+                .iter()
+                .map(|source| (&source.video_id, source.source_version))
+                .collect::<Vec<_>>();
+            identities.sort_unstable();
+            identities.dedup();
+            // Segment muxing and single-source profiles reject accidental
+            // duplicate inputs. Composition deliberately permits the same
+            // immutable source at multiple ordinals so each occurrence can
+            // carry a distinct clip placement while remaining digest-bound.
+            if identities.len() != self.source_inputs.len() && self.profile != "composition_v1" {
+                return Err(ValidationCode::Identifier);
+            }
+            self.source_inputs.len()
+        };
+        let cardinality_valid = match self.profile.as_str() {
+            "segment_mux_v1" => (2..=64).contains(&source_count),
+            "composition_v1" => (1..=64).contains(&source_count),
+            _ => source_count == 1,
+        };
+        if !cardinality_valid {
+            return Err(ValidationCode::Profile);
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn normalized_source_inputs(&self) -> Vec<MediaJobSourceInputV1> {
+        if self.source_inputs.is_empty() {
+            vec![MediaJobSourceInputV1 {
+                video_id: self.video_id.clone(),
+                source_version: self.source_version,
+            }]
+        } else {
+            self.source_inputs.clone()
+        }
     }
 }
 
 impl MediaTransformRequest {
     pub fn validate_for(&self, profile: &str) -> Result<(), ValidationCode> {
         if self.schema_version != 1
-            || self.profile_version == 0
+            || self.profile_version != 1
             || self.max_output_bytes == 0
             || self.max_output_bytes > MAX_SAFE_INTEGER
-            || self.start_ms > MAX_SAFE_INTEGER
+            || self.start_ms > 14_400_000
             || self
                 .duration_ms
-                .is_some_and(|value| value == 0 || value > MAX_SAFE_INTEGER)
+                .is_some_and(|value| value == 0 || value > 14_400_000)
+            || self
+                .duration_ms
+                .and_then(|duration| self.start_ms.checked_add(duration))
+                .is_some_and(|end| end > 14_400_000)
             || self.width.is_some() != self.height.is_some()
-            || self.width.is_some_and(|value| value == 0)
-            || self.height.is_some_and(|value| value == 0)
+            || self.width.is_some_and(|value| value == 0 || value > 7_680)
+            || self.height.is_some_and(|value| value == 0 || value > 4_320)
+            || self.image_count.is_some_and(|count| count > 100)
         {
             return Err(ValidationCode::Profile);
         }
@@ -455,6 +556,90 @@ impl MediaTransformRequest {
             _ => false,
         };
         if !shape_matches {
+            return Err(ValidationCode::Profile);
+        }
+        Ok(())
+    }
+}
+
+fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
+impl CompositionTimelineRequestV1 {
+    pub fn validate(&self, source_count: usize) -> Result<(), ValidationCode> {
+        if self.schema_version != 1
+            || !(1..=7_680).contains(&self.width)
+            || !(1..=4_320).contains(&self.height)
+            || self.frame_rate_numerator == 0
+            || self.frame_rate_denominator == 0
+            || u64::from(self.frame_rate_numerator) > u64::from(self.frame_rate_denominator) * 240
+            || greatest_common_divisor(self.frame_rate_numerator, self.frame_rate_denominator) != 1
+            || self.background_rgba != "000000ff"
+            || self.clips.len() != source_count
+            || !(1..=64).contains(&source_count)
+        {
+            return Err(ValidationCode::Profile);
+        }
+        let mut referenced = vec![false; source_count];
+        let mut duration_ms = 0_u64;
+        let mut common_source_range = None;
+        for (index, clip) in self.clips.iter().enumerate() {
+            let Some(referenced_source) = referenced.get_mut(usize::from(clip.source_ordinal))
+            else {
+                return Err(ValidationCode::Profile);
+            };
+            if usize::from(clip.source_ordinal) != index || *referenced_source {
+                return Err(ValidationCode::Profile);
+            }
+            *referenced_source = true;
+            let clip_duration = clip
+                .source_end_ms
+                .checked_sub(clip.source_start_ms)
+                .filter(|duration| *duration > 0)
+                .ok_or(ValidationCode::Profile)?;
+            if clip.source_end_ms > 43_200_000 {
+                return Err(ValidationCode::Profile);
+            }
+            if clip.timeline_start_ms != 0
+                || common_source_range
+                    .is_some_and(|range| range != (clip.source_start_ms, clip.source_end_ms))
+            {
+                return Err(ValidationCode::Profile);
+            }
+            common_source_range = Some((clip.source_start_ms, clip.source_end_ms));
+            let clip_end = clip
+                .timeline_start_ms
+                .checked_add(clip_duration)
+                .filter(|end| *end <= 43_200_000)
+                .ok_or(ValidationCode::Profile)?;
+            let right = clip
+                .x
+                .checked_add(clip.width)
+                .filter(|right| *right <= self.width)
+                .ok_or(ValidationCode::Profile)?;
+            let bottom = clip
+                .y
+                .checked_add(clip.height)
+                .filter(|bottom| *bottom <= self.height)
+                .ok_or(ValidationCode::Profile)?;
+            if clip.width == 0
+                || clip.height == 0
+                || clip.opacity_milli > 1_000
+                || (clip.opacity_milli == 0 && !clip.include_audio)
+                || right == 0
+                || bottom == 0
+            {
+                return Err(ValidationCode::Profile);
+            }
+            duration_ms = duration_ms.max(clip_end);
+        }
+        if duration_ms == 0 || referenced.iter().any(|referenced| !referenced) {
             return Err(ValidationCode::Profile);
         }
         Ok(())
@@ -798,6 +983,7 @@ mod tests {
             tenant_id: TENANT.into(),
             video_id: VIDEO.into(),
             source_version: 1,
+            source_inputs: Vec::new(),
             profile: "thumbnail_v1".into(),
             transform: Some(MediaTransformRequest {
                 schema_version: 1,
@@ -813,10 +999,128 @@ mod tests {
                 format: ManagedMediaFormat::Jpeg,
                 max_output_bytes: 8_000_000,
             }),
+            composition: None,
         };
         assert_eq!(request.validate(), Ok(()));
         request.profile = "cloudflare_media".into();
         assert_eq!(request.validate(), Err(ValidationCode::Profile));
+    }
+
+    #[test]
+    fn native_multi_source_contract_is_dense_primary_bound_and_profile_bounded() {
+        let second_video = "018f47a6-7b1c-7f55-8f39-8f8a8690f125";
+        let mut request = MediaJobRequest {
+            schema_version: 1,
+            tenant_id: TENANT.into(),
+            video_id: VIDEO.into(),
+            source_version: 1,
+            source_inputs: vec![
+                MediaJobSourceInputV1 {
+                    video_id: VIDEO.into(),
+                    source_version: 1,
+                },
+                MediaJobSourceInputV1 {
+                    video_id: second_video.into(),
+                    source_version: 2,
+                },
+            ],
+            profile: "segment_mux_v1".into(),
+            transform: None,
+            composition: None,
+        };
+        assert_eq!(request.validate(), Ok(()));
+        assert_eq!(request.normalized_source_inputs(), request.source_inputs);
+        request.source_inputs.swap(0, 1);
+        assert_eq!(request.validate(), Err(ValidationCode::Identifier));
+        request.source_inputs.clear();
+        assert_eq!(request.validate(), Err(ValidationCode::Profile));
+        request.profile = "composition_v1".into();
+        request.composition = Some(CompositionTimelineRequestV1 {
+            schema_version: 1,
+            width: 640,
+            height: 360,
+            frame_rate_numerator: 30,
+            frame_rate_denominator: 1,
+            background_rgba: "000000ff".into(),
+            clips: vec![CompositionClipRequestV1 {
+                source_ordinal: 0,
+                source_start_ms: 0,
+                source_end_ms: 2_000,
+                timeline_start_ms: 0,
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 360,
+                opacity_milli: 1_000,
+                include_audio: true,
+            }],
+        });
+        assert_eq!(request.validate(), Ok(()));
+        assert_eq!(request.normalized_source_inputs().len(), 1);
+        request.composition.as_mut().expect("timeline").clips[0].source_ordinal = 1;
+        assert_eq!(request.validate(), Err(ValidationCode::Profile));
+        let timeline = request.composition.as_mut().expect("timeline");
+        timeline.clips[0].source_ordinal = 0;
+        timeline.frame_rate_numerator = 60;
+        timeline.frame_rate_denominator = 2;
+        assert_eq!(request.validate(), Err(ValidationCode::Profile));
+        let timeline = request.composition.as_mut().expect("timeline");
+        timeline.frame_rate_numerator = 30;
+        timeline.frame_rate_denominator = 1;
+        timeline.clips[0].opacity_milli = 0;
+        timeline.clips[0].include_audio = false;
+        assert_eq!(request.validate(), Err(ValidationCode::Profile));
+
+        let repeated_clip = CompositionClipRequestV1 {
+            source_ordinal: 0,
+            source_start_ms: 0,
+            source_end_ms: 2_000,
+            timeline_start_ms: 0,
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 360,
+            opacity_milli: 1_000,
+            include_audio: true,
+        };
+        let mut repeated = MediaJobRequest {
+            schema_version: 1,
+            tenant_id: TENANT.into(),
+            video_id: VIDEO.into(),
+            source_version: 1,
+            source_inputs: vec![
+                MediaJobSourceInputV1 {
+                    video_id: VIDEO.into(),
+                    source_version: 1,
+                },
+                MediaJobSourceInputV1 {
+                    video_id: VIDEO.into(),
+                    source_version: 1,
+                },
+            ],
+            profile: "composition_v1".into(),
+            transform: None,
+            composition: Some(CompositionTimelineRequestV1 {
+                schema_version: 1,
+                width: 640,
+                height: 360,
+                frame_rate_numerator: 30,
+                frame_rate_denominator: 1,
+                background_rgba: "000000ff".into(),
+                clips: vec![
+                    repeated_clip.clone(),
+                    CompositionClipRequestV1 {
+                        source_ordinal: 1,
+                        x: 320,
+                        ..repeated_clip
+                    },
+                ],
+            }),
+        };
+        assert_eq!(repeated.validate(), Ok(()));
+        repeated.profile = "segment_mux_v1".into();
+        repeated.composition = None;
+        assert_eq!(repeated.validate(), Err(ValidationCode::Identifier));
     }
 
     #[test]
@@ -836,11 +1140,46 @@ mod tests {
             max_output_bytes: 16_000_000,
         };
         assert_eq!(transform.validate_for("optimized_clip_v1"), Ok(()));
+        let valid_clip = transform.clone();
         transform.image_count = Some(1);
         assert_eq!(
             transform.validate_for("optimized_clip_v1"),
             Err(ValidationCode::Profile)
         );
+
+        let mut unknown_version = valid_clip.clone();
+        unknown_version.profile_version = 2;
+        assert_eq!(
+            unknown_version.validate_for("optimized_clip_v1"),
+            Err(ValidationCode::Profile)
+        );
+
+        let mut out_of_bounds = valid_clip.clone();
+        out_of_bounds.start_ms = 14_399_999;
+        out_of_bounds.duration_ms = Some(2);
+        assert_eq!(
+            out_of_bounds.validate_for("optimized_clip_v1"),
+            Err(ValidationCode::Profile)
+        );
+        out_of_bounds = valid_clip.clone();
+        out_of_bounds.width = Some(7_681);
+        assert_eq!(
+            out_of_bounds.validate_for("optimized_clip_v1"),
+            Err(ValidationCode::Profile)
+        );
+
+        let mut spritesheet = valid_clip;
+        spritesheet.mode = ManagedMediaMode::Spritesheet;
+        spritesheet.format = ManagedMediaFormat::Jpeg;
+        spritesheet.include_audio = false;
+        spritesheet.image_count = Some(101);
+        assert_eq!(
+            spritesheet.validate_for("spritesheet_v1"),
+            Err(ValidationCode::Profile)
+        );
+        spritesheet.image_count = Some(100);
+        assert_eq!(spritesheet.validate_for("spritesheet_v1"), Ok(()));
+
         let json = serde_json::to_string(&transform).expect("serialize");
         assert!(!json.contains("executor"));
         assert!(!json.contains("source"));

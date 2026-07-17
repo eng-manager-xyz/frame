@@ -63,12 +63,15 @@ adapters and do not prove Cloudflare execution.
 
 ## Control-plane server-finalize integration
 
-The exact server-finalize slice is now wired through a versioned Wasm-safe DTO, authenticated route,
-retained D1 request/operation/job rows, multipart/probe postconditions, and scheduled reconciliation:
+The exact server-finalize slice is wired on the Worker side through a versioned Wasm-safe DTO,
+authenticated route, retained D1 request/operation/job rows, multipart/probe postconditions, and
+scheduled reconciliation. The desktop side below is a tested adapter boundary, not a currently
+registered Tauri command:
 
 ```text
-desktop Instant journal
-  -> InstantFinalizeRequestV1 (canonical digest; retry operation excluded from semantic identity)
+sealed desktop Instant request (contract fixture)
+  -> frame-desktop-core conversion to frame-authenticated-client InstantFinalizeRequestV1
+     (canonical digest; retry operation excluded from semantic identity)
   -> POST /api/v1/instant-recordings/{session_id}/finalize
   -> retained instant_finalize_requests/jobs/operations rows
   -> exact r2_multipart_completions_v1 + verified native probe postconditions
@@ -80,28 +83,42 @@ The server derives the immutable object version from the provider version, never
 media-probe facts, and validates the exact tenant/session/upload/video, ordered parts, object
 version, job, generation, and request digest on every replay. The HTTP contract deliberately omits
 the native journal revision/fence, manifest digest, and native object ID because D1 has no
-independent authority for those values. They remain covered by the `frame-media` journal tests and
-must be mapped by the future desktop adapter; this evidence does not pretend that echoing them from
-a client would verify them. A missing multipart completion or trusted probe remains `pending`; an
+independent authority for those values. They remain covered by the `frame-media` journal and are
+not copied into the DTO merely to echo client assertions. The wire receipt also omits the internal
+playable storage key; D1 keeps that identity behind its relational publication assertion. The
+desktop adapter can map the exact
+session/upload/ordered-part/object-version/job identities from the sealed native request, adds
+tenant/video and a typed retry operation, and validates the bound receipt before reconstructing
+the native publication receipt. A missing multipart completion or trusted probe remains `pending`; an
 identity mismatch fails closed. The HTTP idempotency key, semantic request, operation, and retained
 job are reserved in one authority-fenced batch.
 
 The offline SQLite conformance test proves tenant and immutable-row triggers, revoked-writer and
 deleted-video rollback, contingent-row rollback, bounded fair scanning and dead-letter assertions,
 retryable multipart-abort retention, and the final relational publication postcondition. This
-locally satisfies the server-finalize/D1-reconciliation deliverable; it does not prove hosted D1
-contention, R2 execution, callback ordering, or desktop transport.
-
-The remaining local integration edge is conversion/dispatch from the native `frame-media`
-`InstantFinalizeRequest` into this DTO by a production desktop caller. The bounded journal remains
-inside `frame-media` because the control plane cannot import its native GStreamer dependency.
+locally satisfies the server-finalize/D1-reconciliation deliverable. The concrete desktop caller
+disables redirects and ambient proxies, bounds deadline and response bytes, sends bearer, tenant,
+and deterministic idempotency headers, validates the shared DTO, and is covered by a real loopback
+HTTP test. It is not yet connected to `apps/desktop/src/main.rs`, and the repository therefore does
+not cite this test as a production desktop publication path. The bounded journal remains inside
+`frame-media` because the control plane cannot import its native GStreamer dependency. Hosted D1
+contention, R2 execution, callback ordering, and a real command-to-journal desktop journey remain
+protected evidence.
 
 ## Reproduction commands
 
 Run from the repository root:
 
 ```bash
+cargo test -p frame-authenticated-client
+cargo clippy -p frame-authenticated-client --all-targets -- -D warnings
+cargo check -p frame-authenticated-client --target wasm32-unknown-unknown
 cargo test -p frame-media --test instant_mode_contract
+cargo test -p frame-desktop-core instant_finalize
+# On Windows, with DOCS_RS=1 in the environment:
+cargo test --locked -p frame-windows-secure-spool
+cargo clippy --locked -p frame-windows-secure-spool --all-targets -- -D warnings
+cargo check --locked -p frame-media --all-targets
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
 GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media \
@@ -118,6 +135,13 @@ git diff --check
 
 Machine-specific paths and raw logs are intentionally absent.
 
+The Windows local implementation now applies creation DACLs atomically and
+performs ACL repair and final no-replace publication through validated pinned
+handles. This is local source/type evidence for the final-component boundary,
+not evidence against hostile writable ancestors, same-account concurrent path
+mutation, filesystem-specific rename behavior, or power loss. Those conditions
+stay in the protected platform lane below.
+
 ## Protected evidence not collected
 
 The following remains open and cannot be inferred from Rust fakes or simulated
@@ -126,8 +150,8 @@ time:
 - physical-capture splitmux keyframe placement and cross-track alignment,
   power-loss recovery while the muxer is active, Media ingest, and browser
   playback before and after manifest replacement;
-- macOS, Windows, and Linux private-directory and keystore behavior, actual
-  AES-GCM/XChaCha protection, key loss, atomic replacement under power loss,
+- macOS, Windows, and Linux private-directory and live keystore behavior, key
+  loss, atomic replacement under power loss,
   disk-full behavior, secure wipe policy, and privacy review;
 - real R2 multipart create/part/HEAD/renew/complete/abort, CORS, expiry,
   throttling, outage, conditional postconditions, and lost-response injection;
@@ -145,6 +169,6 @@ time:
   retention/deletion, accessibility, privacy, security, product, media, and
   release-owner signoff.
 
-Until the remaining desktop transport and protected records exist, this slice
-is suitable for integration and local conformance only. It is not a production
-promotion record and does not close the protected acceptance gates in issue 26.
+Until the protected records exist, this slice is suitable for integration and
+local conformance only. It is not a production promotion record and does not
+close the protected acceptance gates in issue 26.

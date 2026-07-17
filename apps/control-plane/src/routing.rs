@@ -119,7 +119,12 @@ pub fn validate_host(
 pub enum Route {
     LegacyRoot,
     LegacyHealth,
+    LegacyMediaServerRoot,
     LegacyApiStatus,
+    LegacyChangelog,
+    LegacyChangelogStatus,
+    LegacyMobileSessionConfig,
+    LegacyNotificationPreferences,
     Discovery,
     Capabilities,
     ApiHealth,
@@ -130,6 +135,11 @@ pub enum Route {
     PublicTranscript { share_id: String },
     PublicAnalyticsConsent { share_id: String },
     PublicAnalyticsEvents { share_id: String },
+    BrowserAuthLogin,
+    BrowserAuthSignup,
+    BrowserAuthRecovery,
+    BrowserAuthVerify,
+    BrowserAuthLogout,
     AuthenticatedWebWorkspace { surface: String },
     AuthenticatedWebAction { action: String },
     StorageGrantCreate,
@@ -193,6 +203,9 @@ pub fn classify_raw_path(path: &str) -> Route {
     if path == "/health" {
         return Route::LegacyHealth;
     }
+    if path == "/media-server" {
+        return Route::LegacyMediaServerRoot;
+    }
     if path.starts_with("/api\\") {
         return Route::InvalidApiPath;
     }
@@ -205,6 +218,10 @@ pub fn classify_raw_path(path: &str) -> Route {
     match path {
         "/api" | "/api/" => Route::Discovery,
         "/api/status" => Route::LegacyApiStatus,
+        "/api/changelog" => Route::LegacyChangelog,
+        "/api/changelog/status" => Route::LegacyChangelogStatus,
+        "/api/mobile/session/config" => Route::LegacyMobileSessionConfig,
+        "/api/notifications/preferences" => Route::LegacyNotificationPreferences,
         "/api/v1" | "/api/v1/" => Route::Capabilities,
         "/api/v1/health" => Route::ApiHealth,
         "/api/v1/videos" => Route::VideoCreate,
@@ -213,6 +230,11 @@ pub fn classify_raw_path(path: &str) -> Route {
         "/api/v1/storage/grants" => Route::StorageGrantCreate,
         "/api/v1/worker/media-jobs/claim" => Route::WorkerMediaJobClaim,
         "/api/v1/operations/authority" => Route::AuthorityStatus,
+        "/api/v1/web/auth/login" => Route::BrowserAuthLogin,
+        "/api/v1/web/auth/signup" => Route::BrowserAuthSignup,
+        "/api/v1/web/auth/recovery" => Route::BrowserAuthRecovery,
+        "/api/v1/web/auth/verify" => Route::BrowserAuthVerify,
+        "/api/v1/web/auth/logout" => Route::BrowserAuthLogout,
         _ => dynamic_route(path),
     }
 }
@@ -699,6 +721,56 @@ mod tests {
     fn versioned_routes_are_matched_without_router_decoding() {
         assert_eq!(classify_raw_path("/api"), Route::Discovery);
         assert_eq!(classify_raw_path("/api/status"), Route::LegacyApiStatus);
+        assert_eq!(classify_raw_path("/api/changelog"), Route::LegacyChangelog);
+        assert_eq!(classify_raw_path("/api/changelog/"), Route::UnknownApi);
+        assert_eq!(
+            classify_raw_path("/api/notifications/preferences"),
+            Route::LegacyNotificationPreferences
+        );
+        for path in [
+            "/api/notifications/preferences/",
+            "/api/notifications//preferences",
+            "/api/notifications/%70references",
+            "/api/notifications/preferences;admin",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "notification preferences lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/changelog/status"),
+            Route::LegacyChangelogStatus
+        );
+        assert_eq!(
+            classify_raw_path("/api/changelog/status/"),
+            Route::UnknownApi
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/session/config"),
+            Route::LegacyMobileSessionConfig
+        );
+        for path in [
+            "/api/mobile/session/config/",
+            "/api/mobile/session/configuration",
+            "/api/mobile//session/config",
+            "/api/mobile/session/%63onfig",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "mobile config lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/media-server"),
+            Route::LegacyMediaServerRoot
+        );
         assert_eq!(classify_raw_path("/api/v1"), Route::Capabilities);
         assert_eq!(classify_raw_path("/api/v1/health"), Route::ApiHealth);
         assert_eq!(
@@ -715,6 +787,23 @@ mod tests {
         );
         assert_eq!(classify_raw_path("/api/v2/health"), Route::UnknownApi);
         assert_eq!(classify_raw_path("/api/v1/videos"), Route::VideoCreate);
+        for (path, expected) in [
+            ("/api/v1/web/auth/login", Route::BrowserAuthLogin),
+            ("/api/v1/web/auth/signup", Route::BrowserAuthSignup),
+            ("/api/v1/web/auth/recovery", Route::BrowserAuthRecovery),
+            ("/api/v1/web/auth/verify", Route::BrowserAuthVerify),
+            ("/api/v1/web/auth/logout", Route::BrowserAuthLogout),
+        ] {
+            assert_eq!(classify_raw_path(path), expected, "{path}");
+        }
+        for path in [
+            "/api/v1/web/auth/login/",
+            "/api/v1/web/auth/verify/extra",
+            "/api/v1/web/auth/Login",
+            "/api/v1/web/auth",
+        ] {
+            assert_eq!(classify_raw_path(path), Route::UnknownApi, "{path}");
+        }
         assert_eq!(
             classify_raw_path("/api/v1/web/actions/organization.spaces.create.v1"),
             Route::AuthenticatedWebAction {
@@ -877,6 +966,13 @@ mod tests {
             Route::WorkerMediaJobSourceOrdinal {
                 job_id: job_id.into(),
                 ordinal: 0,
+            }
+        );
+        assert_eq!(
+            classify_raw_path(&format!("/api/v1/worker/media-jobs/{job_id}/sources/17")),
+            Route::WorkerMediaJobSourceOrdinal {
+                job_id: job_id.into(),
+                ordinal: 17,
             }
         );
         assert_eq!(

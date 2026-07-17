@@ -98,6 +98,14 @@ present in the CAS journal did not happen from the coordinator's perspective.
 6. Select managed/native derivative work only after `Ready`; derivative choice
    never rewrites the source object or upload journal.
 
+For server-side R2 completion recovery, inspect
+`r2_multipart_completion_reconciliation_v1` before retrying anything manually. `pending` rows expose
+the current attempt, due time, and retryable failure class. `quarantined` is a durable terminal
+incident record: preserve the R2 object and D1 claim, compare size/checksum/content type and trusted
+probe evidence, and do not delete or reopen the row. An already in-flight authoritative completion
+may refine it to `complete`; any other repair requires a reviewed, separately fenced operator
+procedure rather than an ad hoc table update.
+
 ## Cancel and delete
 
 Write the journal tombstone first. Once sealed, every late part-complete,

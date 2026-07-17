@@ -4,9 +4,11 @@ This document defines the runtime-neutral authentication contract implemented by
 `frame-domain`, `frame-ports`, and `frame-application`. It is the security baseline for browser,
 desktop, mobile, extension, OAuth, verification, recovery, and developer API clients.
 
-The current proof covers the domain/application state machines and the in-memory conformance
-adapter. It does **not** make that adapter a production store, complete the D1 adapter, send real
-email, migrate a legacy session, or authorize a production cutover. Those gates remain explicit.
+The current proof covers the domain/application state machines, the in-memory conformance adapter,
+the compiled Rust/Wasm D1 repository against Wrangler-local D1, and the Worker browser-issuance,
+session, cookie, authenticated-sealing, and ciphertext-handoff adapters. It does **not** make local
+D1 a production store, send real email/SMS, migrate a legacy session, or authorize a production
+cutover. Those gates remain explicit.
 
 ## Trust and authority boundaries
 
@@ -151,8 +153,11 @@ simultaneous session writers.
 
 ## Production adapter requirements
 
-The D1 implementation must preserve the same atomic outcomes, capability records, audit coupling,
-bounded rate state, outbox leases, and continuation fencing. It must add query/fault conformance,
-contention handling, encrypted delivery envelopes, a CSPRNG secret source, real provider adapters,
-and migration evidence. Until those pass, this protocol is an implemented core contract rather
-than production authentication authority.
+The checked-in D1 repository preserves the atomic outcomes, capability records, audit coupling,
+bounded rate state, outbox leases, continuation fencing, query/fault conformance, and local
+contention behavior. The checked-in Worker adapter uses its CSPRNG for every minted secret, exact
+host-only cookies, separate rotated AES-256-GCM keyrings, purpose/expiry-bound fixed-size delivery
+ciphertext, and a deduplicated D1 provider handoff. Production authority still requires hosted D1
+evidence, protected provisioning and rotation of those secrets, real provider delivery receipts,
+deployed browser journeys, and migration/cutover evidence. Until those pass, this protocol is an
+implemented local contract rather than production authentication authority.

@@ -57,13 +57,20 @@ On 2026-07-16, the following passed:
 - the ordered expand-first D1 migrations applied with no foreign-key
   violations, including the 16-profile policy catalog, trusted source probes,
   fenced execution journal, immutable output manifests, event chain, scoped
-  cutover controls, and API-workflow replay authority.
+  cutover controls, API-workflow replay authority, and immutable dense
+  media-job input authority;
+- the provider-free media-input SQLite suite rejects sparse, mutable,
+  cross-tenant, stale-governance, duplicate segment, and incomplete source
+  sets; permits repeated composition occurrences by ordinal; and proves claim
+  versus authority mutation is serialized by a real write lock.
 
-`segment_mux_v1` remains excluded from control-plane native claims because its
-declared 2–64-source protocol is not yet persisted or transported. Every
-non-executable native profile fails terminally as `unsupported_media` through
-its typed exception; setting the codec approval environment value alone enables
-no graph.
+Migration `0027_media_job_inputs.sql` now persists and transports the declared
+1--64-source protocol with current manifest/governance revalidation. Despite
+that transport, `segment_mux_v1` is rejected by native and hybrid-remote
+admission before persistence because its executable graph is not audited.
+Every other non-executable native profile fails terminally as
+`unsupported_media` through its typed exception; setting the codec approval
+environment value alone enables no graph.
 
 The fixture is generated from FFmpeg `testsrc2` and `sine` filters and is
 declared CC0-1.0 in `fixtures/media-jobs/v1/synthetic-h264-aac.json`. It contains
@@ -83,6 +90,7 @@ GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test -p frame-media-worker --all-targets
 python3 -I scripts/ci/check-migrations.py
 python3 -I scripts/ci/check-media-service.py
+python3 -I scripts/ci/media-job-inputs-sqlite-conformance.py
 ```
 
 Expected focused result is 35 native-worker tests, 5 Cloudflare adapter tests,

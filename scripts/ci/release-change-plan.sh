@@ -18,12 +18,12 @@ infra_changed=false
 while IFS= read -r path; do
   [[ -z "${path}" ]] && continue
   case "${path}" in
-    apps/control-plane/* | crates/application/* | crates/domain/* | crates/frame-client/* | crates/ports/* | fixtures/frame-api/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | .github/workflows/production-gate.yml | scripts/ci/check-migrations.py | scripts/ci/package-release.sh | scripts/ci/verify-release-bundle.sh)
+    apps/control-plane/* | crates/application/* | crates/authenticated-client/* | crates/domain/* | crates/frame-client/* | crates/ports/* | fixtures/frame-api/* | fixtures/api-parity/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | .github/workflows/production-gate.yml | scripts/ci/check-migrations.py | scripts/ci/package-release.sh | scripts/ci/verify-release-bundle.sh)
       worker_changed=true
       ;;
   esac
   case "${path}" in
-    apps/web/* | crates/* | scripts/ci/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | render.yaml)
+    apps/web/* | crates/* | fixtures/web-authenticated/** | scripts/ci/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | render.yaml)
       web_changed=true
       ;;
   esac

@@ -26,6 +26,7 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTROL = ROOT / "apps" / "control-plane"
 MIGRATIONS = CONTROL / "migrations"
+CONTRACT_MIGRATIONS = CONTROL / "contract-migrations"
 QUERIES = CONTROL / "queries" / "auth"
 CONFIG = CONTROL / "wrangler.local.toml"
 SOURCE = CONTROL / "src" / "auth_repository.rs"
@@ -38,6 +39,7 @@ CONFORMANCE_PATH = "/__frame/local/auth-repository-conformance"
 TOKEN_HEADER = "x-frame-auth-repository-conformance-token"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 PLACEHOLDER = re.compile(r"\?([1-9][0-9]*)")
+MIGRATION_NAME = re.compile(r"([0-9]{4})_[a-z0-9_]+\.sql")
 NOW_MS = 1_700_100_000_000
 
 TELEMETRY_OPERATIONS = frozenset(
@@ -388,9 +390,29 @@ def fixture_statements() -> list[str]:
 
 
 def migration_files() -> list[pathlib.Path]:
-    files = sorted(MIGRATIONS.glob("[0-9][0-9][0-9][0-9]_*.sql"))
-    if [int(path.name[:4]) for path in files] != list(range(1, len(files) + 1)):
-        raise ConformanceFailure("migration sequence is not contiguous")
+    files = sorted(MIGRATIONS.glob("*.sql"))
+    contract_files = sorted(CONTRACT_MIGRATIONS.glob("*.sql"))
+    if not files or not contract_files:
+        raise ConformanceFailure("migration authority inventory is incomplete")
+    expand_numbers: list[int] = []
+    contract_numbers: list[int] = []
+    for path, numbers, phase in (
+        *((path, expand_numbers, "expand") for path in files),
+        *((path, contract_numbers, "contract") for path in contract_files),
+    ):
+        match = MIGRATION_NAME.fullmatch(path.name)
+        if match is None:
+            raise ConformanceFailure(f"invalid {phase} migration filename: {path.name}")
+        numbers.append(int(match.group(1)))
+    if expand_numbers != sorted(expand_numbers):
+        raise ConformanceFailure("expand migration sequence is reordered")
+    if contract_numbers != sorted(contract_numbers):
+        raise ConformanceFailure("contract migration sequence is reordered")
+    combined = expand_numbers + contract_numbers
+    if len(combined) != len(set(combined)):
+        raise ConformanceFailure("combined migration authority has a duplicate number")
+    if sorted(combined) != list(range(1, len(combined) + 1)):
+        raise ConformanceFailure("combined migration authority is not globally contiguous")
     return files
 
 

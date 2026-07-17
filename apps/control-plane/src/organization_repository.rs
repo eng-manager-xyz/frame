@@ -14,7 +14,8 @@ use frame_domain::{
 use frame_ports::{
     AcceptOrganizationInviteCommand, ChangeOrganizationMemberCommand, ChangeSpaceRoleCommand,
     CreateFolderCommand, CreateOrganizationCommand, CreateSpaceCommand,
-    IssueOrganizationInviteCommand, MoveFolderCommand, OrganizationCollectionRequest,
+    IssueOrganizationInviteCommand, LegacyOrganizationSelectionRepositoryV1,
+    LegacySetActiveOrganizationCommandV1, MoveFolderCommand, OrganizationCollectionRequest,
     OrganizationGraphAudit, OrganizationGraphAuditRequest, OrganizationInviteSummary,
     OrganizationMutationContext, OrganizationMutationReceipt, OrganizationMutationResult,
     OrganizationPage, OrganizationPortError, OrganizationReadRequest, OrganizationRepository,
@@ -59,6 +60,16 @@ const ORGANIZATION_POSTCONDITION_SQL: &str =
 const SELECTION_UPSERT_SQL: &str = include_str!("../queries/organization/selection_upsert.sql");
 const SELECTION_POSTCONDITION_SQL: &str =
     include_str!("../queries/organization/selection_postcondition.sql");
+const LEGACY_SELECTION_AUTHORITY_ASSERT_SQL: &str =
+    include_str!("../queries/organization/legacy_selection_authority_assert.sql");
+const LEGACY_SELECTION_ACTIVE_UPDATE_SQL: &str =
+    include_str!("../queries/organization/legacy_selection_active_update.sql");
+const LEGACY_SELECTION_POSTCONDITION_SQL: &str =
+    include_str!("../queries/organization/legacy_selection_postcondition.sql");
+const LEGACY_SELECTION_OPERATION_INSERT_SQL: &str =
+    include_str!("../queries/organization/legacy_selection_operation_insert.sql");
+const LEGACY_SELECTION_RECEIPT_SQL: &str =
+    include_str!("../queries/organization/legacy_selection_receipt.sql");
 const INVITE_INSERT_SQL: &str = include_str!("../queries/organization/invite_insert.sql");
 const INVITE_REVOKE_SQL: &str = include_str!("../queries/organization/invite_revoke.sql");
 const INVITE_ACCEPT_SQL: &str = include_str!("../queries/organization/invite_accept.sql");
@@ -1315,6 +1326,23 @@ impl OrganizationRepository for D1OrganizationRepository<'_> {
     }
 }
 
+#[async_trait]
+impl LegacyOrganizationSelectionRepositoryV1 for D1OrganizationRepository<'_> {
+    async fn legacy_set_active_organization(
+        &self,
+        command: LegacySetActiveOrganizationCommandV1,
+    ) -> Result<OrganizationMutationReceipt, OrganizationPortError> {
+        self.legacy_set_active_organization_inner(command)
+            .await
+            .map_err(|failure| match failure {
+                // A failed compatibility predicate is a non-disclosing target
+                // denial, not a caller-visible optimistic concurrency error.
+                AdapterFailure::Stale => OrganizationPortError::AccessDenied,
+                other => other.into_port(),
+            })
+    }
+}
+
 impl D1OrganizationRepository<'_> {
     async fn snapshot_inner(
         &self,
@@ -1663,6 +1691,124 @@ impl D1OrganizationRepository<'_> {
             statements,
         )
         .await
+    }
+
+    async fn legacy_set_active_organization_inner(
+        &self,
+        command: LegacySetActiveOrganizationCommandV1,
+    ) -> AdapterResult<OrganizationMutationReceipt> {
+        let operation_id = OrganizationOperationId::new();
+        let operation_id_value = operation_id.to_string();
+        // The source operations accepted no idempotency key. A fresh server
+        // key intentionally makes every retry execute and preserves their
+        // last-write-wins behavior.
+        let idempotency_key = format!("legacy-auto-{operation_id_value}");
+        let actor_id = command.actor_id.to_string();
+        let organization_id = command.active_organization_id.to_string();
+        let fingerprint = semantic_fingerprint(
+            "active_organization_set",
+            command.actor_id,
+            &serde_json::json!({
+                "active_organization_id": command.active_organization_id,
+                "authorization": command.authorization.stable_code(),
+                "lifecycle": command.lifecycle.stable_code(),
+                "source": "legacy_active_only_v1",
+            }),
+        )?;
+        let statements = vec![
+            self.statement(
+                LEGACY_SELECTION_AUTHORITY_ASSERT_SQL,
+                &[
+                    JsValue::from_str(&format!("{operation_id_value}:legacy_authority")),
+                    JsValue::from_str(&actor_id),
+                    JsValue::from_str(&organization_id),
+                    JsValue::from_str(command.lifecycle.stable_code()),
+                    JsValue::from_str(command.authorization.stable_code()),
+                ],
+            )?,
+            self.statement(
+                LEGACY_SELECTION_ACTIVE_UPDATE_SQL,
+                &[
+                    JsValue::from_str(&actor_id),
+                    JsValue::from_str(&organization_id),
+                    JsValue::from_str(&operation_id_value),
+                    timestamp_value(command.occurred_at),
+                ],
+            )?,
+            self.statement(
+                LEGACY_SELECTION_POSTCONDITION_SQL,
+                &[
+                    JsValue::from_str(&format!("{operation_id_value}:legacy_post")),
+                    JsValue::from_str(&actor_id),
+                    JsValue::from_str(&organization_id),
+                    JsValue::from_str(&operation_id_value),
+                ],
+            )?,
+            self.statement(
+                LEGACY_SELECTION_OPERATION_INSERT_SQL,
+                &[
+                    JsValue::from_str(&operation_id_value),
+                    JsValue::from_str(&organization_id),
+                    JsValue::from_str(&idempotency_key),
+                    JsValue::from_str(&actor_id),
+                    JsValue::from_str(fingerprint.expose_for_verification()),
+                    timestamp_value(command.occurred_at),
+                ],
+            )?,
+            self.statement(
+                ASSERTION_CLEANUP_SQL,
+                &[JsValue::from_str(&operation_id_value)],
+            )?,
+            self.statement(
+                AUDIT_INSERT_SQL,
+                &[
+                    string(OrganizationAuditId::new()),
+                    JsValue::from_str(&operation_id_value),
+                    JsValue::from_str(&organization_id),
+                    JsValue::from_str(&actor_id),
+                    JsValue::from_str("active_organization_set"),
+                    JsValue::from_str("organization"),
+                    JsValue::from_str(&hex_sha256(actor_id.as_bytes())),
+                    JsValue::from_str("allow"),
+                    JsValue::NULL,
+                    timestamp_value(command.occurred_at),
+                ],
+            )?,
+        ];
+        match self.batch(statements).await {
+            Ok(()) => {
+                OrganizationRepositoryTelemetry::emit("legacy_active_organization_set", "allow", 1)
+            }
+            Err(failure) => {
+                OrganizationRepositoryTelemetry::emit(
+                    "legacy_active_organization_set",
+                    if failure == AdapterFailure::Stale {
+                        "deny"
+                    } else {
+                        "unavailable"
+                    },
+                    0,
+                );
+                return Err(failure);
+            }
+        }
+        let row = self
+            .one::<OperationRow>(
+                LEGACY_SELECTION_RECEIPT_SQL,
+                &[JsValue::from_str(&operation_id_value)],
+            )
+            .await?
+            .ok_or(AdapterFailure::Corrupt)?;
+        if row.organization_id != organization_id
+            || row.idempotency_key != idempotency_key
+            || row.operation_id != operation_id_value
+            || row.operation_kind != "active_organization_set"
+            || row.subject_id != actor_id
+            || row.request_fingerprint != fingerprint.expose_for_verification()
+        {
+            return Err(AdapterFailure::Corrupt);
+        }
+        decode_receipt(row, false)
     }
 
     async fn issue_invite_inner(

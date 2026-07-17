@@ -108,7 +108,10 @@ impl InstantSpoolKeyStore for OsCredentialSpoolKeyStore {
     fn load(&mut self, account: &str) -> Result<Option<Zeroizing<[u8; 32]>>, InstantError> {
         use security_framework::passwords::get_generic_password;
         match get_generic_password(&self.service, account) {
-            Ok(bytes) => decode_key_bytes(&bytes).map(Some),
+            Ok(bytes) => {
+                let bytes = Zeroizing::new(bytes);
+                decode_key_bytes(bytes.as_slice()).map(Some)
+            }
             Err(error) if error.code() == -25300 => Ok(None),
             Err(_) => Err(InstantError::SpoolKeyUnavailable),
         }
@@ -149,10 +152,11 @@ impl InstantSpoolKeyStore for OsCredentialSpoolKeyStore {
         if !output.status.success() {
             return Ok(None);
         }
-        if output.stdout.len() > 128 {
+        let stdout = Zeroizing::new(output.stdout);
+        if stdout.len() > 128 {
             return Err(InstantError::SpoolKeyUnavailable);
         }
-        decode_hex_key(&output.stdout).map(Some)
+        decode_hex_key(stdout.as_slice()).map(Some)
     }
 
     fn store(&mut self, account: &str, key: &[u8; 32]) -> Result<(), InstantError> {
@@ -171,7 +175,7 @@ impl InstantSpoolKeyStore for OsCredentialSpoolKeyStore {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| InstantError::SpoolKeyUnavailable)?;
-        let mut encoded = Zeroizing::new(hex_bytes(key));
+        let mut encoded = hex_bytes(key);
         encoded.push('\n');
         child
             .stdin
@@ -211,138 +215,19 @@ impl InstantSpoolKeyStore for OsCredentialSpoolKeyStore {
 #[cfg(windows)]
 impl InstantSpoolKeyStore for OsCredentialSpoolKeyStore {
     fn load(&mut self, account: &str) -> Result<Option<Zeroizing<[u8; 32]>>, InstantError> {
-        use std::{ptr, slice};
-
-        use windows_sys::Win32::{
-            Foundation::{ERROR_NOT_FOUND, GetLastError},
-            Security::Credentials::{CRED_TYPE_GENERIC, CREDENTIALW, CredReadW},
-        };
-
-        let target = windows_credential_target(&self.service, account)?;
-        let mut credential: *mut CREDENTIALW = ptr::null_mut();
-        // SAFETY: `target` is NUL-terminated for the duration of the call and
-        // `credential` is an initialized out pointer. The returned allocation
-        // is immediately owned by `WindowsCredential` and released by CredFree.
-        if unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } == 0 {
-            // SAFETY: GetLastError has no preconditions and is read before any
-            // other Win32 call can replace the thread-local error value.
-            return if unsafe { GetLastError() } == ERROR_NOT_FOUND {
-                Ok(None)
-            } else {
-                Err(InstantError::SpoolKeyUnavailable)
-            };
-        }
-        let credential = WindowsCredential::new(credential)?;
-        let raw = credential.as_ref();
-        if raw.CredentialBlobSize != 32 || raw.CredentialBlob.is_null() {
-            return Err(InstantError::SpoolKeyUnavailable);
-        }
-        // SAFETY: Credential Manager reported a 32-byte blob and the pointer
-        // remains valid until `credential` drops below.
-        decode_key_bytes(unsafe { slice::from_raw_parts(raw.CredentialBlob, 32) }).map(Some)
+        frame_windows_secure_spool::credential_load(&self.service, account)
+            .map_err(|_| InstantError::SpoolKeyUnavailable)
     }
 
     fn store(&mut self, account: &str, key: &[u8; 32]) -> Result<(), InstantError> {
-        use std::ptr;
-
-        use windows_sys::Win32::Security::Credentials::{
-            CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredWriteW,
-        };
-
-        let mut target = windows_credential_target(&self.service, account)?;
-        let mut username = windows_wide(account)?;
-        let credential = CREDENTIALW {
-            Type: CRED_TYPE_GENERIC,
-            TargetName: target.as_mut_ptr(),
-            CredentialBlobSize: 32,
-            CredentialBlob: key.as_ptr().cast_mut(),
-            Persist: CRED_PERSIST_LOCAL_MACHINE,
-            UserName: username.as_mut_ptr(),
-            Comment: ptr::null_mut(),
-            TargetAlias: ptr::null_mut(),
-            Attributes: ptr::null_mut(),
-            ..CREDENTIALW::default()
-        };
-        // SAFETY: all pointers in the credential either are null or reference
-        // live buffers for this synchronous call. CredWriteW copies the blob
-        // into the OS-managed, user-protected credential vault.
-        (unsafe { CredWriteW(&credential, 0) } != 0)
-            .then_some(())
-            .ok_or(InstantError::SpoolKeyUnavailable)
+        frame_windows_secure_spool::credential_store(&self.service, account, key)
+            .map_err(|_| InstantError::SpoolKeyUnavailable)
     }
 
     fn delete(&mut self, account: &str) -> Result<(), InstantError> {
-        use windows_sys::Win32::{
-            Foundation::{ERROR_NOT_FOUND, GetLastError},
-            Security::Credentials::{CRED_TYPE_GENERIC, CredDeleteW},
-        };
-
-        let target = windows_credential_target(&self.service, account)?;
-        // SAFETY: `target` is a live, NUL-terminated UTF-16 string.
-        if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } != 0 {
-            return Ok(());
-        }
-        // SAFETY: GetLastError has no preconditions and immediately follows
-        // the failed call whose error it reports.
-        if unsafe { GetLastError() } == ERROR_NOT_FOUND {
-            Ok(())
-        } else {
-            Err(InstantError::SpoolKeyUnavailable)
-        }
+        frame_windows_secure_spool::credential_delete(&self.service, account)
+            .map_err(|_| InstantError::SpoolKeyUnavailable)
     }
-}
-
-#[cfg(windows)]
-struct WindowsCredential(*mut windows_sys::Win32::Security::Credentials::CREDENTIALW);
-
-#[cfg(windows)]
-impl WindowsCredential {
-    fn new(
-        credential: *mut windows_sys::Win32::Security::Credentials::CREDENTIALW,
-    ) -> Result<Self, InstantError> {
-        (!credential.is_null())
-            .then_some(Self(credential))
-            .ok_or(InstantError::SpoolKeyUnavailable)
-    }
-
-    fn as_ref(&self) -> &windows_sys::Win32::Security::Credentials::CREDENTIALW {
-        // SAFETY: construction rejects null and Credential Manager owns the
-        // allocation until this guard's Drop implementation calls CredFree.
-        unsafe { &*self.0 }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsCredential {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Security::Credentials::CredFree;
-
-        // SAFETY: this pointer was returned by CredReadW and is released once.
-        unsafe { CredFree(self.0.cast()) };
-    }
-}
-
-#[cfg(windows)]
-fn windows_credential_target(service: &str, account: &str) -> Result<Vec<u16>, InstantError> {
-    if account.is_empty()
-        || account.len() > 128
-        || !account
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-    {
-        return Err(InstantError::SpoolKeyUnavailable);
-    }
-    windows_wide(&format!("FrameInstantSpool:{service}:{account}"))
-}
-
-#[cfg(windows)]
-fn windows_wide(value: &str) -> Result<Vec<u16>, InstantError> {
-    if value.is_empty() || value.len() > 512 || value.contains('\0') {
-        return Err(InstantError::SpoolKeyUnavailable);
-    }
-    let mut wide = value.encode_utf16().collect::<Vec<_>>();
-    wide.push(0);
-    Ok(wide)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -372,13 +257,15 @@ fn secret_tool_path() -> Result<&'static Path, InstantError> {
 }
 
 fn decode_key_bytes(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>, InstantError> {
-    let key: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| InstantError::SpoolKeyUnavailable)?;
+    if bytes.len() != 32 {
+        return Err(InstantError::SpoolKeyUnavailable);
+    }
+    let mut key = Zeroizing::new([0_u8; 32]);
+    key.copy_from_slice(bytes);
     if key.iter().all(|byte| *byte == 0) {
         return Err(InstantError::SpoolKeyUnavailable);
     }
-    Ok(Zeroizing::new(key))
+    Ok(key)
 }
 
 #[cfg(target_os = "linux")]
@@ -389,17 +276,27 @@ fn decode_hex_key(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>, InstantError> {
     if text.len() != 64 {
         return Err(InstantError::SpoolKeyUnavailable);
     }
-    let mut key = [0_u8; 32];
+    let mut key = Zeroizing::new([0_u8; 32]);
     for (index, output) in key.iter_mut().enumerate() {
         *output = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
             .map_err(|_| InstantError::SpoolKeyUnavailable)?;
     }
-    decode_key_bytes(&key)
+    if key.iter().all(|byte| *byte == 0) {
+        return Err(InstantError::SpoolKeyUnavailable);
+    }
+    Ok(key)
 }
 
 #[cfg(target_os = "linux")]
-fn hex_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+fn hex_bytes(bytes: &[u8]) -> Zeroizing<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(*byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(*byte & 0x0f)]));
+    }
+    Zeroizing::new(encoded)
 }
 
 /// Concrete `PrivateSpoolPort` used by native desktop Instant recording.
@@ -472,9 +369,10 @@ impl<K: InstantSpoolKeyStore> FilesystemEncryptedSpool<K> {
             let session = session.map_err(|_| InstantError::SpoolDiskFull)?;
             let metadata =
                 fs::symlink_metadata(session.path()).map_err(|_| InstantError::SpoolDiskFull)?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            if metadata_is_indirect(&metadata) || !metadata.is_dir() {
                 return Err(InstantError::SpoolCorrupt);
             }
+            validate_private_directory(&session.path())?;
             for entry in fs::read_dir(session.path()).map_err(|_| InstantError::SpoolDiskFull)? {
                 let entry = entry.map_err(|_| InstantError::SpoolDiskFull)?;
                 let path = entry.path();
@@ -487,9 +385,10 @@ impl<K: InstantSpoolKeyStore> FilesystemEncryptedSpool<K> {
                 }
                 let metadata =
                     fs::symlink_metadata(&path).map_err(|_| InstantError::SpoolDiskFull)?;
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                if metadata_is_indirect(&metadata) || !metadata.is_file() {
                     return Err(InstantError::SpoolCorrupt);
                 }
+                enforce_windows_private_permissions(&path)?;
                 let header =
                     read_header(&mut File::open(path).map_err(|_| InstantError::SpoolDiskFull)?)?;
                 bytes = bytes
@@ -521,6 +420,9 @@ impl<K: InstantSpoolKeyStore + 'static> PrivateSpoolPort for FilesystemEncrypted
         let key = match self.key_store.load(&account)? {
             Some(key) => key,
             None => {
+                if session_contains_committed_spool(&self.session_directory(session_id))? {
+                    return Err(InstantError::SpoolKeyUnavailable);
+                }
                 let mut generated = Zeroizing::new([0_u8; 32]);
                 SystemRandom::new()
                     .fill(generated.as_mut())
@@ -628,7 +530,7 @@ impl<K: InstantSpoolKeyStore + 'static> PrivateSpoolPort for FilesystemEncrypted
         for entry in fs::read_dir(&directory).map_err(|_| InstantError::SpoolCorrupt)? {
             let path = entry.map_err(|_| InstantError::SpoolCorrupt)?.path();
             let metadata = fs::symlink_metadata(&path).map_err(|_| InstantError::SpoolCorrupt)?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
+            if metadata_is_indirect(&metadata) || !metadata.is_file() {
                 return Err(InstantError::SpoolCorrupt);
             }
             let name = path
@@ -708,7 +610,7 @@ impl<K: InstantSpoolKeyStore + 'static> PrivateSpoolPort for FilesystemEncrypted
                 let path = entry.map_err(|_| InstantError::SpoolDiskFull)?.path();
                 let metadata =
                     fs::symlink_metadata(&path).map_err(|_| InstantError::SpoolCorrupt)?;
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                if metadata_is_indirect(&metadata) || !metadata.is_file() {
                     return Err(InstantError::SpoolCorrupt);
                 }
                 fs::remove_file(path).map_err(|_| InstantError::SpoolDiskFull)?;
@@ -786,12 +688,12 @@ impl EncryptedSpoolReservation {
         SystemRandom::new()
             .fill(&mut nonce_bytes)
             .map_err(|_| InstantError::SpoolDiskFull)?;
-        let mut encrypted = bytes.to_vec();
+        let mut encrypted = Zeroizing::new(bytes.to_vec());
         encryption_key(&self.key)?
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce_bytes),
                 Aad::from(aad(self.header(), tag, sequence, plain_len)),
-                &mut encrypted,
+                &mut *encrypted,
             )
             .map_err(|_| InstantError::SpoolDiskFull)?;
         let encrypted_len =
@@ -849,18 +751,19 @@ impl SpoolReservationLease for EncryptedSpoolReservation {
         {
             return Err(InstantError::InvalidSpoolReceipt);
         }
-        let encoded = encode_descriptor(descriptor)?;
-        self.append_encrypted(FRAME_TAG_DESCRIPTOR, u32::MAX, &encoded)?;
+        let encoded = Zeroizing::new(encode_descriptor(descriptor)?);
+        self.append_encrypted(FRAME_TAG_DESCRIPTOR, u32::MAX, encoded.as_slice())?;
         self.file
             .sync_all()
             .map_err(|_| InstantError::SpoolDiskFull)?;
         let _lock = private_create_new(&self.lock_path)?;
+        #[cfg(not(windows))]
         if self.final_path.exists() {
             self.cleanup();
             self.terminal = true;
             return Err(InstantError::OperationAlreadyApplied);
         }
-        fs::rename(&self.temp_path, &self.final_path).map_err(|_| InstantError::SpoolDiskFull)?;
+        publish_spool_file(&self.temp_path, &self.final_path)?;
         sync_directory(&self.session_directory)?;
         let integrity = file_digest(&self.final_path)?;
         fs::remove_file(&self.lock_path).map_err(|_| InstantError::SpoolDiskFull)?;
@@ -951,9 +854,9 @@ impl InstantSegmentPayload for EncryptedSpoolPayload {
             self.file
                 .seek(SeekFrom::Start(frame.offset))
                 .map_err(|_| InstantError::SpoolCorrupt)?;
-            let mut encrypted = vec![0_u8; frame.encrypted_len as usize];
+            let mut encrypted = Zeroizing::new(vec![0_u8; frame.encrypted_len as usize]);
             self.file
-                .read_exact(&mut encrypted)
+                .read_exact(encrypted.as_mut_slice())
                 .map_err(|_| InstantError::SpoolCorrupt)?;
             let opened = encryption_key(&self.key)?
                 .open_in_place(
@@ -964,7 +867,7 @@ impl InstantSegmentPayload for EncryptedSpoolPayload {
                         frame.sequence,
                         frame.plain_len,
                     )),
-                    &mut encrypted,
+                    encrypted.as_mut_slice(),
                 )
                 .map_err(|_| InstantError::SpoolCorrupt)?;
             if opened.len() != frame.plain_len as usize {
@@ -998,9 +901,10 @@ impl Drop for EncryptedSpoolPayload {
 
 fn inspect_file(path: &Path, key: &[u8; 32]) -> Result<InspectedSpool, InstantError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| InstantError::SpoolEntryMissing)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() <= HEADER_BYTES {
+    if metadata_is_indirect(&metadata) || !metadata.is_file() || metadata.len() <= HEADER_BYTES {
         return Err(InstantError::SpoolCorrupt);
     }
+    enforce_windows_private_permissions(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1039,14 +943,14 @@ fn inspect_file(path: &Path, key: &[u8; 32]) -> Result<InspectedSpool, InstantEr
         let offset = file
             .stream_position()
             .map_err(|_| InstantError::SpoolCorrupt)?;
-        let mut encrypted = vec![0_u8; encrypted_len as usize];
-        file.read_exact(&mut encrypted)
+        let mut encrypted = Zeroizing::new(vec![0_u8; encrypted_len as usize]);
+        file.read_exact(encrypted.as_mut_slice())
             .map_err(|_| InstantError::SpoolCorrupt)?;
         let opened = encryption_key(key)?
             .open_in_place(
                 Nonce::assume_unique_for_key(nonce),
                 Aad::from(aad(header, tag[0], sequence, plain_len)),
-                &mut encrypted,
+                encrypted.as_mut_slice(),
             )
             .map_err(|_| InstantError::SpoolCorrupt)?;
         if opened.len() != plain_len as usize {
@@ -1335,6 +1239,7 @@ fn read_u64(reader: &mut impl Read) -> Result<u64, InstantError> {
     Ok(u64::from_be_bytes(bytes))
 }
 
+#[cfg(not(windows))]
 fn private_create_new(path: &Path) -> Result<File, InstantError> {
     let mut options = OpenOptions::new();
     options.create_new(true).read(true).write(true);
@@ -1344,6 +1249,12 @@ fn private_create_new(path: &Path) -> Result<File, InstantError> {
         options.mode(0o600);
     }
     options.open(path).map_err(|_| InstantError::SpoolDiskFull)
+}
+
+#[cfg(windows)]
+fn private_create_new(path: &Path) -> Result<File, InstantError> {
+    frame_windows_secure_spool::create_private_file(path)
+        .map_err(|_| InstantError::SecureSpoolUnavailable)
 }
 
 fn create_private_directory(path: &Path) -> Result<(), InstantError> {
@@ -1359,9 +1270,10 @@ fn create_private_directory(path: &Path) -> Result<(), InstantError> {
 
 fn validate_private_directory(path: &Path) -> Result<(), InstantError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| InstantError::SpoolDiskFull)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if metadata_is_indirect(&metadata) || !metadata.is_dir() {
         return Err(InstantError::SpoolCorrupt);
     }
+    enforce_windows_private_permissions(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1372,10 +1284,90 @@ fn validate_private_directory(path: &Path) -> Result<(), InstantError> {
     Ok(())
 }
 
+fn session_contains_committed_spool(path: &Path) -> Result<bool, InstantError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(InstantError::SpoolCorrupt),
+    };
+    if metadata_is_indirect(&metadata) || !metadata.is_dir() {
+        return Err(InstantError::SpoolCorrupt);
+    }
+    validate_private_directory(path)?;
+    for entry in fs::read_dir(path).map_err(|_| InstantError::SpoolCorrupt)? {
+        let entry = entry.map_err(|_| InstantError::SpoolCorrupt)?;
+        let metadata =
+            fs::symlink_metadata(entry.path()).map_err(|_| InstantError::SpoolCorrupt)?;
+        if metadata_is_indirect(&metadata) || !metadata.is_file() {
+            return Err(InstantError::SpoolCorrupt);
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| InstantError::SpoolCorrupt)?;
+        if name.ends_with(".spool") {
+            return Ok(true);
+        }
+        if !(name.ends_with(".tmp") || name.ends_with(".lock")) {
+            return Err(InstantError::SpoolCorrupt);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(not(windows))]
+fn metadata_is_indirect(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+fn metadata_is_indirect(metadata: &fs::Metadata) -> bool {
+    frame_windows_secure_spool::metadata_is_indirect(metadata)
+}
+
+#[cfg(not(windows))]
+fn enforce_windows_private_permissions(_path: &Path) -> Result<(), InstantError> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn enforce_windows_private_permissions(path: &Path) -> Result<(), InstantError> {
+    frame_windows_secure_spool::enforce_private_permissions(path)
+        .map_err(|_| InstantError::SecureSpoolUnavailable)
+}
+
+#[cfg(not(windows))]
 fn sync_directory(path: &Path) -> Result<(), InstantError> {
     File::open(path)
         .and_then(|file| file.sync_all())
         .map_err(|_| InstantError::SpoolDiskFull)
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> Result<(), InstantError> {
+    // Windows does not expose a portable directory-fsync equivalent through
+    // std. Durable publication is performed by publish_spool_file with
+    // MOVEFILE_WRITE_THROUGH. If a later cleanup is interrupted, recovery may
+    // retain encrypted garbage but will authenticate or remove it fail closed.
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn publish_spool_file(source: &Path, destination: &Path) -> Result<(), InstantError> {
+    fs::rename(source, destination).map_err(|_| InstantError::SpoolDiskFull)
+}
+
+#[cfg(windows)]
+fn publish_spool_file(source: &Path, destination: &Path) -> Result<(), InstantError> {
+    match frame_windows_secure_spool::publish_file(source, destination) {
+        Ok(()) => Ok(()),
+        Err(frame_windows_secure_spool::WindowsPublishError::AlreadyExists) => {
+            Err(InstantError::OperationAlreadyApplied)
+        }
+        Err(frame_windows_secure_spool::WindowsPublishError::Failed) => {
+            Err(InstantError::SpoolDiskFull)
+        }
+    }
 }
 
 fn final_name(index: u32, identity: Sha256Digest) -> String {
@@ -1516,6 +1508,22 @@ mod tests {
     }
 
     #[test]
+    fn credential_key_decoder_rejects_wrong_length_and_zero_material() {
+        assert!(matches!(
+            decode_key_bytes(&[7_u8; 31]),
+            Err(InstantError::SpoolKeyUnavailable)
+        ));
+        assert!(matches!(
+            decode_key_bytes(&[0_u8; 32]),
+            Err(InstantError::SpoolKeyUnavailable)
+        ));
+        assert_eq!(
+            decode_key_bytes(&[9_u8; 32]).expect("valid key").as_ref(),
+            &[9_u8; 32]
+        );
+    }
+
+    #[test]
     fn encrypted_spool_round_trip_restart_tamper_and_cleanup() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let keys = TestKeyStore::default();
@@ -1542,6 +1550,33 @@ mod tests {
             .next()
             .expect("spool file");
         assert!(!disk.windows(body.len()).any(|window| window == body));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let session_directory = directory.path().join(hex(&session.canonical_bytes()));
+            assert_eq!(
+                fs::metadata(&session_directory)
+                    .expect("session metadata")
+                    .permissions()
+                    .mode()
+                    & 0o077,
+                0
+            );
+            let spool_path = fs::read_dir(&session_directory)
+                .expect("session files")
+                .map(|entry| entry.expect("session file").path())
+                .find(|path| path.extension().and_then(|value| value.to_str()) == Some("spool"))
+                .expect("spool path");
+            assert_eq!(
+                fs::metadata(spool_path)
+                    .expect("spool metadata")
+                    .permissions()
+                    .mode()
+                    & 0o077,
+                0
+            );
+        }
 
         let mut upload = spool.open_upload(&descriptor).expect("open upload");
         let mut recovered_body = Vec::new();
@@ -1620,5 +1655,37 @@ mod tests {
             port.reserve(&key, oversized),
             Err(InstantError::SpoolQuotaExceeded)
         ));
+    }
+
+    #[test]
+    fn committed_ciphertext_without_credential_never_mints_a_replacement_key() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let keys = TestKeyStore::default();
+        let session = InstantSessionId::from_csprng([11; 16]).expect("session");
+        let body = b"durable encrypted segment".repeat(32);
+        let segment = descriptor(session, &body);
+        let port =
+            FilesystemEncryptedSpool::new(directory.path(), policy(), keys.clone()).expect("port");
+        let mut spool = InstantSpool::open(port, session, quota()).expect("spool");
+        spool
+            .commit_segment(
+                InstantOperationId::from_csprng([12; 16]).expect("operation"),
+                &segment,
+                Box::new(BytesPayload {
+                    bytes: body,
+                    offset: 0,
+                }),
+            )
+            .expect("commit");
+        drop(spool);
+
+        keys.keys.lock().expect("key store").clear();
+        let restarted =
+            FilesystemEncryptedSpool::new(directory.path(), policy(), keys.clone()).expect("port");
+        assert!(matches!(
+            InstantSpool::open(restarted, session, quota()),
+            Err(InstantError::SpoolKeyUnavailable)
+        ));
+        assert!(keys.keys.lock().expect("key store").is_empty());
     }
 }

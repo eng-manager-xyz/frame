@@ -89,6 +89,8 @@ const DELIVERY_CLAIM_BY_OPERATION_SQL: &str =
     include_str!("../queries/auth/delivery_claim_by_operation.sql");
 const DELIVERY_RETRY_SCHEDULED_POSTCONDITION_SQL: &str =
     include_str!("../queries/auth/delivery_retry_scheduled_postcondition.sql");
+const DELIVERY_MATERIALIZE_LIMIT_PER_CLAIM: u32 = 1;
+const DELIVERY_CRON_CONFLICT_ATTEMPTS: usize = 1;
 
 const AUDIT_INSERT_SQL: &str = include_str!("../queries/auth/audit_insert.sql");
 const ASSERT_CHANGES_SQL: &str = include_str!("../queries/auth/assert_changes.sql");
@@ -4217,6 +4219,7 @@ impl<'database> D1AuthStateRepository<'database> {
         policy: frame_domain::MultiRateLimitPolicy,
         now: TimestampMillis,
     ) -> AdapterResult<Option<TimestampMillis>> {
+        let action = action.rate_limit_bucket_action();
         self.push_statement(
             statements,
             RATE_BUCKET_GC_SQL,
@@ -7022,7 +7025,7 @@ impl AuthStateRepository for D1AuthStateRepository<'_> {
             .map_err(AdapterFailure::into_port)?;
 
         let mut materialized = 0_u32;
-        for round in 0..3 {
+        for round in 0..DELIVERY_CRON_CONFLICT_ATTEMPTS {
             let pending = self
                 .rows::<PendingRow>(
                     PENDING_READY_SQL,
@@ -7273,7 +7276,7 @@ impl AuthStateRepository for D1AuthStateRepository<'_> {
                 telemetry.finish("materialized", materialized as usize);
                 return Ok(materialized);
             }
-            if round == 2 {
+            if round + 1 == DELIVERY_CRON_CONFLICT_ATTEMPTS {
                 return Err(AdapterFailure::Conflict.into_port());
             }
         }
@@ -9024,7 +9027,8 @@ impl AuthStateRepository for D1AuthStateRepository<'_> {
             telemetry.finish("claimed", 1);
             return Ok(Some(claim));
         }
-        self.materialize_verification_deliveries(now, 100).await?;
+        self.materialize_verification_deliveries(now, DELIVERY_MATERIALIZE_LIMIT_PER_CLAIM)
+            .await?;
         let mut cleanup = Vec::with_capacity(1);
         self.push_statement(
             &mut cleanup,
@@ -9036,7 +9040,7 @@ impl AuthStateRepository for D1AuthStateRepository<'_> {
             .await
             .map_err(AdapterFailure::into_port)?;
 
-        for _ in 0..3 {
+        for _ in 0..DELIVERY_CRON_CONFLICT_ATTEMPTS {
             let row = self
                 .one::<DeliveryRow>(DELIVERY_NEXT_SQL, &[JsValue::from_f64(now.get() as f64)])
                 .await

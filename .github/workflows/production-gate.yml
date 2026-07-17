@@ -49,12 +49,18 @@ jobs:
           ref: ${{ github.sha }}
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: Install pinned Node.js for compiled Worker conformance
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.17.0"
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           cache-on-failure: false
       - name: Install the pinned Leptos web asset bundler
         run: cargo install trunk --version 0.21.14 --locked
+      - name: Install the pinned Worker packager for compiled R2 conformance
+        run: cargo install worker-build --version 0.8.5 --locked
       - name: Install GStreamer build and runtime libraries
         run: |
           sudo apt-get update
@@ -68,6 +74,7 @@ jobs:
         run: |
           python3 scripts/ci/check-workflow-policy.py
           python3 -I scripts/ci/test-workflow-policy.py
+          python3 -I scripts/ci/test-release-change-plan.py
           ruby scripts/ci/check-yaml-syntax.rb
           ruby scripts/ci/check-render-blueprint.rb
           python3 scripts/ci/check-fixtures.py
@@ -77,7 +84,15 @@ jobs:
           python3 scripts/ci/check-migrations.py
           python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
           python3 -I scripts/ci/direct-upload-sqlite-conformance.py
+          python3 -I scripts/ci/media-job-inputs-sqlite-conformance.py
+          python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
           python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
+          python3 -I scripts/ci/worker-auth-sqlite-conformance.py
+          python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
+          python3 -I scripts/ci/legacy-organization-selection-sqlite-conformance.py
+          python3 -I scripts/ci/legacy-org-custom-domain-sqlite-conformance.py
+          python3 -I scripts/ci/legacy-notification-preferences-sqlite-conformance.py
+          python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py
           python3 scripts/ci/check-cloudflare-zone-contract.py
           python3 -I scripts/ci/check-cloudflare-edge-policy.py
           python3 -I scripts/ci/test-frame-cache-purge.py
@@ -94,6 +109,9 @@ jobs:
           python3 -I scripts/migration/test_mysql_cdc.py
           python3 -I scripts/migration/test_d1_target.py
           python3 -I scripts/ci/check-media-conformance.py
+          python3 -I scripts/ci/r2-storage-conformance.py \
+            --evidence target/evidence/r2-storage-conformance-production-preflight.json
+          python3 -I scripts/ci/release-join-conformance.py --self-test
           python3 scripts/ci/check-parity-evidence.py --require-full
           python3 scripts/ci/check-secrets.py
           python3 scripts/ci/generate-cyclonedx.py --self-test
@@ -147,7 +165,7 @@ jobs:
           cargo build --locked --release -p frame-web
           npx --yes wrangler@4.111.0 deploy --dry-run \
             --config apps/control-plane/wrangler.toml \
-            --outdir target/wrangler-release
+            --outdir "${GITHUB_WORKSPACE}/target/wrangler-release"
       - name: Create checksummed release manifest and dependency inventory
         env:
           RELEASE_SHA: ${{ github.sha }}
@@ -198,6 +216,17 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      FRAME_EXPECTED_D1_DATABASE_ID: ${{ vars.FRAME_EXPECTED_D1_DATABASE_ID }}
+      FRAME_EXPECTED_D1_DATABASE_NAME: ${{ vars.FRAME_EXPECTED_D1_DATABASE_NAME }}
+      FRAME_APPROVED_ROLLBACK_SOURCE_SHA: ${{ vars.FRAME_APPROVED_ROLLBACK_SOURCE_SHA }}
+      FRAME_APPROVED_ROLLBACK_WORKER_SHA256: ${{ vars.FRAME_APPROVED_ROLLBACK_WORKER_SHA256 }}
+      FRAME_APPROVED_ROLLBACK_DEPLOYMENT_ID: ${{ vars.FRAME_APPROVED_ROLLBACK_DEPLOYMENT_ID }}
+      FRAME_APPROVED_ROLLBACK_VERSION_ID: ${{ vars.FRAME_APPROVED_ROLLBACK_VERSION_ID }}
+      FRAME_APPROVED_ROLLBACK_EXPAND_LEVEL: ${{ vars.FRAME_APPROVED_ROLLBACK_EXPAND_LEVEL }}
+      FRAME_APPROVED_ROLLBACK_CONTRACT_LEVEL: ${{ vars.FRAME_APPROVED_ROLLBACK_CONTRACT_LEVEL }}
+      FRAME_APPROVED_ROLLBACK_IDENTITY_MODE: ${{ vars.FRAME_APPROVED_ROLLBACK_IDENTITY_MODE || 'annotated' }}
+      FRAME_APPROVED_ROLLBACK_PROVIDER_ETAG: ${{ vars.FRAME_APPROVED_ROLLBACK_PROVIDER_ETAG || 'not-applicable' }}
+      FRAME_APPROVED_ROLLBACK_BOOTSTRAP_CONFIRMATION: ${{ vars.FRAME_APPROVED_ROLLBACK_BOOTSTRAP_CONFIRMATION || 'not-applicable' }}
     steps:
       - name: Check out the exact release revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -215,14 +244,32 @@ jobs:
       - name: Validate protected provider credentials without logging them
         run: |
           test -n "${CLOUDFLARE_API_TOKEN}"
-          test "${#CLOUDFLARE_ACCOUNT_ID}" -eq 32
+          [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9a-f]{32}$ ]]
+          [[ "${CLOUDFLARE_D1_DATABASE_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${FRAME_EXPECTED_D1_DATABASE_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${FRAME_EXPECTED_D1_DATABASE_NAME}" =~ ^[a-z][a-z0-9-]{0,62}$ ]]
+          [[ "${FRAME_APPROVED_ROLLBACK_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${FRAME_APPROVED_ROLLBACK_WORKER_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${FRAME_APPROVED_ROLLBACK_DEPLOYMENT_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${FRAME_APPROVED_ROLLBACK_VERSION_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${FRAME_APPROVED_ROLLBACK_EXPAND_LEVEL}" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]]
+          [[ "${FRAME_APPROVED_ROLLBACK_CONTRACT_LEVEL}" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]]
+          case "${FRAME_APPROVED_ROLLBACK_IDENTITY_MODE}" in
+            annotated)
+              test "${FRAME_APPROVED_ROLLBACK_PROVIDER_ETAG}" = not-applicable
+              test "${FRAME_APPROVED_ROLLBACK_BOOTSTRAP_CONFIRMATION}" = not-applicable
+              ;;
+            protected-unannotated-bootstrap)
+              [[ "${FRAME_APPROVED_ROLLBACK_PROVIDER_ETAG}" =~ ^[A-Za-z0-9._:+/=-]{8,128}$ ]]
+              test "${FRAME_APPROVED_ROLLBACK_BOOTSTRAP_CONFIRMATION}" = adopt-current-unannotated-worker-once
+              ;;
+            *) exit 1 ;;
+          esac
       - name: Install pinned Node.js for provider commands
-        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22.17.0"
       - name: Materialize the protected production binding configuration
-        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
         run: >-
           python3 scripts/ci/prepare-wrangler-config.py
           apps/control-plane/wrangler.toml
@@ -235,7 +282,73 @@ jobs:
             --file=target/downloaded-release/frame-worker.tar.gz \
             --directory=target/provider-worker \
             --no-same-owner --no-same-permissions
-          test -f target/provider-worker/wrangler-release/index.js
+          test -f target/provider-worker/wrangler-release/shim.js
+      - name: Prove D1 and current rollback authority before remote mutation
+        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
+        run: |
+          mkdir -p target/provider-authority
+          api=https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/provider-authority/pre-deployments.json \
+            "${api}/workers/scripts/frame-control-plane/deployments"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/provider-authority/pre-rollback-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${FRAME_APPROVED_ROLLBACK_VERSION_ID}"
+          if [[ "${FRAME_APPROVED_ROLLBACK_IDENTITY_MODE}" == protected-unannotated-bootstrap ]]; then
+            curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+              --connect-timeout 5 --max-time 30 \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              --output target/provider-authority/pre-rollback-script-version.json \
+              "${api}/workers/scripts/frame-control-plane/versions/${FRAME_APPROVED_ROLLBACK_VERSION_ID}"
+          fi
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/provider-authority/pre-d1-info.json \
+            "${api}/d1/database/${CLOUDFLARE_D1_DATABASE_ID}?fields=uuid,name"
+          npx --yes wrangler@4.111.0 d1 execute frame --remote --json \
+            --file scripts/ci/contract-migration-authority.sql \
+            --config apps/control-plane/wrangler.production.ci.toml \
+            > target/provider-authority/pre-d1-authority.json
+          identity_args=(
+            --rollback-identity-mode "${FRAME_APPROVED_ROLLBACK_IDENTITY_MODE}"
+          )
+          if [[ "${FRAME_APPROVED_ROLLBACK_IDENTITY_MODE}" == protected-unannotated-bootstrap ]]; then
+            identity_args+=(
+              --rollback-provider-etag "${FRAME_APPROVED_ROLLBACK_PROVIDER_ETAG}"
+              --rollback-bootstrap-confirmation "${FRAME_APPROVED_ROLLBACK_BOOTSTRAP_CONFIRMATION}"
+              --rollback-script-version target/provider-authority/pre-rollback-script-version.json
+            )
+          fi
+          python3 -I scripts/ci/contract-migration-authority.py \
+            --phase release-pre \
+            --deployments target/provider-authority/pre-deployments.json \
+            --rollback-version target/provider-authority/pre-rollback-version.json \
+            --d1-info target/provider-authority/pre-d1-info.json \
+            --d1-authority target/provider-authority/pre-d1-authority.json \
+            --rollback-source-sha "${FRAME_APPROVED_ROLLBACK_SOURCE_SHA}" \
+            --rollback-worker-sha256 "${FRAME_APPROVED_ROLLBACK_WORKER_SHA256}" \
+            --rollback-deployment-id "${FRAME_APPROVED_ROLLBACK_DEPLOYMENT_ID}" \
+            --rollback-version-id "${FRAME_APPROVED_ROLLBACK_VERSION_ID}" \
+            --rollback-expand-migration-level "${FRAME_APPROVED_ROLLBACK_EXPAND_LEVEL}" \
+            --rollback-contract-migration-level "${FRAME_APPROVED_ROLLBACK_CONTRACT_LEVEL}" \
+            --expected-d1-id "${FRAME_EXPECTED_D1_DATABASE_ID}" \
+            --expected-d1-name "${FRAME_EXPECTED_D1_DATABASE_NAME}" \
+            --now-epoch "$(date +%s)" \
+            --evidence target/provider-authority/preflight.json \
+            "${identity_args[@]}"
+      - name: Retain pre-mutation rollback adoption evidence
+        if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: provider-preflight-${{ github.sha }}
+          path: target/provider-authority/preflight.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Apply expand-only D1 migrations before Worker code
         if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
         run: >-
@@ -243,36 +356,159 @@ jobs:
           --config apps/control-plane/wrangler.production.ci.toml
       - name: Deploy the exact verified Worker bundle
         if: ${{ needs.evaluate.outputs.worker_changed == 'true' }}
-        run: >-
-          npx --yes wrangler@4.111.0 deploy
-          target/provider-worker/wrangler-release/index.js --no-bundle
-          --strict --message "GitHub release ${GITHUB_SHA}"
-          --config apps/control-plane/wrangler.production.ci.toml
+        run: |
+          worker_sha="$(jq -er '.artifacts.worker.sha256' target/downloaded-release/release-manifest.json)"
+          expand_level="$(jq -er '.expand_migration_level' target/downloaded-release/release-manifest.json)"
+          contract_level="$(jq -er '.contract_migration_level' target/downloaded-release/release-manifest.json)"
+          message="frame-source:${GITHUB_SHA};frame-worker-sha256:${worker_sha};frame-expand:${expand_level};frame-contract:${contract_level}"
+          npx --yes wrangler@4.111.0 deploy \
+            target/provider-worker/wrangler-release/shim.js --no-bundle \
+            --strict --tag "${GITHUB_SHA}" --message "${message}" \
+            --config apps/control-plane/wrangler.production.ci.toml
       - name: Verify the deployed or current compatible service
         env:
           RELEASE_REASON: ${{ needs.evaluate.outputs.reason }}
         run: |
           echo "Release classification: ${RELEASE_REASON}"
           scripts/ci/smoke-canonical-domain.sh https://frame.engmanager.xyz target/provider-smoke.json
-      - name: Create redacted rollback metadata
+      - name: Observe exact active, rollback, and D1 provider identities
+        env:
+          WORKER_CHANGED: ${{ needs.evaluate.outputs.worker_changed }}
+        run: |
+          mkdir -p target/provider-authority
+          api=https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/provider-authority/deployments.json \
+            "${api}/workers/scripts/frame-control-plane/deployments"
+          active_deployment_id="$(jq -er '.result.deployments | max_by(.created_on) | .id' target/provider-authority/deployments.json)"
+          active_version_id="$(jq -er '.result.deployments | max_by(.created_on) | select((.versions | length) == 1) | .versions[0] | select(.percentage == 100) | .version_id' target/provider-authority/deployments.json)"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/provider-authority/active-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${active_version_id}"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/provider-authority/rollback-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${FRAME_APPROVED_ROLLBACK_VERSION_ID}"
+          if [[ "${FRAME_APPROVED_ROLLBACK_IDENTITY_MODE}" == protected-unannotated-bootstrap ]]; then
+            curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+              --connect-timeout 5 --max-time 30 \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              --output target/provider-authority/rollback-script-version.json \
+              "${api}/workers/scripts/frame-control-plane/versions/${FRAME_APPROVED_ROLLBACK_VERSION_ID}"
+          fi
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/provider-authority/d1-info.json \
+            "${api}/d1/database/${CLOUDFLARE_D1_DATABASE_ID}?fields=uuid,name"
+          if [[ "${WORKER_CHANGED}" == true ]]; then
+            active_source_sha="${GITHUB_SHA}"
+            active_worker_sha256="$(jq -er '.artifacts.worker.sha256' target/downloaded-release/release-manifest.json)"
+          else
+            active_source_sha="$(jq -er '.result.annotations["workers/tag"] | select(test("^[0-9a-f]{40}$"))' target/provider-authority/active-version.json)"
+            active_worker_sha256="$(jq -er '.result.annotations["workers/message"] | capture("^frame-source:[0-9a-f]{40};frame-worker-sha256:(?<digest>[0-9a-f]{64});frame-expand:[0-9]{4}_[a-z0-9_]+\\.sql;frame-contract:[0-9]{4}_[a-z0-9_]+\\.sql$").digest' target/provider-authority/active-version.json)"
+          fi
+          {
+            echo "OBSERVED_ACTIVE_DEPLOYMENT_ID=${active_deployment_id}"
+            echo "OBSERVED_ACTIVE_VERSION_ID=${active_version_id}"
+            echo "OBSERVED_ACTIVE_SOURCE_SHA=${active_source_sha}"
+            echo "OBSERVED_ACTIVE_WORKER_SHA256=${active_worker_sha256}"
+          } >> "${GITHUB_ENV}"
+      - name: Capture privacy-safe D1 schema authority
+        run: >-
+          npx --yes wrangler@4.111.0 d1 execute frame --remote --json
+          --file scripts/ci/contract-migration-authority.sql
+          --config apps/control-plane/wrangler.production.ci.toml
+          > target/provider-authority/d1-authority.json
+      - name: Verify immutable provider identities and create release metadata
         env:
           PREVIOUS_SHA: ${{ github.event.before || '0000000000000000000000000000000000000000' }}
           WORKER_CHANGED: ${{ needs.evaluate.outputs.worker_changed }}
           WEB_CHANGED: ${{ needs.evaluate.outputs.web_changed }}
         run: |
+          identity_args=(
+            --rollback-identity-mode "${FRAME_APPROVED_ROLLBACK_IDENTITY_MODE}"
+          )
+          if [[ "${FRAME_APPROVED_ROLLBACK_IDENTITY_MODE}" == protected-unannotated-bootstrap ]]; then
+            identity_args+=(
+              --rollback-provider-etag "${FRAME_APPROVED_ROLLBACK_PROVIDER_ETAG}"
+              --rollback-bootstrap-confirmation "${FRAME_APPROVED_ROLLBACK_BOOTSTRAP_CONFIRMATION}"
+              --rollback-script-version target/provider-authority/rollback-script-version.json
+            )
+          fi
+          python3 -I scripts/ci/contract-migration-authority.py \
+            --phase release \
+            --deployments target/provider-authority/deployments.json \
+            --active-version target/provider-authority/active-version.json \
+            --rollback-version target/provider-authority/rollback-version.json \
+            --d1-info target/provider-authority/d1-info.json \
+            --d1-authority target/provider-authority/d1-authority.json \
+            --active-source-sha "${OBSERVED_ACTIVE_SOURCE_SHA}" \
+            --active-worker-sha256 "${OBSERVED_ACTIVE_WORKER_SHA256}" \
+            --active-deployment-id "${OBSERVED_ACTIVE_DEPLOYMENT_ID}" \
+            --active-version-id "${OBSERVED_ACTIVE_VERSION_ID}" \
+            --rollback-source-sha "${FRAME_APPROVED_ROLLBACK_SOURCE_SHA}" \
+            --rollback-worker-sha256 "${FRAME_APPROVED_ROLLBACK_WORKER_SHA256}" \
+            --rollback-deployment-id "${FRAME_APPROVED_ROLLBACK_DEPLOYMENT_ID}" \
+            --rollback-version-id "${FRAME_APPROVED_ROLLBACK_VERSION_ID}" \
+            --rollback-expand-migration-level "${FRAME_APPROVED_ROLLBACK_EXPAND_LEVEL}" \
+            --rollback-contract-migration-level "${FRAME_APPROVED_ROLLBACK_CONTRACT_LEVEL}" \
+            --expected-d1-id "${FRAME_EXPECTED_D1_DATABASE_ID}" \
+            --expected-d1-name "${FRAME_EXPECTED_D1_DATABASE_NAME}" \
+            --now-epoch "$(date +%s)" \
+            --evidence target/provider-authority/release.json \
+            "${identity_args[@]}"
+          manifest_sha="$(sha256sum target/downloaded-release/release-manifest.json | awk '{print $1}')"
+          jq \
+            --arg base_manifest_sha256 "${manifest_sha}" \
+            --slurpfile authority target/provider-authority/release.json \
+            '.migration_authority.expand.status = "provider_observed" |
+             .migration_authority.contract.status =
+               (if $authority[0].d1.state == "contract_applied"
+                then "protected_applied"
+                else "protected_manual_required"
+                end) |
+             .migration_authority.active_worker = $authority[0].active_worker |
+             .migration_authority.minimum_compatible_worker =
+               ($authority[0].minimum_compatible_worker +
+                 {evidence: "protected_provider_observed"}) |
+             .migration_authority.approved_rollback =
+               ($authority[0].minimum_compatible_worker +
+                 {evidence: "protected_provider_approved"}) |
+             .base_release_manifest_sha256 = $base_manifest_sha256' \
+            target/downloaded-release/release-manifest.json \
+            > target/provider-release-manifest.json
+          provider_manifest_sha="$(sha256sum target/provider-release-manifest.json | awk '{print $1}')"
           jq -n \
             --arg release_sha "${GITHUB_SHA}" \
             --arg previous_sha "${PREVIOUS_SHA}" \
+            --arg manifest_sha256 "${manifest_sha}" \
+            --arg provider_manifest_sha256 "${provider_manifest_sha}" \
             --arg worker_changed "${WORKER_CHANGED}" \
             --arg web_changed "${WEB_CHANGED}" \
+            --slurpfile authority target/provider-authority/release.json \
             '{
-              schema_version: 1,
+              schema_version: 2,
               release_sha: $release_sha,
               previous_sha: $previous_sha,
+              immutable_release_manifest_sha256: $manifest_sha256,
+              provider_release_manifest_sha256: $provider_manifest_sha256,
               worker_deployed: ($worker_changed == "true"),
               render_authority: "git-checks-pass",
               render_expected: ($web_changed == "true"),
-              rollback: {worker_source_sha: $previous_sha, d1: "expand-only-no-revert"}
+              active_worker: $authority[0].active_worker,
+              minimum_compatible_worker: $authority[0].minimum_compatible_worker,
+              migrations: $authority[0].d1,
+              rollback: {
+                worker_deployment_id: $authority[0].minimum_compatible_worker.deployment_id,
+                worker_version_id: $authority[0].minimum_compatible_worker.version_id,
+                d1: "forward-fix-no-revert"
+              }
             }' > target/provider-release-record.json
       - name: Retain redacted provider evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -282,6 +518,8 @@ jobs:
             target/downloaded-release/release-manifest.json
             target/provider-smoke.json
             target/provider-release-record.json
+            target/provider-release-manifest.json
+            target/provider-authority/release.json
           if-no-files-found: error
           retention-days: 30
       - name: Remove the ephemeral production binding configuration

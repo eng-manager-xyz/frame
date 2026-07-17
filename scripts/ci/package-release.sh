@@ -28,8 +28,8 @@ python3 -I scripts/ci/check-web-hydration-bundle.py --dist "${web_assets}" >/dev
   echo "Worker bundle directory must be named wrangler-release" >&2
   exit 1
 }
-[[ -f "${worker_bundle}/index.js" ]] || {
-  echo "Worker dry-run bundle is missing its index.js entrypoint" >&2
+[[ -f "${worker_bundle}/shim.js" ]] || {
+  echo "Worker dry-run bundle is missing its shim.js entrypoint" >&2
   exit 1
 }
 if find "${worker_bundle}" -type l -print -quit | grep -q .; then
@@ -92,13 +92,24 @@ web_assets_sha="$(sha256_file "${output}/web-dist/manifest.json")"
 worker_sha="$(sha256_file "${output}/frame-worker.tar.gz")"
 metadata_sha="$(sha256_file "${output}/cargo-metadata.json")"
 sbom_sha="$(sha256_file "${output}/frame.cdx.json")"
-migration_level="$(find apps/control-plane/migrations -maxdepth 1 -type f -name '*.sql' -print | sort | tail -n 1 | xargs basename)"
+expand_migration_level="$(find apps/control-plane/migrations -maxdepth 1 -type f -name '*.sql' -print | sort | tail -n 1 | xargs basename)"
+contract_migration_level="$(find apps/control-plane/contract-migrations -maxdepth 1 -type f -name '*.sql' -print | sort | tail -n 1 | xargs basename)"
+[[ "${expand_migration_level}" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]] || {
+  echo "unable to identify the expand migration level" >&2
+  exit 1
+}
+[[ "${contract_migration_level}" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]] || {
+  echo "unable to identify the protected contract migration level" >&2
+  exit 1
+}
 
 jq -n \
   --arg schema_version "1" \
   --arg git_sha "${release_sha}" \
   --arg contract_major "${contract_major}" \
-  --arg migration_level "${migration_level}" \
+  --arg migration_level "${expand_migration_level}" \
+  --arg expand_migration_level "${expand_migration_level}" \
+  --arg contract_migration_level "${contract_migration_level}" \
   --arg render_authority "git-checks-pass" \
   --arg web_sha256 "${web_sha}" \
   --arg web_assets_sha256 "${web_assets_sha}" \
@@ -110,6 +121,36 @@ jq -n \
     git_sha: $git_sha,
     contract_major: ($contract_major | tonumber),
     migration_level: $migration_level,
+    expand_migration_level: $expand_migration_level,
+    contract_migration_level: $contract_migration_level,
+    migration_authority: {
+      expand: {
+        level: $expand_migration_level,
+        status: "candidate"
+      },
+      contract: {
+        level: $contract_migration_level,
+        status: "protected_manual_required"
+      },
+      minimum_compatible_worker: {
+        source_git_sha: $git_sha,
+        artifact_sha256: $worker_sha256,
+        deployment_id: null,
+        version_id: null,
+        expand_migration_level: $expand_migration_level,
+        contract_migration_level: $contract_migration_level,
+        evidence: "pending_protected_provider_observation"
+      },
+      approved_rollback: {
+        source_git_sha: null,
+        artifact_sha256: null,
+        deployment_id: null,
+        version_id: null,
+        expand_migration_level: null,
+        contract_migration_level: null,
+        evidence: "pending_protected_provider_approval"
+      }
+    },
     render_authority: $render_authority,
     portfolio_consumer_sha: null,
     artifacts: {
@@ -132,4 +173,4 @@ jq -n \
   fi
 )
 
-echo "Packaged release ${release_sha} with contract major ${contract_major} and migration ${migration_level}."
+echo "Packaged release ${release_sha} with contract major ${contract_major}, expand ${expand_migration_level}, and protected contract ${contract_migration_level}."

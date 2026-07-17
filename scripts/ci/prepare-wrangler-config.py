@@ -13,15 +13,22 @@ PLACEHOLDER = 'database_id = "replace-with-d1-database-id"'
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: prepare-wrangler-config.py INPUT OUTPUT", file=sys.stderr)
+    if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "--contract-migrations"):
+        print(
+            "usage: prepare-wrangler-config.py INPUT OUTPUT [--contract-migrations]",
+            file=sys.stderr,
+        )
         return 2
 
     source = Path(sys.argv[1])
     destination = Path(sys.argv[2])
+    contract_migrations = len(sys.argv) == 4
     database_id = os.environ.get("CLOUDFLARE_D1_DATABASE_ID", "")
-    if re.fullmatch(r"[0-9a-f]{32}", database_id) is None:
-        print("CLOUDFLARE_D1_DATABASE_ID must be a 32-character lowercase hexadecimal ID", file=sys.stderr)
+    if re.fullmatch(
+        r"(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        database_id,
+    ) is None:
+        print("CLOUDFLARE_D1_DATABASE_ID must be a lowercase Cloudflare UUID", file=sys.stderr)
         return 1
 
     text = source.read_text(encoding="utf-8")
@@ -30,6 +37,7 @@ def main() -> int:
         'FRAME_DEPLOYMENT = "production"',
         'FRAME_PUBLIC_HOST = "frame.engmanager.xyz"',
         'pattern = "frame.engmanager.xyz/api*"',
+        'pattern = "frame.engmanager.xyz/media-server*"',
         'binding = "DB"',
     )
     missing = [fragment for fragment in required_fragments if fragment not in text]
@@ -63,6 +71,15 @@ def main() -> int:
         print("Wrangler config must contain exactly one removable build section", file=sys.stderr)
         return 1
     rendered = "".join(lines)
+    if contract_migrations:
+        migration_directory = 'migrations_dir = "migrations"'
+        if rendered.count(migration_directory) != 1:
+            print("Wrangler config must name exactly one expand migration directory", file=sys.stderr)
+            return 1
+        rendered = rendered.replace(
+            migration_directory,
+            'migrations_dir = "contract-migrations"',
+        )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

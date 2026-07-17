@@ -16,14 +16,15 @@ The portfolio repository's `infra/cloudflare-zone` state is the sole owner of
 the `engmanager.xyz` CNAME/TLS settings and complete cache, WAF, and rate-limit
 phase entrypoints. It must import every existing rule, prove a semantic no-op,
 and retire competing bootstrap writes before adding Frame entries. Frame keeps
-only the machine-readable `infra/cloudflare-zone/frame-contract.json` handoff;
-it cannot apply shared-zone mutations.
+only the machine-readable `infra/cloudflare-zone/frame-contract.json` handoff,
+including its `/api*` and `/media-server*` Worker Route set; it cannot apply
+shared-zone mutations.
 
 Frame's `infra/cloudflare-account` is a disjoint state that owns the private
 recordings bucket, exact-origin CORS, and abandoned multipart lifecycle only.
-Wrangler owns Worker code, bindings, D1, Media, and the reviewed `/api*` route;
-it does not own shared cache/WAF phase rules. Each state uses a pinned provider
-and lockfile, encrypted locked/versioned remote backend, least-privilege token,
+Wrangler owns Worker code, bindings, D1, Media, and the reviewed `/api*` and
+`/media-server*` routes; it does not own shared cache/WAF phase rules. Each
+state uses a pinned provider and lockfile, encrypted locked/versioned remote backend, least-privilege token,
 protected manual apply, drift detection, backup, and restore rehearsal.
 
 Origin response headers are the first cache authority. All API, auth, health,

@@ -66,7 +66,7 @@ pub(crate) enum NativeImplementationExceptionV1 {
     AnimatedPreviewSamplingContract,
     LoudnessAlgorithmApproval,
     ContainerDemuxAllowlist,
-    MultiSourceControlPlaneProtocol,
+    SegmentMuxGraphNotAudited,
     CompositionTimelineProtocol,
 }
 
@@ -420,7 +420,7 @@ impl NativeProfile {
                 state: NativeImplementationStateV1::DocumentedException,
                 implemented_output_content_types: &[],
                 required_factories: SEGMENT_MUX,
-                exception: Some(NativeImplementationExceptionV1::MultiSourceControlPlaneProtocol),
+                exception: Some(NativeImplementationExceptionV1::SegmentMuxGraphNotAudited),
             },
             Self::Waveform => NativeImplementationSpecV1 {
                 graph_id: "bounded_waveform_manifest_v1",

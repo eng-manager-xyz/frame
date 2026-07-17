@@ -16,6 +16,7 @@ REQUIRED_BYPASS = {
     "auth_session_account",
     "cookie",
     "health",
+    "legacy_compatibility",
     "mutation_method",
     "private_or_deleted_share",
     "range_media",
@@ -46,6 +47,8 @@ def main() -> int:
         assert dns["initial_proxy"] is False
         assert "AAAA" in dns["assert_absent_record_types"]
         assert route["pattern"] == "frame.engmanager.xyz/api*"
+        assert route["compatibility_patterns"] == ["frame.engmanager.xyz/media-server*"]
+        assert route["owned_pathnames"] == ["/api", "/api/", "/media-server"]
         assert route["lookalike_policy"] == "non_cacheable_404"
         assert route["workers_dev"] is False
         assert cache["default"] == "bypass"

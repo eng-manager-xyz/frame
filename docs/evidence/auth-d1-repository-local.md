@@ -8,7 +8,7 @@ Python SQLite substitution evidence. Run it from a clean checkout with:
 python3 scripts/ci/auth-d1-conformance.py
 ```
 
-The suite creates an isolated temporary D1 database, applies all 23 ordered
+The suite creates an isolated temporary D1 database, applies all checked-in ordered
 migrations, loads bounded opaque fixtures, and invokes the repository only
 through an exact, loopback-only, per-run-token-gated Worker route. The token is
 never written to the repository or the evidence artifact. CLI database access
@@ -62,10 +62,9 @@ The local report proves:
   or outcome shapes.
 
 The machine-readable artifact is
-`target/evidence/auth-d1-conformance.json`. The final passing local run recorded 76
-telemetry events, migration digest
-`52f4f61a9bc62efc2990bfb9f5fb9d8e30d61bbec8d0206dc04294f7db2c782d`, and
-query digest
+`target/evidence/auth-d1-conformance.json`. The final passing local run applied 28 migrations,
+recorded 76 telemetry events, migration digest
+`33febdcebfb08d85827191abe1790001cd5be1b178ba666f766e2a6fdccbc1ab`, and query digest
 `81c41d9718f5d2cebb35af6efb7da5de104e0682d1368effbce13b0740f9ea8f`.
 SQL text, bindings, row values, token/API-key/OTP digests, provider errors,
 identifiers, and temporary paths are excluded from telemetry and the report.

@@ -7,16 +7,19 @@ members = [
     "apps/media-worker",
     "apps/web",
     "crates/application",
+    "crates/authenticated-client",
     "crates/domain",
     "crates/frame-client",
     "crates/media",
     "crates/ports",
+    "crates/windows-secure-spool",
 ]
 default-members = [
     "apps/desktop",
     "apps/media-worker",
     "apps/web",
     "crates/application",
+    "crates/authenticated-client",
     "crates/domain",
     "crates/frame-client",
     "crates/media",
@@ -31,6 +34,8 @@ repository = "https://github.com/eng-manager-xyz/frame"
 publish = false
 
 [workspace.dependencies]
+aes = { version = "0.8.4", default-features = false, features = ["zeroize"] }
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc", "zeroize"] }
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8.9"

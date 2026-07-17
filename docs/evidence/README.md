@@ -24,9 +24,16 @@ does not promote endpoint adapters, protected providers, or retirements.
 
 The [Leptos authenticated-web local record](leptos-authenticated-web-local.md)
 binds 17 private routes to owner/admin/member and denial states, form/query
-contracts, legacy redirects, and loopback SSR/privacy/performance checks. It
-explicitly leaves production adapters, cross-browser visual diffs, named
-screen-reader checks, billing/provider journeys, and route cutover pending.
+contracts, exact Worker auth/session/cookie adapters, fixed-shape encrypted D1
+delivery handoff, legacy redirects, and loopback SSR/privacy/performance
+checks. It explicitly leaves hosted authority, real OTP/provider delivery,
+cross-browser visual diffs, named screen-reader checks, billing/provider
+journeys, and route cutover pending.
+
+The [authenticated first-party client record](authenticated-client-local.md)
+keeps Instant finalize wire identities out of the anonymous `frame-client`,
+proves native/wasm portability and exact response binding, and leaves provider
+and released-desktop evidence protected.
 
 The [share/player v1 local record](share-player-local.md) binds the privacy
 matrix, descriptor scope, range planner, accessible SSR/hydration controls,

@@ -1732,6 +1732,7 @@ fn consume_limits(
     policy: MultiRateLimitPolicy,
     now: TimestampMillis,
 ) -> Result<Option<TimestampMillis>, PortError> {
+    let action = action.rate_limit_bucket_action();
     state.rate_limits.retain(|_, stored| stored.gc_at > now);
     let dimensions = [
         // Global must be consumed first and a denial must short-circuit before attacker-chosen

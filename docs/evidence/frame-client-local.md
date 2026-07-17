@@ -36,7 +36,7 @@ its Rustls HTTP stack. The workspace boundary gate rejects Axum, Leptos,
 Worker, GStreamer, `frame-media`, `frame-domain`, and `frame-ports` from this
 crate.
 
-Last local run: all 22 `frame-client` tests passed; strict all-target/all-feature
+Last local run: all 23 `frame-client` tests passed; strict all-target/all-feature
 Clippy, native core check, wasm core check, nine-fixture/schema validation, and
 the six-source/three-core-dependency boundary checker all passed. The focused
 Worker serialization test also passed and proved the public health object has

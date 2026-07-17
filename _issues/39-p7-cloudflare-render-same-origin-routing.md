@@ -16,9 +16,10 @@ size: epic
 ## Outcome
 
 `https://frame.engmanager.xyz` is one secure public origin: Cloudflare routes
-`/api` and `/api/*` to Frame's Rust/Wasm control plane and forwards every other
-path to the dedicated Render Leptos service, with no portfolio-route collision
-or origin bypass.
+`/api`, `/api/*`, and exact legacy `/media-server` to Frame's Rust/Wasm control
+plane and forwards every other path outside those reviewed edge prefixes to the
+dedicated Render Leptos service, with no portfolio-route collision or origin
+bypass.
 
 ## Current reference
 
@@ -43,8 +44,8 @@ would make the Worker the origin for every path and replace Render.
 ## Scope
 
 Provision the Render custom domain and staged Cloudflare CNAME through the
-portfolio repository's designated zone-infrastructure state, add a query-safe
-broad Worker Route, move
+portfolio repository's designated zone-infrastructure state, add query-safe
+API and narrow compatibility Worker Routes, move
 the public API under `/api/v1`, validate the first path segment plus host and
 forwarded metadata, prove lookalike/unmatched-path origin behavior, and
 document certificate, CAA, default-hostname, monitoring, and rollback behavior.
@@ -55,24 +56,31 @@ document certificate, CAA, default-hostname, monitoring, and rollback behavior.
 |---|---|---|
 | `/api` | Worker (redirect/error/version discovery only) | bypass |
 | `/api/*` | Worker control plane | bypass |
+| exact `/media-server` | Worker pinned legacy metadata adapter | bypass |
 | `/health/live`, `/health/ready` | Render web process | bypass |
 | hashed assets | Render origin through Cloudflare | immutable public |
 | landing/dashboard/share/embed HTML | Render origin through Cloudflare | route/privacy specific |
 | unknown non-API path | Render 404/fallback | bypass unless explicitly public |
 
 Cloudflare matches the entire URL, including the query string. A route ending
-at `/api` would miss `/api?x=1`, so use one broad interception pattern:
+at `/api` would miss `/api?x=1`. The exact promoted legacy adapter must also
+accept ordinary query strings, so use two interception patterns:
 
 ```toml
 [[routes]]
 pattern = "frame.engmanager.xyz/api*"
 zone_name = "engmanager.xyz"
+
+[[routes]]
+pattern = "frame.engmanager.xyz/media-server*"
+zone_name = "engmanager.xyz"
 ```
 
 The Worker must inspect the URL pathname before normal router decoding. It owns
-only pathname `/api` or a pathname beginning `/api/`. A lookalike such as
-`/apix` is explicitly proxied to the Render origin or receives a reviewed
-non-cacheable 404; it can never enter an API handler. The initial route may
+only pathname `/api`, a pathname beginning `/api/`, or exact `/media-server`.
+Lookalikes such as `/apix`, `/media-server/`, or `/media-serverx` receive a
+reviewed non-cacheable 404; they can never enter an API or unpromoted media
+handler. The initial routes may
 invoke `frame-control-plane` directly after its router adopts the prefix. A
 separate edge gateway Worker is justified only if it owns a concrete policy
 such as version routing or service-binding isolation. If introduced, it must
@@ -92,7 +100,7 @@ Worker deployed first.
 4. Verify the domain and wait for Render's public certificate.
 5. Prove HTTPS while DNS-only, then enable the Cloudflare proxy.
 6. Require Full (strict), verify edge and origin certificates, then add the
-   broad Worker Route and strict segment-boundary behavior.
+   broad API and narrow compatibility Worker Routes and strict raw-path behavior.
 7. After observation, disable the default Render hostname and prove the custom
    host still works.
 
@@ -119,7 +127,8 @@ authorities remain allowed before changing anything.
 - [ ] `/api/v1` control-plane routes, stable health contract, host validation,
   request IDs, proxy metadata policy, and safe error mapping.
 - [ ] Render custom-domain record and staged DNS-only-to-proxied runbook.
-- [ ] Wrangler environment configuration for the broad `/api*` route, strict
+- [ ] Wrangler environment configuration for the broad `/api*` and narrow
+  `/media-server*` routes, strict
   first-segment pass-through/404 policy, and `workers.dev`/legacy exposure
   disposition.
 - [ ] Route-conformance suite covering path encoding, slashes, query strings,
@@ -128,13 +137,17 @@ authorities remain allowed before changing anything.
 
 ## Acceptance criteria
 
-- [ ] `frame.engmanager.xyz/` and all non-API test paths reach the Frame Render
-  service, never the portfolio service or Worker fallback.
+- [ ] `frame.engmanager.xyz/` and all non-API test paths outside the reviewed
+  `/media-server*` compatibility fence reach the Frame Render service, never
+  the portfolio service or Worker fallback.
 - [ ] `/api`, `/api?query`, and `/api/*`, including encoded, repeated-slash,
   semicolon, dot-segment, and trailing-slash variants, reach the intended
   Worker exactly once and never fall through to Render.
 - [ ] `/apix`, `/apiary`, and encoded segment-lookalikes never enter an API
   handler; they follow the documented Render pass-through or no-store 404 path.
+- [ ] Exact `GET /media-server` with and without a query reaches the pinned
+  metadata adapter, while other methods, trailing slashes, child paths, and
+  prefix lookalikes fail closed without reaching Render.
 - [ ] Worker routing preserves safe methods, query strings, streaming bodies,
   response status, range semantics, content type, and request ID without
   forwarding spoofable Cloudflare/internal headers from a client.
@@ -163,8 +176,9 @@ authorities remain allowed before changing anything.
 
 ## Risks and open questions
 
-- A pattern without a trailing wildcard misses query strings; a broad wildcard
-  also intercepts `/apix`, so raw first-segment enforcement is mandatory.
+- A pattern without a trailing wildcard misses query strings; the wildcards
+  also intercept `/apix` and `/media-server` suffixes, so raw-path enforcement
+  is mandatory.
 - URL normalization differences between Cloudflare, Axum, and the Worker can
   produce auth or cache bypasses; test raw and decoded forms.
 - Cloudflare proxy activation before Render certificate issuance can block

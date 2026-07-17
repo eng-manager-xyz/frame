@@ -22,13 +22,16 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTROL = ROOT / "apps" / "control-plane"
 MIGRATIONS = CONTROL / "migrations"
+CONTRACT_MIGRATIONS = CONTROL / "contract-migrations"
 QUERIES = CONTROL / "queries" / "business"
 REPOSITORY = CONTROL / "src" / "business_repository.rs"
+CONTROL_LIB = CONTROL / "src" / "lib.rs"
 DOMAIN = ROOT / "crates" / "domain" / "src" / "business.rs"
 PORT = ROOT / "crates" / "ports" / "src" / "business.rs"
 APPLICATION = ROOT / "crates" / "application" / "src" / "business.rs"
 SAMPLE_EXPORT = ROOT / "docs" / "evidence" / "business-data-sample-export-v1.json"
 PLACEHOLDER = re.compile(r"\?([1-9][0-9]*)")
+MIGRATION_NAME = re.compile(r"([0-9]{4})_[a-z0-9_]+\.sql")
 NOW = 1_700_300_000_000
 BUSINESS_DATA_CLASSES = [
     "video_metadata",
@@ -87,10 +90,35 @@ def require(condition: bool, message: str) -> None:
 
 
 def migration_files() -> list[pathlib.Path]:
-    files = sorted(MIGRATIONS.glob("[0-9][0-9][0-9][0-9]_*.sql"))
+    files = sorted(MIGRATIONS.glob("*.sql"))
+    contract_files = sorted(CONTRACT_MIGRATIONS.glob("*.sql"))
+    require(bool(files), "expand migration inventory is empty")
+    require(bool(contract_files), "contract migration inventory is empty")
+    expand_numbers: list[int] = []
+    contract_numbers: list[int] = []
+    for path, numbers, phase in (
+        *((path, expand_numbers, "expand") for path in files),
+        *((path, contract_numbers, "contract") for path in contract_files),
+    ):
+        match = MIGRATION_NAME.fullmatch(path.name)
+        require(match is not None, f"invalid {phase} migration filename: {path.name}")
+        numbers.append(int(match.group(1)))
     require(
-        [int(path.name[:4]) for path in files] == list(range(1, len(files) + 1)),
-        "migration sequence is not contiguous",
+        expand_numbers == sorted(expand_numbers),
+        "expand migration sequence is reordered",
+    )
+    require(
+        contract_numbers == sorted(contract_numbers),
+        "contract migration sequence is reordered",
+    )
+    combined = expand_numbers + contract_numbers
+    require(
+        len(combined) == len(set(combined)),
+        "combined migration authority has a duplicate number",
+    )
+    require(
+        sorted(combined) == list(range(1, len(combined) + 1)),
+        "combined migration authority is not globally contiguous",
     )
     require(
         any(path.name == "0011_business_authority_expand.sql" for path in files),
@@ -1871,6 +1899,36 @@ def semantic_suite() -> dict[str, int]:
     return {"semantic_assertions": checks, "exported_data_classes": len(counts)}
 
 
+def control_plane_outbox_envelopes() -> dict[str, int]:
+    source = CONTROL_LIB.read_text(encoding="utf-8")
+    starts = [match.start() for match in re.finditer(r"INSERT INTO outbox_events", source)]
+    require(len(starts) == 15, "control-plane direct outbox inventory drifted")
+    required = (
+        "event_sequence",
+        "event_fingerprint",
+        "payload_schema_version",
+        "payload_checksum",
+        "revision",
+    )
+    for ordinal, start in enumerate(starts, 1):
+        bind = source.find(".bind(&[", start)
+        require(
+            bind != -1 and bind - start < 5_000,
+            f"direct outbox insert {ordinal} has no bounded binding",
+        )
+        statement = source[start:bind]
+        for field in required:
+            require(
+                field in statement,
+                f"direct outbox insert {ordinal} omits post-0018 field {field}",
+            )
+    require(
+        source.count("business_initial_event_fingerprint()") >= len(starts),
+        "direct outbox inserts do not all derive the canonical initial fingerprint",
+    )
+    return {"control_plane_outbox_envelopes": len(starts)}
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--migration-only", action="store_true", help="run clean and dirty migration checks only")
@@ -1886,6 +1944,7 @@ def main(argv: Sequence[str]) -> int:
     if not args.migration_only:
         result.update(compile_queries())
         result.update(static_contracts())
+        result.update(control_plane_outbox_envelopes())
         result.update(semantic_suite())
     if args.json:
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))

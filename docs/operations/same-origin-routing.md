@@ -10,7 +10,7 @@ must use the protected owners recorded in
 | Layer | Production value | Sole owner |
 |---|---|---|
 | Render service and domain declaration | `frame-web`, `frame.engmanager.xyz` | Frame `render.yaml` through controlled Render Git sync |
-| Worker script and route declaration | `frame-control-plane`, `frame.engmanager.xyz/api*` | Frame protected Wrangler deploy |
+| Worker script and route declaration | `frame-control-plane`, `frame.engmanager.xyz/api*` plus query-safe `frame.engmanager.xyz/media-server*` compatibility fence | Frame protected Wrangler deploy |
 | DNS record | exact `CNAME frame -> <frame-web>.onrender.com` | `eng-manager-xyz/engmanager.xyz/infra/cloudflare-zone` |
 | Edge certificate, Full (strict), shared rulesets | exact Frame host entries in whole-phase state | `eng-manager-xyz/engmanager.xyz/infra/cloudflare-zone` |
 | Render origin certificate | Render-managed certificate for the exact host | Render |
@@ -31,15 +31,25 @@ The trailing wildcard is therefore mandatory:
 [[routes]]
 pattern = "frame.engmanager.xyz/api*"
 zone_name = "engmanager.xyz"
+
+[[routes]]
+pattern = "frame.engmanager.xyz/media-server*"
+zone_name = "engmanager.xyz"
 ```
 
-The broad pattern also catches `/apix` and `/apiary`. The control plane parses
-the request target before application dispatch and owns only the exact raw
-pathname `/api` or a pathname beginning `/api/`. Lookalikes receive the
-reviewed `404 not_api_route` response with `Cache-Control: no-store`; they are
-never forwarded by an application gateway. Unknown or malformed paths inside
-the API boundary also fail closed. Non-API paths do not match the Worker Route
-and continue to the Render CNAME.
+The broad API pattern also catches `/apix` and `/apiary`. The narrow
+compatibility prefix catches query strings on `/media-server`, as Cloudflare
+cannot express an exact path plus arbitrary query parameters without a
+trailing wildcard; it therefore also catches suffix lookalikes. The control
+plane parses the request target before application dispatch and owns only the
+exact raw pathname `/api`, a pathname beginning `/api/`, or exact `/media-server`.
+The compatibility endpoint accepts only `GET`; query parameters preserve its
+exact pinned metadata body. `/media-server/`, unpromoted children, and prefix
+lookalikes receive the reviewed `404 not_api_route` response with
+`Cache-Control: no-store`, as do API lookalikes. They are never forwarded by
+an application gateway. Unknown or malformed paths inside the API boundary
+also fail closed. Every other non-API path misses both Worker Routes and
+continues to the Render CNAME.
 
 The initial design has no edge gateway. The Worker dispatches the original
 `Request`, so its method, query, body stream, and safe headers are not rebuilt.
@@ -94,7 +104,8 @@ operator, and rollback owners before step 1. Change one layer at a time.
 6. Enable the exact Cloudflare proxy entry. Require Full (strict), then prove
    both the edge certificate and the Render origin certificate. Confirm the
    response is Frame, not the portfolio service.
-7. Deploy the exact broad Worker Route. Exercise every path, host, query,
+7. Deploy the broad API and narrow compatibility Worker Routes together.
+   Exercise every path, host, query,
    method, body, range, streaming, redirect, upgrade, and error class from
    `route-owner-matrix.json`. Cloudflare and application request IDs must show
    one Worker execution for API requests and no Worker execution for ordinary
@@ -121,7 +132,9 @@ python3 -I scripts/ci/check-cloudflare-zone-contract.py
 The protected route trace must cover `/api`, `/api?query`, `/api/`, versioned
 and unknown API paths, repeated slashes, literal and encoded dot segments,
 semicolons, encoded slashes/backslashes, `/apix`, `/apiary`, uppercase and
-encoded-prefix lookalikes, unexpected Host, HTTP, explicit ports, duplicate
+encoded-prefix lookalikes, exact `/media-server` with and without a query,
+its trailing-slash/unpromoted-child/lookalike rejections, unexpected Host,
+HTTP, explicit ports, duplicate
 query keys, chunked and fixed-length bodies, GET/HEAD/POST/PUT/DELETE/OPTIONS,
 single and multiple ranges, a streamed playback body, a non-followed error and
 redirect probe, and an upgrade probe that does not return `101`.
@@ -163,7 +176,9 @@ Roll back one authoritative layer and record its start/end time and validation.
 
 ### Worker Route rollback
 
-Remove only `frame.engmanager.xyz/api*` through the protected Wrangler owner.
+Remove only `frame.engmanager.xyz/api*` and
+`frame.engmanager.xyz/media-server*` through the protected Wrangler owner in
+one deployment so no declared Worker surface is stranded at an old script.
 Verify `/`, health, assets, share pages, and unknown non-API paths still reach
 Render. API requests will then reach Render and must produce its reviewed
 non-cacheable 404; do not add a temporary wildcard or portfolio fallback.

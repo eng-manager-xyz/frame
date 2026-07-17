@@ -9,14 +9,26 @@ FRAME_PUBLIC_HOST = "frame.engmanager.xyz"
 FRAME_MEDIA_MODE = "remote"
 FRAME_R2_BUCKET_NAME = "frame-recordings"
 
+# Browser authentication additionally requires three protected Worker
+# secrets. Each is a deny-unknown-field JSON keyring with one active key and up
+# to four fallback keys. Never place key material in this file:
+# FRAME_AUTH_HASH_KEYRING_V1
+# FRAME_AUTH_DELIVERY_KEYRING_V1
+# FRAME_AUTH_PENDING_KEYRING_V1
+
 # Direct PUT signing also requires FRAME_R2_ACCOUNT_ID,
 # FRAME_R2_ACCESS_KEY_ID, and FRAME_R2_SECRET_ACCESS_KEY from the protected
 # Worker environment. Never commit them or expose them through Render.
 
-# Cloudflare matches the full URL, so the intentionally broad pattern catches
-# `/api?query` as well as `/api/*`. Raw-path and canonical-host checks narrow it.
+# Cloudflare matches the full URL, so each query-safe pattern ends in `*`.
+# Raw-path and canonical-host checks narrow the broad edge prefixes to `/api`,
+# `/api/*`, and the exact legacy compatibility pathname `/media-server`.
 [[routes]]
 pattern = "frame.engmanager.xyz/api*"
+zone_name = "engmanager.xyz"
+
+[[routes]]
+pattern = "frame.engmanager.xyz/media-server*"
 zone_name = "engmanager.xyz"
 
 [build]
@@ -41,4 +53,10 @@ binding = "MEDIA"
 remote = true
 
 [triggers]
-crons = ["* * * * *"]
+crons = [
+  "* * * * *",
+  "*/2 * * * *",
+  "1-59/2 * * * *",
+  "*/5 * * * *",
+  "2-59/5 * * * *",
+]

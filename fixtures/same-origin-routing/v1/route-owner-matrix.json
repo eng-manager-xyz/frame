@@ -2,6 +2,7 @@
   "schema": "frame.same-origin-route-owner-matrix.v1",
   "canonical_host": "frame.engmanager.xyz",
   "worker_route_pattern": "frame.engmanager.xyz/api*",
+  "compatibility_worker_route_pattern": "frame.engmanager.xyz/media-server*",
   "lookalike_policy": "non_cacheable_404",
   "cases": [
     {
@@ -50,6 +51,48 @@
       "id": "render-unknown",
       "url": "https://frame.engmanager.xyz/unknown/path",
       "raw_path": "/unknown/path",
+      "edge_owner": "render",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "media-server-root",
+      "url": "https://frame.engmanager.xyz/media-server",
+      "raw_path": "/media-server",
+      "edge_owner": "worker_compat",
+      "worker_class": "legacy_media_server_root"
+    },
+    {
+      "id": "media-server-root-query",
+      "url": "https://frame.engmanager.xyz/media-server?probe=one&probe=two",
+      "raw_path": "/media-server",
+      "edge_owner": "worker_compat",
+      "worker_class": "legacy_media_server_root"
+    },
+    {
+      "id": "media-server-trailing-slash",
+      "url": "https://frame.engmanager.xyz/media-server/",
+      "raw_path": "/media-server/",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "media-server-unpromoted-child",
+      "url": "https://frame.engmanager.xyz/media-server/health",
+      "raw_path": "/media-server/health",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "media-server-lookalike",
+      "url": "https://frame.engmanager.xyz/media-serverx",
+      "raw_path": "/media-serverx",
+      "edge_owner": "worker_reject",
+      "worker_class": "not_api"
+    },
+    {
+      "id": "render-media-server-uppercase",
+      "url": "https://frame.engmanager.xyz/Media-server",
+      "raw_path": "/Media-server",
       "edge_owner": "render",
       "worker_class": "not_api"
     },

@@ -41,6 +41,25 @@ macro_rules! opaque_id {
                 Ok(Self(bytes))
             }
 
+            /// Rehydrates an identity retained by the authenticated wire
+            /// boundary. Only canonical, lowercase, non-nil UUID text is
+            /// accepted so alternate spellings cannot create a second
+            /// identity for the same 128 bits.
+            pub fn from_canonical_uuid(value: &str) -> Result<Self, InstantError> {
+                let parsed = uuid::Uuid::parse_str(value).map_err(|_| InstantError::$invalid)?;
+                if parsed.is_nil() || parsed.as_hyphenated().to_string() != value {
+                    return Err(InstantError::$invalid);
+                }
+                Self::from_csprng(*parsed.as_bytes())
+            }
+
+            /// Returns the canonical lowercase UUID spelling used by the
+            /// versioned Instant finalize wire contract.
+            #[must_use]
+            pub fn to_canonical_uuid(self) -> String {
+                uuid::Uuid::from_bytes(self.0).as_hyphenated().to_string()
+            }
+
             #[allow(dead_code)]
             pub(crate) fn canonical_bytes(self) -> [u8; 16] {
                 self.0
@@ -2746,6 +2765,11 @@ impl InstantFinalizeRequest {
     #[must_use]
     pub const fn digest(&self) -> Sha256Digest {
         self.digest
+    }
+
+    #[must_use]
+    pub const fn session_id(&self) -> InstantSessionId {
+        self.session_id
     }
 
     #[must_use]

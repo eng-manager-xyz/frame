@@ -21,6 +21,7 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
     let status = RwSignal::new("Checking your same-origin Frame session.".to_owned());
     let workspace = RwSignal::new(None::<BrowserWorkspace>);
     let busy = RwSignal::new(false);
+    let logout_busy = RwSignal::new(false);
     let action_value = RwSignal::new(String::new());
     let uncertain_mutation = RwSignal::new(None::<BrowserMutationInput>);
     let route = current_authenticated_request();
@@ -35,6 +36,17 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
             wasm_bindgen_futures::spawn_local(async move {
                 match client.load(surface, &query).await {
                     Ok(loaded) => {
+                        if surface.action() == Some(BrowserAction::SetActiveOrganization) {
+                            action_value.set(
+                                loaded
+                                    .organizations
+                                    .iter()
+                                    .find(|choice| choice.active)
+                                    .or_else(|| loaded.organizations.first())
+                                    .map(|choice| choice.id.clone())
+                                    .unwrap_or_default(),
+                            );
+                        }
                         status.set("Workspace loaded.".into());
                         workspace.set(Some(loaded));
                     }
@@ -53,6 +65,28 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
         .as_ref()
         .ok()
         .and_then(|(surface, _)| surface.action());
+    let logout_client = Rc::clone(&client);
+    let logout = move |_| {
+        if logout_busy.get_untracked() {
+            return;
+        }
+        let client = Rc::clone(&logout_client);
+        logout_busy.set(true);
+        status.set("Revoking this browser session.".into());
+        wasm_bindgen_futures::spawn_local(async move {
+            match client.logout().await {
+                Ok(()) | Err(crate::browser_authenticated::BrowserClientError::Unauthenticated) => {
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().set_href("/login");
+                    }
+                }
+                Err(error) => {
+                    status.set(browser_error_message(error).into());
+                    logout_busy.set(false);
+                }
+            }
+        });
+    };
     let submit_client = Rc::clone(&client);
     let submit_route = route.clone();
     let submit = move |event: leptos::ev::SubmitEvent| {
@@ -165,6 +199,14 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
             <p role="status" aria-live="polite" aria-atomic="true">
                 {move || status.get()}
             </p>
+            <button
+                class="button secondary"
+                type="button"
+                disabled=move || logout_busy.get()
+                on:click=logout
+            >
+                {move || if logout_busy.get() { "Signing out…" } else { "Sign out" }}
+            </button>
             {move || workspace.get().map(|current| {
                 let recording_items = current.recordings.iter().map(|recording| {
                     view! { <li>{format!("{} · {}", recording.title, recording.state)}</li> }
@@ -193,7 +235,36 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                         })
                     on:submit=submit
                 >
-                    {action.requires_value().then(|| view! {
+                    <label
+                        for="authenticated-organization-choice"
+                        hidden={action != BrowserAction::SetActiveOrganization}
+                    >
+                        "Active organization"
+                    </label>
+                    <select
+                        id="authenticated-organization-choice"
+                        hidden={action != BrowserAction::SetActiveOrganization}
+                        required={action == BrowserAction::SetActiveOrganization}
+                        disabled=move || busy.get()
+                            || uncertain_mutation.get().is_some()
+                            || !workspace.get().is_some_and(|current| {
+                                action.permitted_for(current.role)
+                            })
+                        prop:value=move || action_value.get()
+                        on:change=move |event| action_value.set(event_target_value(&event))
+                    >
+                        {move || workspace.get().into_iter().flat_map(|current| {
+                            current.organizations.into_iter().map(|choice| {
+                                view! {
+                                    <option value=choice.id selected=choice.active>
+                                        {choice.name}
+                                    </option>
+                                }
+                            }).collect::<Vec<_>>()
+                        }).collect_view()}
+                    </select>
+                    {(action.requires_value()
+                        && action != BrowserAction::SetActiveOrganization).then(|| view! {
                         <label for="authenticated-action-value">"Action value"</label>
                         <input
                             id="authenticated-action-value"

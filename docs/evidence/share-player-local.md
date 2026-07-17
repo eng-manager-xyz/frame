@@ -37,7 +37,7 @@ python3 -I scripts/ci/web-hydration-smoke.py \
   rejected, atomic grant/comment/analytics rate caps enforced, share-bound
   replay isolated, current-transcript uniqueness guarded, and the audit stream
   immutable under migrations through `0022`.
-- `cargo test`: 68 tests passed, including 12 focused share-player policy tests,
+- `cargo test`: 73 tests passed, including 12 focused share-player policy tests,
   SSR metadata/leak tests, exact embed header tests, route-confusion collapse,
   legacy redirect behavior, degraded-mode hydration markup, and consent-first
   collaboration-island markup/scope tests.

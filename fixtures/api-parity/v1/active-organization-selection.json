@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "mapping": {
+    "algorithm": "cap_nanoid_uuid_v1",
+    "known_answer": {
+      "legacy_id": "0123456789abcde",
+      "organization_id": "2a6a8a87-d5ca-8c83-8666-2e92c2a69404"
+    }
+  },
+  "mutation": {
+    "field": "active_organization_id",
+    "preserves_default_organization_id": true,
+    "selection_revision": "server_incremented",
+    "client_idempotency": "absent",
+    "retry": "last_write_wins"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-a3b4c805d409bc7c",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateActiveOrganization",
+      "auth": "session",
+      "authorization": "active_membership",
+      "organization_lifecycle": "any",
+      "target_denial": "throw_organization_not_found",
+      "output": "void_and_revalidate_dashboard",
+      "projection": "exact",
+      "sources": [
+        {
+          "path": "apps/web/app/(org)/dashboard/_components/Navbar/server.ts",
+          "sha256": "a7ea138516eb20f40dad4ad53913e69b01e4f5ad8b2938eb9f5a9a98ab3a29b3"
+        },
+        {
+          "path": "packages/database/auth/session.ts",
+          "sha256": "d526dc9d7a6a1a7cb6a8695c24ab88b843ce09b4444f8e4ade24b7a06cbbc1ee"
+        },
+        {
+          "path": "packages/database/schema.ts",
+          "sha256": "7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"
+        },
+        {
+          "path": "packages/web-domain/src/Organisation.ts",
+          "sha256": "14d634ad8910d3921af2ea5b136b9c3d2a8ae26f74b3dcb7a82b9cf19d6a3264"
+        }
+      ]
+    },
+    {
+      "id": "cap-v1-05776c542380771e",
+      "kind": "route",
+      "method": "PATCH",
+      "legacy_identity": "/api/mobile/user/active-organization",
+      "auth": "session_or_api_key",
+      "authorization": "owner_or_active_membership",
+      "organization_lifecycle": "active_only",
+      "target_denial": "http_forbidden",
+      "output": "fresh_mobile_bootstrap",
+      "projection": "blocked",
+      "blockers": [
+        "provider_image_url_signing",
+        "nullable_space_root_folders"
+      ],
+      "sources": [
+        {
+          "path": "apps/web/app/api/mobile/[...route]/route.ts",
+          "sha256": "02df2ce92dc6e8ae11748b6e082c1304596ba9e4c370b35069867754218f5f79"
+        },
+        {
+          "path": "packages/web-domain/src/Mobile.ts",
+          "sha256": "331d76900372d62389d729f8682baca1344f3583e3f41f42ad6e3ef2be7a3d5b"
+        },
+        {
+          "path": "apps/web/lib/server.ts",
+          "sha256": "f24b68bbb31c99ddfa7983a468aa80d293da56d1652e8a0a0a28506e5a9cd63e"
+        },
+        {
+          "path": "packages/web-backend/src/Auth.ts",
+          "sha256": "aea054db2b84a8c4bd6684fefe8d0e971a094a9faa9653105b0c33ab52ab824d"
+        },
+        {
+          "path": "packages/web-domain/src/Authentication.ts",
+          "sha256": "165c9f652c39d7f1cf3b43a5c66c5a4418bbe97338279ca01d00c19f2026167b"
+        },
+        {
+          "path": "packages/database/schema.ts",
+          "sha256": "7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"
+        },
+        {
+          "path": "packages/web-backend/src/ImageUploads/index.ts",
+          "sha256": "1dc0952ae84d76844128d0fc5cdf2eb63519c26183f932c035638ff0d6463d1c"
+        },
+        {
+          "path": "packages/web-backend/src/S3Buckets/index.ts",
+          "sha256": "5fc970066be2551488eb3d9e5bcdd1a8255798da53c9b3f4e5c0048c03551b7f"
+        },
+        {
+          "path": "packages/web-backend/src/S3Buckets/S3BucketAccess.ts",
+          "sha256": "d14f27a6e81e9e13c4108aaceb0098875808440b9397620a83f0d17d4c27cd3b"
+        }
+      ]
+    }
+  ]
+}

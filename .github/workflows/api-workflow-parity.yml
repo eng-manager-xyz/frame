@@ -39,14 +39,21 @@ jobs:
             --evidence target/evidence/api-workflow-d1-conformance.json
           python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py \
             --evidence target/evidence/legacy-api-execution-sqlite-conformance.json
+          python3 -I scripts/ci/legacy-organization-selection-sqlite-conformance.py
+          python3 -I scripts/ci/legacy-org-custom-domain-sqlite-conformance.py
+          python3 -I scripts/ci/legacy-notification-preferences-sqlite-conformance.py
+          python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
       - name: Test public snapshots, admission, webhook, compatibility, and workflow faults
         run: |
           cargo test --locked -p frame-domain --test api_workflow_contract_v1
           cargo test --locked -p frame-domain --lib api_workflow
           cargo test --locked -p frame-application --lib api_workflow
           cargo test --locked -p frame-application --lib legacy_compatibility
+          cargo test --locked -p frame-application --lib legacy_notification_preferences
+          cargo test --locked -p frame-application --lib legacy_organization_selection
           cargo test --locked -p frame-control-plane --lib api_workflow_runtime
           cargo test --locked -p frame-control-plane --lib legacy_compatibility_runtime
+          cargo test --locked -p frame-control-plane --lib legacy_notification_preferences_runtime
       - name: Check formatting and strict focused lints
         run: |
           cargo fmt --all -- --check
@@ -59,7 +66,9 @@ jobs:
           name: api-workflow-parity-${{ github.sha }}
           path: |
             fixtures/api-parity/v1/route-workflow-report.json
+            fixtures/api-parity/v1/operation-contract-catalog.json
             fixtures/api-parity/v1/contract-cases.json
+            fixtures/api-parity/v1/active-organization-selection.json
             docs/generated/api-workflow-parity-v1.md
             docs/evidence/api-workflow-parity-local.md
             target/evidence/api-workflow-d1-conformance.json

@@ -9,6 +9,9 @@ on:
       - docs/operations/same-origin-routing.md
       - docs/evidence/same-origin-routing-local.md
       - scripts/ci/check-same-origin-routing.py
+      - scripts/ci/same-origin-live-conformance.py
+      - scripts/ci/smoke-canonical-domain.sh
+      - scripts/ci/prepare-wrangler-config.py
       - render.yaml
       - .github/workflows/same-origin-routing.yml
   push:
@@ -41,6 +44,7 @@ jobs:
             --evidence target/evidence/same-origin-live-runner-self-test.json
           ruby scripts/ci/check-render-blueprint.rb
           python3 -I scripts/ci/check-cloudflare-zone-contract.py
+          bash -n scripts/ci/smoke-canonical-domain.sh
       - name: Exercise the production raw router matrix
         run: cargo test --locked -p frame-control-plane --test same_origin_routing_v1
       - name: Retain status-only local evidence

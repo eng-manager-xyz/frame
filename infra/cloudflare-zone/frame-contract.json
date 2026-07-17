@@ -24,9 +24,10 @@
   },
   "worker_route": {
     "pattern": "frame.engmanager.xyz/api*",
+    "compatibility_patterns": ["frame.engmanager.xyz/media-server*"],
     "script_owner": "wrangler",
     "lookalike_policy": "non_cacheable_404",
-    "owned_pathnames": ["/api", "/api/"],
+    "owned_pathnames": ["/api", "/api/", "/media-server"],
     "workers_dev": false
   },
   "cache": {
@@ -37,6 +38,7 @@
       "auth_session_account",
       "cookie",
       "health",
+      "legacy_compatibility",
       "mutation_method",
       "private_or_deleted_share",
       "range_media",

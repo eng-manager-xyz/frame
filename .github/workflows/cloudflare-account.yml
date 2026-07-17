@@ -56,10 +56,18 @@ jobs:
           python3 -I scripts/ci/test-frame-cache-purge.py
           python3 -I scripts/ci/direct-upload-sqlite-conformance.py
           terraform -chdir=infra/cloudflare-account fmt -check -recursive
-          if grep -R -n -E --include='*.tf' \
-            'cloudflare_(record|ruleset|zone|zone_setting)' infra/cloudflare-account; then
+          if ownership_matches="$(git grep -n -E \
+            'cloudflare_(record|ruleset|zone|zone_setting)' -- \
+            ':(glob)infra/cloudflare-account/**/*.tf')"; then
+            printf '%s\n' "${ownership_matches}"
             echo "Frame account state may not manage shared zone resources" >&2
             exit 1
+          else
+            ownership_status=$?
+            if [[ "${ownership_status}" -ne 1 ]]; then
+              echo "Terraform ownership scan failed with status ${ownership_status}" >&2
+              exit "${ownership_status}"
+            fi
           fi
       - name: Initialize without credentials or remote state
         run: >-

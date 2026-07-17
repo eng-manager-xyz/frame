@@ -100,6 +100,9 @@ def main() -> int:
     control_source = (ROOT / "apps/control-plane/src/browser_web_runtime.rs").read_text(
         encoding="utf-8"
     )
+    worker_auth_source = (
+        ROOT / "apps/control-plane/src/worker_auth_runtime.rs"
+    ).read_text(encoding="utf-8")
     authenticated_runtime_source = (
         ROOT / "apps/control-plane/src/authenticated_web_runtime.rs"
     ).read_text(encoding="utf-8")
@@ -112,6 +115,9 @@ def main() -> int:
     action_migration = (
         ROOT / "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
     ).read_text(encoding="utf-8")
+    auth_handoff_migration = (
+        ROOT / "apps/control-plane/migrations/0029_worker_auth_delivery_handoff.sql"
+    ).read_text(encoding="utf-8")
     identity_source = (ROOT / "crates/application/src/identity.rs").read_text(
         encoding="utf-8"
     )
@@ -121,12 +127,14 @@ def main() -> int:
     for command in (
         "check-web-authenticated-parity.py",
         "web-authenticated-action-sqlite-conformance.py",
+        "worker-auth-sqlite-conformance.py",
         "web-authenticated-parity.py",
         "web-authenticated-browser.py",
         "web-hydration-smoke.py",
         "cargo clippy --locked -p frame-web --all-targets -- -D warnings",
         "cargo test --locked -p frame-web",
         "cargo test --locked -p frame-control-plane browser_web_runtime",
+        "cargo test --locked -p frame-control-plane worker_auth_runtime",
     ):
         require(command in workflow, f"authenticated-web workflow omits {command}")
     all_aliases: set[str] = set()
@@ -159,7 +167,8 @@ def main() -> int:
 
     auth_routes = matrix.get("auth_routes", [])
     require(
-        [route.get("path") for route in auth_routes] == ["/login", "/signup", "/verify"],
+        [route.get("path") for route in auth_routes]
+        == ["/login", "/signup", "/recovery", "/verify"],
         "auth route set drifted",
     )
     for route in auth_routes:
@@ -169,7 +178,85 @@ def main() -> int:
             is not None,
             f"auth route is absent: {path}",
         )
-        require(route.get("post_state") == "adapter_pending_fail_closed", f"{path} overclaims auth authority")
+        endpoint = route.get("post_endpoint")
+        require(
+            endpoint
+            in {
+                "/api/v1/web/auth/login",
+                "/api/v1/web/auth/signup",
+                "/api/v1/web/auth/recovery",
+                "/api/v1/web/auth/verify",
+            },
+            f"{path} Worker auth endpoint drifted",
+        )
+        require(
+            f'action="{endpoint}"' in pages_source,
+            f"{path} form does not post directly to the Worker",
+        )
+        require(
+            re.search(rf'\.route\(\s*"{re.escape(path)}",\s*get\([^)]*\)\)', lib_source)
+            is not None,
+            f"{path} Render route admits a POST handler",
+        )
+        require(
+            route.get("post_state")
+            == "worker_adapter_local_provider_execution_protected",
+            f"{path} auth evidence boundary drifted",
+        )
+
+    authentication = boundary.get("authentication", {})
+    require(
+        authentication.get("paths")
+        == [
+            "/api/v1/web/auth/login",
+            "/api/v1/web/auth/signup",
+            "/api/v1/web/auth/recovery",
+            "/api/v1/web/auth/verify",
+            "/api/v1/web/auth/logout",
+        ],
+        "Worker auth route set drifted",
+    )
+    require(
+        authentication.get("secret_source") == "worker-csprng"
+        and authentication.get("delivery_handoff")
+        == "d1-ciphertext-only-deduplicated"
+        and authentication.get("provider_execution") == "protected-not-executed",
+        "Worker auth local/protected evidence boundary drifted",
+    )
+    for marker in (
+        "getrandom::fill",
+        "Aes256Gcm",
+        "DELIVERY_PLAINTEXT_BYTES",
+        "__Host-frame_auth_pending",
+        "issue_identity_provisioning_verification",
+        "issue_verification",
+        "consume_verification",
+        "issue_session",
+        "auth_delivery_provider_handoffs_v1",
+        "acknowledge_auth_delivery",
+        "dispatch_delivery_batch",
+        "AUTH_DELIVERY_DISPATCH_BUDGET_PER_TICK",
+        "AUTH_DELIVERY_ADMISSION_PER_MINUTE",
+        "BROWSER_AUTH_DELIVERY_ACTION_CLASSES",
+    ):
+        require(marker in worker_auth_source, f"Worker auth adapter omits {marker}")
+    for marker in (
+        "browser_auth_page_failure_response",
+        "browser_auth_verify_failure_response",
+        "/login?auth_error=invalid",
+        "/signup?auth_error=failed",
+        "/recovery?auth_error=failed",
+        "/verify?auth_error=invalid",
+    ):
+        require(marker in control_lib_source, f"browser auth failure UI omits {marker}")
+    for marker in (
+        "payload_hex",
+        "payload_sha256",
+        "insert_guard",
+        "payload_immutable",
+        "protected deployment gate",
+    ):
+        require(marker in auth_handoff_migration, f"auth handoff migration omits {marker}")
 
     require("DefaultBodyLimit::max(16 * 1024)" in lib_source, "form body limit is absent")
     require(
@@ -184,7 +271,9 @@ def main() -> int:
     for marker in (
         "/api/v1/web/workspace/",
         "/api/v1/web/actions/",
+        "/api/v1/web/auth/logout",
         "RequestCredentials::SameOrigin",
+        "csrf_protected",
         "decode_workspace",
         "decode_receipt",
         "self.cache.borrow_mut().clear",
@@ -201,6 +290,8 @@ def main() -> int:
         and "random_operation_id" in hydration_source
         and "uncertain_mutation" in hydration_source
         and "Retry exact request" in hydration_source
+        and "client.logout()" in hydration_source
+        and "Sign out" in hydration_source
         and "Some(input)" in hydration_source
         and "action.permitted_for(current.role)" in hydration_source
         and "data-frame-browser-loader" in pages_source,
@@ -227,9 +318,9 @@ def main() -> int:
     )
     require(
         boundary.get("load", {}).get("tenant_source")
-        == "users.active_organization_id+organization_preference_revision"
+        == "users.active_organization_id+organization_preference_revision; dashboard recovery exposes only current active memberships"
         and boundary.get("load", {}).get("selection_contract")
-        == "opaque-context+revision"
+        == "opaque-context+revision+authorized-frame-uuid-choices"
         and boundary.get("load", {}).get("cache")
         == "invalidate-all-workspace-envelopes-after-mutation",
         "browser organization selection or workspace cache contract drifted",
@@ -249,6 +340,7 @@ def main() -> int:
         "browser action inventory does not match the route matrix",
     )
     expected_applied_actions = [
+        "organization.active-selection.update.v1",
         "organization.spaces.create.v1",
         "organization.folders.create.v1",
         "business.imports.start.v1",
@@ -275,13 +367,42 @@ def main() -> int:
     require(
         boundary.get("mutation", {}).get("atomic_authority_assertions")
         == [
-            "organization_revision",
-            "active_organization_selection_revision",
-            "membership_role_revision",
+            "action-specific organization-or-selection revision",
+            "current active-organization selection",
+            "current source-or-target membership",
             "one_use_mutation_grant",
             "replay_current_authority",
         ],
         "browser action atomic authority assertions drifted",
+    )
+    require(
+        boundary.get("mutation", {}).get("active_organization_selector")
+        == {
+            "input": "authorized-frame-uuid-choice",
+            "recovery": "dashboard-membership-only-selector-when-current-selection-invalid",
+            "grant_disposition": "atomic-with-selection-write-and-idempotency-receipt",
+            "idempotency_scope": "user+action+key-across-target-organizations",
+            "replay_authority": "receipt-target-selection-revision+target-membership+one-use-grant",
+            "rate_limit_bucket": "organization_library.v1",
+            "legacy_cap_server_action_status": "local-contract-ingress-pending",
+        },
+        "active-organization selector boundary drifted",
+    )
+    selector_replay = re.search(
+        r"async fn consume_selection_grant.*?\n}\n\n#\[allow",
+        control_source,
+        re.DOTALL,
+    )
+    require(
+        selector_replay is not None
+        and "active_organization_id=?3" in selector_replay.group(0)
+        and "organization_preference_revision=?4" in selector_replay.group(0)
+        and "target_membership_assertion_statement" in selector_replay.group(0)
+        and "grant_delete_statement" in selector_replay.group(0)
+        and "existing_selection_operation" in control_source
+        and "existing.organization_id != target_organization_id" in control_source
+        and "receipt.revision" in control_source,
+        "active-organization replay is not bound to global key scope and current authority",
     )
     require(
         boundary.get("mutation", {}).get("applied_http_status") == 200
@@ -316,8 +437,17 @@ def main() -> int:
         "auth_session_mutation_grants_v2",
         "authenticated_web_action_operations_v1",
         "database.batch(statements)",
+        "organization_choices",
+        "consume_selection_grant",
+        "CompatibilityRateLimitBucketV1::OrganizationLibrary",
     ):
         require(marker in control_source, f"Worker browser boundary omits {marker}")
+    for marker in (
+        "authenticated-organization-choice",
+        "current.organizations",
+        "BrowserAction::SetActiveOrganization",
+    ):
+        require(marker in hydration_source, f"active-organization selector omits {marker}")
     for marker in (
         "u.active_organization_id=?1",
         "u.organization_preference_revision=?3",

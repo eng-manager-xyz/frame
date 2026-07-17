@@ -12,8 +12,9 @@ a graph.
 Catalog v1 has exactly one logical output for every retained native profile. The plural output
 shape is deliberate but a v1 claim or completion with zero or multiple outputs is rejected.
 `segment_mux_v1` requires 2–64 sources; `composition_v1` accepts 1–64; every other profile requires
-exactly one. The control plane currently has only a primary-source record, so segment mux remains
-unclaimable until a source-input table and API can supply all dense descriptors.
+exactly one. The control plane persists and transports dense source descriptors under migration
+0027, but segment mux is rejected by both native and hybrid-remote admission until its GStreamer
+graph is implemented and audited; no permanently queued placeholder job is created.
 
 | Profile | Origin | Sources | Catalog output | Limit | Graph implementation / typed exception |
 | --- | --- | ---: | --- | --- | --- |
@@ -27,7 +28,7 @@ unclaimable until a source-input table and API can supply all dense descriptors.
 | `animated_preview_v1` | native only | 1 | `image/gif`, `video/mp4` | light | `sampled_animated_preview_gif_v1`; sampling-contract exception |
 | `audio_normalize_v1` | native only | 1 | `audio/mpeg`, `audio/mp4`, `audio/wav` | light | `two_pass_audio_normalize_v1`; loudness-algorithm exception |
 | `remux_repair_v1` | native only | 1 | `video/mp4` | heavy | `allowlisted_remux_repair_mp4_v1`; demux-allowlist exception |
-| `segment_mux_v1` | native only | 2–64 | `video/mp4` | heavy | `ordered_segment_mux_mp4_v1`; multi-source transport exception |
+| `segment_mux_v1` | native only | 2–64 | `video/mp4` | heavy | `ordered_segment_mux_mp4_v1`; graph-not-audited exception |
 | `waveform_v1` | native only | 1 | `application/json` | light | `bounded_waveform_manifest_v1` executable |
 | `composition_v1` | native only | 1–64 | `video/mp4` | heavy | `timeline_composition_h264_aac_mp4_v1`; timeline transport exception |
 | `normalize_v1` | native only | 1 | `video/mp4` | heavy | `normalized_h264_aac_mp4_v1`; codec approval exception |

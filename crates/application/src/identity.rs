@@ -85,6 +85,32 @@ impl AuthHashKeyRing {
     pub const fn active_version(&self) -> HashKeyVersion {
         self.active.version
     }
+
+    /// Build the privacy-safe subject key used by the Worker compatibility
+    /// rate-limit authority. The dedicated domain separator prevents a source
+    /// or principal digest from being compared with any authentication
+    /// credential digest, even though both deliberately share the protected
+    /// authentication hash-key rotation.
+    pub fn compatibility_rate_limit_digest(
+        &self,
+        bucket: &str,
+        subject: &[u8],
+    ) -> Result<VersionedSecretDigest, AuthFailure> {
+        if bucket.is_empty()
+            || bucket.len() > 64
+            || !bucket.is_ascii()
+            || bucket.bytes().any(|byte| byte.is_ascii_control())
+            || subject.is_empty()
+            || subject.len() > 256
+        {
+            return Err(AuthFailure::InvalidRequest);
+        }
+        hash_with_key(
+            &self.active,
+            b"frame/compatibility-rate-limit/v1",
+            &[bucket.as_bytes(), subject],
+        )
+    }
 }
 
 impl fmt::Debug for AuthHashKeyRing {
@@ -3055,5 +3081,35 @@ mod tests {
             expires_at: time(10),
         };
         assert!(!format!("{material:?}").contains("123456"));
+    }
+
+    #[test]
+    fn compatibility_rate_limit_digest_is_keyed_and_domain_separated() {
+        let ring = AuthHashKeyRing::new(key(9, b'k'), vec![]).expect("ring");
+        let first = ring
+            .compatibility_rate_limit_digest("client_compatibility.v1", b"192.0.2.1")
+            .expect("digest");
+        let replay = ring
+            .compatibility_rate_limit_digest("client_compatibility.v1", b"192.0.2.1")
+            .expect("digest replay");
+        let other_bucket = ring
+            .compatibility_rate_limit_digest("service_misc.v1", b"192.0.2.1")
+            .expect("bucket digest");
+        let other_subject = ring
+            .compatibility_rate_limit_digest("client_compatibility.v1", b"192.0.2.2")
+            .expect("subject digest");
+        assert_eq!(first, replay);
+        assert_ne!(first, other_bucket);
+        assert_ne!(first, other_subject);
+        assert_eq!(first.key_version.get(), 9);
+        assert!(!format!("{first:?}").contains("192.0.2.1"));
+        assert_eq!(
+            ring.compatibility_rate_limit_digest("", b"192.0.2.1"),
+            Err(AuthFailure::InvalidRequest)
+        );
+        assert_eq!(
+            ring.compatibility_rate_limit_digest("client_compatibility.v1", b""),
+            Err(AuthFailure::InvalidRequest)
+        );
     }
 }

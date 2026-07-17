@@ -30,7 +30,16 @@ LOAD = QUERY_ROOT / "legacy_execution_load.sql"
 OPERATION_ID = "cap-v1-0000000000000000"
 AUDIT_ACTION = "legacy.synthetic-conformance"
 RESPONSE_STATUS = 202
-STATIC_SEMANTIC_ADAPTER_ID = "cap-v1-05b6ba3f76daac22"
+STATIC_SEMANTIC_ADAPTER_IDS = (
+    "cap-v1-05b6ba3f76daac22",
+    "cap-v1-ff19008f47194c43",
+    "cap-v1-a1b180c5d123c870",
+    "cap-v1-16668b858461f386",
+    "cap-v1-0fa8384f3666825b",
+    "cap-v1-237f41f3086a2d67",
+    "cap-v1-4f21920a947c4c84",
+)
+D1_READ_SEMANTIC_ADAPTER_IDS = ("cap-v1-d130c840f654bd72",)
 
 
 def digest(seed: str) -> str:
@@ -430,10 +439,12 @@ def run() -> dict[str, object]:
         "schema_version": "frame.legacy-api-execution-sqlite-conformance.v1",
         "provider": "local_sqlite",
         "synthetic_only": True,
-        "semantic_adapters_enabled": 1,
-        "semantic_adapter_operation_ids": [STATIC_SEMANTIC_ADAPTER_ID],
+        "semantic_adapters_enabled": 8,
+        "semantic_adapter_operation_ids": list(
+            STATIC_SEMANTIC_ADAPTER_IDS + D1_READ_SEMANTIC_ADAPTER_IDS
+        ),
         "durable_semantic_adapters_enabled": 0,
-        "inventory_endpoint_success_promoted": 1,
+        "inventory_endpoint_success_promoted": 9,
         "race_contenders": 2,
         "race_complete": 1,
         "race_replays": 1,

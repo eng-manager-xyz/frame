@@ -19,9 +19,11 @@ That authoritative state owns:
   proxied; no wildcard and no unrelated record edits;
 - any conflicting `frame` AAAA removal after an inventory assertion;
 - Full (strict), certificate/CAA verification, and HTTP-to-HTTPS behavior;
-- one broad `frame.engmanager.xyz/api*` Worker Route, with Wrangler remaining
+- one broad `frame.engmanager.xyz/api*` Worker Route and one query-safe
+  `frame.engmanager.xyz/media-server*` compatibility fence, with Wrangler remaining
   the Worker-script deploy authority only if the route ownership is explicitly
-  delegated there;
+  delegated there; the Worker owns only exact `/media-server` under the second
+  prefix and returns a non-cacheable 404 for suffix lookalikes;
 - bypass-first cache rules for API/auth/account/upload/finalize/health,
   cookies, authorization, mutations, private shares, WebSocket, and SSE;
 - immutable caching only for fingerprinted assets and narrowly reviewed public

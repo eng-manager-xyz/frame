@@ -196,38 +196,45 @@ def main() -> int:
             require(headers.get("location") == route["fixture_path"], f"legacy alias target drifted: {alias}")
             alias_cases += 1
 
+    auth_error_cases = 0
+    render_auth_post_rejections = 0
     for auth in MATRIX["auth_routes"]:
         path = auth["path"]
+        endpoint = auth["post_endpoint"]
         status, headers, body, elapsed = request(origin, path)
         timings.append(elapsed)
         text = validate_private_document(path, status, headers, body, 200)
-        require(f'action="{path}"' in text, f"{path} form action drifted")
+        require(f'action="{endpoint}"' in text, f"{path} Worker form action drifted")
         require('method="post"' in text, f"{path} form is not POST")
 
-    auth_submissions = (
-        ("/login", {"email": "not-an-email-private-fixture"}, 422),
-        ("/login", {"email": "private-person@example.test"}, 503),
-        (
-            "/signup",
-            {"display_name": "", "email": "not-an-email-private-fixture"},
-            422,
-        ),
-        (
-            "/signup",
-            {"display_name": "Private Person", "email": "private-person@example.test"},
-            503,
-        ),
-        ("/verify", {"otp": "12x-private-fixture"}, 422),
-        ("/verify", {"otp": "123456"}, 503),
-    )
-    for path, fields, expected_status in auth_submissions:
-        status, headers, body, elapsed = request(origin, path, fields=fields)
-        timings.append(elapsed)
-        text = validate_private_document(path, status, headers, body, expected_status)
-        for value in fields.values():
-            if value:
-                require(value not in text, f"{path} reflected submitted form material")
-        require(headers.get("location") is None, f"{path} redirected without auth authority")
+        for error_state in ("invalid", "failed"):
+            error_path = f"{path}?auth_error={error_state}"
+            status, headers, body, elapsed = request(origin, error_path)
+            timings.append(elapsed)
+            text = validate_private_document(error_path, status, headers, body, 200)
+            require('role="alert"' in text, f"{error_path} has no accessible failure state")
+            require("auth_error=" not in text, f"{error_path} reflected its control query")
+            auth_error_cases += 1
+
+        private_probe = {"probe": "private-person@example.test"}
+        for render_path, expected_status in ((path, 405), (endpoint, 404)):
+            status, headers, body, elapsed = request(
+                origin, render_path, fields=private_probe
+            )
+            timings.append(elapsed)
+            require(
+                status == expected_status,
+                f"Render accepted auth POST {render_path}: {status}",
+            )
+            require(
+                headers.get("location") is None,
+                f"Render redirected auth POST {render_path}",
+            )
+            require(
+                private_probe["probe"].encode("ascii") not in body,
+                f"Render reflected auth material at {render_path}",
+            )
+            render_auth_post_rejections += 1
 
     p95_ms = percentile_95(timings)
     require(
@@ -241,7 +248,8 @@ def main() -> int:
         "role_route_cases": role_cases,
         "denied_cases": denied_cases,
         "state_cases": len(state_expectations),
-        "auth_submission_cases": len(auth_submissions),
+        "auth_error_cases": auth_error_cases,
+        "render_auth_post_rejections": render_auth_post_rejections,
         "legacy_alias_cases": alias_cases,
         "query_validation_cases": 4,
         "ssr_request_count": len(timings),
@@ -253,7 +261,7 @@ def main() -> int:
         "flash_of_private_content": False,
         "server_role_filtering": True,
         "unsafe_query_rejected": True,
-        "auth_adapter_status": "pending_fail_closed",
+        "auth_adapter_status": "worker_direct_render_post_rejected",
     }
     rendered = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
     if args.evidence:

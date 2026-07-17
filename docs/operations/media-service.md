@@ -43,9 +43,10 @@ If no approved executor remains, keep the job queued/dead-lettered with a
 bounded public failure code. Never temporarily publish a partial object or make
 a private original public.
 
-`segment_mux_v1` must remain disabled in native dispatch until the control plane
-can persist and emit 2--64 ordered, independently checksummed source descriptors.
-A single-source approximation is not a degraded mode: it is a protocol error.
+`segment_mux_v1` must remain disabled in native dispatch until the executable
+graph is implemented and audited. Native and hybrid-remote admission returns
+`profile_unavailable` before persistence; a permanently queued placeholder and
+a single-source approximation are both protocol errors.
 
 Treat a Cloudflare beta-behavior change, codec/output drift, unexplained cost
 increase, checksum/manifest mismatch, lost cancellation, residency mismatch,

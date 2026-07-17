@@ -23,10 +23,12 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTROL = ROOT / "apps" / "control-plane"
 MIGRATIONS = CONTROL / "migrations"
+CONTRACT_MIGRATIONS = CONTROL / "contract-migrations"
 QUERIES = CONTROL / "queries" / "organization"
 REPOSITORY_SOURCE = CONTROL / "src" / "organization_repository.rs"
 PORT_SOURCE = ROOT / "crates" / "ports" / "src" / "organization.rs"
 PLACEHOLDER = re.compile(r"\?([1-9][0-9]*)")
+MIGRATION_NAME = re.compile(r"([0-9]{4})_[a-z0-9_]+\.sql")
 CAS_SENTINEL = "frame_organization_cas_conflict_v1"
 RETENTION_SENTINEL = "frame_organization_retention_locked_v1"
 NOW_MS = int(time.time()) * 1_000
@@ -82,10 +84,35 @@ def require(condition: bool, message: str) -> None:
 
 
 def migration_files() -> list[pathlib.Path]:
-    files = sorted(MIGRATIONS.glob("[0-9][0-9][0-9][0-9]_*.sql"))
+    files = sorted(MIGRATIONS.glob("*.sql"))
+    contract_files = sorted(CONTRACT_MIGRATIONS.glob("*.sql"))
+    require(bool(files), "expand migration inventory is empty")
+    require(bool(contract_files), "contract migration inventory is empty")
+    expand_numbers: list[int] = []
+    contract_numbers: list[int] = []
+    for path, numbers, phase in (
+        *((path, expand_numbers, "expand") for path in files),
+        *((path, contract_numbers, "contract") for path in contract_files),
+    ):
+        match = MIGRATION_NAME.fullmatch(path.name)
+        require(match is not None, f"invalid {phase} migration filename: {path.name}")
+        numbers.append(int(match.group(1)))
     require(
-        [int(path.name[:4]) for path in files] == list(range(1, len(files) + 1)),
-        "migration sequence is not contiguous",
+        expand_numbers == sorted(expand_numbers),
+        "expand migration sequence is reordered",
+    )
+    require(
+        contract_numbers == sorted(contract_numbers),
+        "contract migration sequence is reordered",
+    )
+    combined = expand_numbers + contract_numbers
+    require(
+        len(combined) == len(set(combined)),
+        "combined migration authority has a duplicate number",
+    )
+    require(
+        sorted(combined) == list(range(1, len(combined) + 1)),
+        "combined migration authority is not globally contiguous",
     )
     return files
 

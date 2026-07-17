@@ -27,7 +27,7 @@ routing to the portfolio service.
 flowchart LR
   PORTFOLIO["engmanager.xyz portfolio"] -->|"top-level link"| EDGE
   BROWSER["Browser"] --> EDGE["Cloudflare · frame.engmanager.xyz"]
-  EDGE -->|"/api and /api/* Worker Routes"| API["Rust/Wasm control plane"]
+  EDGE -->|"/api* and /media-server* Worker Routes"| API["Rust/Wasm control plane"]
   EDGE -->|"all other paths via proxied CNAME"| WEB["Render · Leptos/Axum"]
   API --> D1["D1"]
   API --> R2["private R2"]
@@ -37,12 +37,15 @@ flowchart LR
 
 Cloudflare Route patterns match the full URL, including its query string. Use
 one broad `frame.engmanager.xyz/api*` route so `/api?query` cannot fall through
-to Render. The Worker must then enforce a first-segment boundary: handle only
-the `/api` and `/api/...` pathnames, and explicitly proxy any lookalike such as
-`/apix` to the Render origin (or return a reviewed non-cacheable 404). The
-initial route may invoke `frame-control-plane` directly; introduce a thin
-gateway Worker and service binding only if path normalization, independent
-policy, or isolation becomes necessary. Unmatched paths continue to Render.
+to Render, plus `frame.engmanager.xyz/media-server*` so the exact promoted
+legacy metadata adapter remains reachable with or without a query. Because a
+query-safe route must end in a wildcard, the Worker enforces the business
+boundary: handle only `/api`, `/api/...`, and exact `/media-server`; return a
+reviewed non-cacheable 404 for `/apix`, `/media-server/`, unpromoted children,
+and other prefix lookalikes. The routes invoke `frame-control-plane` directly;
+introduce a thin gateway Worker and service binding only if path normalization,
+independent policy, or isolation becomes necessary. Unmatched paths continue
+to Render.
 
 `crates/frame-client` owns the versioned public browser/portfolio contract.
 Its URL builder uses the single public origin and prefixes API calls with
@@ -106,8 +109,8 @@ Use this staged sequence:
 3. Verify the Render custom domain and wait for its managed public certificate.
 4. Confirm direct HTTPS, then enable the Cloudflare proxy.
 5. Use Cloudflare Full (strict) after the Render certificate is valid.
-6. Add the broad `/api*` Worker Route and verify its strict segment-boundary
-   handling, including query strings and lookalike paths.
+6. Add the broad `/api*` and narrow `/media-server*` Worker Routes together
+   and verify strict raw-path handling, including query strings and lookalikes.
 7. After edge policy is proven, disable the default Render subdomain to reduce
    Cloudflare-policy bypass.
 
@@ -117,9 +120,9 @@ Let's Encrypt and Google Trust Services to remain permitted.
 
 ## Cache and security boundary
 
-Cloudflare must bypass cache for `/api`, auth/session/account, upload/finalize,
-health, WebSocket/SSE, mutations, private shares, and any request carrying
-authorization or session cookies. Those responses also emit `no-store` or
+Cloudflare must bypass cache for `/api`, `/media-server`, auth/session/account,
+upload/finalize, health, WebSocket/SSE, mutations, private shares, and any
+request carrying authorization or session cookies. Those responses also emit `no-store` or
 `private` at the application boundary. Only fingerprinted immutable assets
 receive a one-year immutable policy; explicitly public share HTML receives a
 separate reviewed policy.

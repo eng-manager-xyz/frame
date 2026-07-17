@@ -5,6 +5,7 @@
 //! thin Tauri command layer can call after workspace integration.
 
 pub mod accessibility;
+pub mod instant_finalize;
 pub mod ipc;
 pub mod migration;
 pub mod runtime;
@@ -12,6 +13,7 @@ pub mod surface;
 pub mod workflow;
 
 pub use accessibility::*;
+pub use instant_finalize::*;
 pub use ipc::*;
 pub use migration::*;
 pub use runtime::*;

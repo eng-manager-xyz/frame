@@ -7,10 +7,10 @@
     "local_gap": "A required implementation or integration can still be completed in this repository without protected evidence. Protected work cannot hide this status."
   },
   "expected_totals": {
-    "checkboxes": 553,
-    "local_satisfied": 364,
-    "protected_pending": 187,
-    "local_gap": 2
+    "checkboxes": 554,
+    "local_satisfied": 363,
+    "protected_pending": 190,
+    "local_gap": 1
   },
   "issues": {
     "01": {
@@ -225,18 +225,21 @@
       "count": 12,
       "digest": "08e6e19cef6fcf020e34f2b28358bbd8f6db79fe38d7d23986a68969fbf9bb89",
       "evidence": ["docs/evidence/api-workflow-parity-local.md", "fixtures/api-parity/v1/route-workflow-report.json", "docs/architecture/api-workflow-parity-v1.md"],
-      "protected": [{"ordinals": [11], "classes": ["provider_execution"], "reason": "Managed quota/outage, native fallback, and kill-switch public behavior need protected executor/provider evidence in addition to the local state model."}],
+      "protected": [
+        {"ordinals": [11], "classes": ["provider_execution"], "reason": "Managed quota/outage, native fallback, and kill-switch public behavior need protected executor/provider evidence in addition to the local state model."},
+        {"ordinals": [12], "classes": ["external_repository", "browser_accessibility_execution"], "reason": "Current and N-1 released desktop, mobile, extension, developer, and web artifacts plus their compatibility journeys require consumer-repository builds and real browser/client execution; the local registry is prerequisite evidence only."}
+      ],
       "local_gaps": [
-        {"ordinals": [7], "reason": "One exact source-pinned status adapter is locally proven, but the other 287 operations still lack their success/validation/auth/idempotency/failure E2E families or approved retirement."},
-        {"ordinals": [12], "reason": "Only the exact status contract has registry-level current/N-1 evidence; no released-client compatibility E2E or additional redirect is authorized."}
+        {"ordinals": [7], "reason": "Nine exact source-pinned operations have local success contracts; the per-row completion audit keeps 157 local-only operations and 123 operations with both local work and exact protected gates explicitly unfinished."}
       ]
     },
     "31": {
       "count": 10,
       "digest": "7a4cf939709c4a697c8d769178b960638112512424dabe365a97c28a8dc2ae5d",
-      "evidence": ["docs/evidence/leptos-authenticated-web-local.md", "fixtures/web-authenticated/v1/route-matrix.json", "apps/web/src/browser_authenticated.rs", "apps/control-plane/src/browser_web_runtime.rs"],
+      "evidence": ["docs/evidence/leptos-authenticated-web-local.md", "fixtures/web-authenticated/v1/route-matrix.json", "apps/web/src/browser_authenticated.rs", "apps/control-plane/src/browser_web_runtime.rs", "apps/control-plane/src/worker_auth_runtime.rs", "scripts/ci/worker-auth-sqlite-conformance.py"],
       "protected": [
         {"ordinals": [4, 8], "classes": ["browser_accessibility_execution"], "reason": "Cross-browser visual baselines, complete keyboard checks, and named screen-reader reports need supported browsers and AT."},
+        {"ordinals": [6], "classes": ["provider_execution"], "reason": "The CSPRNG issuance, encrypted-cookie, session, logout, fixed-shape sealing, and ciphertext-only D1 handoff adapters are local; real OTP delivery and hosted end-to-end browser journeys require protected provider/D1 execution."},
         {"ordinals": [10], "classes": ["browser_accessibility_execution", "provider_execution"], "reason": "Navigation, interaction, API, and production SSR performance budgets need real browser/edge/API observations."}
       ],
       "local_gaps": []
@@ -297,10 +300,10 @@
       "local_gaps": []
     },
     "39": {
-      "count": 16,
-      "digest": "e0e5f5f64c59b05aee11567cd2fde4f734c22ab5bb23005b046f9f5640a15d46",
+      "count": 17,
+      "digest": "e5519b6494f0dcc35e7c764fde49a2a825db9546d90037d6c0df04738c19b0bf",
       "evidence": ["docs/evidence/same-origin-routing-local.md", "fixtures/same-origin-routing/v1/route-owner-matrix.json", "scripts/ci/check-same-origin-routing.py"],
-      "protected": [{"ordinals": [7, 8, 9, 11, 12, 13, 14, 15, 16], "classes": ["provider_execution", "external_repository"], "reason": "Live owner routing/normalization, host bypass, TLS/CAA, cache, rollback, and unrelated-zone non-regression require Cloudflare, Render, DNS, and portfolio access."}],
+      "protected": [{"ordinals": [7, 8, 9, 10, 12, 13, 14, 15, 16, 17], "classes": ["provider_execution", "external_repository"], "reason": "Live owner routing/normalization, host bypass, TLS/CAA, cache, rollback, and unrelated-zone non-regression require Cloudflare, Render, DNS, and portfolio access."}],
       "local_gaps": []
     },
     "40": {

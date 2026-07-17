@@ -71,10 +71,20 @@ pub struct WebWorkspaceV1 {
     pub revision: u64,
     pub selection_revision: u64,
     pub selection_context: String,
+    pub selection_required: bool,
+    pub organizations: Vec<WebOrganizationChoiceV1>,
     pub recordings: Vec<WebRecordingV1>,
     pub spaces: Vec<WebResourceV1>,
     pub folders: Vec<WebResourceV1>,
     pub import: Option<WebImportProgressV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebOrganizationChoiceV1 {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +130,13 @@ struct RecordingRow {
 struct ResourceRow {
     id: String,
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrganizationChoiceRow {
+    id: String,
+    name: String,
+    active: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +236,11 @@ pub async fn load(
 
     let spaces = visible_spaces(database, tenant_id, user_id, &workspace.role).await?;
     let folders = visible_folders(database, tenant_id, user_id, &workspace.role).await?;
+    let organizations = organization_choices(database, user_id, Some(tenant_id)).await?;
+    if organizations.is_empty() || organizations.iter().filter(|choice| choice.active).count() != 1
+    {
+        return Ok(Err(WebLoadFailure::Unavailable));
+    }
     let import = database
         .prepare(
             "SELECT SUM(CASE WHEN state='complete' THEN 1 ELSE 0 END) AS completed, \
@@ -244,11 +266,70 @@ pub async fn load(
         revision,
         selection_revision,
         selection_context: selection_context.to_owned(),
+        selection_required: false,
+        organizations,
         recordings,
         spaces,
         folders,
         import,
     }))
+}
+
+/// Return only organizations for which the authenticated user has a current
+/// product membership. The active marker is presentation data; mutation
+/// authority is reasserted atomically by the action repository.
+pub async fn organization_choices(
+    database: &D1Database,
+    user_id: &str,
+    active_organization_id: Option<&str>,
+) -> Result<Vec<WebOrganizationChoiceV1>> {
+    let result = database
+        .prepare(
+            "SELECT o.id,o.name,CASE WHEN o.id=?2 THEN 1 ELSE 0 END AS active \
+             FROM organization_members m \
+             JOIN organizations o ON o.id=m.organization_id AND o.status='active' \
+             JOIN users u ON u.id=m.user_id AND u.status='active' AND u.deleted_at_ms IS NULL \
+             WHERE m.user_id=?1 AND m.state='active' AND m.role IN ('owner','admin','member') \
+             ORDER BY active DESC,o.created_at_ms,o.id LIMIT 50",
+        )
+        .bind(&[
+            JsValue::from_str(user_id),
+            active_organization_id.map_or(JsValue::NULL, JsValue::from_str),
+        ])?
+        .all()
+        .into_send()
+        .await?;
+    if !result.success() {
+        return Err(Error::RustError(
+            "authenticated organization choice load failed".into(),
+        ));
+    }
+    let rows = result.results::<OrganizationChoiceRow>()?;
+    if rows.len() > MAX_COLLECTION_ROWS {
+        return Err(Error::RustError(
+            "authenticated organization choices exceeded their bound".into(),
+        ));
+    }
+    rows.into_iter()
+        .map(|row| {
+            if !uuid::Uuid::parse_str(&row.id)
+                .is_ok_and(|id| !id.is_nil() && id.as_hyphenated().to_string() == row.id)
+                || row.name.is_empty()
+                || row.name.len() > 160
+                || row.name.chars().any(char::is_control)
+                || !matches!(row.active, 0 | 1)
+            {
+                return Err(Error::RustError(
+                    "authenticated organization choice is corrupt".into(),
+                ));
+            }
+            Ok(WebOrganizationChoiceV1 {
+                id: row.id,
+                name: row.name,
+                active: row.active == 1,
+            })
+        })
+        .collect()
 }
 
 async fn resource_is_visible(

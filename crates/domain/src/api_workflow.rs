@@ -24,6 +24,10 @@ pub enum ApiAuthClassV1 {
     Public,
     OptionalSession,
     Session,
+    /// A released compatibility route may authenticate with either the normal
+    /// session capability or a tenant-scoped API key. The transport must still
+    /// prove which credential class succeeded before admission.
+    SessionOrApiKey,
     ApiKey,
     Worker,
     Webhook,

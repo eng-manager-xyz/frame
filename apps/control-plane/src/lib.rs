@@ -7,12 +7,21 @@ pub mod business_repository;
 pub mod business_repository_conformance;
 mod cloudflare_media;
 mod commands;
+mod compatibility_rate_limit;
 mod contracts;
 pub mod cutover_authority;
 pub mod cutover_authority_runtime;
 mod instant_finalize_contract;
 mod instant_finalize_runtime;
 pub mod legacy_compatibility_runtime;
+mod legacy_notification_preferences_runtime;
+// This compatibility projection is intentionally test-only until a pinned,
+// complete Cap backfill proves every active organization has a lossless row.
+// Keeping it in the normal test target prevents the blocked adapter from
+// drifting while ensuring it cannot be routed in production by accident.
+#[cfg(test)]
+#[allow(dead_code)]
+mod legacy_org_custom_domain_runtime;
 mod media_service_runtime;
 pub mod organization_repository;
 mod organization_repository_conformance;
@@ -24,17 +33,20 @@ pub mod repository;
 mod repository_conformance;
 mod routing;
 pub mod storage_governance_runtime;
+mod worker_auth_runtime;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use commands::{
     ApiKeyRow, COMMAND_TTL_MS, IntegrationRow, MAX_SINGLE_UPLOAD_BYTES, MediaJobResponse,
-    MembershipRow, NativeJobCandidateRow, NativeJobClaimResponse, NativeSandboxEnvelopeV1,
-    SourceObjectRow, StoredCommandRow, UploadIntentResponse, UploadStatusResponse, VideoResponse,
-    VideoScopeRow, WorkerOutputDescriptor, WorkerOutputResponse, WorkerSourceDescriptor,
-    digest_credential, digest_identifier, parse_sha256, profile_kind, request_digest,
-    source_object_key,
+    MembershipRow, NativeArtifactSourceIdentityV2, NativeJobCandidateRow, NativeJobClaimResponse,
+    NativeSandboxEnvelopeV1, SourceObjectRow, StoredCommandRow, UploadIntentResponse,
+    UploadStatusResponse, VideoResponse, VideoScopeRow, WorkerOutputDescriptor,
+    WorkerOutputResponse, WorkerSourceDescriptor, WorkerSourceRow, digest_credential,
+    digest_identifier, media_job_create_digests, native_artifact_digest, parse_sha256,
+    profile_kind, request_digest, source_object_key,
 };
+use compatibility_rate_limit::CompatibilityRateLimitBucketV1;
 use contracts::{
     API_SCHEMA_VERSION, AuthorityResponse, CapabilitiesResponse, CreateVideoRequest,
     DirectUploadFinalizeRequest, DiscoveryResponse, MAX_COMMAND_BODY_BYTES, MAX_SAFE_INTEGER,
@@ -48,31 +60,29 @@ use cutover_authority::{
     CutoverAuthoritySnapshot, CutoverShadowObservation, CutoverSignalKind, ReplayControlAction,
     ShadowClassification,
 };
-use frame_application::{
-    LegacyCallerV1, RateLimitDecisionV1, RequestSecurityContextV1, StorageGovernanceServiceError,
-};
+use frame_application::{LegacyCallerV1, RequestSecurityContextV1, StorageGovernanceServiceError};
 use frame_client::{
     ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
     PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
 };
 use frame_domain::{
-    ApiErrorCodeV1, ApiMutationEnvelopeV1, AuthorityFence, ByteSize, ChecksumSha256,
-    ClientCompatibilityPolicyV1, ClientReleaseV1, ClientSurfaceV1, ContentType, CorrelationId,
-    CustomDomainName, CutoverDomain, CutoverEvidence, CutoverPhase, CutoverScope, DataAuthority,
-    DurationMillis, GovernedObject, GovernedObjectId, GovernedObjectRole, GovernedObjectState,
-    IdempotencyKey, MAX_SIGNED_GRANT_LIFETIME_MS, MalwareDisposition, MultipartLimitsV1,
-    MultipartPartNumberV1, MultipartUploadId, MultipartUploadSpecV1, ObjectVisibility,
-    PublicAnalyticsConsentCommandV1, PublicAnalyticsEventCommandV1, PublicCommentCommandV1,
-    PublicTranscriptV1, ScopedObjectKey, SignedGrantId, StorageAccessRequest, StorageAccessSurface,
-    StorageActor, StorageHttpMethod, StorageMemberRole, StorageOperation, StorageQuotaPolicy,
-    StorageResponsePolicy, TenantId, TimestampMillis, UserId, VerifiedCustomDomain,
-    VerifiedRangeResponse,
+    ApiErrorCodeV1, AuthorityFence, ByteSize, ChecksumSha256, ClientCompatibilityPolicyV1,
+    ClientReleaseV1, ClientSurfaceV1, ContentType, CorrelationId, CustomDomainName, CutoverDomain,
+    CutoverEvidence, CutoverPhase, CutoverScope, DataAuthority, DurationMillis, GovernedObject,
+    GovernedObjectId, GovernedObjectRole, GovernedObjectState, MAX_SIGNED_GRANT_LIFETIME_MS,
+    MalwareDisposition, MultipartLimitsV1, MultipartPartNumberV1, MultipartUploadId,
+    MultipartUploadSpecV1, ObjectVisibility, PublicAnalyticsConsentCommandV1,
+    PublicAnalyticsEventCommandV1, PublicCommentCommandV1, PublicTranscriptV1, ScopedObjectKey,
+    SignedGrantId, StorageAccessRequest, StorageAccessSurface, StorageActor, StorageHttpMethod,
+    StorageMemberRole, StorageOperation, StorageQuotaPolicy, StorageResponsePolicy, TenantId,
+    TimestampMillis, UserId, VerifiedCustomDomain, VerifiedRangeResponse,
 };
 use frame_ports::{
     MultipartObjectStoreV1, ProviderCompleteMultipartRequestV1, ProviderCreateMultipartRequestV1,
     ProviderPutPartRequestV1, StorageFailureKind, StorageGovernanceContextV1,
     StorageGovernanceRepositoryV1, StorageRequestContext,
 };
+use futures::StreamExt;
 use instant_finalize_contract::{InstantFinalizeRequestV1, InstantFinalizeStateV1};
 use r2_direct_upload::{
     MAX_DIRECT_UPLOAD_BYTES, R2DirectPutSigner, R2SigningCredentials, private_staging_key,
@@ -103,7 +113,13 @@ const DIRECT_STAGING_CLEANUP_GRACE_MS: i64 = 60_000;
 const MULTIPART_PART_BYTES: u64 = 16 * 1_024 * 1_024;
 const MULTIPART_MAX_BYTES: u64 = 2_000_000_000;
 const MULTIPART_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
+const NATIVE_STANDARD_MAX_SOURCE_BYTES: u64 = 2_000_000_000;
+const NATIVE_HEAVY_MAX_SOURCE_BYTES: u64 = 20_000_000_000;
 const METADATA_CUTOVER_DOMAIN: &str = "metadata";
+
+fn direct_upload_finalize_expired(now_ms: i64, expires_at_ms: i64) -> bool {
+    now_ms >= expires_at_ms.saturating_add(DIRECT_STAGING_CLEANUP_GRACE_MS)
+}
 
 #[derive(Debug, Clone, Copy)]
 struct NativeOutputContract {
@@ -163,12 +179,17 @@ fn native_output_contract(profile: &str, content_type: &str) -> Option<NativeOut
 }
 
 fn native_claim_output(profile: &str, payload_json: &str) -> Option<(String, u64)> {
-    let content_type = if contracts::managed_profile(profile) {
-        let request: MediaJobRequest = serde_json::from_str(payload_json).ok()?;
-        if request.profile != profile {
+    let managed_request = if contracts::managed_profile(profile) {
+        let request = serde_json::from_str::<MediaJobRequest>(payload_json).ok()?;
+        if request.profile != profile || request.validate().is_err() {
             return None;
         }
-        match request.transform?.format {
+        Some(request)
+    } else {
+        None
+    };
+    let content_type = if let Some(request) = managed_request.as_ref() {
+        match request.transform.as_ref()?.format {
             contracts::ManagedMediaFormat::Mp4H264Aac => "video/mp4",
             contracts::ManagedMediaFormat::Jpeg => "image/jpeg",
             contracts::ManagedMediaFormat::Png => "image/png",
@@ -187,7 +208,14 @@ fn native_claim_output(profile: &str, payload_json: &str) -> Option<(String, u64
         }
     };
     let contract = native_output_contract(profile, content_type)?;
-    Some((content_type.into(), contract.max_bytes))
+    let requested_max_bytes = managed_request
+        .as_ref()
+        .and_then(|request| request.transform.as_ref())
+        .map_or(contract.max_bytes, |transform| transform.max_output_bytes);
+    Some((
+        content_type.into(),
+        requested_max_bytes.min(contract.max_bytes),
+    ))
 }
 
 fn native_profile_max_attempts(profile: &str) -> i64 {
@@ -252,7 +280,7 @@ fn native_sandbox(profile: &str) -> Option<NativeSandboxEnvelopeV1> {
     native_catalog_output_role(profile)?;
     Some(if heavy {
         NativeSandboxEnvelopeV1 {
-            max_source_bytes: 20_000_000_000,
+            max_source_bytes: NATIVE_HEAVY_MAX_SOURCE_BYTES,
             max_duration_ms: 43_200_000,
             max_width: 7_680,
             max_height: 4_320,
@@ -269,7 +297,7 @@ fn native_sandbox(profile: &str) -> Option<NativeSandboxEnvelopeV1> {
         }
     } else {
         NativeSandboxEnvelopeV1 {
-            max_source_bytes: 2_000_000_000,
+            max_source_bytes: NATIVE_STANDARD_MAX_SOURCE_BYTES,
             max_duration_ms: 14_400_000,
             max_width: 7_680,
             max_height: 4_320,
@@ -672,6 +700,14 @@ enum MediaMode {
     Native,
 }
 
+fn requires_native_claim(mode: MediaMode, profile: &str) -> bool {
+    match mode {
+        MediaMode::Native => true,
+        MediaMode::Remote => !contracts::managed_profile(profile),
+        MediaMode::Fake => false,
+    }
+}
+
 impl RuntimeConfig {
     fn from_env(env: &Env) -> Option<Self> {
         let deployment = env
@@ -743,6 +779,7 @@ struct ApiFailure {
     retryable: bool,
     allow: Option<&'static str>,
     authenticate: bool,
+    retry_after_seconds: Option<u64>,
 }
 
 impl ApiFailure {
@@ -754,6 +791,7 @@ impl ApiFailure {
             retryable,
             allow: None,
             authenticate: false,
+            retry_after_seconds: None,
         }
     }
 
@@ -764,6 +802,11 @@ impl ApiFailure {
 
     const fn with_authenticate(mut self) -> Self {
         self.authenticate = true;
+        self
+    }
+
+    const fn with_retry_after_seconds(mut self, seconds: u64) -> Self {
+        self.retry_after_seconds = Some(seconds);
         self
     }
 }
@@ -802,21 +845,73 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
     }
 }
 
+const AUTH_DELIVERY_CRON: &str = "* * * * *";
+const MULTIPART_MAINTENANCE_CRON: &str = "*/2 * * * *";
+const INSTANT_FINALIZE_CRON: &str = "1-59/2 * * * *";
+const MEDIA_RECOVERY_CRON: &str = "*/5 * * * *";
+const RETENTION_MAINTENANCE_CRON: &str = "2-59/5 * * * *";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduledLane {
+    AuthDelivery,
+    MultipartMaintenance,
+    InstantFinalize,
+    MediaRecovery,
+    RetentionMaintenance,
+}
+
+fn scheduled_lane(cron: &str) -> Option<ScheduledLane> {
+    match cron {
+        AUTH_DELIVERY_CRON => Some(ScheduledLane::AuthDelivery),
+        MULTIPART_MAINTENANCE_CRON => Some(ScheduledLane::MultipartMaintenance),
+        INSTANT_FINALIZE_CRON => Some(ScheduledLane::InstantFinalize),
+        MEDIA_RECOVERY_CRON => Some(ScheduledLane::MediaRecovery),
+        RETENTION_MAINTENANCE_CRON => Some(ScheduledLane::RetentionMaintenance),
+        _ => None,
+    }
+}
+
 #[event(scheduled)]
-pub async fn scheduled(_event: ScheduledEvent, env: Env, context: ScheduleContext) {
+pub async fn scheduled(event: ScheduledEvent, env: Env, context: ScheduleContext) {
     let Some(config) = RuntimeConfig::from_env(&env) else {
         return;
     };
-    if config.media_mode == MediaMode::Remote {
-        context.wait_until(media_service_runtime::recover_one(env.clone()));
+    match scheduled_lane(&event.cron()) {
+        Some(ScheduledLane::AuthDelivery) => {
+            context.wait_until(worker_auth_runtime::dispatch_delivery_batch(env));
+        }
+        Some(ScheduledLane::MultipartMaintenance) => {
+            context.wait_until(cleanup_expired_multipart(env));
+        }
+        Some(ScheduledLane::InstantFinalize) => {
+            context.wait_until(reconcile_instant_finalize_one(env));
+        }
+        Some(ScheduledLane::MediaRecovery) => {
+            context.wait_until(recover_scheduled_media(env, config.media_mode));
+        }
+        Some(ScheduledLane::RetentionMaintenance) => {
+            context.wait_until(run_retention_maintenance(env));
+        }
+        None => console_error!("scheduled invocation rejected class=unknown_cron"),
     }
-    context.wait_until(prune_public_collaboration(env.clone()));
-    context.wait_until(cleanup_expired_direct_staging(env.clone()));
-    context.wait_until(cleanup_expired_multipart(env.clone()));
-    context.wait_until(reconcile_instant_finalize_one(env.clone()));
-    if matches!(config.media_mode, MediaMode::Native | MediaMode::Remote) {
-        context.wait_until(recover_native_staging_one(env));
+}
+
+async fn recover_scheduled_media(env: Env, mode: MediaMode) {
+    // These two bounded one-candidate reconcilers share only the media lane.
+    // They can never consume the auth, multipart, or instant-finalize D1
+    // allowance because every configured Cron Trigger is a distinct Worker
+    // invocation.
+    if mode == MediaMode::Remote {
+        media_service_runtime::recover_one(env.clone()).await;
     }
+    if matches!(mode, MediaMode::Native | MediaMode::Remote) {
+        recover_native_staging_one(env).await;
+    }
+}
+
+async fn run_retention_maintenance(env: Env) {
+    prune_public_collaboration(env.clone()).await;
+    cleanup_expired_direct_staging(env).await;
 }
 
 async fn cleanup_expired_multipart(env: Env) {
@@ -1579,11 +1674,77 @@ async fn dispatch(
                 health_response(env, config).await?
             }
         }
+        Route::LegacyMediaServerRoot => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_media_server_root_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    config.production(),
+                )
+                .await?
+            }
+        }
         Route::LegacyApiStatus => {
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
                 failure_response(failure, request_id, config.production())?
             } else {
-                legacy_api_status_response(&request, request_id, config.production()).await?
+                legacy_api_status_response(&mut request, env, request_id, config.production())
+                    .await?
+            }
+        }
+        Route::LegacyMobileSessionConfig => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_session_config_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    config.production(),
+                )
+                .await?
+            }
+        }
+        Route::LegacyNotificationPreferences => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_notification_preferences_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    config.production(),
+                )
+                .await?
+            }
+        }
+        Route::LegacyChangelog => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Options], "GET, OPTIONS")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_changelog_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    config.production(),
+                    &canonical_origin,
+                )
+                .await?
+            }
+        }
+        Route::LegacyChangelogStatus => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Options], "GET, OPTIONS")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_changelog_status_response(&mut request, env, request_id, config.production())
+                    .await?
             }
         }
         Route::ApiHealth => {
@@ -1805,6 +1966,67 @@ async fn dispatch(
                 )
                 .await?;
                 public_collaboration_response(outcome, 202, request_id, config.production())?
+            }
+        }
+        auth_route @ (Route::BrowserAuthLogin
+        | Route::BrowserAuthSignup
+        | Route::BrowserAuthRecovery) => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                let action = match auth_route {
+                    Route::BrowserAuthLogin => worker_auth_runtime::BrowserAuthStart::Login,
+                    Route::BrowserAuthSignup => worker_auth_runtime::BrowserAuthStart::Signup,
+                    Route::BrowserAuthRecovery => worker_auth_runtime::BrowserAuthStart::Recovery,
+                    _ => unreachable!("closed browser auth route"),
+                };
+                match worker_auth_runtime::start(&mut request, env, action, current_time_ms()?)
+                    .await
+                {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(failure)) => browser_auth_page_failure_response(action, failure)?,
+                    Err(_) => {
+                        console_error!(
+                            "browser authentication start failed request_id={request_id}"
+                        );
+                        browser_auth_page_failure_response(
+                            action,
+                            browser_web_runtime::BrowserWebFailure::Unavailable,
+                        )?
+                    }
+                }
+            }
+        }
+        Route::BrowserAuthVerify => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                match worker_auth_runtime::verify(&mut request, env, current_time_ms()?).await {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(failure)) => browser_auth_verify_failure_response(failure)?,
+                    Err(_) => {
+                        console_error!(
+                            "browser authentication verify failed request_id={request_id}"
+                        );
+                        browser_auth_verify_failure_response(
+                            browser_web_runtime::BrowserWebFailure::Unavailable,
+                        )?
+                    }
+                }
+            }
+        }
+        Route::BrowserAuthLogout => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                match worker_auth_runtime::logout(&request, env, current_time_ms()?).await? {
+                    Ok(response) => response,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_logout"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
             }
         }
         Route::AuthenticatedWebWorkspace { surface } => {
@@ -2525,20 +2747,39 @@ async fn dispatch(
                 if let Err(failure) = validate_worker_lease_header(&request) {
                     return failure_response(failure, request_id, config.production());
                 }
-                native_job_source_response(
+                native_job_source_response(env, config, &request, &actor, &job_id, 0, request_id)
+                    .await?
+            }
+        }
+        Route::WorkerMediaJobSourceOrdinal { job_id, ordinal } => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Head], "GET, HEAD")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&job_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
                     env,
                     config,
-                    &request,
-                    &actor,
-                    &job_id,
-                    request.method() == Method::Head,
-                    request_id,
+                    RequiredAccess::Worker,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_worker_lease_header(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                native_job_source_response(
+                    env, config, &request, &actor, &job_id, ordinal, request_id,
                 )
                 .await?
             }
-        }
-        Route::WorkerMediaJobSourceOrdinal { .. } => {
-            failure_response(not_found_failure(), request_id, config.production())?
         }
         Route::WorkerMediaJobOutput { job_id }
         | Route::WorkerMediaJobOutputOrdinal { job_id, ordinal: 0 } => {
@@ -3048,36 +3289,141 @@ fn method_guard(
 }
 
 async fn legacy_api_status_response(
-    request: &Request,
+    request: &mut Request,
+    env: &Env,
     request_id: &str,
     production: bool,
 ) -> Result<Response> {
-    let content_length = match request.headers().get("content-length")? {
-        None => 0,
-        Some(value) => match value.parse::<u64>() {
-            Ok(value) => value,
-            Err(_) => {
-                return failure_response(
-                    invalid_body_failure("invalid_content_length"),
-                    request_id,
-                    production,
-                );
-            }
-        },
+    legacy_static_response(
+        request,
+        request_id,
+        production,
+        "GET",
+        legacy_compatibility_runtime::LEGACY_STATUS_PATH,
+        LegacyCallerV1::Released(ClientReleaseV1 {
+            surface: ClientSurfaceV1::Web,
+            api_major: 1,
+            release: 2,
+        }),
+        None,
+        None,
+        env,
+        CompatibilityRateLimitBucketV1::ServiceMisc,
+        None,
+        b"frame:legacy-public-status:v1",
+        "invalid_status_request",
+    )
+    .await
+}
+
+async fn legacy_media_server_root_response(
+    request: &mut Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    legacy_static_response(
+        request,
+        request_id,
+        production,
+        "GET",
+        legacy_compatibility_runtime::LEGACY_MEDIA_SERVER_ROOT_PATH,
+        LegacyCallerV1::InternalWorker,
+        None,
+        None,
+        env,
+        CompatibilityRateLimitBucketV1::ServiceMisc,
+        None,
+        b"frame:legacy-media-server-root:v1",
+        "invalid_media_server_root_request",
+    )
+    .await
+}
+
+async fn legacy_mobile_session_config_response(
+    request: &mut Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    legacy_static_response(
+        request,
+        request_id,
+        production,
+        "GET",
+        legacy_compatibility_runtime::LEGACY_MOBILE_SESSION_CONFIG_PATH,
+        LegacyCallerV1::Released(ClientReleaseV1 {
+            surface: ClientSurfaceV1::Mobile,
+            api_major: 1,
+            release: 2,
+        }),
+        None,
+        None,
+        env,
+        CompatibilityRateLimitBucketV1::ClientCompatibility,
+        Some(env),
+        b"frame:legacy-mobile-session-config:v1",
+        "invalid_mobile_session_config_request",
+    )
+    .await
+}
+
+async fn legacy_notification_preferences_response(
+    request: &mut Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    let actor_id = match browser_web_runtime::authenticate_host_only_browser_session(
+        request,
+        env,
+        current_time_ms()?,
+    )
+    .await?
+    {
+        Ok(actor_id) => actor_id,
+        Err(browser_web_runtime::BrowserWebFailure::Unavailable) => {
+            return failure_response(
+                ApiFailure::new(
+                    503,
+                    "service_unavailable",
+                    "The service is temporarily unavailable.",
+                    true,
+                ),
+                request_id,
+                production,
+            );
+        }
+        Err(_) => {
+            return legacy_notification_preferences_exact_json_response(
+                401,
+                legacy_notification_preferences_runtime::LEGACY_NOTIFICATION_PREFERENCES_UNAUTHORIZED_BODY,
+            );
+        }
     };
-    let idempotency_key = match request.headers().get("idempotency-key")? {
-        None => None,
-        Some(value) => match IdempotencyKey::parse(value) {
-            Ok(value) => Some(value),
-            Err(_) => {
-                return failure_response(
-                    invalid_body_failure("invalid_idempotency_key"),
-                    request_id,
-                    production,
-                );
-            }
-        },
+    let raw_body = match read_bounded_legacy_body(request, 0).await {
+        Ok(body) => body,
+        Err(()) => {
+            return failure_response(
+                invalid_body_failure("invalid_notification_preferences_request"),
+                request_id,
+                production,
+            );
+        }
     };
+    let raw_query = request.url()?.query().unwrap_or_default().to_owned();
+    let mut headers = Vec::new();
+    for name in [
+        "content-length",
+        "content-type",
+        "idempotency-key",
+        "if-match",
+        "origin",
+    ] {
+        if let Some(value) = request.headers().get(name)? {
+            headers.push((name.to_owned(), value));
+        }
+    }
     let compatibility = ClientCompatibilityPolicyV1 {
         api_major: 1,
         current_release: 2,
@@ -3085,48 +3431,334 @@ async fn legacy_api_status_response(
         deprecated_after_ms: None,
         retired: false,
     };
-    let transport = legacy_compatibility_runtime::LegacyCompatibilityTransportV1::new_static_only(
+    let database = env.d1("DB")?;
+    let rate_limit = compatibility_rate_limit::admit_principal(
+        env,
+        &database,
+        CompatibilityRateLimitBucketV1::CollaborationNotifications,
+        &actor_id,
+        current_time_ms()?,
+    )
+    .await?;
+    let transport = legacy_compatibility_runtime::LegacyCompatibilityTransportV1::new_fail_closed(
+        &database,
         compatibility,
     )
     .map_err(|_| Error::RustError("legacy compatibility registry is invalid".into()))?;
-    let outcome = transport
-        .dispatch_http_response(legacy_compatibility_runtime::LegacyHttpTransportRequestV1 {
+    let authenticated = legacy_compatibility_runtime::LegacyAuthenticatedContextV1::principal_only(
+        actor_id.clone(),
+    )
+    .map_err(|_| Error::RustError("legacy session principal is invalid".into()))?;
+    let typed_request = match legacy_compatibility_runtime::LegacyHttpTransportRequestV1::new(
+        legacy_compatibility_runtime::LegacyHttpTransportRequestPartsV1 {
             method: "GET".into(),
-            raw_path: legacy_compatibility_runtime::LEGACY_STATUS_PATH.into(),
+            raw_path: legacy_notification_preferences_runtime::LEGACY_NOTIFICATION_PREFERENCES_PATH
+                .into(),
+            raw_query,
+            raw_body,
+            headers,
             caller: LegacyCallerV1::Released(ClientReleaseV1 {
                 surface: ClientSurfaceV1::Web,
                 api_major: 1,
                 release: 2,
             }),
-            envelope: ApiMutationEnvelopeV1 {
-                content_length,
-                content_type: request.headers().get("content-type")?,
-                idempotency_key,
-                correlation_id: request_id.into(),
-            },
+            correlation_id: request_id.into(),
             security: RequestSecurityContextV1 {
-                authenticated: false,
+                authenticated: true,
                 authorized: true,
                 browser_origin_valid: true,
                 csrf_valid: true,
-                rate_limit: RateLimitDecisionV1::Allowed,
+                rate_limit,
             },
-            scope_digest: ChecksumSha256::digest_bytes(b"frame:legacy-public-status:v1"),
-            request_fingerprint: ChecksumSha256::digest_bytes(b"GET\0/api/status\0v1"),
-        })
-        .await;
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
+            scope_digest: ChecksumSha256::digest_bytes(
+                format!("frame:legacy-notification-preferences:v1\0{actor_id}").as_bytes(),
+            ),
+            authenticated: Some(authenticated),
+            revision: None,
+            fallback_origin: None,
+            configured_origin: None,
+        },
+    ) {
+        Ok(request) => request,
+        Err(_) => {
+            return failure_response(
+                invalid_body_failure("invalid_notification_preferences_request"),
+                request_id,
+                production,
+            );
+        }
+    };
+    match transport.dispatch_http_response(typed_request).await {
+        Ok(outcome) => {
+            let mut response =
+                Response::from_bytes(outcome.body().to_vec())?.with_status(outcome.status());
+            if let Some(content_type) = outcome.content_type() {
+                response.headers_mut().set("content-type", content_type)?;
+            }
+            Ok(response)
+        }
+        Err(error) if error.code == ApiErrorCodeV1::Internal => {
+            legacy_notification_preferences_exact_json_response(
+                500,
+                legacy_notification_preferences_runtime::LEGACY_NOTIFICATION_PREFERENCES_FAILURE_BODY,
+            )
+        }
         Err(error) => {
             let failure = match error.code {
-                ApiErrorCodeV1::InvalidRequest => invalid_body_failure("invalid_status_request"),
+                ApiErrorCodeV1::InvalidRequest => {
+                    invalid_body_failure("invalid_notification_preferences_request")
+                }
                 ApiErrorCodeV1::NotFound => not_found_failure(),
                 ApiErrorCodeV1::RateLimited => ApiFailure::new(
                     429,
                     "rate_limited",
                     "The request rate limit was exceeded.",
                     true,
+                )
+                .with_retry_after_seconds(compatibility_rate_limit::RETRY_AFTER_SECONDS),
+                ApiErrorCodeV1::UpgradeRequired => ApiFailure::new(
+                    426,
+                    "upgrade_required",
+                    "A supported client version is required.",
+                    false,
                 ),
+                ApiErrorCodeV1::Unauthenticated
+                | ApiErrorCodeV1::Conflict
+                | ApiErrorCodeV1::Unsupported
+                | ApiErrorCodeV1::TemporarilyUnavailable
+                | ApiErrorCodeV1::Indeterminate
+                | ApiErrorCodeV1::Internal => ApiFailure::new(
+                    503,
+                    "service_unavailable",
+                    "The service is temporarily unavailable.",
+                    true,
+                ),
+            };
+            failure_response(failure, request_id, production)
+        }
+    }
+}
+
+fn legacy_notification_preferences_exact_json_response(
+    status: u16,
+    body: &'static str,
+) -> Result<Response> {
+    let mut response = Response::from_bytes(body.as_bytes().to_vec())?.with_status(status);
+    response.headers_mut().set(
+        "content-type",
+        legacy_notification_preferences_runtime::LEGACY_NOTIFICATION_PREFERENCES_CONTENT_TYPE,
+    )?;
+    Ok(response)
+}
+
+async fn legacy_changelog_response(
+    request: &mut Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+    canonical_origin: &str,
+) -> Result<Response> {
+    let (method, caller, rate_limit_bucket) = match request.method() {
+        Method::Get => (
+            "GET",
+            LegacyCallerV1::Released(ClientReleaseV1 {
+                surface: ClientSurfaceV1::Desktop,
+                api_major: 1,
+                release: 2,
+            }),
+            CompatibilityRateLimitBucketV1::ClientCompatibility,
+        ),
+        Method::Options => (
+            "OPTIONS",
+            LegacyCallerV1::Released(ClientReleaseV1 {
+                surface: ClientSurfaceV1::Web,
+                api_major: 1,
+                release: 2,
+            }),
+            CompatibilityRateLimitBucketV1::ServiceMisc,
+        ),
+        _ => {
+            return Err(Error::RustError(
+                "legacy changelog method guard was bypassed".into(),
+            ));
+        }
+    };
+    legacy_static_response(
+        request,
+        request_id,
+        production,
+        method,
+        legacy_compatibility_runtime::LEGACY_CHANGELOG_FEED_PATH,
+        caller,
+        Some(canonical_origin.into()),
+        Some(canonical_origin.into()),
+        env,
+        rate_limit_bucket,
+        None,
+        b"frame:legacy-changelog-feed:v1",
+        "invalid_changelog_request",
+    )
+    .await
+}
+
+async fn legacy_changelog_status_response(
+    request: &mut Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    let (method, caller, rate_limit_bucket) = match request.method() {
+        Method::Get => (
+            "GET",
+            LegacyCallerV1::Released(ClientReleaseV1 {
+                surface: ClientSurfaceV1::Desktop,
+                api_major: 1,
+                release: 2,
+            }),
+            CompatibilityRateLimitBucketV1::ClientCompatibility,
+        ),
+        Method::Options => (
+            "OPTIONS",
+            LegacyCallerV1::Released(ClientReleaseV1 {
+                surface: ClientSurfaceV1::Web,
+                api_major: 1,
+                release: 2,
+            }),
+            CompatibilityRateLimitBucketV1::ServiceMisc,
+        ),
+        _ => {
+            return Err(Error::RustError(
+                "legacy changelog method guard was bypassed".into(),
+            ));
+        }
+    };
+    legacy_static_response(
+        request,
+        request_id,
+        production,
+        method,
+        legacy_compatibility_runtime::LEGACY_CHANGELOG_STATUS_PATH,
+        caller,
+        None,
+        None,
+        env,
+        rate_limit_bucket,
+        None,
+        b"frame:legacy-changelog-status:v1",
+        "invalid_changelog_status_request",
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn legacy_static_response(
+    request: &mut Request,
+    request_id: &str,
+    production: bool,
+    method: &'static str,
+    raw_path: &'static str,
+    caller: LegacyCallerV1,
+    fallback_origin: Option<String>,
+    configured_origin: Option<String>,
+    rate_limit_env: &Env,
+    rate_limit_bucket: CompatibilityRateLimitBucketV1,
+    worker_env: Option<&Env>,
+    scope: &'static [u8],
+    invalid_request_reason: &'static str,
+) -> Result<Response> {
+    let rate_limit = compatibility_rate_limit::admit_edge_request(
+        rate_limit_env,
+        request,
+        rate_limit_bucket,
+        current_time_ms()?,
+    )
+    .await?;
+    let raw_body = match read_bounded_legacy_body(request, 0).await {
+        Ok(body) => body,
+        Err(()) => {
+            return failure_response(
+                invalid_body_failure(invalid_request_reason),
+                request_id,
+                production,
+            );
+        }
+    };
+    let raw_query = request.url()?.query().unwrap_or_default().to_owned();
+    let mut headers = Vec::new();
+    for name in [
+        "content-length",
+        "content-type",
+        "idempotency-key",
+        "if-match",
+        "origin",
+    ] {
+        if let Some(value) = request.headers().get(name)? {
+            headers.push((name.to_owned(), value));
+        }
+    }
+    let compatibility = ClientCompatibilityPolicyV1 {
+        api_major: 1,
+        current_release: 2,
+        previous_release: 1,
+        deprecated_after_ms: None,
+        retired: false,
+    };
+    let transport = match worker_env {
+        Some(env) => legacy_compatibility_runtime::LegacyCompatibilityTransportV1::new_static_from_worker_env(
+            compatibility,
+            env,
+        ),
+        None => legacy_compatibility_runtime::LegacyCompatibilityTransportV1::new_static_only(
+            compatibility,
+        ),
+    }
+    .map_err(|_| Error::RustError("legacy compatibility registry is invalid".into()))?;
+    let typed_request = match legacy_compatibility_runtime::LegacyHttpTransportRequestV1::new(
+        legacy_compatibility_runtime::LegacyHttpTransportRequestPartsV1 {
+            method: method.into(),
+            raw_path: raw_path.into(),
+            raw_query,
+            raw_body,
+            headers,
+            configured_origin,
+            caller,
+            correlation_id: request_id.into(),
+            security: RequestSecurityContextV1 {
+                authenticated: false,
+                authorized: true,
+                browser_origin_valid: true,
+                csrf_valid: true,
+                rate_limit,
+            },
+            scope_digest: ChecksumSha256::digest_bytes(scope),
+            authenticated: None,
+            revision: None,
+            fallback_origin,
+        },
+    ) {
+        Ok(request) => request,
+        Err(_) => {
+            return failure_response(
+                invalid_body_failure(invalid_request_reason),
+                request_id,
+                production,
+            );
+        }
+    };
+    let outcome = transport.dispatch_http_response(typed_request).await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let failure = match error.code {
+                ApiErrorCodeV1::InvalidRequest => invalid_body_failure(invalid_request_reason),
+                ApiErrorCodeV1::NotFound => not_found_failure(),
+                ApiErrorCodeV1::RateLimited => ApiFailure::new(
+                    429,
+                    "rate_limited",
+                    "The request rate limit was exceeded.",
+                    true,
+                )
+                .with_retry_after_seconds(compatibility_rate_limit::RETRY_AFTER_SECONDS),
                 ApiErrorCodeV1::UpgradeRequired => ApiFailure::new(
                     426,
                     "upgrade_required",
@@ -3148,11 +3780,38 @@ async fn legacy_api_status_response(
             return failure_response(failure, request_id, production);
         }
     };
-    let mut response = Response::ok(outcome.body())?.with_status(outcome.status());
-    response
-        .headers_mut()
-        .set("content-type", outcome.content_type())?;
+    let mut response = if outcome.status() == 204 {
+        Response::empty()?.with_status(outcome.status())
+    } else {
+        Response::from_bytes(outcome.body().to_vec())?.with_status(outcome.status())
+    };
+    if let Some(content_type) = outcome.content_type() {
+        response.headers_mut().set("content-type", content_type)?;
+    }
+    for (name, value) in outcome.headers() {
+        response.headers_mut().set(name, value)?;
+    }
     Ok(response)
+}
+
+async fn read_bounded_legacy_body(
+    request: &mut Request,
+    max_bytes: usize,
+) -> std::result::Result<Vec<u8>, ()> {
+    if request.inner().body().is_none() {
+        return Ok(Vec::new());
+    }
+    let mut stream = request.stream().map_err(|_| ())?;
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ())?;
+        let next_length = body.len().checked_add(chunk.len()).ok_or(())?;
+        if next_length > max_bytes {
+            return Err(());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 async fn health_response(env: &Env, config: &RuntimeConfig) -> Result<Response> {
@@ -3274,6 +3933,8 @@ async fn video_create_response(
         "privacy": "private",
     })
     .to_string();
+    let outbox_payload_checksum = ChecksumSha256::digest_bytes(outbox_payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let statements = vec![
         database
             .prepare(
@@ -3323,9 +3984,10 @@ async fn video_create_response(
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision\
                  ) SELECT ?1, ?2, 'video', ?3, 'video.created', ?4, ?5, \
-                          'pending', 0, ?6, ?6 FROM videos v \
+                          'pending', 0, ?6, ?6, 0, ?8, 1, ?9, 0 FROM videos v \
                    WHERE v.id = ?3 AND v.organization_id = ?2 \
                      AND v.owner_id = ?7 AND v.deleted_at_ms IS NULL",
             )
@@ -3337,6 +3999,8 @@ async fn video_create_response(
                 JsValue::from_str(&outbox_payload),
                 JsValue::from_f64(now as f64),
                 JsValue::from_str(&actor.user_id),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(outbox_payload_checksum.as_str()),
             ])?,
     ];
     if !atomic_batch_applied(
@@ -3541,6 +4205,8 @@ async fn video_privacy_response(
         "revision": response.revision,
     })
     .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let statements = vec![
         database
             .prepare(
@@ -3619,9 +4285,10 @@ async fn video_privacy_response(
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision\
                  ) SELECT ?1, ?2, 'video', ?3, 'video.privacy.changed', ?4, ?5, \
-                          'pending', 0, ?6, ?6 FROM videos v \
+                          'pending', 0, ?6, ?6, 0, ?12, 1, ?13, 0 FROM videos v \
                    JOIN command_idempotency c ON c.organization_id = v.organization_id \
                      AND c.idempotency_key = ?7 AND c.command_type = 'video_privacy' \
                      AND c.request_digest = ?8 AND c.response_json = ?11 \
@@ -3640,6 +4307,8 @@ async fn video_privacy_response(
                 JsValue::from_f64(next_revision as f64),
                 JsValue::from_str(&body.privacy),
                 JsValue::from_str(&response_json),
+                JsValue::from_str(event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
             ])?,
     ];
     if !atomic_batch_applied(
@@ -3878,6 +4547,8 @@ async fn upload_intent_response(
         "object_version": body.object_version,
     })
     .to_string();
+    let outbox_payload_checksum = ChecksumSha256::digest_bytes(outbox_payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
 
     let persisted_transfer_mode = if body.transfer_mode == "multipart" {
         "brokered"
@@ -3943,9 +4614,10 @@ async fn upload_intent_response(
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision\
                  ) VALUES (?1, ?2, 'video_upload', ?3, 'upload.intent.created', ?4, ?5, \
-                           'pending', 0, ?6, ?6)",
+                           'pending', 0, ?6, ?6, 0, ?7, 1, ?8, 0)",
             )
             .bind(&[
                 JsValue::from_str(&outbox_id),
@@ -3954,6 +4626,8 @@ async fn upload_intent_response(
                 JsValue::from_str(&format!("upload-intent:{upload_id}")),
                 JsValue::from_str(&outbox_payload),
                 JsValue::from_f64(now as f64),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(outbox_payload_checksum.as_str()),
             ])?,
     ];
     if body.transfer_mode == "multipart" {
@@ -4139,8 +4813,10 @@ async fn claim_authenticated_multipart_abort(
         .await?;
     match state.as_ref().map(|row| row.state.as_str()) {
         Some("aborted" | "expired") => return Ok(AuthenticatedAbortClaim::AlreadyAborted),
-        Some("complete") => return Ok(AuthenticatedAbortClaim::AlreadyCompleted),
-        Some("open" | "completing") => {}
+        Some("completing" | "complete") => {
+            return Ok(AuthenticatedAbortClaim::AlreadyCompleted);
+        }
+        Some("open") => {}
         _ => {
             return Err(Error::RustError(
                 "multipart abort session is unavailable".into(),
@@ -4160,7 +4836,7 @@ async fn claim_authenticated_multipart_abort(
                  WHERE EXISTS (SELECT 1 FROM r2_multipart_sessions_v1 session \
                    JOIN video_uploads upload ON upload.id=session.upload_id \
                    WHERE session.upload_id=?1 AND upload.organization_id=?4 \
-                     AND session.state IN ('open','completing') \
+                     AND session.state = 'open' \
                      AND upload.state IN ('initiated','uploading','finalizing','failed')) \
                  ON CONFLICT(upload_id) DO UPDATE SET \
                    intent_kind='authenticated_delete',attempt_count=attempt_count+1,\
@@ -5569,6 +6245,8 @@ async fn upload_content_response(
         "bytes": expected_bytes,
     })
     .to_string();
+    let outbox_payload_checksum = ChecksumSha256::digest_bytes(outbox_payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let statements = vec![
         database
             .prepare(
@@ -5669,9 +6347,10 @@ async fn upload_content_response(
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision\
                  ) VALUES (?1, ?2, 'video_upload', ?3, 'upload.completed', ?4, ?5, \
-                           'pending', 0, ?6, ?6)",
+                           'pending', 0, ?6, ?6, 0, ?7, 1, ?8, 0)",
             )
             .bind(&[
                 JsValue::from_str(&outbox_id),
@@ -5680,6 +6359,8 @@ async fn upload_content_response(
                 JsValue::from_str(&format!("upload-complete:{upload_id}")),
                 JsValue::from_str(&outbox_payload),
                 JsValue::from_f64(now as f64),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(outbox_payload_checksum.as_str()),
             ])?,
     ];
     require_batch_success(
@@ -5817,7 +6498,7 @@ async fn direct_upload_finalize_response(
         .direct_expires_at_ms
         .ok_or_else(|| Error::RustError("direct staging expiry is missing".into()))?;
     let bucket = env.bucket("RECORDINGS")?;
-    if now >= expires_at_ms {
+    if direct_upload_finalize_expired(now, expires_at_ms) {
         let event_fingerprint = digest_identifier(
             "direct_upload_event",
             &format!("{upload_id}:aborted:{expires_at_ms}"),
@@ -6142,6 +6823,8 @@ async fn direct_upload_finalize_response(
         "transfer_mode": "direct",
     })
     .to_string();
+    let outbox_payload_checksum = ChecksumSha256::digest_bytes(outbox_payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let complete_fingerprint = digest_identifier(
         "direct_upload_event",
         &format!("{upload_id}:complete:{}", body.checksum_sha256),
@@ -6259,8 +6942,10 @@ async fn direct_upload_finalize_response(
         database
             .prepare(
                 "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
-                 VALUES (?1, ?2, 'video_upload', ?3, 'upload.completed', ?4, ?5, 'pending', 0, ?6, ?6)",
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision) \
+                 VALUES (?1, ?2, 'video_upload', ?3, 'upload.completed', ?4, ?5, 'pending', 0, ?6, ?6, \
+                         0, ?7, 1, ?8, 0)",
             )
             .bind(&[
                 JsValue::from_str(&outbox_id),
@@ -6269,6 +6954,8 @@ async fn direct_upload_finalize_response(
                 JsValue::from_str(&format!("upload-complete:{upload_id}")),
                 JsValue::from_str(&outbox_payload),
                 JsValue::from_f64(now as f64),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(outbox_payload_checksum.as_str()),
             ])?,
     ];
     require_batch_success(
@@ -6309,7 +6996,7 @@ async fn media_job_create_response(
     context: &Context,
     request: &Request,
     actor: &AuthenticatedActor,
-    body: MediaJobRequest,
+    mut body: MediaJobRequest,
     request_id: &str,
 ) -> Result<Response> {
     let database = env.d1("DB")?;
@@ -6321,19 +7008,27 @@ async fn media_job_create_response(
     if tenant_id != body.tenant_id {
         return failure_response(not_found_failure(), request_id, config.production());
     }
+    if let Err(code) = body.validate() {
+        return failure_response(
+            invalid_body_failure(code.as_str()),
+            request_id,
+            config.production(),
+        );
+    }
     let Some(authority_fence) = mutation_authority_fence(env, config, &tenant_id).await? else {
         return failure_response(mutation_disabled_failure(), request_id, config.production());
     };
     let idempotency_key = idempotency_header(request)?;
-    let digest = request_digest("media_job_create", &body)
+    let (digest, serializer_alias_digest) = media_job_create_digests(&body)
         .map_err(|()| Error::RustError("media command could not be digested".into()))?;
-    match command_replay(
+    match command_replay_accepting(
         &database,
         &authority_fence,
         &tenant_id,
         &idempotency_key,
         "media_job_create",
         &digest,
+        serializer_alias_digest.as_deref(),
     )
     .await?
     {
@@ -6347,30 +7042,76 @@ async fn media_job_create_response(
         }
         CommandReplay::New => {}
     }
-    if !video_is_scoped(&database, &tenant_id, &body.video_id).await? {
-        return failure_response(not_found_failure(), request_id, config.production());
+    // Replay lookup canonicalizes an omitted or equivalent explicit singleton
+    // to the pre-0027 digest and also accepts the explicit rollout alias. Only
+    // new work is expanded to the durable, explicit input array below.
+    body.source_inputs = body.normalized_source_inputs();
+    #[derive(Deserialize)]
+    struct MediaInputRolloutRow {
+        phase: String,
     }
-    let Some(source) =
-        load_source_object(&database, &tenant_id, &body.video_id, body.source_version).await?
-    else {
+    let rollout = database
+        .prepare("SELECT phase FROM media_job_input_rollout_v1 WHERE singleton=1 LIMIT 1")
+        .first::<MediaInputRolloutRow>(None)
+        .await?
+        .ok_or_else(|| Error::RustError("media input rollout state is unavailable".into()))?;
+    if !matches!(rollout.phase.as_str(), "expand" | "enforced") {
+        return Err(Error::RustError(
+            "media input rollout state is invalid".into(),
+        ));
+    }
+    if rollout.phase != "enforced"
+        && (body.source_inputs.len() > 1 || body.profile == "composition_v1")
+    {
         return failure_response(
             ApiFailure::new(
-                409,
-                "source_not_ready",
-                "The source object is not ready for processing.",
+                503,
+                "media_input_contract_pending",
+                "The selected media profile is waiting for a compatible rollout.",
                 true,
             ),
             request_id,
             config.production(),
         );
-    };
-    if !supported_source_content_type(&source.content_type) {
-        return failure_response(
-            invalid_body_failure("unsupported_source_media_type"),
-            request_id,
-            config.production(),
-        );
     }
+    let mut resolved_sources = Vec::with_capacity(body.source_inputs.len());
+    for input in &body.source_inputs {
+        if !video_is_scoped(&database, &tenant_id, &input.video_id).await? {
+            return failure_response(not_found_failure(), request_id, config.production());
+        }
+        let Some(source) =
+            load_source_object(&database, &tenant_id, &input.video_id, input.source_version)
+                .await?
+        else {
+            return failure_response(
+                ApiFailure::new(
+                    409,
+                    "source_not_ready",
+                    "A source object is not ready for processing.",
+                    true,
+                ),
+                request_id,
+                config.production(),
+            );
+        };
+        if !supported_native_source_content_type(&source.content_type)
+            || source.bytes <= 0
+            || source
+                .checksum_sha256
+                .as_deref()
+                .is_none_or(|checksum| !contracts::valid_sha256(checksum))
+        {
+            return failure_response(
+                invalid_body_failure("unsupported_source_media_type"),
+                request_id,
+                config.production(),
+            );
+        }
+        resolved_sources.push(source);
+    }
+    let source = resolved_sources
+        .first()
+        .ok_or_else(|| Error::RustError("validated media sources are unavailable".into()))?;
     if config.media_mode == MediaMode::Fake && body.profile != "preview_v1" {
         return failure_response(
             ApiFailure::new(
@@ -6383,7 +7124,11 @@ async fn media_job_create_response(
             config.production(),
         );
     }
-    if config.media_mode == MediaMode::Native
+    // Remote mode is hybrid: managed profiles use the provider adapter and
+    // every other profile falls back to the native worker. Reject a request
+    // before persistence when that native path has no executable claim
+    // contract; otherwise the job can remain queued forever.
+    if requires_native_claim(config.media_mode, &body.profile)
         && native_claim_output(
             &body.profile,
             &serde_json::to_string(&body)
@@ -6402,60 +7147,51 @@ async fn media_job_create_response(
             config.production(),
         );
     }
-    if config.media_mode == MediaMode::Remote
-        && !contracts::managed_profile(&body.profile)
-        && matches!(body.profile.as_str(), "transcription_v1" | "ai_cleanup_v1")
-    {
-        return failure_response(
-            ApiFailure::new(
-                422,
-                "profile_unavailable",
-                "The selected media profile is unavailable in this runtime.",
-                false,
-            ),
-            request_id,
-            config.production(),
-        );
-    }
     let kind = profile_kind(&body.profile)
         .ok_or_else(|| Error::RustError("validated profile is unsupported".into()))?;
     let now = current_time_ms()?;
     let Some(tenant_contract) = storage_tenant(&tenant_id) else {
         return failure_response(not_found_failure(), request_id, config.production());
     };
-    let Some(source_authority) = governed_object(
-        &database,
-        tenant_contract,
-        &source.object_key,
-        &actor.user_id,
-    )
-    .await
-    .map_err(|()| Error::RustError("storage authority is unavailable".into()))?
-    else {
-        return failure_response(not_found_failure(), request_id, config.production());
-    };
+    let mut source_authorities = Vec::with_capacity(resolved_sources.len());
+    for source in &resolved_sources {
+        let Some(authority) = governed_object(
+            &database,
+            tenant_contract,
+            &source.object_key,
+            &actor.user_id,
+        )
+        .await
+        .map_err(|()| Error::RustError("storage authority is unavailable".into()))?
+        else {
+            return failure_response(not_found_failure(), request_id, config.production());
+        };
+        source_authorities.push(authority);
+    }
     let governance =
         storage_governance_runtime::governance_service(env, &storage_origin(config))
             .map_err(|_| Error::RustError("storage governance configuration is invalid".into()))?;
-    if let Err(error) = governance.authorize(
-        CorrelationId::new(),
-        StorageAccessRequest {
-            actor: StorageActor::Service {
-                tenant_id: tenant_contract,
-                purpose: frame_domain::StorageServicePurpose::MediaProcessor,
+    for source_authority in &source_authorities {
+        if let Err(error) = governance.authorize(
+            CorrelationId::new(),
+            StorageAccessRequest {
+                actor: StorageActor::Service {
+                    tenant_id: tenant_contract,
+                    purpose: frame_domain::StorageServicePurpose::MediaProcessor,
+                },
+                operation: StorageOperation::Read,
+                surface: StorageAccessSurface::MediaTransformation,
+                object: source_authority,
+                now: storage_timestamp(now)
+                    .ok_or_else(|| Error::RustError("storage clock is invalid".into()))?,
+                grant: None,
+                grant_proof: None,
+                request_domain: None,
+                custom_domain: None,
             },
-            operation: StorageOperation::Read,
-            surface: StorageAccessSurface::MediaTransformation,
-            object: &source_authority,
-            now: storage_timestamp(now)
-                .ok_or_else(|| Error::RustError("storage clock is invalid".into()))?,
-            grant: None,
-            grant_proof: None,
-            request_domain: None,
-            custom_domain: None,
-        },
-    ) {
-        return storage_policy_error(error, request_id, config.production());
+        ) {
+            return storage_policy_error(error, request_id, config.production());
+        }
     }
     let managed_execution =
         if config.media_mode == MediaMode::Remote && contracts::managed_profile(&body.profile) {
@@ -6534,11 +7270,70 @@ async fn media_job_create_response(
     let executor = managed_execution
         .as_ref()
         .map_or("native_gstreamer", |seed| seed.selected_executor);
+    if executor == "native_gstreamer" {
+        let native_sources = body
+            .source_inputs
+            .iter()
+            .zip(&resolved_sources)
+            .enumerate()
+            .map(|(ordinal, (input, source))| {
+                Ok(WorkerSourceRow {
+                    ordinal: i64::try_from(ordinal).map_err(|_| ())?,
+                    video_id: input.video_id.clone(),
+                    source_version: i64::from(input.source_version),
+                    object_key: source.object_key.clone(),
+                    bytes: source.bytes,
+                    checksum_sha256: source.checksum_sha256.clone().ok_or(())?,
+                    content_type: source.content_type.clone(),
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, ()>>();
+        if !native_sources.is_ok_and(|sources| {
+            validated_worker_sources(&tenant_id, &body.profile, sources).is_ok()
+        }) {
+            return failure_response(
+                ApiFailure::new(
+                    422,
+                    "source_outside_native_sandbox",
+                    "The source set exceeds the selected media profile limits.",
+                    false,
+                ),
+                request_id,
+                config.production(),
+            );
+        }
+    }
     let normalized_profile_sha256 = if let Some(seed) = managed_execution.as_ref() {
         seed.normalized_profile_sha256.clone()
     } else {
-        request_digest("media_profile_v1", &body.profile)
-            .map_err(|()| Error::RustError("media profile could not be digested".into()))?
+        let artifact_sources = body
+            .source_inputs
+            .iter()
+            .zip(&resolved_sources)
+            .zip(&source_authorities)
+            .enumerate()
+            .map(|(ordinal, ((input, source), authority))| {
+                Ok(NativeArtifactSourceIdentityV2 {
+                    ordinal: u16::try_from(ordinal)
+                        .map_err(|_| Error::RustError("media source ordinal is invalid".into()))?,
+                    video_id: input.video_id.clone(),
+                    source_version: input.source_version,
+                    object_key: source.object_key.clone(),
+                    bytes: u64::try_from(source.bytes)
+                        .map_err(|_| Error::RustError("media source size is invalid".into()))?,
+                    checksum_sha256: source.checksum_sha256.clone().ok_or_else(|| {
+                        Error::RustError("media source checksum is unavailable".into())
+                    })?,
+                    content_type: source.content_type.clone(),
+                    authority_digest: authority.audit_digest().as_str().to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // V2 identity binds the profile payload and every ordered immutable
+        // source authority field. Repeated composition identities remain
+        // distinct because each occurrence carries its own dense ordinal.
+        native_artifact_digest(&body, &artifact_sources)
+            .map_err(|()| Error::RustError("media artifact could not be digested".into()))?
     };
     let job_id = new_id();
     let output_key = match storage_governance_runtime::deterministic_derivative_key_for_profile(
@@ -6547,7 +7342,7 @@ async fn media_job_create_response(
         &body.video_id,
         &body.profile,
         &normalized_profile_sha256,
-        &source_authority,
+        &source_authorities[0],
     ) {
         Ok(key) => key,
         Err(_) => {
@@ -6561,7 +7356,14 @@ async fn media_job_create_response(
     let response = MediaJobResponse::new(job_id.clone(), body.profile.clone(), executor.into());
     let response_json = serde_json::to_string(&response)
         .map_err(|_| Error::RustError("media response could not be serialized".into()))?;
-    let payload_json = serde_json::to_string(&body)
+    let mut persisted_body = body.clone();
+    if persisted_body.source_inputs.len() == 1 && persisted_body.profile != "composition_v1" {
+        // The immutable input table is authoritative. Omitting the redundant
+        // singleton field keeps the queued payload parseable by the released
+        // N-1 Worker throughout the expand/deploy window.
+        persisted_body.source_inputs.clear();
+    }
+    let payload_json = serde_json::to_string(&persisted_body)
         .map_err(|_| Error::RustError("media request could not be serialized".into()))?;
     let outbox_id = new_id();
     let outbox_payload = serde_json::json!({
@@ -6572,6 +7374,8 @@ async fn media_job_create_response(
         "source_version": body.source_version,
     })
     .to_string();
+    let outbox_payload_checksum = ChecksumSha256::digest_bytes(outbox_payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let scoped_job_idempotency_key = digest_identifier(
         "media_job_resource",
         &format!("{tenant_id}:{idempotency_key}:{job_id}"),
@@ -6586,8 +7390,9 @@ async fn media_job_create_response(
                 "INSERT INTO media_jobs(\
                    id, video_id, kind, state, idempotency_key, attempt, payload_json, \
                    created_at_ms, updated_at_ms, organization_id, selected_executor, \
-                   source_version, profile_version, output_object_key, cancel_requested, revision\
-                 ) VALUES (?1, ?2, ?3, 'queued', ?4, 0, ?5, ?6, ?6, ?7, ?8, ?9, ?10, ?11, 0, 0)",
+                   source_version, profile_version, output_object_key, cancel_requested, revision, \
+                   input_contract_version\
+                 ) VALUES (?1, ?2, ?3, 'queued', ?4, 0, ?5, ?6, ?6, ?7, ?8, ?9, ?10, ?11, 0, 0, 1)",
             )
             .bind(&[
                 JsValue::from_str(&job_id),
@@ -6621,9 +7426,10 @@ async fn media_job_create_response(
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision\
                  ) VALUES (?1, ?2, 'media_job', ?3, 'media.job.queued', ?4, ?5, \
-                           'pending', 0, ?6, ?6)",
+                           'pending', 0, ?6, ?6, 0, ?7, 1, ?8, 0)",
             )
             .bind(&[
                 JsValue::from_str(&outbox_id),
@@ -6632,6 +7438,8 @@ async fn media_job_create_response(
                 JsValue::from_str(&format!("media-job:{job_id}")),
                 JsValue::from_str(&outbox_payload),
                 JsValue::from_f64(now as f64),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(outbox_payload_checksum.as_str()),
             ])?,
     ];
     if let Some(seed) = managed_execution.as_ref() {
@@ -6667,6 +7475,33 @@ async fn media_job_create_response(
                 ])?,
         );
     }
+    for (ordinal, (input, source)) in body.source_inputs.iter().zip(&resolved_sources).enumerate() {
+        let checksum = source
+            .checksum_sha256
+            .as_deref()
+            .ok_or_else(|| Error::RustError("validated media source checksum is absent".into()))?;
+        statements.push(
+            database
+                .prepare(
+                    "INSERT INTO media_job_inputs_v1(\
+                       job_id,organization_id,ordinal,video_id,source_version,object_key,bytes,\
+                       checksum_sha256,content_type,created_at_ms) \
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                )
+                .bind(&[
+                    JsValue::from_str(&job_id),
+                    JsValue::from_str(&tenant_id),
+                    JsValue::from_f64(ordinal as f64),
+                    JsValue::from_str(&input.video_id),
+                    JsValue::from_f64(f64::from(input.source_version)),
+                    JsValue::from_str(&source.object_key),
+                    JsValue::from_f64(source.bytes as f64),
+                    JsValue::from_str(checksum),
+                    JsValue::from_str(&source.content_type),
+                    JsValue::from_f64(now as f64),
+                ])?,
+        );
+    }
     require_batch_success(
         execute_mutation_batch(
             &database,
@@ -6697,7 +7532,7 @@ async fn media_job_create_response(
                 job_id: &job_id,
                 output_key: &output_key,
                 source_version: body.source_version,
-                source: &source,
+                source,
             },
         )
         .await
@@ -6796,6 +7631,7 @@ async fn native_job_claim_response(
     }
 
     let now = current_time_ms()?;
+    reap_invalid_queued_native_job(&database, &tenant_id, now, &authority_fence).await?;
     reap_exhausted_native_jobs(&database, &tenant_id, now, &authority_fence).await?;
     for _ in 0..2 {
         let candidate = database
@@ -6805,12 +7641,8 @@ async fn native_job_claim_response(
                         m.bytes AS source_bytes, m.checksum_sha256 AS source_checksum_sha256, \
                         m.content_type AS source_content_type \
                  FROM media_jobs j \
-                 JOIN object_manifests m ON m.object_key = ( \
-                   SELECT m2.object_key FROM object_manifests m2 \
-                   WHERE m2.organization_id = j.organization_id AND m2.video_id = j.video_id \
-                     AND m2.object_version = j.source_version \
-                     AND m2.role IN ('source', 'import') AND m2.state = 'available' \
-                   ORDER BY CASE m2.role WHEN 'source' THEN 0 ELSE 1 END LIMIT 1) \
+                 JOIN media_job_current_inputs_v1 m ON m.job_id = j.id \
+                  AND m.organization_id = j.organization_id AND m.ordinal = 0 \
                  WHERE j.organization_id = ?1 AND j.selected_executor = 'native_gstreamer' \
                    AND json_extract(j.payload_json, '$.profile') IN ( \
                      'optimized_clip_v1','thumbnail_v1','spritesheet_v1','audio_extract_v1', \
@@ -6828,7 +7660,36 @@ async fn native_job_claim_response(
                    AND m.checksum_sha256 IS NOT NULL \
                    AND length(m.checksum_sha256) = 64 AND lower(m.checksum_sha256) = m.checksum_sha256 \
                    AND m.checksum_sha256 NOT GLOB '*[^0-9a-f]*' \
-                   AND m.content_type IN ('video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska') \
+                   AND m.content_type IN (\
+                     'video/mp4','video/quicktime','video/webm','video/x-matroska',\
+                     'audio/mpeg','audio/mp4','audio/wav','audio/webm','audio/ogg') \
+                   AND NOT EXISTS (SELECT 1 FROM media_job_current_inputs_v1 invalid \
+                     WHERE invalid.job_id = j.id AND invalid.organization_id = j.organization_id \
+                       AND (invalid.source_version <= 0 \
+                         OR invalid.bytes NOT BETWEEN 1 AND CASE \
+                           json_extract(j.payload_json, '$.profile') \
+                           WHEN 'probe_v1' THEN ?4 ELSE ?5 END \
+                         OR invalid.checksum_sha256 IS NULL \
+                         OR length(invalid.checksum_sha256) != 64 \
+                         OR lower(invalid.checksum_sha256) != invalid.checksum_sha256 \
+                         OR invalid.checksum_sha256 GLOB '*[^0-9a-f]*' \
+                         OR invalid.content_type NOT IN (\
+                           'video/mp4','video/quicktime','video/webm','video/x-matroska',\
+                           'audio/mpeg','audio/mp4','audio/wav','audio/webm','audio/ogg') \
+                         OR substr(invalid.object_key, 1, length('tenants/' || j.organization_id || \
+                           '/videos/' || invalid.video_id || '/')) != \
+                           'tenants/' || j.organization_id || '/videos/' || invalid.video_id || '/' \
+                         OR instr(invalid.object_key, '..') != 0 \
+                         OR instr(invalid.object_key, char(92)) != 0 \
+                         OR instr(invalid.object_key, '?') != 0 \
+                         OR instr(invalid.object_key, '#') != 0 \
+                         OR instr(invalid.object_key, '%') != 0)) \
+                   AND (SELECT COALESCE(SUM(inputs.bytes), 0) \
+                     FROM media_job_current_inputs_v1 inputs \
+                     WHERE inputs.job_id = j.id AND inputs.organization_id = j.organization_id) \
+                     <= CASE WHEN json_extract(j.payload_json, '$.profile') IN (\
+                       'distribution_master_v1','remux_repair_v1',\
+                       'composition_v1','normalize_v1') THEN ?6 ELSE ?7 END \
                    AND substr(m.object_key, 1, length('tenants/' || j.organization_id || \
                      '/videos/' || j.video_id || '/')) = \
                      'tenants/' || j.organization_id || '/videos/' || j.video_id || '/' \
@@ -6845,6 +7706,24 @@ async fn native_job_claim_response(
                      json_extract(j.payload_json, '$.profile') || '/') + 64 \
                    AND lower(substr(j.output_object_key, -64)) = substr(j.output_object_key, -64) \
                    AND substr(j.output_object_key, -64) NOT GLOB '*[^0-9a-f]*' \
+                   AND j.input_contract_version = 1 \
+                   AND (SELECT COUNT(*) FROM media_job_current_inputs_v1 inputs \
+                         WHERE inputs.job_id = j.id AND inputs.organization_id = j.organization_id) = \
+                       (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                         WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) \
+                   AND (SELECT MIN(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                         WHERE inputs.job_id = j.id AND inputs.organization_id = j.organization_id) = 0 \
+                   AND (SELECT MAX(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                         WHERE inputs.job_id = j.id AND inputs.organization_id = j.organization_id) = \
+                       (SELECT COUNT(*) - 1 FROM media_job_inputs_v1 bound \
+                         WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) \
+                   AND CASE json_extract(j.payload_json, '$.profile') \
+                     WHEN 'composition_v1' THEN \
+                       (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                         WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) \
+                         BETWEEN 1 AND 64 \
+                     ELSE (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                         WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) = 1 END \
                  ORDER BY j.created_at_ms, j.id LIMIT 1",
             )
             .bind(&[
@@ -6853,12 +7732,29 @@ async fn native_job_claim_response(
                 JsValue::from_f64(now as f64),
                 JsValue::from_f64(MULTIPART_MAX_BYTES as f64),
                 JsValue::from_f64(MAX_SINGLE_UPLOAD_BYTES as f64),
+                JsValue::from_f64(NATIVE_HEAVY_MAX_SOURCE_BYTES as f64),
+                JsValue::from_f64(NATIVE_STANDARD_MAX_SOURCE_BYTES as f64),
             ])?
             .first::<NativeJobCandidateRow>(None)
             .await?;
         let Some(candidate) = candidate else {
             return Ok(Response::empty()?.with_status(204));
         };
+        let loaded_sources = load_worker_sources(&database, &tenant_id, &candidate.id).await?;
+        let Ok(sources) = validated_worker_sources(&tenant_id, &candidate.profile, loaded_sources)
+        else {
+            // Current authority changed after candidate selection. Re-query
+            // instead of leasing a partial/stale source set or blocking the
+            // queue behind it.
+            continue;
+        };
+        if sources.first().is_none_or(|source| {
+            source.bytes != candidate.source_bytes
+                || source.checksum_sha256 != candidate.source_checksum_sha256
+                || source.content_type != candidate.source_content_type
+        }) {
+            continue;
+        }
         let max_attempts = native_profile_max_attempts(&candidate.profile);
         let next_attempt = candidate
             .attempt
@@ -6898,14 +7794,25 @@ async fn native_job_claim_response(
                 .map_err(|_| Error::RustError("worker revision is invalid".into()))?,
             lease_expires_at_ms: u64::try_from(lease_expires_at_ms)
                 .map_err(|_| Error::RustError("worker lease expiry is invalid".into()))?,
-            sources: vec![WorkerSourceDescriptor {
-                ordinal: 0,
-                path: format!("/api/v1/worker/media-jobs/{}/sources/0", candidate.id),
-                bytes: u64::try_from(candidate.source_bytes)
-                    .map_err(|_| Error::RustError("worker source size is invalid".into()))?,
-                checksum_sha256: candidate.source_checksum_sha256.clone(),
-                content_type: candidate.source_content_type.clone(),
-            }],
+            sources: sources
+                .iter()
+                .map(|source| {
+                    Ok(WorkerSourceDescriptor {
+                        ordinal: u16::try_from(source.ordinal).map_err(|_| {
+                            Error::RustError("worker source ordinal is invalid".into())
+                        })?,
+                        path: format!(
+                            "/api/v1/worker/media-jobs/{}/sources/{}",
+                            candidate.id, source.ordinal
+                        ),
+                        bytes: u64::try_from(source.bytes).map_err(|_| {
+                            Error::RustError("worker source size is invalid".into())
+                        })?,
+                        checksum_sha256: source.checksum_sha256.clone(),
+                        content_type: source.content_type.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
             outputs: vec![WorkerOutputDescriptor {
                 ordinal: 0,
                 role: output_role.into(),
@@ -6930,6 +7837,8 @@ async fn native_job_claim_response(
             "state": "leased",
         })
         .to_string();
+        let outbox_payload_checksum = ChecksumSha256::digest_bytes(outbox_payload.as_bytes());
+        let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
         let reservation_id = new_id();
         let statements = vec![
             worker_command_reservation(
@@ -6951,6 +7860,30 @@ async fn native_job_claim_response(
                        AND selected_executor = 'native_gstreamer' AND cancel_requested = 0 \
                        AND attempt < ?8 AND (state = 'queued' OR (state IN ('leased', 'running') \
                          AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms <= ?3)) \
+                       AND input_contract_version = 1 \
+                       AND (SELECT COUNT(*) FROM media_job_current_inputs_v1 inputs \
+                             WHERE inputs.job_id = media_jobs.id \
+                               AND inputs.organization_id = media_jobs.organization_id) = \
+                           (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                             WHERE bound.job_id = media_jobs.id \
+                               AND bound.organization_id = media_jobs.organization_id) \
+                       AND (SELECT MIN(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                             WHERE inputs.job_id = media_jobs.id \
+                               AND inputs.organization_id = media_jobs.organization_id) = 0 \
+                       AND (SELECT MAX(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                             WHERE inputs.job_id = media_jobs.id \
+                               AND inputs.organization_id = media_jobs.organization_id) = \
+                           (SELECT COUNT(*) - 1 FROM media_job_inputs_v1 bound \
+                             WHERE bound.job_id = media_jobs.id \
+                               AND bound.organization_id = media_jobs.organization_id) \
+                       AND CASE json_extract(payload_json, '$.profile') \
+                         WHEN 'composition_v1' THEN \
+                           (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                             WHERE bound.job_id = media_jobs.id \
+                               AND bound.organization_id = media_jobs.organization_id) BETWEEN 1 AND 64 \
+                         ELSE (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                             WHERE bound.job_id = media_jobs.id \
+                               AND bound.organization_id = media_jobs.organization_id) = 1 END \
                        AND (?9 = -1 OR EXISTS (SELECT 1 FROM authority_state a \
                          WHERE a.singleton = 1 AND a.epoch = ?9 AND a.authority = 'd1' \
                            AND a.phase IN ('d1_authoritative', 'finalized'))) \
@@ -7043,8 +7976,11 @@ async fn native_job_claim_response(
             database
                 .prepare(
                     "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
-                       event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
+                       event_type, deduplication_key, payload_json, state, attempt, available_at_ms, \
+                       created_at_ms, event_sequence, event_fingerprint, payload_schema_version, \
+                       payload_checksum, revision) \
                      SELECT ?1, ?2, 'media_job', ?3, 'media.job.leased', ?4, ?5, 'pending', 0, ?6, ?6 \
+                       , 0, ?13, 1, ?14, 0 \
                      FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
                        AND j.state = 'leased' AND j.attempt = ?7 AND j.worker_id = ?8 \
                        AND j.lease_token_digest = ?9 \
@@ -7067,6 +8003,8 @@ async fn native_job_claim_response(
                     JsValue::from_str(&idempotency_key),
                     JsValue::from_str(&digest),
                     JsValue::from_str(&reservation_id),
+                    JsValue::from_str(outbox_event_fingerprint.as_str()),
+                    JsValue::from_str(outbox_payload_checksum.as_str()),
                 ])?,
             worker_command_reservation_cleanup(
                 &database,
@@ -7154,9 +8092,10 @@ async fn native_job_source_response(
     request: &Request,
     actor: &AuthenticatedActor,
     job_id: &str,
-    head_only: bool,
+    ordinal: u16,
     request_id: &str,
 ) -> Result<Response> {
+    let head_only = request.method() == Method::Head;
     if !native_worker_enabled(config) {
         return failure_response(
             native_worker_unavailable_failure(),
@@ -7185,11 +8124,23 @@ async fn native_job_source_response(
     if job.cancel_requested != 0 {
         return failure_response(worker_cancelled_failure(), request_id, config.production());
     }
-    let source_version = u32::try_from(job.source_version)
-        .map_err(|_| Error::RustError("worker source version is invalid".into()))?;
-    let Some(source) =
-        load_source_object(&database, &tenant_id, &job.video_id, source_version).await?
-    else {
+    let loaded_sources = load_worker_sources(&database, &tenant_id, job_id).await?;
+    let sources = match validated_worker_sources(&tenant_id, &job.profile, loaded_sources) {
+        Ok(sources) => sources,
+        Err(_) => {
+            return failure_response(
+                ApiFailure::new(
+                    409,
+                    "source_not_ready",
+                    "The current source authority is incomplete.",
+                    true,
+                ),
+                request_id,
+                config.production(),
+            );
+        }
+    };
+    let Some(source) = sources.get(usize::from(ordinal)) else {
         return failure_response(
             ApiFailure::new(
                 409,
@@ -7201,18 +8152,21 @@ async fn native_job_source_response(
             config.production(),
         );
     };
+    if ordinal == 0
+        && (source.video_id != job.video_id || source.source_version != job.source_version)
+    {
+        return Err(Error::RustError(
+            "worker primary source authority is inconsistent".into(),
+        ));
+    }
     let source_bytes = u64::try_from(source.bytes)
         .ok()
         .filter(|bytes| (1..=MAX_SINGLE_UPLOAD_BYTES).contains(bytes))
         .ok_or_else(|| Error::RustError("worker source size is invalid".into()))?;
-    let checksum_text = source
-        .checksum_sha256
-        .as_deref()
-        .filter(|checksum| contracts::valid_sha256(checksum))
-        .ok_or_else(|| Error::RustError("worker source checksum is invalid".into()))?;
+    let checksum_text = source.checksum_sha256.as_str();
     let checksum = parse_sha256(checksum_text)
         .ok_or_else(|| Error::RustError("worker source checksum is invalid".into()))?;
-    if !supported_source_content_type(&source.content_type) {
+    if !supported_native_source_content_type(&source.content_type) {
         return failure_response(
             ApiFailure::new(
                 409,
@@ -7224,7 +8178,7 @@ async fn native_job_source_response(
             config.production(),
         );
     }
-    if !valid_private_object_key(&source.object_key, &tenant_id, &job.video_id) {
+    if !valid_private_object_key(&source.object_key, &tenant_id, &source.video_id) {
         return failure_response(
             ApiFailure::new(
                 409,
@@ -7250,6 +8204,27 @@ async fn native_job_source_response(
     else {
         return failure_response(not_found_failure(), request_id, config.production());
     };
+    if source_authority.object_id().as_str() != source.object_key
+        || source_authority.role() != GovernedObjectRole::Source
+        || source_authority.state() != GovernedObjectState::Active
+        || source_authority.malware() != MalwareDisposition::Clean
+        || source_authority.immutable_revision()
+            != u64::try_from(source.source_version)
+                .map_err(|_| Error::RustError("worker source version is invalid".into()))?
+        || source_authority.size().get() != source_bytes
+        || source_authority.checksum().as_str() != checksum_text
+    {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "source_not_ready",
+                "The current source authority changed.",
+                true,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
     let governance =
         storage_governance_runtime::governance_service(env, &storage_origin(config))
             .map_err(|_| Error::RustError("storage governance configuration is invalid".into()))?;
@@ -7825,6 +8800,8 @@ async fn native_job_heartbeat_response(
         "state": "running",
     })
     .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let reservation_id = new_id();
     let statements = vec![
         worker_command_reservation(
@@ -7890,8 +8867,11 @@ async fn native_job_heartbeat_response(
         database
             .prepare(
                 "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
-                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
-                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.heartbeat', ?4, ?5, 'pending', 0, ?6, ?6 \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, \
+                   created_at_ms, event_sequence, event_fingerprint, payload_schema_version, \
+                   payload_checksum, revision) \
+                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.heartbeat', ?4, ?5, 'pending', 0, ?6, ?6, \
+                        0, ?13, 1, ?14, 0 \
                  FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 AND j.revision = ?7 \
                    AND j.worker_id = ?8 AND j.lease_token_digest = ?9 \
                    AND EXISTS (SELECT 1 FROM command_idempotency c \
@@ -7913,6 +8893,8 @@ async fn native_job_heartbeat_response(
                 JsValue::from_str(&idempotency_key),
                 JsValue::from_str(&digest),
                 JsValue::from_str(&reservation_id),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
             ])?,
         worker_command_reservation_cleanup(
             &database,
@@ -8097,6 +9079,8 @@ async fn native_job_progress_response(
         "progress_basis_points": progress,
     })
     .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let reservation_id = new_id();
     let statements = vec![
         worker_command_reservation(
@@ -8166,8 +9150,11 @@ async fn native_job_progress_response(
         database
             .prepare(
                 "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
-                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
-                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.progressed', ?4, ?5, 'pending', 0, ?6, ?6 \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, \
+                   created_at_ms, event_sequence, event_fingerprint, payload_schema_version, \
+                   payload_checksum, revision) \
+                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.progressed', ?4, ?5, 'pending', 0, ?6, ?6, \
+                        0, ?14, 1, ?15, 0 \
                  FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 AND j.revision = ?7 \
                    AND j.progress_basis_points = ?8 AND j.worker_id = ?9 AND j.lease_token_digest = ?10 \
                    AND EXISTS (SELECT 1 FROM command_idempotency c \
@@ -8190,6 +9177,8 @@ async fn native_job_progress_response(
                 JsValue::from_str(&idempotency_key),
                 JsValue::from_str(&digest),
                 JsValue::from_str(&reservation_id),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
             ])?,
         worker_command_reservation_cleanup(
             &database,
@@ -8724,6 +9713,8 @@ async fn native_job_complete_response(
         "state": "succeeded",
     })
     .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let reservation_id = new_id();
     let execution_manifest = execution_seed.as_ref().map(|seed| {
         let manifest_json = serde_json::json!({
@@ -8976,8 +9967,11 @@ async fn native_job_complete_response(
         database
             .prepare(
                 "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
-                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
-                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.succeeded', ?4, ?5, 'pending', 0, ?6, ?6 \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, \
+                   created_at_ms, event_sequence, event_fingerprint, payload_schema_version, \
+                   payload_checksum, revision) \
+                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.succeeded', ?4, ?5, 'pending', 0, ?6, ?6, \
+                        0, ?14, 1, ?15, 0 \
                  FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
                    AND j.state = 'succeeded' AND j.revision = ?7 AND j.worker_id = ?8 \
                    AND j.lease_token_digest = ?9 AND j.output_object_key = ?10 \
@@ -9001,6 +9995,8 @@ async fn native_job_complete_response(
                 JsValue::from_str(&idempotency_key),
                 JsValue::from_str(&digest),
                 JsValue::from_str(&reservation_id),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
             ])?,
         worker_command_reservation_cleanup(
             &database,
@@ -9436,6 +10432,8 @@ async fn native_job_fail_response(
         "retry_scheduled": retry_scheduled,
     })
     .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let event_type = match target_state {
         "queued" => "media.job.retry_scheduled",
         "cancelled" => "media.job.cancelled",
@@ -9563,8 +10561,11 @@ async fn native_job_fail_response(
         database
             .prepare(
                 "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
-                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
-                 SELECT ?1, ?2, 'media_job', ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7 \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, \
+                   created_at_ms, event_sequence, event_fingerprint, payload_schema_version, \
+                   payload_checksum, revision) \
+                 SELECT ?1, ?2, 'media_job', ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7, \
+                        0, ?13, 1, ?14, 0 \
                  FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
                    AND j.state = ?8 AND j.revision = ?9 \
                    AND EXISTS (SELECT 1 FROM command_idempotency c \
@@ -9586,6 +10587,8 @@ async fn native_job_fail_response(
                 JsValue::from_str(&idempotency_key),
                 JsValue::from_str(&digest),
                 JsValue::from_str(&reservation_id),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
             ])?,
         worker_command_reservation_cleanup(
             &database,
@@ -9816,6 +10819,8 @@ async fn media_job_cancel_response(
         "cancel_requested": true,
     })
     .to_string();
+    let outbox_payload_checksum = ChecksumSha256::digest_bytes(outbox_payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let statements = vec![
         database
             .prepare(
@@ -9836,9 +10841,10 @@ async fn media_job_cancel_response(
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision\
                  ) VALUES (?1, ?2, 'media_job', ?3, 'media.job.cancel_requested', ?4, ?5, \
-                           'pending', 0, ?6, ?6) \
+                           'pending', 0, ?6, ?6, 0, ?7, 1, ?8, 0) \
                  ON CONFLICT(deduplication_key) DO NOTHING",
             )
             .bind(&[
@@ -9848,6 +10854,8 @@ async fn media_job_cancel_response(
                 JsValue::from_str(&format!("media-cancel:{job_id}")),
                 JsValue::from_str(&outbox_payload),
                 JsValue::from_f64(now as f64),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(outbox_payload_checksum.as_str()),
             ])?,
     ];
     require_batch_success(
@@ -10074,6 +11082,8 @@ async fn complete_fake_preview(
         "executor": "local_fake_native_gstreamer",
     })
     .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let statements = vec![
         database
             .prepare(
@@ -10207,9 +11217,10 @@ async fn complete_fake_preview(
             .prepare(
                 "INSERT INTO outbox_events(\
                    id, organization_id, aggregate_type, aggregate_id, event_type, \
-                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms\
+                   deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms, \
+                   event_sequence, event_fingerprint, payload_schema_version, payload_checksum, revision\
                  ) SELECT ?1, ?2, 'media_job', ?3, 'media.job.succeeded', ?4, ?5, \
-                           'pending', 0, ?6, ?6 FROM media_jobs \
+                           'pending', 0, ?6, ?6, 0, ?8, 1, ?9, 0 FROM media_jobs \
                    WHERE id = ?3 AND organization_id = ?2 AND state = 'succeeded' \
                      AND lease_token_digest = ?7 \
                  ON CONFLICT(deduplication_key) DO NOTHING",
@@ -10222,6 +11233,8 @@ async fn complete_fake_preview(
                 JsValue::from_str(&payload),
                 JsValue::from_f64(now as f64),
                 JsValue::from_str(&completion_lease),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
             ])?,
     ];
     require_batch_success(
@@ -10284,6 +11297,27 @@ async fn command_replay(
     command_type: &str,
     digest: &str,
 ) -> Result<CommandReplay> {
+    command_replay_accepting(
+        database,
+        authority_fence,
+        tenant_id,
+        key,
+        command_type,
+        digest,
+        None,
+    )
+    .await
+}
+
+async fn command_replay_accepting(
+    database: &D1Database,
+    authority_fence: &MutationAuthorityFence,
+    tenant_id: &str,
+    key: &str,
+    command_type: &str,
+    canonical_digest: &str,
+    equivalent_digest: Option<&str>,
+) -> Result<CommandReplay> {
     let row = database
         .prepare(
             "SELECT command_type, request_digest, response_status, response_json, expires_at_ms \
@@ -10323,7 +11357,9 @@ async fn command_replay(
         )?;
         return Ok(CommandReplay::New);
     }
-    if row.command_type != command_type || row.request_digest != digest {
+    let digest_matches = row.request_digest == canonical_digest
+        || equivalent_digest.is_some_and(|digest| row.request_digest == digest);
+    if row.command_type != command_type || !digest_matches {
         return Ok(CommandReplay::Conflict);
     }
     match (row.response_status, row.response_json) {
@@ -10429,6 +11465,88 @@ async fn load_source_object(
         ])?
         .first::<SourceObjectRow>(None)
         .await
+}
+
+async fn load_worker_sources(
+    database: &D1Database,
+    tenant_id: &str,
+    job_id: &str,
+) -> Result<Vec<WorkerSourceRow>> {
+    let result = database
+        .prepare(
+            "SELECT ordinal,video_id,source_version,object_key,bytes,checksum_sha256,content_type \
+             FROM media_job_current_inputs_v1 WHERE organization_id=?1 AND job_id=?2 \
+             ORDER BY ordinal LIMIT 65",
+        )
+        .bind(&[JsValue::from_str(tenant_id), JsValue::from_str(job_id)])?
+        .all()
+        .await?;
+    if !result.success() {
+        return Err(Error::RustError(
+            "worker source authority query failed".into(),
+        ));
+    }
+    result.results::<WorkerSourceRow>()
+}
+
+fn validated_worker_sources(
+    tenant_id: &str,
+    profile: &str,
+    rows: Vec<WorkerSourceRow>,
+) -> Result<Vec<WorkerSourceRow>> {
+    let count_valid = match profile {
+        "segment_mux_v1" => (2..=64).contains(&rows.len()),
+        "composition_v1" => (1..=64).contains(&rows.len()),
+        _ => rows.len() == 1,
+    };
+    if !count_valid {
+        return Err(Error::RustError(
+            "worker source cardinality is invalid".into(),
+        ));
+    }
+    let per_source_max = if profile == "probe_v1" {
+        MULTIPART_MAX_BYTES
+    } else {
+        MAX_SINGLE_UPLOAD_BYTES
+    };
+    let mut total_bytes = 0_u64;
+    let mut source_identities = HashSet::with_capacity(rows.len());
+    for (ordinal, row) in rows.iter().enumerate() {
+        let bytes = u64::try_from(row.bytes)
+            .ok()
+            .filter(|bytes| (1..=per_source_max).contains(bytes))
+            .ok_or_else(|| Error::RustError("worker source size is invalid".into()))?;
+        if usize::try_from(row.ordinal).ok() != Some(ordinal)
+            || row.source_version <= 0
+            || !valid_uuid(&row.video_id)
+            || !contracts::valid_sha256(&row.checksum_sha256)
+            || !supported_native_source_content_type(&row.content_type)
+            || !valid_private_object_key(&row.object_key, tenant_id, &row.video_id)
+        {
+            return Err(Error::RustError(
+                "worker source authority is invalid".into(),
+            ));
+        }
+        if profile != "composition_v1"
+            && !source_identities.insert((row.video_id.as_str(), row.source_version))
+        {
+            return Err(Error::RustError(
+                "worker source identity is duplicated".into(),
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| Error::RustError("worker source size overflowed".into()))?;
+    }
+    let max_total = native_sandbox(profile)
+        .map(|sandbox| sandbox.max_source_bytes)
+        .ok_or_else(|| Error::RustError("worker profile sandbox is invalid".into()))?;
+    if total_bytes > max_total {
+        return Err(Error::RustError(
+            "worker source set exceeds its sandbox".into(),
+        ));
+    }
+    Ok(rows)
 }
 
 async fn active_r2_integration(
@@ -10663,6 +11781,194 @@ fn native_probe_insert_statement(
         ])
 }
 
+async fn reap_invalid_queued_native_job(
+    database: &D1Database,
+    tenant_id: &str,
+    now: i64,
+    authority_fence: &MutationAuthorityFence,
+) -> Result<()> {
+    // The current-input view deliberately removes a source as soon as its
+    // video, immutable manifest, or storage-governance authority is revoked.
+    // Convert that fail-closed disappearance into a durable terminal result;
+    // otherwise an attempt-zero job can remain queued but unclaimable forever.
+    let invalid = database
+        .prepare(
+            "SELECT j.id, j.video_id, j.state, j.revision, j.attempt, \
+                    json_extract(j.payload_json, '$.profile') AS profile, j.source_version, \
+                    j.output_object_key, j.worker_id, j.lease_token_digest, \
+                    j.lease_expires_at_ms, j.progress_basis_points, j.cancel_requested \
+             FROM media_jobs j \
+             WHERE j.organization_id = ?1 AND j.selected_executor = 'native_gstreamer' \
+               AND j.state = 'queued' AND NOT (\
+                 COALESCE(j.input_contract_version, 0) = 1 \
+                 AND (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                       WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) \
+                     BETWEEN 1 AND 64 \
+                 AND (SELECT COUNT(*) FROM media_job_current_inputs_v1 inputs \
+                       WHERE inputs.job_id = j.id AND inputs.organization_id = j.organization_id) = \
+                     (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                       WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) \
+                 AND (SELECT MIN(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                       WHERE inputs.job_id = j.id AND inputs.organization_id = j.organization_id) = 0 \
+                 AND (SELECT MAX(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                       WHERE inputs.job_id = j.id AND inputs.organization_id = j.organization_id) = \
+                     (SELECT COUNT(*) - 1 FROM media_job_inputs_v1 bound \
+                       WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) \
+                 AND CASE json_extract(j.payload_json, '$.profile') \
+                   WHEN 'composition_v1' THEN \
+                     (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                       WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) \
+                       BETWEEN 1 AND 64 \
+                   ELSE (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                       WHERE bound.job_id = j.id AND bound.organization_id = j.organization_id) = 1 END) \
+             ORDER BY j.updated_at_ms, j.id LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(tenant_id)])?
+        .first::<WorkerJobRow>(None)
+        .await?;
+    let Some(invalid) = invalid else {
+        return Ok(());
+    };
+    let next_revision = invalid
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| Error::RustError("invalid-input job revision overflowed".into()))?;
+    let outbox_id = new_id();
+    let payload = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "job_id": invalid.id,
+        "attempt": invalid.attempt,
+        "state": "failed",
+        "error_class": "input_authority_missing",
+    })
+    .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let event_fingerprint = frame_domain::business_initial_event_fingerprint();
+    let statements = vec![
+        database
+            .prepare(
+                "UPDATE media_jobs SET state = 'failed', \
+                   error_code = 'media_input_authority_missing', \
+                   error_class = 'input_authority_missing', lease_expires_at_ms = NULL, \
+                   worker_id = NULL, lease_token_digest = NULL, heartbeat_at_ms = NULL, \
+                   updated_at_ms = ?4, revision = revision + 1 \
+                 WHERE id = ?1 AND organization_id = ?2 AND revision = ?3 \
+                   AND selected_executor = 'native_gstreamer' AND state = 'queued' \
+                   AND NOT (COALESCE(input_contract_version, 0) = 1 \
+                     AND (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                           WHERE bound.job_id = media_jobs.id \
+                             AND bound.organization_id = media_jobs.organization_id) BETWEEN 1 AND 64 \
+                     AND (SELECT COUNT(*) FROM media_job_current_inputs_v1 inputs \
+                           WHERE inputs.job_id = media_jobs.id \
+                             AND inputs.organization_id = media_jobs.organization_id) = \
+                         (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                           WHERE bound.job_id = media_jobs.id \
+                             AND bound.organization_id = media_jobs.organization_id) \
+                     AND (SELECT MIN(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                           WHERE inputs.job_id = media_jobs.id \
+                             AND inputs.organization_id = media_jobs.organization_id) = 0 \
+                     AND (SELECT MAX(inputs.ordinal) FROM media_job_current_inputs_v1 inputs \
+                           WHERE inputs.job_id = media_jobs.id \
+                             AND inputs.organization_id = media_jobs.organization_id) = \
+                         (SELECT COUNT(*) - 1 FROM media_job_inputs_v1 bound \
+                           WHERE bound.job_id = media_jobs.id \
+                             AND bound.organization_id = media_jobs.organization_id) \
+                     AND CASE json_extract(payload_json, '$.profile') \
+                       WHEN 'composition_v1' THEN \
+                         (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                           WHERE bound.job_id = media_jobs.id \
+                             AND bound.organization_id = media_jobs.organization_id) BETWEEN 1 AND 64 \
+                       ELSE (SELECT COUNT(*) FROM media_job_inputs_v1 bound \
+                           WHERE bound.job_id = media_jobs.id \
+                             AND bound.organization_id = media_jobs.organization_id) = 1 END) \
+                   AND (?5 = -1 OR EXISTS (SELECT 1 FROM authority_state a \
+                     WHERE a.singleton = 1 AND a.epoch = ?5 AND a.authority = 'd1' \
+                       AND a.phase IN ('d1_authoritative', 'finalized')))",
+            )
+            .bind(&[
+                JsValue::from_str(&invalid.id),
+                JsValue::from_str(tenant_id),
+                JsValue::from_f64(invalid.revision as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(authority_fence.sql_epoch as f64),
+            ])?,
+        database
+            .prepare(
+                "UPDATE media_job_execution_v1 SET state = 'failed', \
+                   failure_class = 'invalid_input', lease_token_digest = NULL, \
+                   lease_expires_at_ms = NULL, updated_at_ms = ?4 \
+                 WHERE job_id = ?1 AND organization_id = ?2 \
+                   AND selected_executor = 'native_gstreamer' \
+                   AND state NOT IN ('succeeded', 'failed', 'cancelled', 'dead_letter') \
+                   AND EXISTS (SELECT 1 FROM media_jobs j WHERE j.id = ?1 \
+                     AND j.organization_id = ?2 AND j.state = 'failed' \
+                     AND j.revision = ?3)",
+            )
+            .bind(&[
+                JsValue::from_str(&invalid.id),
+                JsValue::from_str(tenant_id),
+                JsValue::from_f64(next_revision as f64),
+                JsValue::from_f64(now as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO media_job_dead_letters(\
+                   job_id, attempt, error_class, diagnostic_code, created_at_ms) \
+                 SELECT ?1, ?3, 'input_authority_missing', \
+                        'native_input_authority_revoked', ?4 FROM media_jobs j \
+                 WHERE ?3 > 0 AND j.id = ?1 AND j.organization_id = ?2 \
+                   AND j.state = 'failed' AND j.revision = ?5 \
+                 ON CONFLICT(job_id) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&invalid.id),
+                JsValue::from_str(tenant_id),
+                JsValue::from_f64(invalid.attempt as f64),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(next_revision as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
+                   event_type, deduplication_key, payload_json, state, attempt, \
+                   available_at_ms, created_at_ms, event_sequence, event_fingerprint, \
+                   payload_schema_version, payload_checksum, revision) \
+                 SELECT ?1, ?2, 'media_job', ?3, 'media.job.failed', ?4, ?5, \
+                        'pending', 0, ?6, ?6, 0, ?7, 1, ?8, 0 FROM media_jobs j \
+                 WHERE j.id = ?3 AND j.organization_id = ?2 \
+                   AND j.state = 'failed' AND j.revision = ?9 \
+                 ON CONFLICT(deduplication_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&outbox_id),
+                JsValue::from_str(tenant_id),
+                JsValue::from_str(&invalid.id),
+                JsValue::from_str(&format!(
+                    "media-input-invalid:{}:{}",
+                    invalid.id, invalid.revision
+                )),
+                JsValue::from_str(&payload),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
+                JsValue::from_f64(next_revision as f64),
+            ])?,
+    ];
+    require_batch_success(
+        execute_mutation_batch(
+            database,
+            authority_fence,
+            &format!(
+                "native-reap-invalid-input:{}:{}",
+                invalid.id, invalid.revision
+            ),
+            now,
+            statements,
+        )
+        .await?,
+    )
+}
+
 async fn reap_exhausted_native_jobs(
     database: &D1Database,
     tenant_id: &str,
@@ -10712,6 +12018,8 @@ async fn reap_exhausted_native_jobs(
         "error_class": "lease_expired",
     })
     .to_string();
+    let payload_checksum = ChecksumSha256::digest_bytes(payload.as_bytes());
+    let outbox_event_fingerprint = frame_domain::business_initial_event_fingerprint();
     let statements = vec![
         database
             .prepare(
@@ -10769,8 +12077,11 @@ async fn reap_exhausted_native_jobs(
         database
             .prepare(
                 "INSERT INTO outbox_events(id, organization_id, aggregate_type, aggregate_id, \
-                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, created_at_ms) \
-                 SELECT ?1, ?2, 'media_job', ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7 \
+                   event_type, deduplication_key, payload_json, state, attempt, available_at_ms, \
+                   created_at_ms, event_sequence, event_fingerprint, payload_schema_version, \
+                   payload_checksum, revision) \
+                 SELECT ?1, ?2, 'media_job', ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7, \
+                        0, ?10, 1, ?11, 0 \
                  FROM media_jobs j WHERE j.id = ?3 AND j.organization_id = ?2 \
                    AND j.state = ?8 AND j.revision = ?9 ON CONFLICT(deduplication_key) DO NOTHING",
             )
@@ -10788,6 +12099,8 @@ async fn reap_exhausted_native_jobs(
                 JsValue::from_f64(now as f64),
                 JsValue::from_str(target_state),
                 JsValue::from_f64(next_revision as f64),
+                JsValue::from_str(outbox_event_fingerprint.as_str()),
+                JsValue::from_str(payload_checksum.as_str()),
             ])?,
     ];
     require_batch_success(
@@ -10900,6 +12213,14 @@ fn supported_source_content_type(content_type: &str) -> bool {
         content_type,
         "video/mp4" | "video/quicktime" | "video/webm" | "video/x-matroska"
     )
+}
+
+fn supported_native_source_content_type(content_type: &str) -> bool {
+    supported_source_content_type(content_type)
+        || matches!(
+            content_type,
+            "audio/mpeg" | "audio/mp4" | "audio/wav" | "audio/webm" | "audio/ogg"
+        )
 }
 
 fn valid_private_object_key(key: &str, tenant_id: &str, video_id: &str) -> bool {
@@ -12772,7 +14093,12 @@ const fn browser_web_failure(
     invalid_code: &'static str,
 ) -> ApiFailure {
     match failure {
-        browser_web_runtime::BrowserWebFailure::Unauthenticated => unauthenticated_failure(),
+        browser_web_runtime::BrowserWebFailure::Unauthenticated => ApiFailure::new(
+            401,
+            "unauthenticated",
+            "Valid browser authentication is required.",
+            false,
+        ),
         browser_web_runtime::BrowserWebFailure::Forbidden => {
             ApiFailure::new(403, "forbidden", "The browser request was rejected.", false)
         }
@@ -12785,6 +14111,10 @@ const fn browser_web_failure(
             "The workspace changed before the request completed.",
             false,
         ),
+        browser_web_runtime::BrowserWebFailure::RateLimited => {
+            ApiFailure::new(429, "rate_limited", "The request rate is too high.", true)
+                .with_retry_after_seconds(compatibility_rate_limit::RETRY_AFTER_SECONDS)
+        }
         browser_web_runtime::BrowserWebFailure::NotFound => not_found_failure(),
         browser_web_runtime::BrowserWebFailure::Unavailable => ApiFailure::new(
             503,
@@ -12793,6 +14123,57 @@ const fn browser_web_failure(
             true,
         ),
     }
+}
+
+fn browser_auth_page_failure_response(
+    action: worker_auth_runtime::BrowserAuthStart,
+    failure: browser_web_runtime::BrowserWebFailure,
+) -> Result<Response> {
+    browser_auth_failure_redirect(browser_auth_page_failure_location(action, failure))
+}
+
+const fn browser_auth_page_failure_location(
+    action: worker_auth_runtime::BrowserAuthStart,
+    failure: browser_web_runtime::BrowserWebFailure,
+) -> &'static str {
+    match (action, failure) {
+        (
+            worker_auth_runtime::BrowserAuthStart::Login,
+            browser_web_runtime::BrowserWebFailure::Invalid,
+        ) => "/login?auth_error=invalid",
+        (worker_auth_runtime::BrowserAuthStart::Login, _) => "/login?auth_error=failed",
+        (
+            worker_auth_runtime::BrowserAuthStart::Signup,
+            browser_web_runtime::BrowserWebFailure::Invalid,
+        ) => "/signup?auth_error=invalid",
+        (worker_auth_runtime::BrowserAuthStart::Signup, _) => "/signup?auth_error=failed",
+        (
+            worker_auth_runtime::BrowserAuthStart::Recovery,
+            browser_web_runtime::BrowserWebFailure::Invalid,
+        ) => "/recovery?auth_error=invalid",
+        (worker_auth_runtime::BrowserAuthStart::Recovery, _) => "/recovery?auth_error=failed",
+    }
+}
+
+fn browser_auth_verify_failure_response(
+    failure: browser_web_runtime::BrowserWebFailure,
+) -> Result<Response> {
+    browser_auth_failure_redirect(browser_auth_verify_failure_location(failure))
+}
+
+const fn browser_auth_verify_failure_location(
+    failure: browser_web_runtime::BrowserWebFailure,
+) -> &'static str {
+    match failure {
+        browser_web_runtime::BrowserWebFailure::Invalid => "/verify?auth_error=invalid",
+        _ => "/verify?auth_error=failed",
+    }
+}
+
+fn browser_auth_failure_redirect(location: &'static str) -> Result<Response> {
+    let mut response = Response::empty()?.with_status(303);
+    response.headers_mut().set("location", location)?;
+    Ok(response)
 }
 
 const fn unauthenticated_failure() -> ApiFailure {
@@ -12824,6 +14205,11 @@ fn failure_response(failure: ApiFailure, request_id: &str, production: bool) -> 
         response
             .headers_mut()
             .set("www-authenticate", "Bearer realm=\"frame\"")?;
+    }
+    if let Some(seconds) = failure.retry_after_seconds {
+        response
+            .headers_mut()
+            .set("retry-after", &seconds.to_string())?;
     }
     secure_response(response, request_id, production)
 }
@@ -12872,6 +14258,31 @@ mod tests {
 
     use super::*;
     use crate::contracts::ValidationCode;
+
+    #[test]
+    fn scheduled_work_is_partitioned_into_distinct_invocations() {
+        assert_eq!(
+            scheduled_lane(AUTH_DELIVERY_CRON),
+            Some(ScheduledLane::AuthDelivery)
+        );
+        assert_eq!(
+            scheduled_lane(MULTIPART_MAINTENANCE_CRON),
+            Some(ScheduledLane::MultipartMaintenance)
+        );
+        assert_eq!(
+            scheduled_lane(INSTANT_FINALIZE_CRON),
+            Some(ScheduledLane::InstantFinalize)
+        );
+        assert_eq!(
+            scheduled_lane(MEDIA_RECOVERY_CRON),
+            Some(ScheduledLane::MediaRecovery)
+        );
+        assert_eq!(
+            scheduled_lane(RETENTION_MAINTENANCE_CRON),
+            Some(ScheduledLane::RetentionMaintenance)
+        );
+        assert_eq!(scheduled_lane("0 0 * * *"), None);
+    }
 
     #[test]
     fn failures_have_stable_status_and_do_not_carry_internal_details() {
@@ -12981,12 +14392,114 @@ mod tests {
     }
 
     #[test]
-    fn native_dispatch_excludes_profiles_without_a_complete_input_protocol() {
+    fn direct_finalize_uses_the_same_post_expiry_grace_as_staging_cleanup() {
+        let expiry = 1_000_000_i64;
+        assert!(!direct_upload_finalize_expired(expiry, expiry));
+        assert!(!direct_upload_finalize_expired(
+            expiry + DIRECT_STAGING_CLEANUP_GRACE_MS - 1,
+            expiry
+        ));
+        assert!(direct_upload_finalize_expired(
+            expiry + DIRECT_STAGING_CLEANUP_GRACE_MS,
+            expiry
+        ));
+        assert!(direct_upload_finalize_expired(i64::MAX, i64::MAX));
+    }
+
+    #[test]
+    fn native_dispatch_keeps_unimplemented_segment_mux_unclaimable() {
         assert!(native_claim_output("segment_mux_v1", "{}").is_none());
+        assert!(requires_native_claim(MediaMode::Remote, "segment_mux_v1"));
+        assert!(requires_native_claim(MediaMode::Remote, "transcription_v1"));
+        assert!(!requires_native_claim(MediaMode::Remote, "thumbnail_v1"));
+        assert!(requires_native_claim(MediaMode::Native, "thumbnail_v1"));
+        assert!(!requires_native_claim(MediaMode::Fake, "segment_mux_v1"));
         assert_eq!(
             native_claim_output("probe_v1", "{}"),
             Some(("application/json".into(), 64 * 1_024))
         );
+    }
+
+    #[test]
+    fn worker_source_sets_are_dense_scoped_and_profile_bounded() {
+        let tenant = "018f47a6-7b1c-7f55-8f39-8f8a86900001";
+        let first_video = "018f47a6-7b1c-7f55-8f39-8f8a86900002";
+        let second_video = "018f47a6-7b1c-7f55-8f39-8f8a86900003";
+        let source = |ordinal, video: &str| WorkerSourceRow {
+            ordinal,
+            video_id: video.into(),
+            source_version: 1,
+            object_key: format!("tenants/{tenant}/videos/{video}/source/v1/payload"),
+            bytes: 1_024,
+            checksum_sha256: "a".repeat(64),
+            content_type: "video/mp4".into(),
+        };
+        assert!(
+            validated_worker_sources(
+                tenant,
+                "segment_mux_v1",
+                vec![source(0, first_video), source(1, second_video)]
+            )
+            .is_ok()
+        );
+        assert!(
+            validated_worker_sources(
+                tenant,
+                "segment_mux_v1",
+                vec![source(0, first_video), source(2, second_video)]
+            )
+            .is_err()
+        );
+        assert!(
+            validated_worker_sources(
+                tenant,
+                "segment_mux_v1",
+                vec![source(0, first_video), source(1, first_video)]
+            )
+            .is_err()
+        );
+        assert!(
+            validated_worker_sources(
+                tenant,
+                "composition_v1",
+                vec![source(0, first_video), source(1, first_video)]
+            )
+            .is_ok()
+        );
+        assert!(
+            validated_worker_sources(
+                tenant,
+                "probe_v1",
+                vec![source(0, first_video), source(1, second_video)]
+            )
+            .is_err()
+        );
+        let mut cross_tenant = source(0, first_video);
+        cross_tenant.object_key =
+            format!("tenants/{tenant}/videos/{second_video}/source/v1/payload");
+        assert!(validated_worker_sources(tenant, "probe_v1", vec![cross_tenant]).is_err());
+
+        let mut oversized_secondary = source(1, second_video);
+        oversized_secondary.bytes =
+            i64::try_from(MAX_SINGLE_UPLOAD_BYTES.saturating_add(1)).unwrap_or(i64::MAX);
+        assert!(
+            validated_worker_sources(
+                tenant,
+                "composition_v1",
+                vec![source(0, first_video), oversized_secondary]
+            )
+            .is_err()
+        );
+
+        let mut multipart_probe = source(0, first_video);
+        multipart_probe.bytes =
+            i64::try_from(MAX_SINGLE_UPLOAD_BYTES.saturating_add(1)).unwrap_or(i64::MAX);
+        assert!(
+            validated_worker_sources(tenant, "probe_v1", vec![multipart_probe.clone()]).is_ok()
+        );
+        multipart_probe.bytes =
+            i64::try_from(MULTIPART_MAX_BYTES.saturating_add(1)).unwrap_or(i64::MAX);
+        assert!(validated_worker_sources(tenant, "probe_v1", vec![multipart_probe]).is_err());
     }
 
     #[test]
@@ -13149,5 +14662,36 @@ mod tests {
         for invalid in ["bytes=100-", "bytes=9-2", "bytes=0-1,4-5", "bytes=-0"] {
             assert!(parse_range_header(Some(invalid), 100).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn browser_auth_failures_redirect_to_closed_render_states_without_bearer_challenge() {
+        assert_eq!(
+            browser_auth_page_failure_location(
+                worker_auth_runtime::BrowserAuthStart::Login,
+                browser_web_runtime::BrowserWebFailure::Invalid,
+            ),
+            "/login?auth_error=invalid"
+        );
+        assert_eq!(
+            browser_auth_page_failure_location(
+                worker_auth_runtime::BrowserAuthStart::Recovery,
+                browser_web_runtime::BrowserWebFailure::Unavailable,
+            ),
+            "/recovery?auth_error=failed"
+        );
+        assert_eq!(
+            browser_auth_verify_failure_location(
+                browser_web_runtime::BrowserWebFailure::Unauthenticated,
+            ),
+            "/verify?auth_error=failed"
+        );
+
+        let cookie_failure = browser_web_failure(
+            browser_web_runtime::BrowserWebFailure::Unauthenticated,
+            "invalid_browser_request",
+        );
+        assert_eq!(cookie_failure.status, 401);
+        assert!(!cookie_failure.authenticate);
     }
 }

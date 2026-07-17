@@ -147,6 +147,7 @@ impl BrowserSurface {
     #[must_use]
     pub const fn action(self) -> Option<BrowserAction> {
         match self {
+            Self::Dashboard => Some(BrowserAction::SetActiveOrganization),
             Self::Spaces => Some(BrowserAction::CreateSpace),
             Self::Folders => Some(BrowserAction::CreateFolder),
             Self::Onboarding => Some(BrowserAction::CompleteOnboarding),
@@ -158,12 +159,7 @@ impl BrowserSurface {
             Self::Developer => Some(BrowserAction::CreateDeveloperKey),
             Self::Billing => Some(BrowserAction::UpdateBilling),
             Self::Admin => Some(BrowserAction::AdminAction),
-            Self::Dashboard
-            | Self::Library
-            | Self::Space
-            | Self::Folder
-            | Self::Settings
-            | Self::Analytics => None,
+            Self::Library | Self::Space | Self::Folder | Self::Settings | Self::Analytics => None,
         }
     }
 }
@@ -197,6 +193,7 @@ impl BrowserRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CacheDomain {
+    Dashboard,
     Session,
     Workspace,
     Library,
@@ -217,6 +214,7 @@ impl CacheDomain {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Dashboard => "dashboard",
             Self::Session => "session",
             Self::Workspace => "workspace",
             Self::Library => "library",
@@ -236,6 +234,7 @@ impl CacheDomain {
 
     fn parse(value: &str) -> Option<Self> {
         match value {
+            "dashboard" => Some(Self::Dashboard),
             "session" => Some(Self::Session),
             "workspace" => Some(Self::Workspace),
             "library" => Some(Self::Library),
@@ -257,6 +256,7 @@ impl CacheDomain {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserAction {
+    SetActiveOrganization,
     CompleteOnboarding,
     CreateSpace,
     CreateFolder,
@@ -274,6 +274,7 @@ impl BrowserAction {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::SetActiveOrganization => "organization.active-selection.update.v1",
             Self::CompleteOnboarding => "organization.onboarding.complete.v1",
             Self::CreateSpace => "organization.spaces.create.v1",
             Self::CreateFolder => "organization.folders.create.v1",
@@ -291,7 +292,7 @@ impl BrowserAction {
     #[must_use]
     pub const fn permitted_for(self, role: BrowserRole) -> bool {
         match self {
-            Self::CompleteOnboarding | Self::UpdateAccount => true,
+            Self::SetActiveOrganization | Self::CompleteOnboarding | Self::UpdateAccount => true,
             Self::CreateSpace
             | Self::CreateFolder
             | Self::StartImport
@@ -307,6 +308,7 @@ impl BrowserAction {
     #[must_use]
     pub const fn invalidates(self) -> &'static [CacheDomain] {
         match self {
+            Self::SetActiveOrganization => &[CacheDomain::Dashboard],
             Self::CompleteOnboarding => &[CacheDomain::Session, CacheDomain::Workspace],
             Self::CreateSpace => &[CacheDomain::Spaces, CacheDomain::Workspace],
             Self::CreateFolder => &[CacheDomain::Folders, CacheDomain::Library],
@@ -324,7 +326,8 @@ impl BrowserAction {
     #[must_use]
     pub const fn effect_state(self) -> BrowserActionEffectState {
         match self {
-            Self::CreateSpace
+            Self::SetActiveOrganization
+            | Self::CreateSpace
             | Self::CreateFolder
             | Self::StartImport
             | Self::UpdateAccount
@@ -342,7 +345,11 @@ impl BrowserAction {
     pub const fn requires_value(self) -> bool {
         matches!(
             self,
-            Self::CreateSpace | Self::CreateFolder | Self::UpdateAccount | Self::UpdateOrganization
+            Self::SetActiveOrganization
+                | Self::CreateSpace
+                | Self::CreateFolder
+                | Self::UpdateAccount
+                | Self::UpdateOrganization
         )
     }
 }
@@ -421,10 +428,19 @@ pub struct BrowserWorkspace {
     pub revision: u64,
     pub selection_revision: u64,
     pub selection_context: String,
+    pub selection_required: bool,
+    pub organizations: Vec<BrowserOrganizationChoice>,
     pub recordings: Vec<BrowserRecording>,
     pub spaces: Vec<BrowserResource>,
     pub folders: Vec<BrowserResource>,
     pub import: Option<BrowserImportProgress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserOrganizationChoice {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,6 +487,8 @@ impl BrowserMutationInput {
                     || value.contains(['<', '>'])
             })
             || (self.action.requires_value() && self.value.is_none())
+            || (self.action == BrowserAction::SetActiveOrganization
+                && !self.value.as_deref().is_some_and(valid_uuid))
             || self
                 .resource_id
                 .as_deref()
@@ -507,6 +525,7 @@ pub struct BrowserHttpRequest {
     pub path: String,
     pub body: Option<String>,
     pub idempotency_key: Option<String>,
+    pub csrf_protected: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -582,6 +601,7 @@ where
                 path,
                 body: None,
                 idempotency_key: None,
+                csrf_protected: false,
             })
             .await?;
         let workspace = decode_workspace(response)?;
@@ -622,10 +642,32 @@ where
                 path: format!("/api/v1/web/actions/{}", input.action.as_str()),
                 body: Some(body),
                 idempotency_key: Some(input.idempotency_key.clone()),
+                csrf_protected: true,
             })
             .await?;
         let receipt = decode_receipt(response, input.action)?;
         Ok(receipt)
+    }
+
+    /// Revoke the current host-only browser session through the same
+    /// double-submit CSRF boundary as every authenticated mutation.
+    pub async fn logout(&self) -> Result<(), BrowserClientError> {
+        self.cache.borrow_mut().clear();
+        let response = self
+            .transport
+            .send(BrowserHttpRequest {
+                method: BrowserHttpMethod::Post,
+                path: "/api/v1/web/auth/logout".into(),
+                body: None,
+                idempotency_key: None,
+                csrf_protected: true,
+            })
+            .await?;
+        if (200..400).contains(&response.status) {
+            Ok(())
+        } else {
+            Err(decode_error(response))
+        }
     }
 
     #[cfg(test)]
@@ -644,10 +686,20 @@ struct WorkspaceWire {
     revision: u64,
     selection_revision: u64,
     selection_context: String,
+    selection_required: bool,
+    organizations: Vec<OrganizationChoiceWire>,
     recordings: Vec<RecordingWire>,
     spaces: Vec<ResourceWire>,
     folders: Vec<ResourceWire>,
     import: Option<ImportWire>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OrganizationChoiceWire {
+    id: String,
+    name: String,
+    active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -709,6 +761,25 @@ fn decode_workspace(response: BrowserHttpResponse) -> Result<BrowserWorkspace, B
         || !valid_label(&wire.member_label, 160)
         || wire.selection_revision > 9_007_199_254_740_991
         || !valid_selection_context(&wire.selection_context)
+        || wire.organizations.is_empty()
+        || wire.organizations.len() > 50
+        || wire
+            .organizations
+            .iter()
+            .any(|value| !valid_uuid(&value.id) || !valid_label(&value.name, 160))
+        || if wire.selection_required {
+            wire.organizations.iter().any(|value| value.active)
+                || !wire.recordings.is_empty()
+                || !wire.spaces.is_empty()
+                || !wire.folders.is_empty()
+                || wire.import.is_some()
+        } else {
+            wire.organizations
+                .iter()
+                .filter(|value| value.active)
+                .count()
+                != 1
+        }
         || wire.recordings.len() > 20
         || wire.spaces.len() > 50
         || wire.folders.len() > 50
@@ -737,6 +808,15 @@ fn decode_workspace(response: BrowserHttpResponse) -> Result<BrowserWorkspace, B
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let organizations = wire
+        .organizations
+        .into_iter()
+        .map(|choice| BrowserOrganizationChoice {
+            id: choice.id,
+            name: choice.name,
+            active: choice.active,
+        })
+        .collect();
     let decode_resources = |resources: Vec<ResourceWire>| {
         resources
             .into_iter()
@@ -758,6 +838,8 @@ fn decode_workspace(response: BrowserHttpResponse) -> Result<BrowserWorkspace, B
         revision: wire.revision,
         selection_revision: wire.selection_revision,
         selection_context: wire.selection_context,
+        selection_required: wire.selection_required,
+        organizations,
         recordings,
         spaces: decode_resources(wire.spaces)?,
         folders: decode_resources(wire.folders)?,
@@ -859,6 +941,11 @@ fn valid_resource_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn valid_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value)
+        .is_ok_and(|uuid| !uuid.is_nil() && uuid.as_hyphenated().to_string() == value)
+}
+
 fn valid_label(value: &str, maximum: usize) -> bool {
     !value.is_empty()
         && value.len() <= maximum
@@ -900,9 +987,11 @@ async fn wasm_send(request: BrowserHttpRequest) -> Result<BrowserHttpResponse, B
     use wasm_bindgen::{JsCast, JsValue};
 
     if (!request.path.starts_with("/api/v1/web/workspace/")
-        && !request.path.starts_with("/api/v1/web/actions/"))
+        && !request.path.starts_with("/api/v1/web/actions/")
+        && request.path != "/api/v1/web/auth/logout")
         || request.path.contains(['#', '\\'])
         || request.path.starts_with("//")
+        || request.idempotency_key.is_some() && !request.csrf_protected
     {
         return Err(BrowserClientError::Invalid);
     }
@@ -922,13 +1011,15 @@ async fn wasm_send(request: BrowserHttpRequest) -> Result<BrowserHttpResponse, B
             .set("content-type", "application/json")
             .map_err(|_| BrowserClientError::Unavailable)?;
     }
-    if let Some(idempotency_key) = &request.idempotency_key {
+    if request.csrf_protected {
         let csrf = browser_cookie(CSRF_COOKIE_NAME).ok_or(BrowserClientError::Forbidden)?;
         headers
-            .set("idempotency-key", idempotency_key)
-            .map_err(|_| BrowserClientError::Unavailable)?;
-        headers
             .set("x-frame-csrf", &csrf)
+            .map_err(|_| BrowserClientError::Unavailable)?;
+    }
+    if let Some(idempotency_key) = &request.idempotency_key {
+        headers
+            .set("idempotency-key", idempotency_key)
             .map_err(|_| BrowserClientError::Unavailable)?;
     }
     init.set_headers(&headers);
@@ -1020,6 +1111,12 @@ mod tests {
                 "revision": 7,
                 "selection_revision": 3,
                 "selection_context": "a".repeat(64),
+                "selection_required": false,
+                "organizations": [{
+                    "id": "018f47a6-7b1c-7f55-8f39-8f8a86900003",
+                    "name": "Frame workspace",
+                    "active": true,
+                }],
                 "recordings": [{
                     "id": "recording-1",
                     "title": "Quarterly update",
@@ -1049,6 +1146,12 @@ mod tests {
                     BrowserHttpMethod::Post => {
                         if self.fail_mutation {
                             return Err(BrowserClientError::Unavailable);
+                        }
+                        if request.path == "/api/v1/web/auth/logout" {
+                            return Ok(BrowserHttpResponse {
+                                status: 200,
+                                body: String::new(),
+                            });
                         }
                         let action = request
                             .path
@@ -1133,7 +1236,13 @@ mod tests {
                     selection_revision: 3,
                     selection_context: "a".repeat(64),
                     idempotency_key: format!("journey-{}-{}", surface.as_str(), role.as_str()),
-                    value: action.requires_value().then(|| "Journey value".into()),
+                    value: action.requires_value().then(|| {
+                        if action == BrowserAction::SetActiveOrganization {
+                            "018f47a6-7b1c-7f55-8f39-8f8a86900004".into()
+                        } else {
+                            "Journey value".into()
+                        }
+                    }),
                     resource_id: (action == BrowserAction::CreateFolder).then(|| "space-1".into()),
                 };
                 let receipt = client.mutate(&input).await.expect("allowed action");
@@ -1208,6 +1317,29 @@ mod tests {
             .await;
         assert_eq!(result, Err(BrowserClientError::Unavailable));
         assert_eq!(client.cached_entries(), 0);
+    }
+
+    #[tokio::test]
+    async fn logout_uses_the_exact_csrf_protected_worker_route_and_clears_cache() {
+        let transport = FakeTransport::new(BrowserRole::Owner);
+        let calls = Rc::clone(&transport.calls);
+        let client = BrowserAuthenticatedClient::new(transport);
+        client
+            .load(BrowserSurface::Dashboard, &query(BrowserSurface::Dashboard))
+            .await
+            .expect("dashboard");
+        assert_eq!(client.cached_entries(), 1);
+
+        client.logout().await.expect("logout");
+
+        assert_eq!(client.cached_entries(), 0);
+        let calls = calls.borrow();
+        let request = calls.last().expect("logout request");
+        assert_eq!(request.method, BrowserHttpMethod::Post);
+        assert_eq!(request.path, "/api/v1/web/auth/logout");
+        assert!(request.body.is_none());
+        assert!(request.idempotency_key.is_none());
+        assert!(request.csrf_protected);
     }
 
     #[test]

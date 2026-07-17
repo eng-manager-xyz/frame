@@ -122,6 +122,26 @@ the temporary object. A commit receipt must bind the segment index, identity,
 length, ciphertext-integrity digest, and durable bit before the journal can
 record it.
 
+On Windows, temporary and lock files receive their protected current-user and
+SYSTEM DACL in the same `CreateFileW(CREATE_NEW)` call that creates them.
+Existing file and directory ACL repair opens the final object with
+`FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, rejects a reparse
+attribute from that handle, and calls `SetSecurityInfo` on the pinned handle.
+Final publication pins and validates both the source file and destination
+directory, then uses `SetFileInformationByHandle(FileRenameInfo)` with a simple
+relative leaf and `ReplaceIfExists=false`; the exact source handle is flushed
+before and after the rename. A pre-existing destination therefore loses the
+atomic collision race instead of being replaced.
+
+That boundary closes the former final-component metadata-check/name-use race;
+it is not a claim that Win32 path traversal is safe under a hostile writable
+ancestor. The configured spool root must be a caller-controlled local path
+whose ancestors are not concurrently mutable by an untrusted or same-account
+process. Root/session `create_dir_all`, later enumeration and later file opens
+remain path based, and Windows exposes no documented unprivileged directory
+fsync. Same-account path mutation and power-loss durability therefore remain
+protected platform evidence rather than locally proven guarantees.
+
 Recovery lists only committed entries with their full immutable descriptor and
 commit receipt. Duplicate indexes, uncommitted entries, receipt mismatch,
 invalid lengths, or aggregate quota overflow mark the spool corrupt. Opening a
@@ -200,19 +220,27 @@ job generation. Later cleanup or ownership revisions do not alter that sealed
 request.
 
 The server finalize port reconciles lost acknowledgements by inspecting the
-same request. A receipt is accepted only when request digest, job and
-generation, object manifest/version, playable master, and distribution
-eligibility match exactly. `Ready` stores one publication identity. An exact
-duplicate complete or callback is stable; another publication is a conflict.
+same request. Its internal D1 postcondition binds the playable master without
+placing that storage identity on the wire. The first-party receipt is accepted
+only when publication identity, request digest, job and generation, upload,
+object version, and distribution eligibility match exactly. `Ready` stores one
+publication identity. An exact duplicate complete or callback is stable;
+another publication is a conflict.
 
 That full request is the native `frame-media` journal contract, not a claim
 about fields the control plane can independently authenticate. The v1 HTTP
 wire DTO is intentionally narrower: tenant, session, retry operation, upload,
 video, ordered-part digest, server-derived object-version digest, job and
 generation, and the canonical request digest. It does not transmit journal
-revision/fence, native manifest digest, or native object ID. Those values have
-no independent D1 authority yet and must be mapped by a future desktop adapter
-instead of being accepted as client assertions. The HTTP receipt binds the
+revision/fence, native manifest digest, or native object ID because those values
+have no independent D1 authority and would only be echoed client assertions.
+The DTO lives in `frame-authenticated-client`, not the anonymous public
+`frame-client`, and its receipt never exposes an R2 or governed-object key.
+The production-shaped desktop HTTP adapter maps the exact transportable
+identities from a sealed native request and retains the omitted authority
+inside the native journal. It is not yet invoked by the Tauri command surface;
+therefore the repository does not claim an end-to-end production desktop
+finalize journey. The HTTP receipt binds the
 retained upload and server-derived object version; publication is allowed only
 after the immutable R2 verification receipt, exact trusted probe, and exact D1
 object/video/job postconditions agree.

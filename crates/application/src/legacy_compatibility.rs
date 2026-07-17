@@ -849,6 +849,7 @@ mod tests {
     #[derive(Deserialize)]
     struct ReportSecurity {
         max_body_bytes: u64,
+        accepted_content_types: Vec<String>,
         rate_limit_bucket: String,
         idempotency: String,
     }
@@ -856,6 +857,10 @@ mod tests {
     #[derive(Deserialize)]
     struct ReportEvidence {
         success: String,
+        validation: String,
+        authorization: String,
+        idempotency_retry: String,
+        failure: String,
     }
 
     fn report() -> Report {
@@ -891,6 +896,7 @@ mod tests {
             "public_or_flow_token" => ApiAuthClassV1::Public,
             "optional_session_or_share_capability" => ApiAuthClassV1::OptionalSession,
             "session" => ApiAuthClassV1::Session,
+            "session_or_api_key" => ApiAuthClassV1::SessionOrApiKey,
             "developer_api_key" => ApiAuthClassV1::ApiKey,
             "internal_service" => ApiAuthClassV1::Worker,
             "signed_webhook" => ApiAuthClassV1::Webhook,
@@ -934,11 +940,7 @@ mod tests {
             ApiRequestPolicyV1 {
                 auth,
                 max_body_bytes: row.security.max_body_bytes,
-                accepted_content_types: if row.security.max_body_bytes > 0 {
-                    vec!["application/json".to_owned()]
-                } else {
-                    Vec::new()
-                },
+                accepted_content_types: row.security.accepted_content_types.clone(),
                 idempotency,
                 rate_limit_bucket: row.security.rate_limit_bucket.clone(),
                 audit_action: format!("legacy.{}", row.id),
@@ -985,8 +987,14 @@ mod tests {
         let required = contract.request_policy.idempotency == IdempotencyRequirementV1::Required;
         ApiMutationEnvelopeV1 {
             content_length: u64::from(contract.request_policy.max_body_bytes > 0) * 2,
-            content_type: (contract.request_policy.max_body_bytes > 0)
-                .then(|| "application/json".to_owned()),
+            content_type: (contract.request_policy.max_body_bytes > 0).then(|| {
+                contract
+                    .request_policy
+                    .accepted_content_types
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "application/octet-stream".to_owned())
+            }),
             idempotency_key: required
                 .then(|| IdempotencyKey::parse("compatibility-case-0001").expect("key")),
             correlation_id: "compatibility-case".into(),
@@ -1082,8 +1090,27 @@ mod tests {
     }
 
     #[test]
-    fn pinned_report_promotes_only_its_exact_status_contract() {
+    fn pinned_report_promotes_only_its_exact_contracts() {
         const STATUS_OPERATION_ID: &str = "cap-v1-05b6ba3f76daac22";
+        const MEDIA_SERVER_ROOT_OPERATION_ID: &str = "cap-v1-ff19008f47194c43";
+        const CHANGELOG_STATUS_GET_OPERATION_ID: &str = "cap-v1-a1b180c5d123c870";
+        const CHANGELOG_STATUS_OPTIONS_OPERATION_ID: &str = "cap-v1-16668b858461f386";
+        const CHANGELOG_FEED_GET_OPERATION_ID: &str = "cap-v1-0fa8384f3666825b";
+        const CHANGELOG_FEED_OPTIONS_OPERATION_ID: &str = "cap-v1-237f41f3086a2d67";
+        const MOBILE_SESSION_CONFIG_OPERATION_ID: &str = "cap-v1-4f21920a947c4c84";
+        const NOTIFICATION_PREFERENCES_OPERATION_ID: &str = "cap-v1-d130c840f654bd72";
+        const ACTIVE_ORGANIZATION_OPERATION_ID: &str = "cap-v1-a3b4c805d409bc7c";
+        const PROMOTED_OPERATION_IDS: [&str; 9] = [
+            STATUS_OPERATION_ID,
+            MEDIA_SERVER_ROOT_OPERATION_ID,
+            CHANGELOG_STATUS_GET_OPERATION_ID,
+            CHANGELOG_STATUS_OPTIONS_OPERATION_ID,
+            CHANGELOG_FEED_GET_OPERATION_ID,
+            CHANGELOG_FEED_OPTIONS_OPERATION_ID,
+            MOBILE_SESSION_CONFIG_OPERATION_ID,
+            NOTIFICATION_PREFERENCES_OPERATION_ID,
+            ACTIVE_ORGANIZATION_OPERATION_ID,
+        ];
 
         let report = report();
         let contracts = report
@@ -1105,16 +1132,80 @@ mod tests {
             .iter()
             .filter(|row| row.contract_evidence.success == "local_contract")
             .collect::<Vec<_>>();
-        assert_eq!(promoted.len(), 1);
-        assert_eq!(promoted[0].id, STATUS_OPERATION_ID);
-        assert_eq!(promoted[0].kind, "route");
-        assert_eq!(promoted[0].method, "GET");
-        assert_eq!(promoted[0].legacy_path, "/api/status");
+        assert_eq!(promoted.len(), PROMOTED_OPERATION_IDS.len());
+        for (id, kind, method, path) in [
+            (STATUS_OPERATION_ID, "route", "GET", "/api/status"),
+            (
+                MEDIA_SERVER_ROOT_OPERATION_ID,
+                "route",
+                "GET",
+                "/media-server",
+            ),
+            (
+                CHANGELOG_STATUS_GET_OPERATION_ID,
+                "route",
+                "GET",
+                "/api/changelog/status",
+            ),
+            (
+                CHANGELOG_STATUS_OPTIONS_OPERATION_ID,
+                "route",
+                "OPTIONS",
+                "/api/changelog/status",
+            ),
+            (
+                CHANGELOG_FEED_GET_OPERATION_ID,
+                "route",
+                "GET",
+                "/api/changelog",
+            ),
+            (
+                CHANGELOG_FEED_OPTIONS_OPERATION_ID,
+                "route",
+                "OPTIONS",
+                "/api/changelog",
+            ),
+            (
+                MOBILE_SESSION_CONFIG_OPERATION_ID,
+                "route",
+                "GET",
+                "/api/mobile/session/config",
+            ),
+            (
+                NOTIFICATION_PREFERENCES_OPERATION_ID,
+                "route",
+                "GET",
+                "/api/notifications/preferences",
+            ),
+            (
+                ACTIVE_ORGANIZATION_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateActiveOrganization",
+            ),
+        ] {
+            let operation = promoted
+                .iter()
+                .find(|operation| operation.id == id)
+                .expect("exact promoted operation");
+            assert_eq!(operation.kind, kind);
+            assert_eq!(operation.method, method);
+            assert_eq!(operation.legacy_path, path);
+        }
+        for operation in &promoted {
+            assert_eq!(operation.contract_evidence.validation, "local_contract");
+            assert_eq!(operation.contract_evidence.authorization, "local_contract");
+            assert_eq!(
+                operation.contract_evidence.idempotency_retry,
+                "local_contract"
+            );
+            assert_eq!(operation.contract_evidence.failure, "local_contract");
+        }
 
         let mut released_associations = 0;
         for row in &report.entries {
             let operation = registry.contract(&row.id).expect("registered row");
-            let expected_frame = row.id == STATUS_OPERATION_ID;
+            let expected_frame = PROMOTED_OPERATION_IDS.contains(&row.id.as_str());
             assert_eq!(
                 operation.evidence().endpoint_contract_proven,
                 expected_frame
@@ -1139,11 +1230,13 @@ mod tests {
                         expected_frame
                     );
                 } else {
-                    assert!(!expected_frame);
-                    assert!(matches!(
-                        registry.admit(&request(operation, service_caller(*family))),
-                        Ok(LegacyCompatibilityOutcomeV1::UseLegacyFallback(_))
-                    ));
+                    let outcome = registry
+                        .admit(&request(operation, service_caller(*family)))
+                        .expect("service caller decision");
+                    assert_eq!(
+                        matches!(outcome, LegacyCompatibilityOutcomeV1::ServeFrame(_)),
+                        expected_frame
+                    );
                 }
             }
         }

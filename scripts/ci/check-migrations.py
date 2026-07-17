@@ -11,6 +11,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MIGRATIONS = ROOT / "apps" / "control-plane" / "migrations"
+CONTRACT_MIGRATIONS = ROOT / "apps" / "control-plane" / "contract-migrations"
 NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 DESTRUCTIVE = re.compile(
     r"\b(DROP\s+(?:TABLE|COLUMN|INDEX)|TRUNCATE|VACUUM|DELETE\s+FROM)\b",
@@ -22,6 +23,7 @@ REQUIRED_TABLES = {
     "authority_state",
     "comments",
     "command_idempotency",
+    "compatibility_rate_limit_buckets_v1",
     "cutover_authority_audit",
     "cutover_authority_scopes",
     "cutover_change_events",
@@ -78,9 +80,30 @@ def discover() -> list[pathlib.Path]:
         numbers.append(int(match.group(1)))
     if not files:
         raise ValueError("no migrations found")
-    expected = list(range(numbers[0], numbers[-1] + 1))
-    if numbers != expected:
-        raise ValueError(f"migration sequence is not contiguous: {numbers}")
+    if len(numbers) != len(set(numbers)):
+        raise ValueError(f"duplicate expand migration number: {numbers}")
+    return files
+
+
+def discover_contract(expand_files: list[pathlib.Path]) -> list[pathlib.Path]:
+    files = sorted(CONTRACT_MIGRATIONS.glob("*.sql"))
+    if not files:
+        raise ValueError("no protected contract migrations found")
+    expand_numbers = {int(path.name[:4]) for path in expand_files}
+    numbers: list[int] = []
+    for path in files:
+        match = NAME.fullmatch(path.name)
+        if not match:
+            raise ValueError(f"invalid contract migration filename: {path.name}")
+        number = int(match.group(1))
+        if number in expand_numbers:
+            raise ValueError(f"duplicate expand/contract migration number: {number:04d}")
+        numbers.append(number)
+    if len(numbers) != len(set(numbers)):
+        raise ValueError(f"duplicate contract migration number: {numbers}")
+    combined = sorted(expand_numbers | set(numbers))
+    if combined != list(range(combined[0], combined[-1] + 1)):
+        raise ValueError(f"combined migration sequence is not contiguous: {combined}")
     return files
 
 
@@ -493,7 +516,13 @@ def verify_media_service_invariants(database: sqlite3.Connection) -> None:
 
 def main() -> int:
     try:
-        files = discover()
+        expand_files = discover()
+        contract_files = discover_contract(expand_files)
+        # Production applies the complete expand directory before the separately
+        # approved contract directory. Validate that phase order here rather
+        # than re-sorting both directories into numeric filename order, which
+        # would silently model contract migrations running before later expands.
+        files = expand_files + contract_files
         database = apply(files)
         tables = {
             row[0]
@@ -519,7 +548,10 @@ def main() -> int:
         print(f"migration validation failed: {error}", file=sys.stderr)
         return 1
 
-    print(f"validated {len(files)} ordered expand-first migrations and 0001 upgrade path")
+    print(
+        f"validated {len(expand_files)} expand migrations, "
+        f"{len(contract_files)} protected contract migrations, and 0001 upgrade path"
+    )
     return 0
 
 

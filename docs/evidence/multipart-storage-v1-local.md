@@ -77,14 +77,14 @@ passed after this evidence file was updated.
 
 ## Evidence this record does not provide
 
-No Cloudflare account, R2 bucket, deployed Worker, real provider multipart session, signed PUT, temporary
-credential, hosted D1 database or scheduler, custom domain, browser, desktop app, media player, large
-recording, network/runtime streaming body, capacity run, production log sink, or security-owner
-approval was exercised. The deterministic fake pulls chunks from small in-memory vectors and cannot
-establish R2 compatibility, durability, latency, Worker memory safety, browser playback, CORS
-correctness in production, or operational readiness. Upload parts remain bounded buffers at this
-local port. Those protected/provider gates remain explicitly open in the architecture document;
-this record must not be used to close issue 19.
+No Cloudflare account, hosted R2 bucket, deployed Worker, hosted provider multipart session, signed
+PUT, temporary credential, hosted D1 database or scheduler, custom domain, browser, desktop app,
+media player, large recording, capacity run, production log sink, or security-owner approval was
+exercised. The deterministic fake and Wrangler-local provider cannot establish hosted R2
+durability, latency, Worker memory safety, browser playback, production CORS, or operational
+readiness. Upload parts remain bounded buffers at this local port. Those protected/provider gates
+remain explicitly open in the architecture document; this record must not be used to close issue
+19.
 
 ## Control-plane wiring audit
 
@@ -101,7 +101,10 @@ The local repository now contains the complete server call path that was previou
   and then accepts only an exact `verified_native_probe` row. Client-supplied codec, duration,
   dimensions, and frame-rate claims never enter this boundary;
 - the scheduled path replays a `completing` session, idempotently bootstraps the native probe job
-  from the immutable verification receipt, and reconciles stale `open` sessions. Cleanup first
+  from the immutable verification receipt, and reconciles stale `open` sessions. Completion replay
+  uses a durable attempt journal with 15-minute leases, bounded retry/backoff, permanent-failure
+  quarantine, expired-final-lease terminalization, and fair due ordering; an older integrity failure
+  therefore cannot starve the next completing row. Cleanup first
   checks for a completed object: a present object moves back to `completing`; an abort success or
   authoritative not-found expires the session; every other provider failure retains a durable
   retryable abort record with bounded backoff; and
@@ -111,10 +114,20 @@ The local repository now contains the complete server call path that was previou
 The offline D1 check is reproducible with:
 
 ```text
+python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
 python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
 ```
 
-Result: passed. It rejects invalid multipart geometry and a forged verification receipt, proves the
+Result: passed. The completion proof quarantines a permanently invalid oldest row and selects the
+later row, enforces retry backoff and the 12-attempt ceiling, terminalizes a Worker crash after the
+final lease, proves a post-0031 N-1 open-to-completing write is scheduler-visible before the 0033
+contract fence, terminalizes exact N-1 completions with and without a matching concurrent active
+claim, validates the same pre-existing-row backfill while quarantining a mismatched receipt, and
+proves lost-ack recovery cannot roll the journal clock backward. The mixed-version SQLite proof
+also verifies that 0028 leaves N-1 SQL writable while new provider mutations stay fenced, that
+0033 refuses without mutating an open legacy session, and that only a fully drained database
+persists the immutable assertion and enables claim-aware writes. The Instant proof
+rejects invalid multipart geometry and a forged verification receipt, proves the
 post-stream receipt cannot be mutated, retains retryable provider-abort failures without expiring
 the session, rejects premature terminal cleanup, proves fair bounded finalize scanning and asserted
 dead-letter transitions, rejects a cross-tenant Instant request, and reaches one exact
@@ -122,7 +135,26 @@ upload/object/job/playable publication postcondition. The focused Rust client an
 suites, migration application, route-classifier tests, and warnings-denied Clippy checks also
 passed.
 
-This wiring is local implementation evidence, not Cloudflare execution evidence. No Wrangler-local
-or hosted test has yet exercised real R2 create/list/part/resume/complete/abort, checksum/etag
-behavior, lost acknowledgements, expiry cleanup, or Worker resource limits. Those protected gates
-remain open and this record still must not be used as a production-readiness claim for issue 19.
+The provider-backed local contract is reproducible with:
+
+```text
+python3 -I scripts/ci/r2-storage-conformance.py \
+  --evidence target/evidence/r2-storage-conformance.json
+```
+
+Result: passed through the compiled Rust/Wasm Worker with Wrangler 4.111.0, all checked-in D1
+migrations, an isolated local R2 bucket, and no Cloudflare credentials. Two complete runs exercise
+multipart create and concurrent exact create replay; 5 MiB and tail part upload; exact part replay;
+persisted part listing; an atomic race between conflicting bytes for the same part, with exactly one
+claim allowed to reach a durable receipt; contiguous completion; full-object SHA-256 verification;
+concurrent exact completion replay; private HEAD and a range crossing the part boundary; abort and
+repeated abort;
+an actual concurrent complete/abort race with exactly one durable provider-state winner;
+stale-session cleanup; and cross-tenant rejection. The run also discovered and now guards the real
+R2 upload-ID length case: the server-only handle is a fixed-size domain-separated digest while the
+original provider ID remains only in D1.
+
+This is Wrangler-local provider execution evidence, not hosted Cloudflare execution evidence. It
+does not exercise lost acknowledgements, hosted etag/version behavior, provider quotas or failures,
+concurrent hosted requests, or Worker body/time/memory limits. Those protected gates remain open,
+and this record still must not be used as a production-readiness claim for issue 19.

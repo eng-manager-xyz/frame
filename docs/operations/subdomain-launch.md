@@ -212,8 +212,9 @@ shared-cache bypass. Never retry a mutation merely because its response was
 lost; query by durable idempotency and reconcile first.
 
 On Worker regression, deploy the named previous schema-compatible Worker. If
-the route itself is implicated, remove only `frame.engmanager.xyz/api*` and
-prove non-API Render traffic still works. D1 migrations remain expand-only and
+route ownership itself is implicated, remove only `frame.engmanager.xyz/api*`
+and `frame.engmanager.xyz/media-server*` together and prove all other non-API
+Render traffic still works. D1 migrations remain expand-only and
 are not rolled back. Restore the route only after the raw/normalized matrix,
 current/N-1 contract, auth/privacy, and direct-upload synthetics pass.
 

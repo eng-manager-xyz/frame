@@ -176,6 +176,57 @@ pub struct SetActiveOrganizationCommand {
     pub expected_selection_revision: OrganizationRevision,
 }
 
+/// The legacy Cap surfaces did not share one organization-selection authority rule.
+/// Keeping the rule in the command prevents a compatibility adapter from silently
+/// widening the membership-only web action to the mobile owner fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyOrganizationSelectionAuthorizationV1 {
+    ActiveMembership,
+    OwnerOrActiveMembership,
+}
+
+impl LegacyOrganizationSelectionAuthorizationV1 {
+    #[must_use]
+    pub const fn stable_code(self) -> &'static str {
+        match self {
+            Self::ActiveMembership => "active_membership",
+            Self::OwnerOrActiveMembership => "owner_or_active_membership",
+        }
+    }
+}
+
+/// Organization lifecycle predicate observed by the legacy caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyOrganizationSelectionLifecycleV1 {
+    /// The Navbar server action joined the organization row but did not filter
+    /// its tombstone column.
+    Any,
+    /// The mobile route explicitly rejected tombstoned organizations.
+    ActiveOnly,
+}
+
+impl LegacyOrganizationSelectionLifecycleV1 {
+    #[must_use]
+    pub const fn stable_code(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::ActiveOnly => "active_only",
+        }
+    }
+}
+
+/// Active-only compatibility mutation. The legacy caller supplies neither a
+/// default organization nor a selection revision; both are deliberately absent
+/// from this command so an adapter cannot overwrite the default or invent a CAS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegacySetActiveOrganizationCommandV1 {
+    pub actor_id: UserId,
+    pub active_organization_id: OrganizationId,
+    pub authorization: LegacyOrganizationSelectionAuthorizationV1,
+    pub lifecycle: LegacyOrganizationSelectionLifecycleV1,
+    pub occurred_at: TimestampMillis,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueOrganizationInviteCommand {
     pub context: OrganizationMutationContext,
@@ -468,6 +519,25 @@ pub trait OrganizationRepository: Send + Sync {
         &self,
         decision: OrganizationAuditDecision,
     ) -> Result<(), OrganizationPortError>;
+}
+
+/// Narrow compatibility authority for the two audited Cap active-organization
+/// operations. Implementations must execute a single atomic batch that:
+///
+/// - asserts the requested legacy authorization and lifecycle predicate;
+/// - changes only `active_organization_id`;
+/// - preserves `default_organization_id`;
+/// - derives and increments the selection revision server-side; and
+/// - records the resulting revision in the operation and audit journals.
+///
+/// No client idempotency key is accepted because both Cap callers were
+/// last-write-wins and repeated a same-target update on every invocation.
+#[async_trait]
+pub trait LegacyOrganizationSelectionRepositoryV1: Send + Sync {
+    async fn legacy_set_active_organization(
+        &self,
+        command: LegacySetActiveOrganizationCommandV1,
+    ) -> Result<OrganizationMutationReceipt, OrganizationPortError>;
 }
 
 // Compile-time checks keep all repository DTOs Send + Sync for native and Worker adapters.

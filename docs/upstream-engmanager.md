@@ -69,9 +69,11 @@ to provision a separate Render service.
 
 The public topology is defined in
 [ADR 0004](./adr/0004-engmanager-render-cloudflare-topology.md): Cloudflare
-uses a broad `/api*` Worker Route plus strict first-segment validation to own
-`/api` and `/api/*` on `frame.engmanager.xyz`, and proxies every other path to
-the Render-hosted Leptos/Axum service.
+uses a broad `/api*` Worker Route plus a query-safe `/media-server*`
+compatibility fence. Strict raw-path validation owns `/api`, `/api/*`, and
+exact `/media-server` on `frame.engmanager.xyz`; every other path is rejected
+inside an intercepted prefix or continues to the Render-hosted Leptos/Axum
+service.
 
 ### Start with top-level navigation
 

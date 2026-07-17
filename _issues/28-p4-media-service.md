@@ -86,8 +86,14 @@ The four approved Cloudflare modes (`video`, `frame`, `spritesheet`, and
 `audio`) have bounded private-R2 binding implementations and exact/just-over
 contract tests. The native worker now has a machine-checked entry for all 14
 native profiles: four executable local graphs and ten stable graph recipes with
-typed codec, sampling, loudness, demux, multi-source, or timeline exceptions.
+typed codec, sampling, loudness, demux, unaudited-graph, or timeline exceptions.
 The exception state fails closed and is not a production-output claim.
+
+Migration 0027 independently completes the dense multi-source authority and
+transport prerequisite: every ordered immutable source occurrence is bound to
+current manifest/governance state, while segment mux is rejected at admission
+with `profile_unavailable` until its documented GStreamer graph exception is
+resolved.
 
 Parity matrix schema 2 maps all 16 retained jobs to a concrete SHA-pinned CC0
 fixture artifact, primary/fallback executor and implementation, limit profile,

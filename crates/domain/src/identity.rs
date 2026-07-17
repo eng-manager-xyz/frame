@@ -742,6 +742,21 @@ pub enum AuthAbuseAction {
     OAuthExchange,
 }
 
+impl AuthAbuseAction {
+    /// Verification delivery starts share one admission bucket even though
+    /// their audit actions and challenge purposes remain distinct. Without
+    /// this canonical bucket, signup, sign-in, and recovery can each consume
+    /// the nominal global ceiling and overrun the bounded delivery dispatcher.
+    pub const fn rate_limit_bucket_action(self) -> Self {
+        match self {
+            Self::IdentityProvisionIssue | Self::SignInIssue | Self::RecoverIssue => {
+                Self::SignInIssue
+            }
+            action => action,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AbuseDimension {
@@ -1532,6 +1547,18 @@ mod tests {
                 Some(digest(1, 'b'))
             )
             .is_err()
+        );
+        assert_eq!(
+            AuthAbuseAction::IdentityProvisionIssue.rate_limit_bucket_action(),
+            AuthAbuseAction::SignInIssue
+        );
+        assert_eq!(
+            AuthAbuseAction::RecoverIssue.rate_limit_bucket_action(),
+            AuthAbuseAction::SignInIssue
+        );
+        assert_eq!(
+            AuthAbuseAction::AccountLinkIssue.rate_limit_bucket_action(),
+            AuthAbuseAction::AccountLinkIssue
         );
     }
 

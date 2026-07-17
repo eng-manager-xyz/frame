@@ -25,6 +25,13 @@ ALLOWED_ORIGINS = {
     "https://frame-staging.engmanager.xyz",
 }
 SELF_TEST_SHARE = "018f47a6-7b1c-7f55-8f39-8f8a8690f123"
+MEDIA_SERVER_ROOT_BODY = (
+    b'{"name":"@cap/media-server","version":"1.0.0","endpoints":'
+    b'["/health","/audio/status","/audio/check","/audio/extract","/audio/convert",'
+    b'"/video/status","/video/probe","/video/thumbnail","/video/convert",'
+    b'"/video/process","/video/edit","/video/process/:jobId/status",'
+    b'"/video/process/:jobId/cancel","/video/cleanup","/video/force-cleanup"]}'
+)
 
 
 class ConformanceError(RuntimeError):
@@ -128,6 +135,7 @@ def exercise(origin: str, public_share_id: str | None, require_full: bool) -> di
         "api-capabilities-slash",
         "api-health",
     }
+    media_server_bodies: list[bytes] = []
     for case in matrix["cases"]:
         owner = case["edge_owner"]
         if owner == "render":
@@ -137,6 +145,15 @@ def exercise(origin: str, public_share_id: str | None, require_full: bool) -> di
             worker_response(response, case["id"])
             require(response.status == 200, f"{case['id']}: expected 200, got {response.status}")
             require(case["id"] in expected_api_success, f"{case['id']}: unreviewed API success")
+        elif owner == "worker_compat":
+            worker_response(response, case["id"])
+            require(response.status == 200, f"{case['id']}: expected 200, got {response.status}")
+            require(
+                response.headers.get("content-type", "").lower().startswith("application/json"),
+                f"{case['id']}: media-server metadata content type drifted",
+            )
+            require(response.body == MEDIA_SERVER_ROOT_BODY, f"{case['id']}: media-server metadata body drifted")
+            media_server_bodies.append(response.body)
         elif owner == "worker_reject":
             worker_response(response, case["id"])
             require(response.status in {400, 404}, f"{case['id']}: expected closed 400/404, got {response.status}")
@@ -147,6 +164,12 @@ def exercise(origin: str, public_share_id: str | None, require_full: bool) -> di
             require(response.status >= 400, f"{case['id']}: encoded lookalike entered an API handler")
             no_shared_cache(response, case["id"])
         route_results.append({"id": case["id"], "status": response.status, "owner": owner})
+
+    require(len(media_server_bodies) == 2, "media-server exact and query route evidence is incomplete")
+    require(media_server_bodies[0] == media_server_bodies[1], "media-server query changed the exact response")
+    media_server_post = client.request("POST", "/media-server")
+    worker_response(media_server_post, "media-server-post")
+    require(media_server_post.status == 405, f"POST /media-server returned {media_server_post.status}")
 
     method_statuses: dict[str, int] = {}
     for method in ("GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"):
@@ -218,6 +241,7 @@ def exercise(origin: str, public_share_id: str | None, require_full: bool) -> di
         "origin": origin,
         "route_cases": route_results,
         "method_statuses": method_statuses,
+        "media_server": {"exact": 200, "query": 200, "post": media_server_post.status},
         "chunked_body_status": chunked.status,
         "upgrade_status": upgrade.status,
         "request_id_spoof_rejected": True,
@@ -234,10 +258,57 @@ class FakeEdge(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
-    def _send(self, status: int, value: dict[str, Any] | bytes, *, worker: bool = False, extra: dict[str, str] | None = None) -> None:
+    def _drain_request_body(self) -> bool:
+        if self.command not in {"POST", "PUT", "PATCH"}:
+            return True
+        declared = self.headers.get("content-length")
+        if declared is not None:
+            try:
+                length = int(declared)
+            except ValueError:
+                return False
+            if length < 0 or length > 65_536:
+                return False
+            return len(self.rfile.read(length)) == length
+        if self.headers.get("transfer-encoding", "").lower() != "chunked":
+            return True
+        total = 0
+        while True:
+            line = self.rfile.readline(128)
+            if not line or len(line) >= 128:
+                return False
+            try:
+                length = int(line.split(b";", 1)[0].strip(), 16)
+            except ValueError:
+                return False
+            total += length
+            if total > 65_536:
+                return False
+            if length == 0:
+                while True:
+                    trailer = self.rfile.readline(8_192)
+                    if trailer in {b"\r\n", b"\n"}:
+                        return True
+                    if not trailer or len(trailer) >= 8_192:
+                        return False
+            if len(self.rfile.read(length)) != length or self.rfile.read(2) != b"\r\n":
+                return False
+
+    def _send(
+        self,
+        status: int,
+        value: dict[str, Any] | bytes,
+        *,
+        worker: bool = False,
+        extra: dict[str, str] | None = None,
+        content_type: str | None = None,
+    ) -> None:
         body = value if isinstance(value, bytes) else json.dumps(value, separators=(",", ":")).encode()
         self.send_response(status)
-        self.send_header("content-type", "application/octet-stream" if isinstance(value, bytes) else "application/json")
+        self.send_header(
+            "content-type",
+            content_type or ("application/octet-stream" if isinstance(value, bytes) else "application/json"),
+        )
         self.send_header("content-length", str(len(body)))
         self.send_header("cache-control", "no-store, max-age=0")
         if worker:
@@ -251,12 +322,31 @@ class FakeEdge(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _handle(self) -> None:
+        if not self._drain_request_body():
+            self._send(400, {"code": "invalid_request_body"}, worker=True)
+            return
         path = self.path.split("?", 1)[0]
         if self.headers.get("host") == "evil.example":
             self._send(421, {"code": "unexpected_host"}, worker=True)
             return
         if path == "/health/ready":
             self._send(200, {"service": "frame-web", "status": "ready"})
+            return
+        if path == "/media-server":
+            if self.command == "GET":
+                self._send(
+                    200,
+                    MEDIA_SERVER_ROOT_BODY,
+                    worker=True,
+                    content_type="application/json",
+                )
+            else:
+                self._send(
+                    405,
+                    {"code": "method_not_allowed"},
+                    worker=True,
+                    extra={"allow": "GET"},
+                )
             return
         if path == f"/api/v1/public/shares/{SELF_TEST_SHARE}/media":
             range_value = self.headers.get("range")
@@ -284,6 +374,9 @@ class FakeEdge(BaseHTTPRequestHandler):
             return
         if path.startswith("/api"):
             self._send(404, {"code": "not_found"}, worker=True)
+            return
+        if path.startswith("/media-server"):
+            self._send(404, {"code": "not_api_route"}, worker=True)
             return
         self._send(404, {"code": "render_not_found"})
 

@@ -2,11 +2,11 @@
 
 Status: executable provider-neutral catalog/router, D1 lease and publication
 authority, isolated Cloudflare Workers binding adapter, offline adapter, four
-native GStreamer graphs, and licensed synthetic fixture implemented. Ten native
-profiles, the multi-source segment-mux protocol, external-provider adapters,
-remote-account Cloudflare execution, and protected cross-executor evidence
-remain release gates until their respective adapters and environments are
-exercised.
+native GStreamer graphs, immutable dense multi-source D1 authority, and a
+licensed synthetic fixture implemented. Ten native profiles (including the
+segment-mux graph), external-provider adapters, remote-account Cloudflare
+execution, and protected cross-executor evidence remain release gates until
+their respective adapters and environments are exercised.
 
 ## Catalog and retained Cap surface
 
@@ -199,9 +199,12 @@ exception.
 The native worker has a closed 14-profile implementation catalog. It locally
 executes thumbnail PNG, probe, audio-presence, and waveform graphs; every other
 profile has a stable graph identity, pinned factory set, and typed exception
-instead of an anonymous unsupported branch. Segment mux remains deliberately
-undispatchable: its worker contract requires 2--64 ordered sources, while the
-control plane has no multi-source job-input table/API yet. Local evidence does
-not prove actual Cloudflare outputs, protected native graphs, provider accounts,
-platform performance, codec licensing, or product/perceptual review. Those are
-explicit protected gates in the runbook.
+instead of an anonymous unsupported branch. Migration 0027 now binds 1--64
+ordered immutable source occurrences, revalidates current manifest/governance
+authority at claim and delivery time, and supports repeated composition inputs
+by ordinal. Segment mux remains deliberately undispatchable because its
+GStreamer graph is still a typed, unaudited exception; completing source
+transport does not fabricate executable output. Local evidence does not prove
+actual Cloudflare outputs, protected native graphs, provider accounts, platform
+performance, codec licensing, or product/perceptual review. Those are explicit
+protected gates in the runbook.

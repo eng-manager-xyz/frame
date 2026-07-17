@@ -6,15 +6,25 @@ on:
       - ".github/workflows/leptos-authenticated-web.yml"
       - "apps/web/**"
       - "apps/control-plane/src/authenticated_web_runtime.rs"
+      - "apps/control-plane/src/auth_repository.rs"
       - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/compatibility_rate_limit.rs"
+      - "apps/control-plane/src/worker_auth_runtime.rs"
       - "apps/control-plane/src/lib.rs"
       - "apps/control-plane/src/routing.rs"
+      - "apps/control-plane/queries/auth/**"
+      - "apps/control-plane/queries/api_workflow/compatibility_rate_limit_*.sql"
       - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
+      - "apps/control-plane/migrations/0029_worker_auth_delivery_handoff.sql"
+      - "apps/control-plane/migrations/0034_compatibility_rate_limits.sql"
       - "crates/application/src/identity.rs"
+      - "crates/domain/src/identity.rs"
       - "crates/frame-client/**"
+      - "crates/ports/src/identity.rs"
       - "fixtures/web-authenticated/**"
       - "scripts/ci/check-web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
+      - "scripts/ci/worker-auth-sqlite-conformance.py"
       - "scripts/ci/web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-browser.py"
       - "scripts/ci/build-web-hydration.py"
@@ -28,15 +38,25 @@ on:
       - ".github/workflows/leptos-authenticated-web.yml"
       - "apps/web/**"
       - "apps/control-plane/src/authenticated_web_runtime.rs"
+      - "apps/control-plane/src/auth_repository.rs"
       - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/compatibility_rate_limit.rs"
+      - "apps/control-plane/src/worker_auth_runtime.rs"
       - "apps/control-plane/src/lib.rs"
       - "apps/control-plane/src/routing.rs"
+      - "apps/control-plane/queries/auth/**"
+      - "apps/control-plane/queries/api_workflow/compatibility_rate_limit_*.sql"
       - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
+      - "apps/control-plane/migrations/0029_worker_auth_delivery_handoff.sql"
+      - "apps/control-plane/migrations/0034_compatibility_rate_limits.sql"
       - "crates/application/src/identity.rs"
+      - "crates/domain/src/identity.rs"
       - "crates/frame-client/**"
+      - "crates/ports/src/identity.rs"
       - "fixtures/web-authenticated/**"
       - "scripts/ci/check-web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
+      - "scripts/ci/worker-auth-sqlite-conformance.py"
       - "scripts/ci/web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-browser.py"
       - "scripts/ci/build-web-hydration.py"
@@ -70,6 +90,8 @@ jobs:
             --evidence target/evidence/web-authenticated-contract-linux.json
           python3 -I scripts/ci/web-authenticated-action-sqlite-conformance.py \
             --evidence target/evidence/web-authenticated-action-sqlite-linux.json
+          python3 -I scripts/ci/worker-auth-sqlite-conformance.py \
+            --evidence target/evidence/worker-auth-sqlite-linux.json
       - name: Run focused strict Rust gates
         run: |
           cargo fmt --all -- --check
@@ -78,6 +100,7 @@ jobs:
             --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
           cargo test --locked -p frame-web
           cargo test --locked -p frame-control-plane browser_web_runtime
+          cargo test --locked -p frame-control-plane worker_auth_runtime
       - name: Build exact hydration closure and web binary
         run: |
           python3 -I scripts/ci/build-web-hydration.py \
@@ -123,6 +146,7 @@ jobs:
           name: leptos-authenticated-web-${{ github.sha }}
           path: |
             target/evidence/web-authenticated-*.json
+            target/evidence/worker-auth-*.json
             target/evidence/web-authenticated-screenshots
             target/evidence/web-hydration-*-authenticated-*.json
             target/frame-web-authenticated.log

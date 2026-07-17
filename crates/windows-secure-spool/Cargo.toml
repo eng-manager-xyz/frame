@@ -1,0 +1,31 @@
+[package]
+name = "frame-windows-secure-spool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Credentials",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+] }
+
+# This package is the workspace's deliberately narrow Win32 FFI boundary.
+# Every other package inherits the workspace-wide unsafe-code prohibition.
+[lints.rust]
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "warn"

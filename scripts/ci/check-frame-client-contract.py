@@ -22,6 +22,7 @@ FORBIDDEN_SOURCE_MARKERS = (
     "axum::",
     "object_key",
     "signed_url",
+    "instant_finalize",
 )
 REQUIRED_ARTIFACTS = (
     "docs/architecture/frame-public-contract-v1.md",

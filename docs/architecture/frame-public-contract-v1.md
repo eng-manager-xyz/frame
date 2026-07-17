@@ -8,6 +8,11 @@ errors, and an optional bounded native HTTP adapter. The dependency direction
 is one way: an external consumer may pin Frame; no Frame manifest may depend on
 the EngManager portfolio repository.
 
+Authenticated first-party DTOs live in the separate
+`frame-authenticated-client` package. They are never re-exported from
+`frame-client`, do not expand this anonymous allowlist, and are not supported
+as an external portfolio integration contract.
+
 The v1 allowlist is deliberately small:
 
 | Classification | Public v1 fields | Never public |

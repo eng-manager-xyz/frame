@@ -961,6 +961,38 @@ mod tests {
         assert_eq!(error.retry_after_ms, None);
     }
 
+    #[test]
+    fn session_or_api_key_requires_one_authenticated_transport_capability() {
+        let policy = ApiRequestPolicyV1 {
+            auth: ApiAuthClassV1::SessionOrApiKey,
+            max_body_bytes: 0,
+            accepted_content_types: Vec::new(),
+            idempotency: IdempotencyRequirementV1::Optional,
+            rate_limit_bucket: "mobile_compatibility_v1".into(),
+            audit_action: "mobile.folder.create".into(),
+        };
+        let envelope = ApiMutationEnvelopeV1 {
+            content_length: 0,
+            content_type: None,
+            idempotency_key: None,
+            correlation_id: "trace-mobile-auth".into(),
+        };
+        let context = |authenticated| RequestSecurityContextV1 {
+            authenticated,
+            authorized: true,
+            browser_origin_valid: true,
+            csrf_valid: true,
+            rate_limit: RateLimitDecisionV1::Allowed,
+        };
+        assert_eq!(
+            ApiGatewayV1::admit_mutation(&policy, &envelope, context(false))
+                .expect_err("neither credential class was authenticated")
+                .code,
+            ApiErrorCodeV1::Unauthenticated
+        );
+        assert!(ApiGatewayV1::admit_mutation(&policy, &envelope, context(true)).is_ok());
+    }
+
     #[tokio::test]
     async fn webhook_signature_rotation_window_and_replay_are_enforced() {
         let ring = WebhookKeyRingV1::new(

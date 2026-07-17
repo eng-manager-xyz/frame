@@ -22,19 +22,29 @@
       "path": "/login",
       "component": "login-form",
       "journey": "request-one-time-code",
-      "post_state": "adapter_pending_fail_closed"
+      "post_endpoint": "/api/v1/web/auth/login",
+      "post_state": "worker_adapter_local_provider_execution_protected"
     },
     {
       "path": "/signup",
       "component": "signup-form",
       "journey": "create-and-verify-account",
-      "post_state": "adapter_pending_fail_closed"
+      "post_endpoint": "/api/v1/web/auth/signup",
+      "post_state": "worker_adapter_local_provider_execution_protected"
+    },
+    {
+      "path": "/recovery",
+      "component": "recovery-form",
+      "journey": "recover-account-access",
+      "post_endpoint": "/api/v1/web/auth/recovery",
+      "post_state": "worker_adapter_local_provider_execution_protected"
     },
     {
       "path": "/verify",
       "component": "otp-form",
       "journey": "verify-pending-challenge",
-      "post_state": "adapter_pending_fail_closed"
+      "post_endpoint": "/api/v1/web/auth/verify",
+      "post_state": "worker_adapter_local_provider_execution_protected"
     }
   ],
   "routes": [
@@ -46,7 +56,7 @@
       "journey": "inspect-recent-recordings",
       "allowed_roles": ["owner", "admin", "member"],
       "api_operation": "workspace.dashboard.load.v1",
-      "mutation": null,
+      "mutation": "organization.active-selection.update.v1",
       "rollout_flag": "web.dashboard.v1",
       "legacy_aliases": []
     },

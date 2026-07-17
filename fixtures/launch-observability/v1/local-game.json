@@ -117,7 +117,7 @@
       "contract_major": 1,
       "worker_release": "worker-1111111",
       "render_deploy": "render-1111111",
-      "migration_level": "0026_legacy_api_execution.sql",
+      "migration_level": "0034_compatibility_rate_limits.sql",
       "portfolio_consumer": "portfolio-aaaaaaa",
       "consumer_contract_major": 1,
       "expected": "compatible"
@@ -128,7 +128,7 @@
       "contract_major": 1,
       "worker_release": "worker-1111111",
       "render_deploy": "render-1111111",
-      "migration_level": "0026_legacy_api_execution.sql",
+      "migration_level": "0034_compatibility_rate_limits.sql",
       "portfolio_consumer": "portfolio-9999999",
       "consumer_contract_major": 1,
       "expected": "compatible"
@@ -139,7 +139,7 @@
       "contract_major": 1,
       "worker_release": "worker-1111111",
       "render_deploy": "render-1111111",
-      "migration_level": "0026_legacy_api_execution.sql",
+      "migration_level": "0034_compatibility_rate_limits.sql",
       "portfolio_consumer": "portfolio-bbbbbbb",
       "consumer_contract_major": 2,
       "expected": "NO_GO"
@@ -158,7 +158,7 @@
     {"id": "portfolio_link_remove", "elapsed_ms": 15000, "scope": "portfolio_flagged_link", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
     {"id": "optional_browser_off", "elapsed_ms": 10000, "scope": "frame_optional_browser_capabilities", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
     {"id": "edge_rules_off", "elapsed_ms": 18000, "scope": "frame_host_exact_rule_and_purge", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
-    {"id": "worker_route_remove", "elapsed_ms": 22000, "scope": "frame_api_route_only", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "worker_route_remove", "elapsed_ms": 22000, "scope": "frame_api_and_media_server_routes_only", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
     {"id": "render_rollback", "elapsed_ms": 25000, "scope": "frame_render_service_only", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
     {"id": "proxy_dns_restore", "elapsed_ms": 20000, "scope": "frame_dns_record_only", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
     {"id": "d1_forward_fix", "elapsed_ms": 45000, "scope": "expand_schema_compatible_fix", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},

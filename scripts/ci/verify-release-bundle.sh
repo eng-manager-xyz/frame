@@ -40,6 +40,32 @@ jq -e --arg sha "${expected_sha}" '
   .contract_major == 1 and
   .render_authority == "git-checks-pass" and
   (.migration_level | test("^[0-9]{4}_[a-z0-9_]+\\.sql$")) and
+  .expand_migration_level == .migration_level and
+  (.contract_migration_level | test("^[0-9]{4}_[a-z0-9_]+\\.sql$")) and
+  .migration_authority.expand == {
+    level: .expand_migration_level,
+    status: "candidate"
+  } and
+  .migration_authority.contract == {
+    level: .contract_migration_level,
+    status: "protected_manual_required"
+  } and
+  .migration_authority.minimum_compatible_worker.source_git_sha == $sha and
+  (.migration_authority.minimum_compatible_worker.artifact_sha256 | test("^[0-9a-f]{64}$")) and
+  .migration_authority.minimum_compatible_worker.deployment_id == null and
+  .migration_authority.minimum_compatible_worker.version_id == null and
+  .migration_authority.minimum_compatible_worker.expand_migration_level == .expand_migration_level and
+  .migration_authority.minimum_compatible_worker.contract_migration_level == .contract_migration_level and
+  .migration_authority.minimum_compatible_worker.evidence == "pending_protected_provider_observation" and
+  .migration_authority.approved_rollback == {
+    source_git_sha: null,
+    artifact_sha256: null,
+    deployment_id: null,
+    version_id: null,
+    expand_migration_level: null,
+    contract_migration_level: null,
+    evidence: "pending_protected_provider_approval"
+  } and
   .artifacts.web.path == "frame-web" and
   .artifacts.web_assets.path == "web-dist/manifest.json" and
   .artifacts.web_assets.layout == "web-dist" and
@@ -48,6 +74,11 @@ jq -e --arg sha "${expected_sha}" '
   .artifacts.sbom.path == "frame.cdx.json" and
   .artifacts.sbom.format == "CycloneDX" and
   .artifacts.sbom.spec_version == "1.6"
+' "${bundle}/release-manifest.json" >/dev/null
+
+jq -e '
+  .migration_authority.minimum_compatible_worker.artifact_sha256 ==
+    .artifacts.worker.sha256
 ' "${bundle}/release-manifest.json" >/dev/null
 
 sha256_file() {
@@ -91,8 +122,8 @@ with tarfile.open(archive, "r:gz") as handle:
         if not (member.isfile() or member.isdir()):
             raise SystemExit("Worker archive may contain only regular files and directories")
         names.add(member.name)
-if "wrangler-release/index.js" not in names:
-    raise SystemExit("Worker archive is missing wrangler-release/index.js")
+if "wrangler-release/shim.js" not in names:
+    raise SystemExit("Worker archive is missing wrangler-release/shim.js")
 PY
 
 if grep -Eiq '(authorization:|bearer[[:space:]]|x-amz-signature|signed[_-]?url|cookie:|password|api[_-]?token|client[_-]?secret)' \

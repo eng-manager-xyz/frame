@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::contracts::API_SCHEMA_VERSION;
+use crate::contracts::{API_SCHEMA_VERSION, MediaJobRequest, valid_sha256};
 use crate::r2_direct_upload::DirectPutCapabilityV1;
 
 pub const MAX_SINGLE_UPLOAD_BYTES: u64 = 100 * 1_024 * 1_024;
@@ -290,6 +290,32 @@ pub struct SourceObjectRow {
 }
 
 #[derive(Clone, Deserialize)]
+pub struct WorkerSourceRow {
+    pub ordinal: i64,
+    pub video_id: String,
+    pub source_version: i64,
+    pub object_key: String,
+    pub bytes: i64,
+    pub checksum_sha256: String,
+    pub content_type: String,
+}
+
+/// Ordered, immutable input identity used only for deterministic artifact
+/// naming. Every occurrence is retained, including repeated composition
+/// sources, because the ordinal is part of the semantic input identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeArtifactSourceIdentityV2 {
+    pub ordinal: u16,
+    pub video_id: String,
+    pub source_version: u32,
+    pub object_key: String,
+    pub bytes: u64,
+    pub checksum_sha256: String,
+    pub content_type: String,
+    pub authority_digest: String,
+}
+
+#[derive(Clone, Deserialize)]
 pub struct NativeJobCandidateRow {
     pub id: String,
     pub revision: i64,
@@ -333,6 +359,76 @@ pub fn request_digest<T: Serialize>(command_type: &str, value: &T) -> Result<Str
     hasher.update([0]);
     hasher.update(serialized);
     Ok(hex(&hasher.finalize()))
+}
+
+/// Returns the canonical media-create digest and the only serializer-version
+/// alias that is allowed to replay it. An omitted source list and an explicit
+/// singleton equal to the top-level source describe the same command. New
+/// receipts keep the pre-0027 omitted form as their canonical identity, while
+/// the explicit digest remains accepted for receipts written during a mixed
+/// serializer rollout.
+pub fn media_job_create_digests(request: &MediaJobRequest) -> Result<(String, Option<String>), ()> {
+    let singleton_is_primary = request.source_inputs.is_empty()
+        || matches!(
+            request.source_inputs.as_slice(),
+            [source]
+                if source.video_id == request.video_id
+                    && source.source_version == request.source_version
+        );
+    if !singleton_is_primary {
+        return Ok((request_digest("media_job_create", request)?, None));
+    }
+
+    let mut omitted = request.clone();
+    omitted.source_inputs.clear();
+    let canonical = request_digest("media_job_create", &omitted)?;
+
+    let mut explicit = omitted;
+    explicit.source_inputs = explicit.normalized_source_inputs();
+    let explicit = request_digest("media_job_create", &explicit)?;
+    let alias = (explicit != canonical).then_some(explicit);
+    Ok((canonical, alias))
+}
+
+pub fn native_artifact_digest(
+    request: &MediaJobRequest,
+    sources: &[NativeArtifactSourceIdentityV2],
+) -> Result<String, ()> {
+    let inputs = request.normalized_source_inputs();
+    if sources.len() != inputs.len()
+        || sources
+            .iter()
+            .zip(inputs)
+            .enumerate()
+            .any(|(ordinal, (source, input))| {
+                usize::from(source.ordinal) != ordinal
+                    || source.video_id != input.video_id
+                    || source.source_version != input.source_version
+                    || source.object_key.is_empty()
+                    || source.bytes == 0
+                    || !valid_sha256(&source.checksum_sha256)
+                    || source.content_type.is_empty()
+                    || !valid_sha256(&source.authority_digest)
+            })
+    {
+        return Err(());
+    }
+
+    #[derive(Serialize)]
+    struct ArtifactIdentityV2<'a> {
+        schema_version: u16,
+        request: &'a MediaJobRequest,
+        sources: &'a [NativeArtifactSourceIdentityV2],
+    }
+
+    request_digest(
+        "native_media_artifact_v2",
+        &ArtifactIdentityV2 {
+            schema_version: 2,
+            request,
+            sources,
+        },
+    )
 }
 
 pub fn digest_identifier(command_type: &str, identifier: &str) -> Result<String, ()> {
@@ -420,6 +516,137 @@ mod tests {
             first,
             request_digest("media_job", &payload).expect("domain")
         );
+    }
+
+    #[test]
+    fn singleton_media_request_replays_across_omitted_and_explicit_serializers() {
+        #[derive(Serialize)]
+        struct LegacyMediaJobRequest<'a> {
+            schema_version: u16,
+            tenant_id: &'a str,
+            video_id: &'a str,
+            source_version: u32,
+            profile: &'a str,
+        }
+
+        let tenant = "018f47a6-7b1c-7f55-8f39-8f8a86900101";
+        let video = "018f47a6-7b1c-7f55-8f39-8f8a86900102";
+        let mut request = MediaJobRequest {
+            schema_version: API_SCHEMA_VERSION,
+            tenant_id: tenant.into(),
+            video_id: video.into(),
+            source_version: 3,
+            source_inputs: Vec::new(),
+            profile: "probe_v1".into(),
+            transform: None,
+            composition: None,
+        };
+        let legacy = LegacyMediaJobRequest {
+            schema_version: API_SCHEMA_VERSION,
+            tenant_id: tenant,
+            video_id: video,
+            source_version: 3,
+            profile: "probe_v1",
+        };
+        let legacy_digest = request_digest("media_job_create", &legacy).expect("legacy digest");
+        let (omitted, omitted_alias) =
+            media_job_create_digests(&request).expect("omitted digest set");
+        assert_eq!(omitted, legacy_digest);
+
+        request.source_inputs = request.normalized_source_inputs();
+        let explicit_wire_digest =
+            request_digest("media_job_create", &request).expect("explicit wire digest");
+        let (explicit, explicit_alias) =
+            media_job_create_digests(&request).expect("explicit digest set");
+        assert_eq!(explicit, legacy_digest);
+        assert_ne!(explicit_wire_digest, legacy_digest);
+        assert_eq!(
+            omitted_alias.as_deref(),
+            Some(explicit_wire_digest.as_str())
+        );
+        assert_eq!(
+            explicit_alias.as_deref(),
+            Some(explicit_wire_digest.as_str())
+        );
+
+        request
+            .source_inputs
+            .push(crate::contracts::MediaJobSourceInputV1 {
+                video_id: "018f47a6-7b1c-7f55-8f39-8f8a86900103".into(),
+                source_version: 4,
+            });
+        let (multi_source, alias) =
+            media_job_create_digests(&request).expect("multi-source digest set");
+        assert_eq!(
+            multi_source,
+            request_digest("media_job_create", &request).expect("multi-source wire digest")
+        );
+        assert!(alias.is_none());
+    }
+
+    #[test]
+    fn artifact_digest_binds_every_ordered_source_authority_field() {
+        let tenant = "018f47a6-7b1c-7f55-8f39-8f8a86900101";
+        let first_video = "018f47a6-7b1c-7f55-8f39-8f8a86900102";
+        let second_video = "018f47a6-7b1c-7f55-8f39-8f8a86900103";
+        let request = MediaJobRequest {
+            schema_version: API_SCHEMA_VERSION,
+            tenant_id: tenant.into(),
+            video_id: first_video.into(),
+            source_version: 1,
+            source_inputs: vec![
+                crate::contracts::MediaJobSourceInputV1 {
+                    video_id: first_video.into(),
+                    source_version: 1,
+                },
+                crate::contracts::MediaJobSourceInputV1 {
+                    video_id: second_video.into(),
+                    source_version: 2,
+                },
+            ],
+            profile: "segment_mux_v1".into(),
+            transform: None,
+            composition: None,
+        };
+        let identity =
+            |ordinal: u16, video_id: &str, version: u32, byte: u8| NativeArtifactSourceIdentityV2 {
+                ordinal,
+                video_id: video_id.into(),
+                source_version: version,
+                object_key: format!("tenants/{tenant}/videos/{video_id}/source/v{version}/payload"),
+                bytes: 1_024,
+                checksum_sha256: format!("{byte:02x}").repeat(32),
+                content_type: "video/webm".into(),
+                authority_digest: format!("{:02x}", byte.saturating_add(1)).repeat(32),
+            };
+        let sources = vec![
+            identity(0, first_video, 1, 0xab_u8),
+            identity(1, second_video, 2, 0xcd_u8),
+        ];
+        let digest = native_artifact_digest(&request, &sources).expect("artifact digest");
+        assert_eq!(
+            digest,
+            native_artifact_digest(&request, &sources).expect("stable artifact digest")
+        );
+
+        for mutate in 0..5 {
+            let mut changed = sources.clone();
+            match mutate {
+                0 => changed[1].object_key.push_str("-other"),
+                1 => changed[1].bytes += 1,
+                2 => changed[1].checksum_sha256 = "ef".repeat(32),
+                3 => changed[1].content_type = "video/mp4".into(),
+                _ => changed[1].authority_digest = "12".repeat(32),
+            }
+            assert_ne!(
+                digest,
+                native_artifact_digest(&request, &changed).expect("changed artifact digest")
+            );
+        }
+
+        let mut sparse = sources;
+        sparse[1].ordinal = 2;
+        assert!(native_artifact_digest(&request, &sparse).is_err());
     }
 
     #[test]

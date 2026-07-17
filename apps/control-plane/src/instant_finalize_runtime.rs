@@ -72,11 +72,21 @@ impl RequestRow {
     }
 
     fn receipt(&self) -> Result<InstantFinalizeReceiptV1, InstantFinalizeFailure> {
-        let state = match self.state.as_str() {
-            "pending" => InstantFinalizeStateV1::Pending,
-            "published" => InstantFinalizeStateV1::Published,
+        let (state, published) = match self.state.as_str() {
+            "pending" => (InstantFinalizeStateV1::Pending, false),
+            "published" => (InstantFinalizeStateV1::Published, true),
             _ => return Err(InstantFinalizeFailure::Conflict),
         };
+        if published != self.publication_id.as_deref().is_some_and(valid_uuid)
+            || published
+                != self
+                    .playable_object_key
+                    .as_deref()
+                    .is_some_and(|key| valid_internal_object_key(key, self))
+            || published != (self.distribution_eligible == 1)
+        {
+            return Err(InstantFinalizeFailure::Conflict);
+        }
         Ok(InstantFinalizeReceiptV1 {
             schema_version: INSTANT_FINALIZE_SCHEMA_VERSION,
             state,
@@ -87,10 +97,25 @@ impl RequestRow {
                 .map_err(|_| InstantFinalizeFailure::Persistence)?,
             upload_id: self.upload_id.clone(),
             object_version: self.object_version.clone(),
-            playable_object_key: self.playable_object_key.clone(),
             distribution_eligible: self.distribution_eligible == 1,
         })
     }
+}
+
+fn valid_internal_object_key(key: &str, request: &RequestRow) -> bool {
+    let prefix = format!(
+        "tenants/{}/videos/{}/",
+        request.organization_id, request.video_id
+    );
+    (prefix.len() + 1..=1024).contains(&key.len())
+        && key.starts_with(&prefix)
+        && !key.contains("..")
+        && !key.contains(['\\', '?', '#', '%'])
+}
+
+fn valid_uuid(value: &str) -> bool {
+    Uuid::parse_str(value)
+        .is_ok_and(|uuid| !uuid.is_nil() && uuid.as_hyphenated().to_string() == value)
 }
 
 #[derive(Debug, Deserialize)]

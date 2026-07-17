@@ -125,13 +125,15 @@ no credential, signed URL, provider endpoint, or arbitrary metadata field.
 
 `ObjectStoreV1` negotiates an explicit versioned capability set before I/O. Capabilities cover
 `put`, `head`, `get`, ranges, copy, delete, scoped list, create conditions, provider-version
-conditions, and SHA-256 integrity, with declared object/range/page limits.
+conditions independently for copy sources and deletes, and SHA-256 integrity, with declared
+object/range/page limits.
 
 All media writes and copy destinations are create-only. There is no unconditional overwrite or
-provider-version overwrite method for a `ScopedObjectKey`. Provider-version conditions fence a copy
-source or a delete. If an expected provider version is supplied and the source/object is absent,
-the result is `precondition_failed`; absence therefore cannot silently satisfy a version fence.
-Unconditioned deletes return `deleted` or `already_absent`, making their retries idempotent.
+provider-version overwrite method for a `ScopedObjectKey`. Provider-version conditions can fence a
+copy source or a delete only when the adapter advertises that exact capability. If a supported
+expected provider version is supplied and the source/object is absent, the result is
+`precondition_failed`; absence therefore cannot silently satisfy a version fence. Unconditioned
+deletes return `deleted` or `already_absent`, making their retries idempotent.
 
 A successful write result records the canonical key, exact byte count, content type, SHA-256,
 cache policy, opaque provider version, opaque provider etag, last-modified time, and correlation ID.
@@ -167,8 +169,12 @@ this contract suite and is separate from the Worker-binding adapter described ne
 Create-only puts send R2's `etagDoesNotMatch: *` conditional and a provider SHA-256, then accept an
 existing object only when size, content type, SHA-256, cache policy, and correlation ID exactly
 match the request. Head/get/range reconstruct the complete typed receipt from R2 HTTP/custom
-metadata. Copy is same-video and create-only; delete honors an optional provider-version fence;
-list is prefix-scoped to one tenant/video and keeps the provider cursor opaque.
+metadata. Copy is same-video and create-only; list is prefix-scoped to one tenant/video and keeps
+the provider cursor opaque. The capability model distinguishes conditional source-copy reads from
+conditional deletes. The Worker R2 binding supports the former but exposes no atomic conditional
+delete, so `R2ObjectStoreV1` advertises conditional delete as unsupported and rejects an
+expected-version delete before provider I/O. It never substitutes a racy
+HEAD-then-unconditional-delete sequence for that guarantee.
 
 Every operation checks the request context before invoking R2. A context/key or context/list-tenant
 mismatch returns `not_found`, including put, head, get, range, copy, delete, and list, so callers
@@ -177,9 +183,9 @@ stable storage taxonomy and never included in the public error string.
 
 The route `/__frame/local/r2-storage-conformance` compiles this adapter into the actual Rust/Wasm
 Worker and runs immutable put/replay/conflict, full metadata, head/get/range, conditional copy,
-cursor pagination, version-fenced and idempotent delete, plus every cross-tenant operation against
-Wrangler's isolated local R2 binding. The route is an exact path, accepts only POST, requires an
-IPv4 loopback URL with an explicit port, and is hidden as 404 in production.
+cursor pagination, fail-closed conditional delete, idempotent delete, plus every cross-tenant
+operation against Wrangler's isolated local R2 binding. The route is an exact path, accepts only
+POST, requires an IPv4 loopback URL with an explicit port, and is hidden as 404 in production.
 
 `scripts/ci/r2-storage-conformance.py` starts that Worker with Wrangler 4.111.0, refuses Cloudflare
 credentials and production authority variables, verifies route lookalikes and authority lookalikes

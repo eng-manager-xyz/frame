@@ -29,7 +29,7 @@ mod server {
     use axum::{
         Json, Router,
         body::{Body, Bytes},
-        extract::{DefaultBodyLimit, Form, Path, Query, State},
+        extract::{DefaultBodyLimit, Path, Query, State},
         http::{
             HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri,
             header::{self, HOST},
@@ -271,9 +271,10 @@ mod server {
         };
         let router = Router::new()
             .route("/", get(landing))
-            .route("/login", get(login).post(login_submit))
-            .route("/signup", get(signup).post(signup_submit))
-            .route("/verify", get(verify).post(verify_submit))
+            .route("/login", get(login))
+            .route("/signup", get(signup))
+            .route("/recovery", get(recovery))
+            .route("/verify", get(verify))
             .route("/dashboard", get(dashboard))
             .route("/library", get(library))
             .route("/spaces", get(spaces))
@@ -420,114 +421,48 @@ mod server {
         page_response(pages::landing(&state.config), &state.hydration_assets)
     }
 
-    async fn login(State(state): State<AppState>) -> Response {
+    #[derive(Default, Deserialize)]
+    struct AuthPageQuery {
+        auth_error: Option<String>,
+    }
+
+    fn auth_page_state(query: &AuthPageQuery) -> SignInState {
+        match query.auth_error.as_deref() {
+            Some("invalid") => SignInState::Invalid,
+            Some("failed") => SignInState::Failed,
+            _ => SignInState::Ready,
+        }
+    }
+
+    async fn login(State(state): State<AppState>, Query(query): Query<AuthPageQuery>) -> Response {
         page_response(
-            pages::login(&state.config, SignInState::Ready),
+            pages::login(&state.config, auth_page_state(&query)),
             &state.hydration_assets,
         )
     }
 
-    async fn signup(State(state): State<AppState>) -> Response {
+    async fn signup(State(state): State<AppState>, Query(query): Query<AuthPageQuery>) -> Response {
         page_response(
-            pages::signup(&state.config, SignInState::Ready),
+            pages::signup(&state.config, auth_page_state(&query)),
             &state.hydration_assets,
         )
     }
 
-    async fn verify(State(state): State<AppState>) -> Response {
-        page_response(
-            pages::verify(&state.config, SignInState::Ready),
-            &state.hydration_assets,
-        )
-    }
-
-    #[derive(Deserialize)]
-    struct SignInForm {
-        email: String,
-    }
-
-    async fn login_submit(State(state): State<AppState>, Form(form): Form<SignInForm>) -> Response {
-        // The session service is not connected yet. Consume only the bounded form
-        // shape, never log or reflect the identity, and fail without creating a
-        // partial client-side session.
-        let valid_shape = form.email.len() <= 254
-            && form.email.is_ascii()
-            && form.email.contains('@')
-            && !form.email.chars().any(char::is_whitespace);
-        let mut page = pages::login(
-            &state.config,
-            if valid_shape {
-                SignInState::Failed
-            } else {
-                SignInState::Invalid
-            },
-        );
-        page.status = if valid_shape {
-            StatusCode::SERVICE_UNAVAILABLE
-        } else {
-            StatusCode::UNPROCESSABLE_ENTITY
-        };
-        page_response(page, &state.hydration_assets)
-    }
-
-    #[derive(Deserialize)]
-    struct SignUpForm {
-        display_name: String,
-        email: String,
-    }
-
-    async fn signup_submit(
+    async fn recovery(
         State(state): State<AppState>,
-        Form(form): Form<SignUpForm>,
+        Query(query): Query<AuthPageQuery>,
     ) -> Response {
-        let display_name = form.display_name.trim();
-        let valid_shape = !display_name.is_empty()
-            && display_name.len() <= 120
-            && !display_name.chars().any(char::is_control)
-            && form.email.len() <= 254
-            && form.email.is_ascii()
-            && form.email.contains('@')
-            && !form.email.chars().any(char::is_whitespace);
-        let mut page = pages::signup(
-            &state.config,
-            if valid_shape {
-                SignInState::Failed
-            } else {
-                SignInState::Invalid
-            },
-        );
-        page.status = if valid_shape {
-            StatusCode::SERVICE_UNAVAILABLE
-        } else {
-            StatusCode::UNPROCESSABLE_ENTITY
-        };
-        page_response(page, &state.hydration_assets)
+        page_response(
+            pages::recovery(&state.config, auth_page_state(&query)),
+            &state.hydration_assets,
+        )
     }
 
-    #[derive(Deserialize)]
-    struct VerifyForm {
-        otp: String,
-    }
-
-    async fn verify_submit(
-        State(state): State<AppState>,
-        Form(form): Form<VerifyForm>,
-    ) -> Response {
-        let valid_shape = form.otp.len() == 6 && form.otp.bytes().all(|byte| byte.is_ascii_digit());
-        let mut page = pages::verify(
-            &state.config,
-            if valid_shape {
-                SignInState::Failed
-            } else {
-                SignInState::Invalid
-            },
-        );
-        page.status = if valid_shape {
-            StatusCode::SERVICE_UNAVAILABLE
-        } else {
-            StatusCode::UNPROCESSABLE_ENTITY
-        };
-        page_response(page, &state.hydration_assets)
+    async fn verify(State(state): State<AppState>, Query(query): Query<AuthPageQuery>) -> Response {
+        page_response(
+            pages::verify(&state.config, auth_page_state(&query)),
+            &state.hydration_assets,
+        )
     }
 
     #[derive(Default, Deserialize)]
@@ -1586,7 +1521,7 @@ mod server {
                 diagnostic_token: Some(token.into()),
                 worker_release: Some("worker-1111111".into()),
                 render_deploy: Some("render-deploy-1".into()),
-                migration_level: Some("0026_legacy_api_execution.sql".into()),
+                migration_level: Some("0034_compatibility_rate_limits.sql".into()),
                 portfolio_consumer: Some("portfolio-aaaaaaa".into()),
                 ..ConfigValues::default()
             })
@@ -1620,7 +1555,10 @@ mod server {
             assert_eq!(value["contract_major"], 1);
             assert_eq!(value["worker_release"], "worker-1111111");
             assert_eq!(value["render_deploy"], "render-deploy-1");
-            assert_eq!(value["migration_level"], "0026_legacy_api_execution.sql");
+            assert_eq!(
+                value["migration_level"],
+                "0034_compatibility_rate_limits.sql"
+            );
             assert_eq!(value["portfolio_consumer"], "portfolio-aaaaaaa");
 
             let hidden = release_health(State(state), HeaderMap::new()).await;
@@ -1681,29 +1619,26 @@ mod server {
             ));
         }
 
-        #[tokio::test]
-        async fn failed_sign_in_never_reflects_identity_or_creates_redirect() {
-            let state = AppState {
-                config: Arc::new(local_config()),
-                hydration_assets: HydrationAssets::default(),
-                public_ssr: None,
-            };
-            let response = login_submit(
-                State(state),
-                Form(SignInForm {
-                    email: "private-person@example.test".into(),
+        #[test]
+        fn auth_error_query_is_closed_and_contains_no_submitted_material() {
+            assert_eq!(
+                auth_page_state(&AuthPageQuery {
+                    auth_error: Some("invalid".into()),
                 }),
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            assert!(response.headers().get(header::LOCATION).is_none());
-            assert_eq!(response.headers()[header::CACHE_CONTROL], pages::NO_STORE);
-            let body = to_bytes(response.into_body(), 1024 * 1024)
-                .await
-                .expect("bounded response body");
-            let body = String::from_utf8(body.to_vec()).expect("HTML is UTF-8");
-            assert!(!body.contains("private-person"));
-            assert!(body.contains("No session was created"));
+                SignInState::Invalid
+            );
+            assert_eq!(
+                auth_page_state(&AuthPageQuery {
+                    auth_error: Some("failed".into()),
+                }),
+                SignInState::Failed
+            );
+            assert_eq!(
+                auth_page_state(&AuthPageQuery {
+                    auth_error: Some("private-person@example.test".into()),
+                }),
+                SignInState::Ready
+            );
         }
 
         #[tokio::test]

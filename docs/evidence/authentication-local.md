@@ -1,8 +1,9 @@
 # Local authentication evidence
 
 This record describes locally reproducible evidence for the runtime-neutral authentication core.
-It is not production D1, email/SMS delivery, provider, browser-matrix, or legacy-session cutover
-evidence.
+The companion D1 report executes the compiled Rust/Wasm repository against Wrangler-local D1. It
+is not hosted production D1, browser identity issuance, email/SMS delivery, provider,
+browser-matrix, or legacy-session cutover evidence.
 
 ## Commands
 
@@ -12,12 +13,15 @@ cargo test --locked -p frame-domain -p frame-ports -p frame-application
 cargo clippy --locked -p frame-domain -p frame-ports -p frame-application --all-targets -- -D warnings
 cargo check --locked --target wasm32-unknown-unknown -p frame-domain -p frame-ports -p frame-application
 cargo clippy --locked --target wasm32-unknown-unknown -p frame-domain -p frame-ports -p frame-application -- -D warnings
+python3 -I scripts/ci/auth-d1-conformance.py \
+  --evidence target/evidence/auth-d1-conformance.json
 python3 scripts/ci/check-secrets.py
 ```
 
-The reviewed implementation produced 43 application tests, 26 domain tests, and 23 ports tests
-(92 total), plus passing native/Wasm strict lint and formatting gates. The repository secret scan
-also passes with the auth files included in an isolated index.
+The reviewed implementation passes the domain, ports, and application suites plus native/Wasm
+strict lint and formatting gates. The repository secret scan also passes with the auth files
+included in an isolated index; the exact current test counts remain in CI rather than this durable
+evidence narrative.
 
 ## Proven behaviors
 

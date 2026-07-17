@@ -10,6 +10,8 @@ mod cutover;
 mod idempotency;
 mod identity;
 mod legacy_compatibility;
+mod legacy_notification_preferences;
+mod legacy_organization_selection;
 mod media_router;
 mod multipart;
 mod organization;
@@ -30,6 +32,8 @@ pub use identity::{
     VerificationIssueReceipt, VerifiedIdentityProvisioning, VerifiedPrincipal,
 };
 pub use legacy_compatibility::*;
+pub use legacy_notification_preferences::*;
+pub use legacy_organization_selection::*;
 pub use media_router::{MediaRoute, MediaRouter, MediaRoutingPolicy, RoutedTransform};
 pub use multipart::*;
 pub use organization::*;

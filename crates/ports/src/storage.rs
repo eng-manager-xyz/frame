@@ -27,14 +27,15 @@ pub enum ObjectStoreOperation {
     Delete,
     List,
     ConditionalCreate,
-    ConditionalVersion,
+    ConditionalSourceVersion,
+    ConditionalDeleteVersion,
     Sha256Integrity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectStoreCapabilitiesV1 {
     contract_version: u16,
-    operations: [bool; 10],
+    operations: [bool; 11],
     max_object_size: ByteSize,
     max_range_size: ByteSize,
     max_list_page_size: u16,
@@ -56,7 +57,7 @@ impl ObjectStoreCapabilitiesV1 {
         }
         Ok(Self {
             contract_version: OBJECT_STORE_CONTRACT_VERSION,
-            operations: [true; 10],
+            operations: [true; 11],
             max_object_size,
             max_range_size,
             max_list_page_size,
@@ -113,8 +114,9 @@ const fn operation_index(operation: ObjectStoreOperation) -> usize {
         ObjectStoreOperation::Delete => 5,
         ObjectStoreOperation::List => 6,
         ObjectStoreOperation::ConditionalCreate => 7,
-        ObjectStoreOperation::ConditionalVersion => 8,
-        ObjectStoreOperation::Sha256Integrity => 9,
+        ObjectStoreOperation::ConditionalSourceVersion => 8,
+        ObjectStoreOperation::ConditionalDeleteVersion => 9,
+        ObjectStoreOperation::Sha256Integrity => 10,
     }
 }
 
@@ -1068,7 +1070,7 @@ impl ObjectStoreV1 for DeterministicObjectStore {
         self.guard(ObjectStoreOperation::Copy)?;
         if request.expected_source_version.is_some() {
             self.capabilities
-                .require(ObjectStoreOperation::ConditionalVersion)?;
+                .require(ObjectStoreOperation::ConditionalSourceVersion)?;
         }
         let source = self
             .objects
@@ -1109,7 +1111,7 @@ impl ObjectStoreV1 for DeterministicObjectStore {
         self.guard(ObjectStoreOperation::Delete)?;
         if request.expected_version.is_some() {
             self.capabilities
-                .require(ObjectStoreOperation::ConditionalVersion)?;
+                .require(ObjectStoreOperation::ConditionalDeleteVersion)?;
         }
         let mut objects = self.objects.write().map_err(|_| unavailable())?;
         let Some(existing) = objects.get(request.key.as_str()) else {

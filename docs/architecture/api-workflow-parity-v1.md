@@ -20,6 +20,22 @@ provider, and retirement approvals pending.
 - Effect RPC operations, exported durable workflow implementations, the Effect Loom workflow,
   and the non-workflow-directory dispatch/recovery entrypoints that own durable side effects.
 
+Declaration-only pins are insufficient for operations whose behavior lives behind a shared
+transport. Every Mobile row therefore also pins the concrete catch-all handler, and every Effect
+RPC row pins the `/api/erpc` transport, RPC/auth layer, family handler, and called service/policy
+files. Organization actions in the audited migration slice additionally pin imported authorization,
+role, plan, normalization, and membership helpers when those helpers determine semantics. The
+checker enforces this source closure offline and verifies every digest against the pinned Cap clone
+when it is available.
+
+Provider classification is also identity-driven. Thirty-one additional rows pin only the minimal
+directly effect-bearing Cap sources for Google Drive, Vercel, Stripe, Resend, Groq, OAuth, Discord,
+Tinybird, storage/media, Dub, Deepgram, and GitHub behavior. Those pins add
+`provider_execution` to completion without feeding source-path words back into route-family or
+disposition classification. `POST /commercial/activate` (`cap-v1-261c3cb23ca88bf9`) is guarded by
+a separate invariant: contract declarations alone are dependency evidence, not a concrete Frame
+commercial licensing authority and not proof of an external provider.
+
 Catch-all Next files are recorded as transport wrappers rather than duplicate product operations.
 Ordinary helpers, UI routes, and native desktop IPC are explicitly excluded. When the ignored
 pinned Cap checkout exists, the checker re-extracts all rows and compares source checksums and the
@@ -29,7 +45,10 @@ axes, generated documentation, dispositions, and retirement records.
 Each row records legacy path or operation, methods, symbols and source hashes, client families,
 auth class, policy version, `frame.api.v1`, issue owners, Rust authority, disposition, body/rate/
 idempotency policy, deprecation state, and five independent evidence axes: success, validation,
-authorization, idempotency/retry, and failure.
+authorization, idempotency/retry, and failure. A separate per-row completion decision records the
+remaining repository-local adapter or retirement-response work, any overlapping protected gate,
+the pending retirement authority, and the production fail-closed behavior. Protected evidence
+never erases unfinished local work.
 
 ## Central admission and errors
 
@@ -53,6 +72,19 @@ policy, or telemetry labels.
 
 Correlation IDs are opaque safe tokens and are redacted by `Debug`. Traces and audit rows use the
 policy's static action/bucket labels; raw path parameters and request bodies are not labels.
+
+Promoted compatibility operations now enforce those labels through migration
+`0034_compatibility_rate_limits.sql` instead of supplying a synthetic `Allowed` decision. The
+fixed window is 60 seconds: `service_misc.v1` allows 120 requests per keyed source,
+`client_compatibility.v1` allows 12 (including the 88,817-byte feed),
+`organization_library.v1` allows 12 per authenticated principal, and
+`collaboration_notifications.v1` allows 30 per principal. Public subject keys are HMAC digests of
+Cloudflare's canonical client address; authenticated subject keys are HMAC digests of the trusted
+principal. Both reuse the protected auth hash-key rotation under a distinct domain separator, and
+neither raw value is stored. A missing keyring, D1 binding, migration, or successful postcondition
+returns service-unavailable; a full bucket reaches the typed compatibility admission and returns
+the stable `rate_limited`/429 contract with `Retry-After: 60`. Each request deletes at most 16 expired rows and the schema
+caps total cardinality, so abuse cannot turn admission into unbounded D1 work.
 
 ## Provider-neutral derivatives
 
@@ -128,13 +160,78 @@ Deprecation has no implicit date. The generated row must name an earliest remova
 and approval before a retirement can be promoted. Current inventory retirement proposals therefore
 remain pending and cannot turn an accidental 404 into policy.
 
-The v1 registry currently contains one deliberately narrow promotion:
-`cap-v1-05b6ba3f76daac22`, exact `GET /api/status`, pinned to the Cap source hash recorded in the
-report. Its typed static adapter returns `200`, `text/plain;charset=UTF-8`, body `OK` through the
-common coordinator without acquiring a D1 dependency. The semantic-adapter allowlist, source
-identity, empty-body/forbidden-idempotency request policy, response digest, current/N-1 decision,
-and hostile-path negatives are tested together. The durable-adapter allowlist remains empty; no
-other report row inherits this evidence by route family or implementation authority.
+The v1 registry currently contains seven deliberately narrow static promotions, one exact D1 read,
+and one exact D1 business-action contract. Exact `GET /api/status`
+(`cap-v1-05b6ba3f76daac22`) returns `200`, `text/plain;charset=UTF-8`, body `OK`. Exact
+`GET /media-server` (`cap-v1-ff19008f47194c43`) returns the compact Hono JSON metadata document
+from the pinned Cap `apps/media-server/src/app.ts`, including its ordered endpoint list, with
+`application/json`. The production Wrangler declaration includes the query-safe
+`frame.engmanager.xyz/media-server*` compatibility fence; raw routing admits
+only exact `/media-server`, preserves the same response with a query, and
+returns a no-store 404 for suffix lookalikes. Exact `GET /api/changelog/status` (`cap-v1-a1b180c5d123c870`) preserves the
+pinned `URLSearchParams.get("version")` behavior against changelog `99.mdx` version `0.5.6`, returns
+compact `{"hasUpdate":true|false}` JSON, and emits the source-defined wildcard CORS headers. Its
+exact `OPTIONS` operation (`cap-v1-16668b858461f386`) returns an empty `204` with the same three
+CORS headers and no content type. The changelog GET registration pins the route, changelog loader,
+and latest content source hashes and regeneration verifies that `99.mdx` remains the highest
+numeric slug. Exact `GET /api/changelog` (`cap-v1-0fa8384f3666825b`) reproduces the complete
+99-entry feed as the pinned 88,817-byte `JSON.stringify` body. Its source manifest covers every
+numeric MDX file, and its route, loader, CORS utility, body, and manifest digests are independently
+locked. Its `OPTIONS` companion (`cap-v1-237f41f3086a2d67`) preserves the empty `204`; both methods
+preserve the request-origin/configured-origin reflection and `null` fallback from `getCorsHeaders`.
+Exact `GET /api/mobile/session/config` (`cap-v1-4f21920a947c4c84`) pins both
+`packages/web-domain/src/Mobile.ts` and the `getAuthConfig` handler in
+`apps/web/app/api/mobile/[...route]/route.ts`. It remains public (`public_or_flow_token`), accepts
+no request body or idempotency key, and returns exact compact JSON for all four combinations of
+`googleAuthAvailable` and `workosAuthAvailable`. The values come only from non-empty
+Worker `GOOGLE_CLIENT_ID` and `WORKOS_CLIENT_ID` bindings; binding values never enter the request,
+response, or fingerprint. Cap's pinned `@effect/platform` 0.92.1 transport defines default JSON
+encoding as `application/json` and passes that encoding content type to its JSON response builder,
+so the adapter preserves that exact header rather than inferring it from current Effect behavior.
+Exact session-authenticated `GET /api/notifications/preferences`
+(`cap-v1-d130c840f654bd72`) is the D1 read. Its source closure pins the standalone route,
+`getCurrentUser`, NextAuth session callback, `users.preferences` schema, API middleware exclusion,
+Next runtime configuration, package declaration, and Next 16.2.1 lock resolution. Frame verifies
+only its host-only browser session cookie and browser client kind; it does not add API-key,
+organization, Origin, CORS, CSRF, or user-status route policy. The actor-only D1 query reads
+`users.preferences_json`, defaults a missing/null/schema-invalid notifications object as a whole,
+defaults only an omitted `pauseAnonViews` field within an otherwise valid object, strips unknown
+fields, and returns the exact compact five-boolean JSON order. Missing or invalid sessions return
+the pinned `401` body `{"error":"Unauthorized"}`. Preference query, row decoding, and serialization
+failures return the pinned `500` body `{"error":"Failed to fetch user preferences"}`; session/auth
+repository and configuration failures remain outside that source handler's caught preference-query
+failure path.
+
+All eight typed semantic adapters run through the bounded typed-adapter registry. The seven static
+response adapters have no D1 business-data dependency, while every production ingress requires the
+shared D1 rate-limit authority and the preference read additionally requires its real D1 business
+authority. The ingress representation owns and bounds the raw body, canonical
+application/x-www-form-urlencoded query multimap (including ordered duplicates), normalized
+allowlisted headers, exact matched path parameters, authenticated principal with an optional tenant, and
+optional resource revision. Responses likewise own bounded body bytes and headers. Each adapter
+derives its request fingerprint from only its canonical semantic inputs; transport callers cannot
+supply a fingerprint. Static and future D1 business-authority adapters share this typed boundary,
+but the synthetic compatibility journal is not a business authority, is absent from the promotion
+registry, and retains an empty durable allowlist. Its presence therefore cannot promote a report
+row or authorize a real effect. The independent semantic-adapter registrations pin operation ID, method, path,
+source hashes, client family, exact auth policy, empty-body/forbidden-idempotency policy, response
+digest, retry behavior, authorization failures, rate-limit failures, query variants, and
+hostile-path negatives. The durable-adapter allowlist remains empty; no other report row inherits
+this evidence by route family or implementation authority.
+
+The ninth exact contract is the Navbar `updateActiveOrganization` server action
+(`cap-v1-a3b4c805d409bc7c`). It resolves only as `server_action`/`ACTION` with its frozen
+`action://...#updateActiveOrganization` identity; it never enters raw HTTP resolution. Its typed
+session boundary derives the actor from the trusted authenticated principal, deterministically maps
+the Cap NanoID, and calls a D1 business adapter whose atomic batch updates only the active
+organization, preserves the default, derives the revision server-side, and journals
+`organization_read`. The internal completion effect requires `/dashboard` invalidation followed by
+a void action result. The contract is locally proven, but production remains fail-closed until a
+Leptos server-action ingress consumes that effect.
+
+The related mobile PATCH (`cap-v1-05776c542380771e`) remains unpromoted. Its session-or-API-key and
+owner-or-membership rules are typed, but the exact fresh bootstrap still depends on provider image
+URL signing and Cap root folders with nullable `spaceId`; Frame does not approximate either output.
 
 ## Adapter boundary and remaining gates
 
@@ -149,6 +246,24 @@ are served by a Frame adapter. Promotion still requires, per row or approved ret
   retirement approvals;
 - issue 28/29 managed quota/outage/kill-switch/native-fallback evidence.
 
-Except for the exact status adapter above, until those fields become evidence-backed
+`OrganisationSoftDelete` (`cap-v1-5cd4cac9da73f975`) is a retained organization operation, but its
+pinned service deletes Cap-managed S3 prefixes and Tinybird tenant data before completing database
+cleanup. Its completion record consequently requires both exact local adapter/provider-effect
+orchestration and protected provider execution; the presence of a local organization authority does
+not make that row local-only.
+
+The same compound completion rule applies to the 36 exact transitive-provider identities locked in
+the generator. They remain unavailable until both repository-local adapter/orchestration work and
+protected provider execution are complete. Commercial activation remains unavailable for a
+different reason: Frame still needs a concrete licensing authority and exact adapter before any
+provider question can be evaluated.
+
+Operation-level transport overrides are source-pinned rather than inferred from route families.
+The mobile folder-create route therefore records session-or-API-key authentication and optional
+idempotency, the folder RPCs preserve optional idempotency, and the four space actions accept
+bounded `multipart/form-data` instead of JSON. Those space actions also pin their optional icon
+storage and SVG-sanitization graph and retain a protected provider-execution gate.
+
+Except for the seven exact static adapters and the locally proven business action above, until those fields become evidence-backed
 `local_contract` (and protected evidence where required), a proven route-level fallback remains
 authoritative; in the current production registry, an unproven fallback also fails closed.

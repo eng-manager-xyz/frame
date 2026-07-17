@@ -595,8 +595,24 @@ def validate_repository_contract() -> None:
     ):
         if required not in migration:
             fail(f"media migration marker is missing: {required}")
-    if '[triggers]\ncrons = ["* * * * *"]' not in wrangler:
-        fail("managed recovery cron is not configured")
+    for cron in (
+        '"* * * * *"',
+        '"*/2 * * * *"',
+        '"1-59/2 * * * *"',
+        '"*/5 * * * *"',
+        '"2-59/5 * * * *"',
+    ):
+        if cron not in wrangler:
+            fail(f"bounded scheduled lane is not configured: {cron}")
+    for required in (
+        "ScheduledLane::AuthDelivery",
+        "ScheduledLane::MultipartMaintenance",
+        "ScheduledLane::InstantFinalize",
+        "ScheduledLane::MediaRecovery",
+        "ScheduledLane::RetentionMaintenance",
+    ):
+        if required not in control_plane:
+            fail(f"scheduled D1 invocation lane is missing: {required}")
     for required in (
         "recover_native_staging_one",
         "r2_absent_twice",
@@ -612,7 +628,7 @@ def validate_repository_contract() -> None:
     if claim_start < 0 or claim_end < 0:
         fail("native claim implementation is missing")
     if "'segment_mux_v1'" in control_plane[claim_start:claim_end]:
-        fail("segment mux must not be claimed before the multi-source protocol exists")
+        fail("segment mux must not be claimed before its native graph is audited")
 
 
 def parse_args() -> argparse.Namespace:

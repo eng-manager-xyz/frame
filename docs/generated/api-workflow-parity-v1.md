@@ -9,8 +9,8 @@ This is an inventory and gap report, not a production-parity attestation. A mapp
 ## Summary
 
 - Total retained/retirement decisions inventoried: **288**
-- Endpoint-level success contracts proven locally: **1**
-- Endpoint-level success or retirement approval still pending: **287**
+- Endpoint-level success contracts proven locally: **9**
+- Endpoint-level success or retirement approval still pending: **279**
 - Kinds: `route` 138, `rpc` 15, `server_action` 121, `workflow` 14
 - Dispositions: `migrate` 18, `protected_parity_required` 15, `replace` 245, `retire` 10
 
@@ -20,41 +20,49 @@ The 138 HTTP method rows represent 128 unique legacy paths. Exactly 0 are alread
 
 | Kind | Inventory rows | Endpoint success proven | Endpoint success pending |
 |---|---:|---:|---:|
-| `route` | 138 | 1 | 137 |
+| `route` | 138 | 8 | 130 |
 | `rpc` | 15 | 0 | 15 |
-| `server_action` | 121 | 0 | 121 |
+| `server_action` | 121 | 1 | 120 |
 | `workflow` | 14 | 0 | 14 |
 
 Evidence values below are row counts, not endpoint passes inferred from a shared family contract.
 
 | Evidence axis | `local_contract` | `family_contract` | `dependency_pending` | `endpoint_adapter_pending` | `protected_evidence_required` | `retirement_contract_pending_approval` |
 |---|---:|---:|---:|---:|---:|---:|
-| `success` | 1 | 0 | 0 | 262 | 15 | 10 |
-| `validation` | 0 | 200 | 63 | 0 | 15 | 10 |
-| `authorization` | 0 | 200 | 63 | 0 | 15 | 10 |
-| `idempotency_retry` | 14 | 197 | 53 | 0 | 14 | 10 |
-| `failure` | 0 | 200 | 63 | 0 | 15 | 10 |
+| `success` | 9 | 0 | 0 | 254 | 15 | 10 |
+| `validation` | 9 | 191 | 63 | 0 | 15 | 10 |
+| `authorization` | 9 | 191 | 63 | 0 | 15 | 10 |
+| `idempotency_retry` | 23 | 188 | 53 | 0 | 14 | 10 |
+| `failure` | 9 | 191 | 63 | 0 | 15 | 10 |
+
+Every row also carries an exact completion decision. 280 rows still name repository-local adapter or retirement-response work; 123 of those additionally name genuine protected gates, while 157 are local-only. Protected evidence never converts unfinished local work into a completed route.
+
+The normalized `operation-contract-catalog.json` assigns every identity a source-manifest-bound success-or-retirement, validation, authorization, idempotency/retry, and failure specification. It is deliberately marked `specification_only_not_endpoint_execution_evidence`: validating a profile cannot promote an adapter or approve a retirement. It contains 54 shared profiles for 288 operations; 9 have local success evidence, 8 have no remaining local/protected work, and 279 endpoint or retirement gates remain.
+
+Source closure pins the concrete catch-all implementation for all 22 Mobile rows and the HTTP transport, RPC layer, family handler, and called service/policy sources for all 15 Effect RPC rows. `cap-v1-5cd4cac9da73f975` additionally pins its S3 and Tinybird services and therefore retains an explicit `provider_execution` gate alongside unfinished local adapter/orchestration work.
+
+A second exact-ID audit pins the minimal provider-bearing implementation graph for 36 additional rows and gives each an explicit `provider_execution` completion gate without changing its route taxonomy. `cap-v1-261c3cb23ca88bf9` remains provider-free but dependency-pending: its Cap contract declarations do not establish a concrete Frame commercial licensing authority.
 
 Client counts are associations and can overlap when one operation serves multiple client families. They do not claim a current or N-1 client journey.
 
 | Client family | Operation associations | Endpoint success proven | Endpoint success pending |
 |---|---:|---:|---:|
-| `desktop` | 31 | 0 | 31 |
+| `desktop` | 31 | 2 | 29 |
 | `developer` | 21 | 0 | 21 |
 | `extension` | 7 | 0 | 7 |
-| `internal_worker` | 19 | 0 | 19 |
-| `mobile` | 22 | 0 | 22 |
+| `internal_worker` | 19 | 1 | 18 |
+| `mobile` | 22 | 1 | 21 |
 | `provider` | 3 | 0 | 3 |
 | `scheduler` | 16 | 0 | 16 |
-| `web` | 186 | 1 | 185 |
+| `web` | 186 | 5 | 181 |
 
 ## Central compatibility registry
 
 `frame-application::LegacyCompatibilityRegistryV1` decodes this exact report in its focused test suite. It registers all 288 identities and exercises the common compatibility, request validation, authentication/non-disclosure, rate-limit, idempotency-header, stable-error, trace-label, and audit-label boundary for every retained row. Its compatibility fixture supplies synthetic fallback availability to prove routing decisions; it does not claim an external deployment is reachable. The test-only evidence-enabled case proves that no row can bypass the common admission path. Every retained row also reaches one atomic execution port contract that binds its operation ID, request fingerprint, idempotency key, audit labels, and durable receipt; replay, conflicting reuse, in-flight work, and closed execution failures are covered. All 288 stable identities and all 138 raw HTTP method patterns resolve through the same registry without URL decoding; hostile encoded, dot, empty, backslash, semicolon, and control-character paths fail closed.
 
-The control-plane runtime constructs that registry behind a raw HTTP transport and implements the execution port with a digest-only D1 claim, fenced intent, completion, and append-only audit journal. Provider-free SQLite conformance covers a two-contender race, restart replay, conflicting key reuse, losing-reservation partial writes, tenant scoping, and immutable rows. Its durable semantic-adapter allowlist remains empty. The only enabled semantic adapter is the source-pinned `GET /api/status` static contract (`cap-v1-05b6ba3f76daac22`): it has no database dependency and returns the pinned Fetch response `200`, `text/plain;charset=UTF-8`, body `OK`. Exact path, method, empty-body, forbidden-idempotency, source-SHA, response, and digest tests guard that promotion. Production fallback availability stays false, so every other operation returns a closed unavailable error rather than manufacturing a business success or a legacy fallback.
+The control-plane runtime constructs that registry behind a raw HTTP transport and implements the execution port with a digest-only D1 claim, fenced intent, completion, and append-only audit journal. Provider-free SQLite conformance covers a two-contender race, restart replay, conflicting key reuse, losing-reservation partial writes, tenant scoping, and immutable rows. Its durable semantic-adapter allowlist remains empty. The enabled semantic adapters are the source-pinned `GET /api/status` contract (`cap-v1-05b6ba3f76daac22`) and `GET /media-server` metadata contract (`cap-v1-ff19008f47194c43`), plus `GET /api/changelog/status` (`cap-v1-a1b180c5d123c870`) and its exact `OPTIONS` preflight (`cap-v1-16668b858461f386`), and the full `GET /api/changelog` feed (`cap-v1-0fa8384f3666825b`) with its exact `OPTIONS` preflight (`cap-v1-237f41f3086a2d67`), and `GET /api/mobile/session/config` (`cap-v1-4f21920a947c4c84`), plus the session-authenticated D1 `GET /api/notifications/preferences` contract (`cap-v1-d130c840f654bd72`). The notification adapter pins `getCurrentUser`, `users.preferences`, the API middleware exclusion, and Next 16.2.1 response runtime; it preserves Cap's whole-object fallback, optional `pauseAnonViews` default, compact field order, actor-only query, exact 401 and preference-query 500 JSON while keeping auth-infrastructure failures outside that custom query error. The mobile adapter pins both the Effect endpoint declaration and handler, derives its two booleans from non-empty Worker bindings with JavaScript string truthiness, and binds all four configurations into its fingerprint and exact compact JSON. The feed adapter pins all 99 MDX sources and the exact 88,817-byte `JSON.stringify` body. The seven static response adapters have no D1 business-data dependency, but every production ingress enforces its report bucket through the bounded keyed-digest authority in migration `0034_compatibility_rate_limits.sql`; missing authority fails closed and saturation reaches the typed rate-limit error. All eight semantic adapters return their exact pinned status, content type, body, headers, and response digest. Per-operation path, method, query semantics, empty-body, forbidden-idempotency, authorization, retry, source-SHA, response, and stable-failure tests guard all seven static promotions and the exact D1 preference read. A separate exact business registration pins the Navbar `updateActiveOrganization` server action (`cap-v1-a3b4c805d409bc7c`) as `server_action`/`ACTION`, binds the actor to a trusted session principal, maps the Cap NanoID deterministically, and executes an atomic D1 active-only update that preserves the default organization and derives the revision server-side. It yields an internal `/dashboard` invalidation-then-void effect and never synthesizes an HTTP path. The contract is proven locally, while production remains fail-closed until a Leptos server-action ingress consumes that effect. The mobile `PATCH /api/mobile/user/active-organization` row remains unpromoted and provider-gated: its exact fresh bootstrap still requires provider image signing and nullable-space root folder semantics. Production fallback availability stays false, so every unpromoted operation returns a closed unavailable error rather than manufacturing a business success or a legacy fallback.
 
-The registry exercises current and previous release decisions for all 267 release-managed client associations and rejects older releases. This is local registry evidence, not a released client binary/build. Endpoint success is therefore limited to 1 exact static contract; the remaining 287 per-operation request/response and side-effect semantics, transport promotions, released-client runs, protected providers, and accountable retirement approvals remain explicit gates.
+The registry exercises current and previous release decisions for all 267 release-managed client associations and rejects older releases. This is local registry evidence, not a released client binary/build. Endpoint success is therefore limited to 9 exact contracts (seven static, one D1 preference read, and one D1 business action); the remaining 279 per-operation request/response and side-effect semantics, transport promotions, released-client runs, protected providers, and accountable retirement approvals remain explicit gates.
 
 ## Contract inventory
 
@@ -64,10 +72,10 @@ The registry exercises current and previous release decisions for all 267 releas
 | `POST` | `/api/analytics/track` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `GET` | `/api/auth/:nextauth*` | web | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `POST` | `/api/auth/:nextauth*` | web | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/changelog` | desktop | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `OPTIONS` | `/api/changelog` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/changelog/status` | desktop | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `OPTIONS` | `/api/changelog/status` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `GET` | `/api/changelog` | desktop | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_exact_changelog_feed_adapter_local_contract` |
+| `OPTIONS` | `/api/changelog` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_changelog_feed_cors_adapter_local_contract` |
+| `GET` | `/api/changelog/status` | desktop | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_exact_changelog_status_adapter_local_contract` |
+| `OPTIONS` | `/api/changelog/status` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_changelog_status_cors_adapter_local_contract` |
 | `GET` | `/api/cron/developer-storage` | developer, scheduler | `scheduler_secret` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `GET` | `/api/cron/finalize-stale-desktop-segments` | desktop, scheduler | `scheduler_secret` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
 | `GET` | `/api/dashboard/analytics` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
@@ -131,8 +139,8 @@ The registry exercises current and previous release decisions for all 267 releas
 | `PATCH` | `/api/mobile/caps/:id/sharing` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `PATCH` | `/api/mobile/caps/:id/title` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `DELETE` | `/api/mobile/comments/:id` | mobile | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/folders` | mobile | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/mobile/session/config` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `POST` | `/api/mobile/folders` | mobile | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `GET` | `/api/mobile/session/config` | mobile | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_exact_mobile_session_config_adapter_local_contract` |
 | `POST` | `/api/mobile/session/email/request` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `POST` | `/api/mobile/session/email/verify` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `GET` | `/api/mobile/session/request` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
@@ -140,9 +148,9 @@ The registry exercises current and previous release decisions for all 267 releas
 | `POST` | `/api/mobile/uploads` | mobile | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `POST` | `/api/mobile/uploads/:id/complete` | mobile | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `POST` | `/api/mobile/uploads/:id/progress` | mobile | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `PATCH` | `/api/mobile/user/active-organization` | mobile | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `PATCH` | `/api/mobile/user/active-organization` | mobile | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `GET` | `/api/notifications` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/notifications/preferences` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `GET` | `/api/notifications/preferences` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_notification_preferences_d1_adapter_local_contract` |
 | `GET` | `/api/org-custom-domain` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `GET` | `/api/playlist` | web | `optional_session_or_share_capability` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `HEAD` | `/api/playlist` | web | `optional_session_or_share_capability` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
@@ -179,9 +187,9 @@ The registry exercises current and previous release decisions for all 267 releas
 | `POST` | `/api/webhooks/media-server/multipart/:action` | internal_worker, provider | `signed_webhook` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
 | `POST` | `/api/webhooks/media-server/progress` | internal_worker, provider | `signed_webhook` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
 | `POST` | `/api/webhooks/stripe` | provider | `signed_webhook` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `POST` | `/commercial/activate` | web | `public_or_flow_token` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `POST` | `/commercial/activate` | web | `public_or_flow_token` | `developer_api.v1` | `replace` | `contract_declarations_only_licensing_authority_pending` |
 | `POST` | `/commercial/checkout` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `GET` | `/media-server` | internal_worker | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
+| `GET` | `/media-server` | internal_worker | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_media_server_root_adapter_local_contract` |
 | `POST` | `/media-server/audio/check` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
 | `POST` | `/media-server/audio/convert` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
 | `POST` | `/media-server/audio/extract` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
@@ -319,7 +327,7 @@ The registry exercises current and previous release decisions for all 267 releas
 | `ACTION` | `action://apps/web/actions/videos/translate-transcript.ts#translateTranscript` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/search.ts#searchDashboardVideos` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
 | `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#createSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateActiveOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateActiveOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_active_organization_action_local_contract_ingress_pending` |
 | `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `ACTION` | `action://apps/web/app/(org)/dashboard/_components/actions.ts#setTheme` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `ACTION` | `action://apps/web/app/(org)/dashboard/settings/account/server.ts#patchAccountSettings` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |

@@ -3,7 +3,8 @@
 This document specifies the provider-neutral, locally testable core of issue 19. It builds on the
 canonical `ScopedObjectKey`, immutable-write, and storage failure contracts in
 [`storage-contract-v1.md`](storage-contract-v1.md). The control plane now implements the checked-in
-R2/D1 adapter and brokered routes, but this document does **not** prove a real provider operation,
+R2/D1 adapter and brokered routes. Wrangler-local evidence now exercises the compiled adapter over
+real local R2 multipart primitives, but this document does **not** prove hosted provider behavior,
 exercise a browser or desktop media player, or close issue 19's protected promotion gates.
 
 ## Threat model and client contract
@@ -80,6 +81,10 @@ completion receipts, immutable destination creation, and conditional/range reads
 for the same upload specification, duplicate identical part, and duplicate complete are stable.
 Changed replays fail with `precondition_failed`. Abort is stable as `aborted`, `already_aborted`, or
 `already_completed`. Complete and abort share one linearizable state lock, so only one can win.
+The R2/D1 adapter realizes that lock by atomically committing an open session to `completing` only
+when no abort reconciliation is pending, while abort can claim only an open session. Once
+committed, completion remains exactly retryable after the original session expiry and abort must
+preserve it.
 One-shot failures can be injected after tenant/reference checks; an unauthorized probe cannot
 consume a fault meant for an authorized request.
 
@@ -122,6 +127,34 @@ Provider object completion and D1 metadata finalization cannot be atomic. The
   object identity, then record `provider_completed`;
 - `provider_completed` recorded, finalize failed: reconciliation writes the source identity and
   trusted media probe without touching object bytes.
+
+The concrete R2 adapter journals scheduled completion work in
+`r2_multipart_completion_reconciliation_v1`. A due row is atomically leased before provider I/O;
+retryable `throttled`, `timeout`, and `unavailable` failures retain a visible failure class and use
+exponential backoff bounded by the 15-minute provider-completion lease and a one-hour ceiling.
+Permanent storage failures quarantine immediately. Retryable work is capped at 12 attempts, and an
+expired twelfth-attempt lease is terminalized even if the Worker died before it could retain the
+failure. `quarantined` rows are excluded from candidate selection, so an older corrupt object can
+never starve a later completion. A concurrently authoritative late completion may only refine that
+terminal record to `complete`; its journal clock remains monotonic even when the R2 object timestamp
+predates the recovery attempt. Quarantine is durable operator evidence and cannot be deleted or
+reopened by the scheduler. During the expand window, an N-1 Worker that performs its released
+open-to-completing session update without a claim is journaled by an additive 0031 side-effect
+trigger; if it dies immediately afterward, the new scheduler can still see and reconcile that row.
+If N-1 instead commits an exact nullable-token completion, a second compatibility trigger validates
+the complete session identity and terminalizes the journal. When the same ordered-part digest also
+has an active N claim, 0031 promotes that legacy receipt into the claim and completes it under the
+existing 0028 transition guard; a mismatched completion is quarantined as integrity failure. The
+same validation and promotion run once for rows that were already complete when 0031 was applied.
+Because N-1 performs R2 writes before its nullable-token D1 write, the 0028 expansion also creates
+`r2_multipart_claim_rollout_v1` in `fenced` state. Every new-Worker create, part, completion, abort,
+cleanup, and reconciliation provider mutation checks that durable fence before provider I/O. The
+protected 0033 contract phase refuses while any open/completing session, uncommitted creation
+claim, active completion claim, or pending abort remains. Only after exact active and approved
+rollback bundles are claim-aware, old requests are drained, and that zero-residual assertion is
+persisted does 0033 install the reverse enforcement triggers and move the phase to `enabled`.
+After enablement an N-1 pre-claim writer is not rollback-eligible. This removes the legacy writer
+shape without changing the journal semantics or risking an R2/D1 split-brain.
 
 Reconciliation also lists incomplete candidates and aborts expired `creating` or `uploading`
 sessions. It never aborts a provider-completed object. The final source record contains the exact
@@ -184,9 +217,9 @@ must not delete a provider-completed object.
 
 The following work is required before issue 19 can close:
 
-- Wrangler-local and hosted evidence for the constructed Cloudflare R2/Worker multipart adapter's
-  actual create/list/part/complete/abort/checksum/etag behavior, lost-response recovery, and
-  documented provider limits;
+- hosted evidence for the constructed Cloudflare R2/Worker multipart adapter's actual
+  create/list/part/complete/abort/checksum/etag behavior, lost-response recovery, and documented
+  provider limits (the credential-free Wrangler-local operation contract is now checked in);
 - an approved decision and implementation for same-origin brokering versus R2-supported signed PUT
   or temporary credentials, including signing-key rotation and emergency revocation;
 - hosted D1 durability/contention evidence for the checked-in session, part, post-stream
@@ -200,5 +233,5 @@ The following work is required before issue 19 can close:
 - security-owner approval of the grant, tenant-isolation, logging, credential, and download model;
 - test-tenant rollout, rollback, and legacy endpoint retirement evidence.
 
-Until those records exist, this protocol is a provider-free contract foundation only. It must not
-be cited as R2, browser playback, capacity, or production-security evidence.
+Until those records exist, this protocol is a local provider-backed contract foundation only. It
+must not be cited as hosted R2, browser playback, capacity, or production-security evidence.

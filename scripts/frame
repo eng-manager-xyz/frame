@@ -175,10 +175,13 @@ case "$command" in
     python3 -I scripts/ci/check-media-service.py
     python3 scripts/ci/check-api-workflow-parity.py
     python3 -I scripts/ci/api-workflow-d1-conformance.py
+    python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py
     python3 scripts/ci/check-cloudflare-zone-contract.py
     python3 -I scripts/ci/check-cloudflare-edge-policy.py
     python3 -I scripts/ci/test-frame-cache-purge.py
     python3 -I scripts/ci/check-browser-security.py
+    python3 -I scripts/ci/check-share-player.py \
+      --evidence target/evidence/share-player-local.json
     python3 -I scripts/ci/check-engmanager-portfolio-integration.py
     python3 -I scripts/ci/check-launch-observability.py
     python3 scripts/ci/check-migrations.py
@@ -186,7 +189,16 @@ case "$command" in
     python3 scripts/ci/cutover-authority-conformance.py
     python3 -I scripts/ci/business-sqlite-semantic-conformance.py
     python3 -I scripts/ci/organization-sqlite-semantic-conformance.py
+    python3 -I scripts/ci/legacy-organization-selection-sqlite-conformance.py
+    python3 -I scripts/ci/legacy-org-custom-domain-sqlite-conformance.py
+    python3 -I scripts/ci/legacy-notification-preferences-sqlite-conformance.py
+    python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
     python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
+    python3 -I scripts/ci/direct-upload-sqlite-conformance.py
+    python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
+    python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
+    python3 -I scripts/ci/media-job-inputs-sqlite-conformance.py
+    python3 -I scripts/ci/worker-auth-sqlite-conformance.py
     python3 -I scripts/migration/test_cap_id_map.py
     python3 -I scripts/migration/test_etl_cap_id_map.py
     python3 -I scripts/migration/test_cap_business_plan_contract.py
@@ -198,6 +210,10 @@ case "$command" in
   test)
     configure_gstreamer
     "$GSTREAMER_EXEC" cargo test --workspace
+    python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py
+    python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
+    python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
+    python3 -I scripts/ci/worker-auth-sqlite-conformance.py
     ;;
   migrate)
     migrate

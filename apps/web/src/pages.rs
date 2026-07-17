@@ -110,7 +110,7 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
                 </p>
                 {match state {
                     SignInState::Ready => view! {
-                        <form class="stack" method="post" action="/login" aria-describedby="signin-help">
+                        <form class="stack" method="post" action="/api/v1/web/auth/login" aria-describedby="signin-help">
                             <label for="email">"Email address"</label>
                             <input
                                 id="email"
@@ -128,7 +128,7 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
                         <div id="signin-error" class="notice error" role="alert" tabindex="-1">
                             "Enter a valid email address. Nothing was submitted."
                         </div>
-                        <form class="stack" method="post" action="/login" aria-describedby="signin-help signin-error">
+                        <form class="stack" method="post" action="/api/v1/web/auth/login" aria-describedby="signin-help signin-error">
                             <label for="email">"Email address"</label>
                             <input
                                 id="email"
@@ -152,6 +152,7 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
                 }}
                 <p class="form-help">
                     "New to Frame? " <a href="/signup">"Create an account"</a>
+                    " · " <a href="/recovery">"Recover access"</a>
                 </p>
             </section>
         </main>
@@ -163,6 +164,77 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
         body: document(
             "Sign in · Frame",
             "Sign in to Frame.",
+            &canonical,
+            "noindex,nofollow",
+            body,
+        ),
+        cache_control: NO_STORE,
+        robots: "noindex,nofollow",
+    }
+}
+
+pub fn recovery(config: &RuntimeConfig, state: SignInState) -> Page {
+    let canonical = format!("{}/recovery", config.public_origin().as_str());
+    let body = view! {
+        <main id="main" class="narrow" tabindex="-1">
+            <a class="back" href="/login">"← Return to sign in"</a>
+            <section class="panel" aria-labelledby="page-title">
+                <p class="eyebrow">"Authentication boundary"</p>
+                <h1 id="page-title">"Recover Frame access"</h1>
+                <p id="recovery-help">
+                    "Enter your workspace email. Frame gives the same response whether or not an account exists."
+                </p>
+                {match state {
+                    SignInState::Ready => view! {
+                        <form class="stack" method="post" action="/api/v1/web/auth/recovery" aria-describedby="recovery-help">
+                            <label for="recovery-email">"Email address"</label>
+                            <input
+                                id="recovery-email"
+                                name="email"
+                                type="email"
+                                inputmode="email"
+                                autocomplete="email"
+                                maxlength="254"
+                                required
+                            />
+                            <button class="button" type="submit">"Continue securely"</button>
+                        </form>
+                    }.into_any(),
+                    SignInState::Invalid => view! {
+                        <div id="recovery-error" class="notice error" role="alert" tabindex="-1">
+                            "Enter a valid email address. Nothing was submitted."
+                        </div>
+                        <form class="stack" method="post" action="/api/v1/web/auth/recovery" aria-describedby="recovery-help recovery-error">
+                            <label for="recovery-email">"Email address"</label>
+                            <input
+                                id="recovery-email"
+                                name="email"
+                                type="email"
+                                inputmode="email"
+                                autocomplete="email"
+                                maxlength="254"
+                                aria-invalid="true"
+                                required
+                            />
+                            <button class="button" type="submit">"Continue securely"</button>
+                        </form>
+                    }.into_any(),
+                    SignInState::Failed => view! {
+                        <div class="notice error" role="alert" tabindex="-1">
+                            "Recovery is temporarily unavailable. No account details were disclosed."
+                        </div>
+                        <a class="button secondary" href="/recovery">"Try again later"</a>
+                    }.into_any(),
+                }}
+            </section>
+        </main>
+    }
+    .to_html();
+    Page {
+        status: StatusCode::OK,
+        body: document(
+            "Recover access · Frame",
+            "Recover access to Frame.",
             &canonical,
             "noindex,nofollow",
             body,
@@ -185,7 +257,7 @@ pub fn signup(config: &RuntimeConfig, state: SignInState) -> Page {
                 </p>
                 {match state {
                     SignInState::Ready => view! {
-                        <form class="stack" method="post" action="/signup" aria-describedby="signup-help">
+                        <form class="stack" method="post" action="/api/v1/web/auth/signup" aria-describedby="signup-help">
                             <label for="signup-name">"Display name"</label>
                             <input id="signup-name" name="display_name" maxlength="120" autocomplete="name" required/>
                             <label for="signup-email">"Email address"</label>
@@ -237,7 +309,7 @@ pub fn verify(config: &RuntimeConfig, state: SignInState) -> Page {
                 </p>
                 {match state {
                     SignInState::Ready => view! {
-                        <form class="stack" method="post" action="/verify" aria-describedby="verify-help">
+                        <form class="stack" method="post" action="/api/v1/web/auth/verify" aria-describedby="verify-help">
                             <label for="otp">"Six-digit code"</label>
                             <input
                                 id="otp"
@@ -664,7 +736,7 @@ fn workspace_shell(
             <nav class="workspace-nav" aria-label="Workspace">
                 <p class="workspace-name">{workspace.organization_name.clone()}</p>
                 <ul>{navigation}</ul>
-                <a href="/login">"Sign out"</a>
+                <a href="/login">"Go to sign in"</a>
             </nav>
             <section class="workspace-content" aria-labelledby="page-title">
                 <p class="eyebrow">"Private workspace"</p>
@@ -1638,6 +1710,7 @@ mod tests {
         for page in [
             login(&config(), SignInState::Ready),
             signup(&config(), SignInState::Ready),
+            recovery(&config(), SignInState::Ready),
             verify(&config(), SignInState::Ready),
         ] {
             assert_eq!(page.status, StatusCode::OK);

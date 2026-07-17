@@ -97,8 +97,11 @@ def main() -> int:
                 "--headless=new",
                 "--disable-gpu",
                 "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",
+                "--no-sandbox",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--remote-debugging-address=127.0.0.1",
                 f"--remote-debugging-port={port}",
                 f"--user-data-dir={profile}",
                 "about:blank",
@@ -109,7 +112,11 @@ def main() -> int:
         devtools = None
         try:
             endpoint = f"http://127.0.0.1:{port}"
-            deadline = time.monotonic() + 10
+            # Hosted runners can spend several seconds starting crashpad and
+            # the first browser process after a release build. Keep the probe
+            # bounded, but do not turn normal runner variance into a false
+            # product failure.
+            deadline = time.monotonic() + 30
             while True:
                 try:
                     with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):

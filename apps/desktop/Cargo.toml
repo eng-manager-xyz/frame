@@ -17,6 +17,10 @@ path = "src/main.rs"
 required-features = ["tauri-app"]
 
 [dependencies]
+frame-authenticated-client = { path = "../../crates/authenticated-client" }
+frame-client = { path = "../../crates/frame-client" }
+frame-media = { path = "../../crates/media" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -26,6 +30,9 @@ tauri = { version = "=2.11.5", optional = true }
 
 [build-dependencies]
 tauri-build = "=2.6.3"
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

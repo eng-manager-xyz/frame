@@ -55,7 +55,7 @@ else
   errors << "frame-web must own only the canonical production domain" unless domains == ["frame.engmanager.xyz"]
 
   paths = web.dig("buildFilter", "paths") || []
-  required_paths = %w[apps/web/** crates/** Cargo.toml Cargo.lock rust-toolchain.toml scripts/ci/** render.yaml]
+  required_paths = %w[apps/web/** crates/** fixtures/web-authenticated/** Cargo.toml Cargo.lock rust-toolchain.toml scripts/ci/** render.yaml]
   required_paths.each do |required|
     errors << "frame-web buildFilter.paths is missing #{required}" unless paths.include?(required)
   end

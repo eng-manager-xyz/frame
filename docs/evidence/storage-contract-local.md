@@ -56,15 +56,26 @@ mutations—including removal of the required local R2 lane—were rejected.
 python3 -I scripts/ci/r2-storage-conformance.py \
   --wrangler-bin <cached-wrangler-4.111.0-js> \
   --evidence target/evidence/r2-storage-conformance.json
+python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
 ```
 
 Result: passed through the compiled Rust/Wasm Worker with Wrangler 4.111.0 and no Cloudflare
-credentials. The report records all seven adapter operations; immutable create, exact replay,
-provider-version fencing, and opaque cross-tenant `not_found`; two complete contract runs;
-idempotent cleanup; and exact route/method/IPv4-loopback guards. The generated report is a CI
-artifact rather than a committed provider result, and its `not_claimed` list excludes hosted R2,
-provider network/quota behavior, production access, durability, latency, residency, lifecycle, and
-cost.
+credentials. The report records all seven object-store operations plus multipart create, lookup,
+list-parts, put-part, complete, abort, stale cleanup, private HEAD, and cross-part range reads;
+immutable create, exact replay, source-version-fenced copy, fail-closed unsupported conditional
+delete, and opaque cross-tenant rejection; two complete contract runs; idempotent cleanup; and
+exact route/method/IPv4-loopback guards. The generated report is a CI artifact rather than a
+committed hosted-provider result, and its
+`not_claimed` list excludes hosted R2, provider network/quota behavior, production access,
+durability, latency, residency, lifecycle, and cost.
+
+The credential-free SQLite checks also passed. They prove the 0028 expansion accepts the nullable
+N-1 session/part/completion shapes before the protected contract migration is applied, then proves
+completion reconciliation quarantine fairness, bounded retries, final-lease crash recovery, and a
+monotonic lost-ack terminal transition under the enforced claim triggers. They also prove a
+post-0031 N-1 open-to-completing update is journaled and scheduler-eligible before 0033 enforcement,
+exact nullable-token completion reaches terminal state, a matching active claim is promoted instead
+of stranded, and the same pre-existing-row backfill quarantines invalid completion metadata.
 
 ```text
 cargo test -p frame-control-plane r2_storage::tests --lib
@@ -114,8 +125,12 @@ passed with warnings denied; and the Worker target compiled successfully.
   plus hostile-adapter postcondition checks for write receipts, HEAD identity, and every upload-plan
   binding field.
 - compiled Worker/R2-binding put, exact replay/conflict, full typed metadata, head/get/range,
-  same-scope conditional copy, cursor pagination, version-fenced/idempotent delete, and complete
-  cross-tenant `not_found` coverage before provider access;
+  same-scope source-version-fenced copy, cursor pagination, fail-closed unsupported conditional
+  delete, idempotent delete, and complete cross-tenant `not_found` coverage before provider access;
+- compiled Worker/R2/D1 multipart create/resume, exact create and part replay, persisted ordered
+  parts, concurrent conflicting-part claim exclusion, provider completion, full-object SHA-256,
+  exact completion replay, complete/abort linearization, private HEAD and cross-part range, abort
+  replay, stale cleanup, and cross-tenant rejection;
 - production hiding plus exact local POST path, method, IPv4 loopback authority, and path-lookalike
   rejection, with a credential-refusing Wrangler-local runner and required source-bound CI report.
 

@@ -16,6 +16,7 @@ struct Matrix {
     schema: String,
     canonical_host: String,
     worker_route_pattern: String,
+    compatibility_worker_route_pattern: String,
     lookalike_policy: String,
     cases: Vec<RouteCase>,
     host_cases: Vec<HostCase>,
@@ -53,6 +54,7 @@ fn route_class(route: &Route) -> &'static str {
     match route {
         Route::LegacyRoot => "legacy_root",
         Route::LegacyHealth => "legacy_health",
+        Route::LegacyMediaServerRoot => "legacy_media_server_root",
         Route::Discovery => "discovery",
         Route::Capabilities => "capabilities",
         Route::ApiHealth => "api_health",
@@ -63,15 +65,18 @@ fn route_class(route: &Route) -> &'static str {
     }
 }
 
-fn literal_broad_route_matches(url: &str, host: &str) -> bool {
-    let Some(suffix) = url
+fn literal_worker_route(url: &str, host: &str) -> Option<&'static str> {
+    let suffix = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
-        .and_then(|url| url.strip_prefix(host))
-    else {
-        return false;
-    };
-    suffix.starts_with("/api")
+        .and_then(|url| url.strip_prefix(host))?;
+    if suffix.starts_with("/api") {
+        Some("api")
+    } else if suffix.starts_with("/media-server") {
+        Some("media-server")
+    } else {
+        None
+    }
 }
 
 #[test]
@@ -80,6 +85,10 @@ fn exhaustive_owner_matrix_matches_the_literal_edge_pattern_and_raw_router() {
     assert_eq!(matrix.schema, "frame.same-origin-route-owner-matrix.v1");
     assert_eq!(matrix.canonical_host, "frame.engmanager.xyz");
     assert_eq!(matrix.worker_route_pattern, "frame.engmanager.xyz/api*");
+    assert_eq!(
+        matrix.compatibility_worker_route_pattern,
+        "frame.engmanager.xyz/media-server*"
+    );
     assert_eq!(matrix.lookalike_policy, "non_cacheable_404");
     assert!(matrix.cases.len() >= 25);
 
@@ -94,12 +103,32 @@ fn exhaustive_owner_matrix_matches_the_literal_edge_pattern_and_raw_router() {
             case.id
         );
 
-        let intercepted = literal_broad_route_matches(&case.url, &matrix.canonical_host);
+        let intercepted = literal_worker_route(&case.url, &matrix.canonical_host);
         match case.edge_owner.as_str() {
-            "render" => assert!(!intercepted, "{} unexpectedly entered Worker", case.id),
-            "worker_api" | "worker_reject" => {
-                assert!(
+            "render" => assert!(
+                intercepted.is_none(),
+                "{} unexpectedly entered Worker",
+                case.id
+            ),
+            "worker_api" => {
+                assert_eq!(
                     intercepted,
+                    Some("api"),
+                    "{} entered the wrong Worker route",
+                    case.id
+                );
+            }
+            "worker_compat" => {
+                assert_eq!(
+                    intercepted,
+                    Some("media-server"),
+                    "{} entered the wrong Worker route",
+                    case.id
+                );
+            }
+            "worker_reject" => {
+                assert!(
+                    intercepted.is_some(),
                     "{} unexpectedly fell through to Render",
                     case.id
                 );
@@ -109,7 +138,11 @@ fn exhaustive_owner_matrix_matches_the_literal_edge_pattern_and_raw_router() {
             // prove either Render pass-through or an edge rejection; the raw
             // Worker classifier remains closed in both cases.
             "render_or_edge_reject" => {
-                assert!(!intercepted, "{} literal route assumption drifted", case.id);
+                assert!(
+                    intercepted.is_none(),
+                    "{} literal route assumption drifted",
+                    case.id
+                );
                 assert_eq!(case.worker_class, "not_api");
             }
             owner => panic!("{} has unsupported edge owner {owner}", case.id),

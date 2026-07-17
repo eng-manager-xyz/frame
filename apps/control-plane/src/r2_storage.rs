@@ -13,9 +13,9 @@ use frame_domain::{
 use frame_ports::{
     CopyObjectRequestV1, DeleteObjectDisposition, DeleteObjectRequestV1, ListObjectsPageV1,
     ListObjectsRequestV1, ObjectBodyV1, ObjectByteRange, ObjectCachePolicy, ObjectMetadataV1,
-    ObjectRangeBodyV1, ObjectStoreCapabilitiesV1, ObjectStoreV1, ObjectWriteReceiptV1,
-    ProviderEntityTag, ProviderObjectVersion, PutObjectRequestV1, StorageFailure,
-    StorageFailureKind, StorageListCursor, StorageRequestContext,
+    ObjectRangeBodyV1, ObjectStoreCapabilitiesV1, ObjectStoreOperation, ObjectStoreV1,
+    ObjectWriteReceiptV1, ProviderEntityTag, ProviderObjectVersion, PutObjectRequestV1,
+    StorageFailure, StorageFailureKind, StorageListCursor, StorageRequestContext,
 };
 use worker::{
     Bucket, Conditional, Env, HttpMetadata, Include, Method, Range, Request, Response,
@@ -34,21 +34,46 @@ pub async fn local_conformance_response(request: Request, env: &Env) -> worker::
         return Response::error("method not allowed", 405);
     }
     let bucket = env.bucket("RECORDINGS")?;
+    let database = env.d1("DB")?;
     let adapter = R2ObjectStoreV1::new(&bucket)
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
     run_local_contract(&adapter)
+        .await
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    crate::r2_multipart::run_local_contract(&bucket, &database)
         .await
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
     Response::from_json(&serde_json::json!({
         "schema_version": 1,
         "adapter": "cloudflare_r2_worker_binding_v1",
         "operations": ["put", "head", "get", "range", "copy", "delete", "list"],
-        "conditions": ["immutable_create", "exact_replay", "version_match", "cross_tenant_not_found"],
+        "multipart_operations": [
+            "create", "lookup", "list_parts", "put_part", "complete", "abort",
+            "stale_cleanup", "head", "range"
+        ],
+        "multipart_conditions": [
+            "durable_pre_provider_create_claim", "provider_handle_reconciliation",
+            "leased_part_write_claim", "strict_completion_linearization",
+            "completion_abort_exclusion", "expired_open_completion_rejected"
+        ],
+        "conditions": [
+            "immutable_create", "exact_replay", "conditional_source_version",
+            "conditional_delete_unsupported", "cross_tenant_not_found"
+        ],
         "status": "passed"
     }))
 }
 
 async fn run_local_contract(adapter: &R2ObjectStoreV1<'_>) -> Result<(), StorageFailure> {
+    if !adapter
+        .capabilities()
+        .supports(ObjectStoreOperation::ConditionalSourceVersion)
+        || adapter
+            .capabilities()
+            .supports(ObjectStoreOperation::ConditionalDeleteVersion)
+    {
+        return Err(integrity());
+    }
     let tenant = TenantId::new();
     let video = VideoId::new();
     let context = StorageRequestContext::new(tenant, CorrelationId::new());
@@ -187,7 +212,7 @@ async fn run_local_contract(adapter: &R2ObjectStoreV1<'_>) -> Result<(), Storage
                 ),
             )
             .await,
-        Err(error) if error.kind() == StorageFailureKind::PreconditionFailed
+        Err(error) if error.kind() == StorageFailureKind::UnsupportedCapability
     ) {
         return Err(integrity());
     }
@@ -275,7 +300,8 @@ impl<'a> R2ObjectStoreV1<'a> {
                 ByteSize::new(MAX_OBJECT_BYTES).map_err(|_| invalid())?,
                 ByteSize::new(MAX_RANGE_BYTES).map_err(|_| invalid())?,
                 100,
-            )?,
+            )?
+            .without(ObjectStoreOperation::ConditionalDeleteVersion),
         })
     }
 
@@ -541,6 +567,12 @@ impl ObjectStoreV1 for R2ObjectStoreV1<'_> {
         request: DeleteObjectRequestV1,
     ) -> Result<DeleteObjectDisposition, StorageFailure> {
         Self::authorize(context, request.key())?;
+        if request.expected_version().is_some() {
+            // worker-rs exposes no conditional delete on an R2 Bucket. A
+            // HEAD followed by unconditional delete would permit a
+            // delete/recreate race, so this adapter fails before provider I/O.
+            return Err(StorageFailure::unsupported());
+        }
         let Some(existing) = self
             .bucket
             .head(request.key().as_str())
@@ -550,13 +582,7 @@ impl ObjectStoreV1 for R2ObjectStoreV1<'_> {
         else {
             return Ok(DeleteObjectDisposition::AlreadyAbsent);
         };
-        let metadata = Self::metadata(&existing, request.key())?;
-        if request
-            .expected_version()
-            .is_some_and(|expected| expected != metadata.provider_version())
-        {
-            return Err(StorageFailure::new(StorageFailureKind::PreconditionFailed));
-        }
+        Self::metadata(&existing, request.key())?;
         self.bucket
             .delete(request.key().as_str())
             .into_send()
