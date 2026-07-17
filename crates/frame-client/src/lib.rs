@@ -8,7 +8,6 @@
 
 mod dto;
 mod error;
-mod instant;
 #[cfg(all(feature = "client", not(target_arch = "wasm32")))]
 mod native;
 mod origin;
@@ -19,10 +18,6 @@ pub use dto::{
     PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
 };
 pub use error::{ClientError, ClientErrorCode};
-pub use instant::{
-    INSTANT_FINALIZE_SCHEMA_VERSION, InstantFinalizeReceiptV1, InstantFinalizeRequestV1,
-    InstantFinalizeStateV1,
-};
 #[cfg(all(feature = "client", not(target_arch = "wasm32")))]
 pub use native::NativeTransport;
 pub use origin::FrameOrigin;

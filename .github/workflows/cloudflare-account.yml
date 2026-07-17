@@ -56,7 +56,8 @@ jobs:
           python3 -I scripts/ci/test-frame-cache-purge.py
           python3 -I scripts/ci/direct-upload-sqlite-conformance.py
           terraform -chdir=infra/cloudflare-account fmt -check -recursive
-          if rg -n 'cloudflare_(record|ruleset|zone|zone_setting)' infra/cloudflare-account --glob '*.tf'; then
+          if grep -R -n -E --include='*.tf' \
+            'cloudflare_(record|ruleset|zone|zone_setting)' infra/cloudflare-account; then
             echo "Frame account state may not manage shared zone resources" >&2
             exit 1
           fi

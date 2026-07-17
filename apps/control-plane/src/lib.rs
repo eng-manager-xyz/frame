@@ -10,6 +10,7 @@ mod commands;
 mod contracts;
 pub mod cutover_authority;
 pub mod cutover_authority_runtime;
+mod instant_finalize_contract;
 mod instant_finalize_runtime;
 pub mod legacy_compatibility_runtime;
 mod media_service_runtime;
@@ -51,8 +52,8 @@ use frame_application::{
     LegacyCallerV1, RateLimitDecisionV1, RequestSecurityContextV1, StorageGovernanceServiceError,
 };
 use frame_client::{
-    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, InstantFinalizeRequestV1,
-    PlaybackDescriptor, PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
+    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
+    PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
 };
 use frame_domain::{
     ApiErrorCodeV1, ApiMutationEnvelopeV1, AuthorityFence, ByteSize, ChecksumSha256,
@@ -72,6 +73,7 @@ use frame_ports::{
     ProviderPutPartRequestV1, StorageFailureKind, StorageGovernanceContextV1,
     StorageGovernanceRepositoryV1, StorageRequestContext,
 };
+use instant_finalize_contract::{InstantFinalizeRequestV1, InstantFinalizeStateV1};
 use r2_direct_upload::{
     MAX_DIRECT_UPLOAD_BYTES, R2DirectPutSigner, R2SigningCredentials, private_staging_key,
 };
@@ -5213,7 +5215,7 @@ async fn instant_finalize_response(
             );
         }
     };
-    if retained.state == frame_client::InstantFinalizeStateV1::Published {
+    if retained.state == InstantFinalizeStateV1::Published {
         return json_response(&retained, 200, None);
     }
     match instant_finalize_runtime::reconcile_session(&database, &authority_fence, session_id, now)

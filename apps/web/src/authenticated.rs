@@ -1,4 +1,4 @@
-//! Authenticated web contracts for a future approved browser-side adapter.
+//! Authenticated web state contracts used by the concrete browser-side adapter.
 //!
 //! This module deliberately contains no fixture transport and no authority.
 //! A production adapter must obtain a same-origin session decision, load only

@@ -232,7 +232,7 @@ def validate_sources() -> None:
         EVIDENCE,
         (
             "provider-free local evidence only",
-            "58 tests",
+            "73 tests",
             "protected_execution_pending",
             "cargo clippy -p frame-web",
         ),

@@ -1,4 +1,4 @@
-//! Versioned wire contract for the Instant server-finalize boundary.
+//! Private versioned wire contract for the authenticated Instant finalize boundary.
 //!
 //! The native media state machine keeps runtime capabilities and opaque
 //! provider handles private. This DTO carries only immutable identities and
@@ -9,14 +9,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{ClientError, ClientErrorCode};
-
-pub const INSTANT_FINALIZE_SCHEMA_VERSION: u16 = 1;
+pub(crate) const INSTANT_FINALIZE_SCHEMA_VERSION: u16 = 1;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InstantFinalizeContractError;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InstantFinalizeRequestV1 {
+pub(crate) struct InstantFinalizeRequestV1 {
     pub schema_version: u16,
     pub tenant_id: String,
     pub session_id: String,
@@ -41,7 +42,7 @@ impl std::fmt::Debug for InstantFinalizeRequestV1 {
 }
 
 impl InstantFinalizeRequestV1 {
-    pub fn validate(&self) -> Result<(), ClientError> {
+    pub(crate) fn validate(&self) -> Result<(), InstantFinalizeContractError> {
         let uuids = [
             &self.tenant_id,
             &self.session_id,
@@ -58,13 +59,13 @@ impl InstantFinalizeRequestV1 {
             || !valid_sha256(&self.request_sha256)
             || self.compute_request_sha256() != self.request_sha256
         {
-            return Err(ClientError::new(ClientErrorCode::InvalidContract));
+            return Err(InstantFinalizeContractError);
         }
         Ok(())
     }
 
     #[must_use]
-    pub fn compute_request_sha256(&self) -> String {
+    pub(crate) fn compute_request_sha256(&self) -> String {
         let mut digest = Sha256::new();
         digest.update(b"frame.instant.finalize-wire.v1\0");
         append_u16(&mut digest, self.schema_version);
@@ -86,23 +87,18 @@ impl InstantFinalizeRequestV1 {
         append_u64(&mut digest, self.job_generation);
         hex(&digest.finalize())
     }
-
-    #[must_use]
-    pub fn finalize_path(&self) -> String {
-        format!("instant-recordings/{}/finalize", self.session_id)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InstantFinalizeStateV1 {
+pub(crate) enum InstantFinalizeStateV1 {
     Pending,
     Published,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InstantFinalizeReceiptV1 {
+pub(crate) struct InstantFinalizeReceiptV1 {
     pub schema_version: u16,
     pub state: InstantFinalizeStateV1,
     pub request_sha256: String,
@@ -128,7 +124,11 @@ impl std::fmt::Debug for InstantFinalizeReceiptV1 {
 }
 
 impl InstantFinalizeReceiptV1 {
-    pub fn validate_for(&self, request: &InstantFinalizeRequestV1) -> Result<(), ClientError> {
+    #[cfg(test)]
+    pub(crate) fn validate_for(
+        &self,
+        request: &InstantFinalizeRequestV1,
+    ) -> Result<(), InstantFinalizeContractError> {
         request.validate()?;
         let published = self.state == InstantFinalizeStateV1::Published;
         if self.schema_version != INSTANT_FINALIZE_SCHEMA_VERSION
@@ -145,7 +145,7 @@ impl InstantFinalizeReceiptV1 {
                     .is_some_and(valid_object_key)
             || published != self.distribution_eligible
         {
-            return Err(ClientError::new(ClientErrorCode::InvalidContract));
+            return Err(InstantFinalizeContractError);
         }
         Ok(())
     }
@@ -176,6 +176,7 @@ fn valid_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+#[cfg(test)]
 fn valid_object_key(value: &str) -> bool {
     (16..=1024).contains(&value.len())
         && value.starts_with("tenants/")

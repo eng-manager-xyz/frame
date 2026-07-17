@@ -1,6 +1,6 @@
 //! D1 authority for the Instant multipart-to-publication boundary.
 
-use frame_client::{
+use crate::instant_finalize_contract::{
     INSTANT_FINALIZE_SCHEMA_VERSION, InstantFinalizeReceiptV1, InstantFinalizeRequestV1,
     InstantFinalizeStateV1,
 };
