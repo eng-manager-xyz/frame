@@ -9,6 +9,7 @@ mod business;
 mod cutover;
 mod idempotency;
 mod identity;
+mod legacy_compatibility;
 mod media_router;
 mod multipart;
 mod organization;
@@ -28,6 +29,7 @@ pub use identity::{
     PrincipalAssurance, ValidatedBrowserMutationProof, VerificationConsumeOutcome,
     VerificationIssueReceipt, VerifiedIdentityProvisioning, VerifiedPrincipal,
 };
+pub use legacy_compatibility::*;
 pub use media_router::{MediaRoute, MediaRouter, MediaRoutingPolicy, RoutedTransform};
 pub use multipart::*;
 pub use organization::*;

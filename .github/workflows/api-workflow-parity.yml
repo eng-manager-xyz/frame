@@ -37,12 +37,16 @@ jobs:
           python3 scripts/ci/check-migrations.py
           python3 -I scripts/ci/api-workflow-d1-conformance.py \
             --evidence target/evidence/api-workflow-d1-conformance.json
+          python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py \
+            --evidence target/evidence/legacy-api-execution-sqlite-conformance.json
       - name: Test public snapshots, admission, webhook, compatibility, and workflow faults
         run: |
           cargo test --locked -p frame-domain --test api_workflow_contract_v1
           cargo test --locked -p frame-domain --lib api_workflow
           cargo test --locked -p frame-application --lib api_workflow
+          cargo test --locked -p frame-application --lib legacy_compatibility
           cargo test --locked -p frame-control-plane --lib api_workflow_runtime
+          cargo test --locked -p frame-control-plane --lib legacy_compatibility_runtime
       - name: Check formatting and strict focused lints
         run: |
           cargo fmt --all -- --check
@@ -59,5 +63,6 @@ jobs:
             docs/generated/api-workflow-parity-v1.md
             docs/evidence/api-workflow-parity-local.md
             target/evidence/api-workflow-d1-conformance.json
+            target/evidence/legacy-api-execution-sqlite-conformance.json
           if-no-files-found: error
           retention-days: 14

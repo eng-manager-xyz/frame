@@ -2,6 +2,7 @@ pub mod api_workflow_runtime;
 pub mod auth_repository;
 mod auth_repository_conformance;
 mod authenticated_web_runtime;
+mod browser_web_runtime;
 pub mod business_repository;
 pub mod business_repository_conformance;
 mod cloudflare_media;
@@ -9,6 +10,8 @@ mod commands;
 mod contracts;
 pub mod cutover_authority;
 pub mod cutover_authority_runtime;
+mod instant_finalize_runtime;
+pub mod legacy_compatibility_runtime;
 mod media_service_runtime;
 pub mod organization_repository;
 mod organization_repository_conformance;
@@ -44,24 +47,37 @@ use cutover_authority::{
     CutoverAuthoritySnapshot, CutoverShadowObservation, CutoverSignalKind, ReplayControlAction,
     ShadowClassification,
 };
-use frame_application::StorageGovernanceServiceError;
+use frame_application::{
+    LegacyCallerV1, RateLimitDecisionV1, RequestSecurityContextV1, StorageGovernanceServiceError,
+};
 use frame_client::{
-    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, PlaybackDescriptor,
-    PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
+    ApiError, ApiVersion, Capabilities, CaptionTrack, Health, InstantFinalizeRequestV1,
+    PlaybackDescriptor, PublicShareSummary, RetryAdvice, ServiceStatus, ShareAvailability,
 };
 use frame_domain::{
-    AuthorityFence, ByteSize, ChecksumSha256, CorrelationId, CustomDomainName, CutoverDomain,
-    CutoverEvidence, CutoverPhase, CutoverScope, DataAuthority, GovernedObject, GovernedObjectId,
-    GovernedObjectRole, GovernedObjectState, MAX_SIGNED_GRANT_LIFETIME_MS, MalwareDisposition,
-    ObjectVisibility, PublicAnalyticsConsentCommandV1, PublicAnalyticsEventCommandV1,
-    PublicCommentCommandV1, PublicTranscriptV1, SignedGrantId, StorageAccessRequest,
-    StorageAccessSurface, StorageActor, StorageHttpMethod, StorageMemberRole, StorageOperation,
-    StorageQuotaPolicy, StorageResponsePolicy, TenantId, TimestampMillis, UserId,
-    VerifiedCustomDomain, VerifiedRangeResponse,
+    ApiErrorCodeV1, ApiMutationEnvelopeV1, AuthorityFence, ByteSize, ChecksumSha256,
+    ClientCompatibilityPolicyV1, ClientReleaseV1, ClientSurfaceV1, ContentType, CorrelationId,
+    CustomDomainName, CutoverDomain, CutoverEvidence, CutoverPhase, CutoverScope, DataAuthority,
+    DurationMillis, GovernedObject, GovernedObjectId, GovernedObjectRole, GovernedObjectState,
+    IdempotencyKey, MAX_SIGNED_GRANT_LIFETIME_MS, MalwareDisposition, MultipartLimitsV1,
+    MultipartPartNumberV1, MultipartUploadId, MultipartUploadSpecV1, ObjectVisibility,
+    PublicAnalyticsConsentCommandV1, PublicAnalyticsEventCommandV1, PublicCommentCommandV1,
+    PublicTranscriptV1, ScopedObjectKey, SignedGrantId, StorageAccessRequest, StorageAccessSurface,
+    StorageActor, StorageHttpMethod, StorageMemberRole, StorageOperation, StorageQuotaPolicy,
+    StorageResponsePolicy, TenantId, TimestampMillis, UserId, VerifiedCustomDomain,
+    VerifiedRangeResponse,
 };
-use frame_ports::{StorageGovernanceContextV1, StorageGovernanceRepositoryV1};
+use frame_ports::{
+    MultipartObjectStoreV1, ProviderCompleteMultipartRequestV1, ProviderCreateMultipartRequestV1,
+    ProviderPutPartRequestV1, StorageFailureKind, StorageGovernanceContextV1,
+    StorageGovernanceRepositoryV1, StorageRequestContext,
+};
 use r2_direct_upload::{
     MAX_DIRECT_UPLOAD_BYTES, R2DirectPutSigner, R2SigningCredentials, private_staging_key,
+};
+use r2_multipart::{
+    AuthenticatedAbortOutcomeV1, D1TrustedMediaProbeV1, R2MultipartObjectStoreV1,
+    abort_attempt_lock_until, abort_failure_class, abort_retry_at,
 };
 use repository::{AggregateRepository, MediaJobRow, UploadRow, VideoMutationRow, WorkerJobRow};
 use routing::{
@@ -69,6 +85,7 @@ use routing::{
     valid_repository_conformance_target, validate_host,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use uuid::Uuid;
 use wasm_bindgen::JsValue;
 use worker::*;
@@ -81,6 +98,9 @@ const NATIVE_MAX_ATTEMPTS: i64 = 3;
 const STORAGE_RESERVATION_TTL_MS: i64 = 15 * 60 * 1_000;
 const DIRECT_UPLOAD_TTL_SECONDS: u32 = 300;
 const DIRECT_STAGING_CLEANUP_GRACE_MS: i64 = 60_000;
+const MULTIPART_PART_BYTES: u64 = 16 * 1_024 * 1_024;
+const MULTIPART_MAX_BYTES: u64 = 2_000_000_000;
+const MULTIPART_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const METADATA_CUTOVER_DOMAIN: &str = "metadata";
 
 #[derive(Debug, Clone, Copy)]
@@ -324,6 +344,46 @@ struct DirectStagingExpiryRow {
     content_type: String,
     state: String,
     direct_staging_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartProbeCandidateRow {
+    organization_id: String,
+    upload_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartAbortCandidateRow {
+    organization_id: String,
+    upload_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartAbortAttemptRow {
+    intent_kind: String,
+    state: String,
+    attempt_count: i64,
+    next_attempt_at_ms: i64,
+    last_failure_class: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartSessionStateRow {
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifiedMultipartObjectRow {
+    provider_version: String,
+    provider_etag: String,
+    bytes: i64,
+    checksum_sha256: String,
+    content_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PresenceFlagRow {
+    present: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -750,8 +810,239 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, context: ScheduleContex
     }
     context.wait_until(prune_public_collaboration(env.clone()));
     context.wait_until(cleanup_expired_direct_staging(env.clone()));
+    context.wait_until(cleanup_expired_multipart(env.clone()));
+    context.wait_until(reconcile_instant_finalize_one(env.clone()));
     if matches!(config.media_mode, MediaMode::Native | MediaMode::Remote) {
         context.wait_until(recover_native_staging_one(env));
+    }
+}
+
+async fn cleanup_expired_multipart(env: Env) {
+    let result = async {
+        let config = RuntimeConfig::from_env(&env)
+            .ok_or_else(|| Error::RustError("multipart runtime configuration is invalid".into()))?;
+        let database = env.d1("DB")?;
+        let bucket = env.bucket("RECORDINGS")?;
+        let probe = D1TrustedMediaProbeV1::new(&database);
+        let store = R2MultipartObjectStoreV1::new(&bucket, &database, &probe)
+            .map_err(|_| Error::RustError("multipart adapter configuration is invalid".into()))?;
+        if let Err(error) = store.reconcile_completing_one().await
+            && !error.retryable()
+        {
+            console_error!("multipart completion reconciliation failed class=conflict");
+        }
+        enqueue_pending_multipart_probe(&env, &database).await?;
+        reconcile_authenticated_multipart_abort_one(&env, &config, &database, &bucket).await?;
+        store
+            .cleanup_stale(
+                TimestampMillis::new(current_time_ms()?)
+                    .map_err(|_| Error::RustError("multipart cleanup clock is invalid".into()))?,
+                25,
+            )
+            .await
+            .map_err(|_| Error::RustError("multipart cleanup failed".into()))?;
+        Ok::<(), Error>(())
+    }
+    .await;
+    if result.is_err() {
+        console_error!("multipart stale-session cleanup failed class=persistence");
+    }
+}
+
+async fn reconcile_authenticated_multipart_abort_one(
+    env: &Env,
+    config: &RuntimeConfig,
+    database: &D1Database,
+    bucket: &Bucket,
+) -> Result<()> {
+    let now = current_time_ms()?;
+    let candidate = database
+        .prepare(
+            "SELECT upload.organization_id,reconciliation.upload_id \
+             FROM r2_multipart_abort_reconciliation_v1 reconciliation \
+             JOIN r2_multipart_sessions_v1 session USING(upload_id) \
+             JOIN video_uploads upload ON upload.id=reconciliation.upload_id \
+             WHERE reconciliation.intent_kind='authenticated_delete' \
+               AND reconciliation.state='pending' AND reconciliation.next_attempt_at_ms<=?1 \
+               AND session.state IN ('open','completing') \
+               AND upload.state IN ('initiated','uploading','finalizing','failed') \
+             ORDER BY reconciliation.next_attempt_at_ms,reconciliation.updated_at_ms,\
+               reconciliation.upload_id LIMIT 1",
+        )
+        .bind(&[JsValue::from_f64(now as f64)])?
+        .first::<MultipartAbortCandidateRow>(None)
+        .await?;
+    let Some(candidate) = candidate else {
+        return Ok(());
+    };
+    let Some(authority_fence) =
+        mutation_authority_fence(env, config, &candidate.organization_id).await?
+    else {
+        return Ok(());
+    };
+    let Some(upload) =
+        load_upload(database, &candidate.organization_id, &candidate.upload_id).await?
+    else {
+        return Ok(());
+    };
+    let Some(intent) = load_multipart_intent(database, &candidate.upload_id).await? else {
+        return Ok(());
+    };
+    let probe = D1TrustedMediaProbeV1::new(database);
+    let store = R2MultipartObjectStoreV1::new(bucket, database, &probe)
+        .map_err(|_| Error::RustError("multipart adapter configuration is invalid".into()))?;
+    let (context, upload_id, key, _) = multipart_values(&upload, &intent)?;
+    let reference = store
+        .route_reference(context, upload_id, &key)
+        .await
+        .map_err(|_| Error::RustError("multipart abort reference is unavailable".into()))?;
+    let attempt = match claim_authenticated_multipart_abort(
+        database,
+        &authority_fence,
+        &candidate.organization_id,
+        &candidate.upload_id,
+        now,
+    )
+    .await?
+    {
+        AuthenticatedAbortClaim::Attempt(attempt) => attempt,
+        AuthenticatedAbortClaim::AlreadyAborted | AuthenticatedAbortClaim::AlreadyCompleted => {
+            return Ok(());
+        }
+    };
+    let outcome = match store
+        .reconcile_authenticated_abort_provider(
+            context,
+            reference,
+            attempt,
+            TimestampMillis::new(now)
+                .map_err(|_| Error::RustError("multipart abort clock is invalid".into()))?,
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            retain_authenticated_multipart_abort_failure(
+                database,
+                &authority_fence,
+                &candidate.upload_id,
+                attempt,
+                error.kind(),
+                now,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    match outcome {
+        AuthenticatedAbortOutcomeV1::Confirmed {
+            attempt: provider_attempt,
+        }
+        | AuthenticatedAbortOutcomeV1::PreservedObject {
+            attempt: provider_attempt,
+        } if provider_attempt == attempt => {
+            finish_authenticated_multipart_abort(
+                database,
+                &authority_fence,
+                &candidate.organization_id,
+                &candidate.upload_id,
+                attempt,
+                outcome,
+                now,
+            )
+            .await
+        }
+        AuthenticatedAbortOutcomeV1::AlreadyAborted
+        | AuthenticatedAbortOutcomeV1::AlreadyCompleted
+        | AuthenticatedAbortOutcomeV1::Pending
+        | AuthenticatedAbortOutcomeV1::Confirmed { .. }
+        | AuthenticatedAbortOutcomeV1::PreservedObject { .. } => Ok(()),
+    }
+}
+
+async fn enqueue_pending_multipart_probe(env: &Env, database: &D1Database) -> Result<()> {
+    let candidate = database
+        .prepare(
+            "SELECT u.organization_id,u.id AS upload_id \
+             FROM r2_multipart_verified_objects_v1 verified \
+             JOIN r2_multipart_sessions_v1 s ON s.upload_id=verified.upload_id \
+             JOIN video_uploads u ON u.id=s.upload_id \
+             LEFT JOIN r2_multipart_completions_v1 complete ON complete.upload_id=s.upload_id \
+             WHERE s.state='completing' AND complete.upload_id IS NULL \
+             ORDER BY verified.verified_at_ms,u.id LIMIT 1",
+        )
+        .first::<MultipartProbeCandidateRow>(None)
+        .await?;
+    let Some(candidate) = candidate else {
+        return Ok(());
+    };
+    let config = RuntimeConfig::from_env(env)
+        .ok_or_else(|| Error::RustError("runtime configuration is invalid".into()))?;
+    let Some(authority_fence) =
+        mutation_authority_fence(env, &config, &candidate.organization_id).await?
+    else {
+        return Ok(());
+    };
+    let upload = load_upload(database, &candidate.organization_id, &candidate.upload_id)
+        .await?
+        .ok_or_else(|| Error::RustError("multipart upload reconciliation is unavailable".into()))?;
+    let intent = load_multipart_intent(database, &candidate.upload_id)
+        .await?
+        .ok_or_else(|| Error::RustError("multipart intent reconciliation is unavailable".into()))?;
+    ensure_multipart_probe_job(env, database, &authority_fence, &upload, &intent).await
+}
+
+async fn reconcile_instant_finalize_one(env: Env) {
+    let result = async {
+        let config = RuntimeConfig::from_env(&env)
+            .ok_or_else(|| Error::RustError("runtime configuration is invalid".into()))?;
+        let database = env.d1("DB")?;
+        let now = current_time_ms()?;
+        let candidates = instant_finalize_runtime::scan_candidates(&database, now, 8)
+            .await
+            .map_err(|_| Error::RustError("instant finalize scan failed".into()))?;
+        for candidate in candidates {
+            // Cursor movement is scheduler bookkeeping, not tenant content.
+            // Advancing before authority lookup prevents one disabled tenant
+            // from starving the rest of the bounded ring.
+            instant_finalize_runtime::advance_cursor(&database, &candidate.session_id, now)
+                .await
+                .map_err(|_| Error::RustError("instant finalize cursor failed".into()))?;
+            let Some(authority_fence) =
+                mutation_authority_fence(&env, &config, &candidate.organization_id).await?
+            else {
+                console_error!(
+                    "instant finalize reconciliation skipped class=authority_unavailable"
+                );
+                continue;
+            };
+            if let Err(failure) = instant_finalize_runtime::reconcile_session(
+                &database,
+                &authority_fence,
+                &candidate.session_id,
+                now,
+            )
+            .await
+                && let Err(record_error) = instant_finalize_runtime::record_reconcile_failure(
+                    &database,
+                    &authority_fence,
+                    &candidate.session_id,
+                    failure,
+                    now,
+                )
+                .await
+            {
+                console_error!(
+                    "instant finalize retry retention failed class={}",
+                    record_error.safe_code()
+                );
+            }
+        }
+        Ok::<(), Error>(())
+    }
+    .await;
+    if result.is_err() {
+        console_error!("instant finalize scheduler failed class=persistence");
     }
 }
 
@@ -1286,6 +1577,13 @@ async fn dispatch(
                 health_response(env, config).await?
             }
         }
+        Route::LegacyApiStatus => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_api_status_response(&request, request_id, config.production()).await?
+            }
+        }
         Route::ApiHealth => {
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
                 failure_response(failure, request_id, config.production())?
@@ -1511,25 +1809,6 @@ async fn dispatch(
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
                 failure_response(failure, request_id, config.production())?
             } else {
-                let actor = match authenticated_command_preflight(
-                    &request,
-                    env,
-                    config,
-                    RequiredAccess::Read,
-                )
-                .await?
-                {
-                    Ok(actor) => actor,
-                    Err(failure) => {
-                        return failure_response(failure, request_id, config.production());
-                    }
-                };
-                let database = env.d1("DB")?;
-                let Some(tenant_id) =
-                    authorized_tenant(&database, &request, &actor, RequiredAccess::Read).await?
-                else {
-                    return failure_response(not_found_failure(), request_id, config.production());
-                };
                 let query = match request.query::<authenticated_web_runtime::WebLoadQuery>() {
                     Ok(query) => query,
                     Err(_) => {
@@ -1540,24 +1819,49 @@ async fn dispatch(
                         );
                     }
                 };
-                match authenticated_web_runtime::load(
-                    &database,
-                    &tenant_id,
-                    &actor.user_id,
-                    &surface,
-                    &query,
-                )
-                .await?
+                match browser_web_runtime::load(&request, env, &surface, &query, current_time_ms()?)
+                    .await?
                 {
                     Ok(workspace) => Response::from_json(&workspace)?,
-                    Err(authenticated_web_runtime::WebLoadFailure::Invalid) => failure_response(
-                        invalid_body_failure("invalid_query"),
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_query"),
                         request_id,
                         config.production(),
                     )?,
-                    Err(authenticated_web_runtime::WebLoadFailure::Unavailable) => {
-                        failure_response(not_found_failure(), request_id, config.production())?
+                }
+            }
+        }
+        Route::AuthenticatedWebAction { action } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                let body = match browser_web_runtime::decode_action_request(&mut request).await? {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_body"),
+                            request_id,
+                            config.production(),
+                        );
                     }
+                };
+                match browser_web_runtime::mutate(&request, env, &action, &body, current_time_ms()?)
+                    .await?
+                {
+                    Ok(receipt) => {
+                        let status = match receipt.effect_state {
+                            browser_web_runtime::WebActionEffectState::Applied => 200,
+                            browser_web_runtime::WebActionEffectState::PendingProtectedExecution => {
+                                202
+                            }
+                        };
+                        Response::from_json(&receipt)?.with_status(status)
+                    }
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_body"),
+                        request_id,
+                        config.production(),
+                    )?,
                 }
             }
         }
@@ -1917,6 +2221,134 @@ async fn dispatch(
                 }
                 direct_upload_finalize_response(
                     env, config, &request, &actor, &upload_id, body, request_id,
+                )
+                .await?
+            }
+        }
+        Route::UploadMultipart { upload_id } => {
+            if let Some(failure) = method_guard(
+                &request,
+                &[Method::Post, Method::Get, Method::Delete],
+                "POST, GET, DELETE",
+            )? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&upload_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Write,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                multipart_session_response(env, config, &request, &actor, &upload_id, request_id)
+                    .await?
+            }
+        }
+        Route::UploadMultipartPart {
+            upload_id,
+            part_number,
+        } => {
+            if let Some(failure) = method_guard(&request, &[Method::Put], "PUT")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&upload_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Write,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                multipart_part_response(
+                    env,
+                    config,
+                    &mut request,
+                    &actor,
+                    &upload_id,
+                    part_number,
+                    request_id,
+                )
+                .await?
+            }
+        }
+        Route::UploadMultipartComplete { upload_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&upload_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Write,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                multipart_complete_response(env, config, &request, &actor, &upload_id, request_id)
+                    .await?
+            }
+        }
+        Route::InstantFinalize { session_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else if !valid_uuid(&session_id) {
+                failure_response(not_found_failure(), request_id, config.production())?
+            } else {
+                let actor = match authenticated_command_preflight(
+                    &request,
+                    env,
+                    config,
+                    RequiredAccess::Write,
+                )
+                .await?
+                {
+                    Ok(actor) => actor,
+                    Err(failure) => {
+                        return failure_response(failure, request_id, config.production());
+                    }
+                };
+                if let Err(failure) = validate_json_command_headers(&request) {
+                    return failure_response(failure, request_id, config.production());
+                }
+                let body = match request.json::<InstantFinalizeRequestV1>().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return failure_response(
+                            invalid_body_failure("invalid_json"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                instant_finalize_response(
+                    env,
+                    config,
+                    &request,
+                    &actor,
+                    &session_id,
+                    body,
+                    request_id,
                 )
                 .await?
             }
@@ -2613,6 +3045,114 @@ fn method_guard(
     }))
 }
 
+async fn legacy_api_status_response(
+    request: &Request,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    let content_length = match request.headers().get("content-length")? {
+        None => 0,
+        Some(value) => match value.parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                return failure_response(
+                    invalid_body_failure("invalid_content_length"),
+                    request_id,
+                    production,
+                );
+            }
+        },
+    };
+    let idempotency_key = match request.headers().get("idempotency-key")? {
+        None => None,
+        Some(value) => match IdempotencyKey::parse(value) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                return failure_response(
+                    invalid_body_failure("invalid_idempotency_key"),
+                    request_id,
+                    production,
+                );
+            }
+        },
+    };
+    let compatibility = ClientCompatibilityPolicyV1 {
+        api_major: 1,
+        current_release: 2,
+        previous_release: 1,
+        deprecated_after_ms: None,
+        retired: false,
+    };
+    let transport = legacy_compatibility_runtime::LegacyCompatibilityTransportV1::new_static_only(
+        compatibility,
+    )
+    .map_err(|_| Error::RustError("legacy compatibility registry is invalid".into()))?;
+    let outcome = transport
+        .dispatch_http_response(legacy_compatibility_runtime::LegacyHttpTransportRequestV1 {
+            method: "GET".into(),
+            raw_path: legacy_compatibility_runtime::LEGACY_STATUS_PATH.into(),
+            caller: LegacyCallerV1::Released(ClientReleaseV1 {
+                surface: ClientSurfaceV1::Web,
+                api_major: 1,
+                release: 2,
+            }),
+            envelope: ApiMutationEnvelopeV1 {
+                content_length,
+                content_type: request.headers().get("content-type")?,
+                idempotency_key,
+                correlation_id: request_id.into(),
+            },
+            security: RequestSecurityContextV1 {
+                authenticated: false,
+                authorized: true,
+                browser_origin_valid: true,
+                csrf_valid: true,
+                rate_limit: RateLimitDecisionV1::Allowed,
+            },
+            scope_digest: ChecksumSha256::digest_bytes(b"frame:legacy-public-status:v1"),
+            request_fingerprint: ChecksumSha256::digest_bytes(b"GET\0/api/status\0v1"),
+        })
+        .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let failure = match error.code {
+                ApiErrorCodeV1::InvalidRequest => invalid_body_failure("invalid_status_request"),
+                ApiErrorCodeV1::NotFound => not_found_failure(),
+                ApiErrorCodeV1::RateLimited => ApiFailure::new(
+                    429,
+                    "rate_limited",
+                    "The request rate limit was exceeded.",
+                    true,
+                ),
+                ApiErrorCodeV1::UpgradeRequired => ApiFailure::new(
+                    426,
+                    "upgrade_required",
+                    "A supported client version is required.",
+                    false,
+                ),
+                ApiErrorCodeV1::Unauthenticated
+                | ApiErrorCodeV1::Conflict
+                | ApiErrorCodeV1::Unsupported
+                | ApiErrorCodeV1::TemporarilyUnavailable
+                | ApiErrorCodeV1::Indeterminate
+                | ApiErrorCodeV1::Internal => ApiFailure::new(
+                    503,
+                    "service_unavailable",
+                    "The service is temporarily unavailable.",
+                    true,
+                ),
+            };
+            return failure_response(failure, request_id, production);
+        }
+    };
+    let mut response = Response::ok(outcome.body())?.with_status(outcome.status());
+    response
+        .headers_mut()
+        .set("content-type", outcome.content_type())?;
+    Ok(response)
+}
+
 async fn health_response(env: &Env, config: &RuntimeConfig) -> Result<Response> {
     let (contract, dependencies) = health_snapshot(env, config).await?;
     Response::from_json(&HealthResponse {
@@ -3181,9 +3721,19 @@ async fn upload_intent_response(
             config.production(),
         );
     }
-    if body.expected_bytes > MAX_SINGLE_UPLOAD_BYTES
-        || (body.transfer_mode == "direct" && body.expected_bytes > MAX_DIRECT_UPLOAD_BYTES)
-    {
+    let multipart_part_count = body
+        .expected_bytes
+        .div_ceil(MULTIPART_PART_BYTES)
+        .try_into()
+        .ok()
+        .filter(|count: &u16| (1..=10_000).contains(count));
+    let upload_size_valid = match body.transfer_mode.as_str() {
+        "brokered" => body.expected_bytes <= MAX_SINGLE_UPLOAD_BYTES,
+        "direct" => body.expected_bytes <= MAX_DIRECT_UPLOAD_BYTES,
+        "multipart" => body.expected_bytes <= MULTIPART_MAX_BYTES && multipart_part_count.is_some(),
+        _ => false,
+    };
+    if !upload_size_valid {
         return failure_response(
             ApiFailure::new(
                 413,
@@ -3227,7 +3777,9 @@ async fn upload_intent_response(
             config.production(),
         );
     };
-    if !integration.supports_single_put() {
+    if (body.transfer_mode == "multipart" && !integration.supports_multipart())
+        || (body.transfer_mode != "multipart" && !integration.supports_single_put())
+    {
         return failure_response(
             storage_unavailable_failure(),
             request_id,
@@ -3285,6 +3837,20 @@ async fn upload_intent_response(
                 Some(checksum.to_owned()),
                 Some(expires_at_ms),
             )
+        } else if body.transfer_mode == "multipart" {
+            (
+                UploadIntentResponse::multipart(
+                    upload_id.clone(),
+                    body.expected_bytes,
+                    body.content_type.clone(),
+                    MULTIPART_PART_BYTES,
+                    multipart_part_count
+                        .ok_or_else(|| Error::RustError("multipart geometry is invalid".into()))?,
+                ),
+                None,
+                None,
+                None,
+            )
         } else {
             (
                 UploadIntentResponse::new(
@@ -3311,7 +3877,12 @@ async fn upload_intent_response(
     })
     .to_string();
 
-    let statements = vec![
+    let persisted_transfer_mode = if body.transfer_mode == "multipart" {
+        "brokered"
+    } else {
+        body.transfer_mode.as_str()
+    };
+    let mut statements = vec![
         database
             .prepare(
                 "INSERT INTO video_uploads(\
@@ -3331,7 +3902,7 @@ async fn upload_intent_response(
                 JsValue::from_f64(f64::from(body.object_version)),
                 JsValue::from_str(&body.content_type),
                 JsValue::from_f64(now as f64),
-                JsValue::from_str(&body.transfer_mode),
+                JsValue::from_str(persisted_transfer_mode),
                 direct_staging_key
                     .as_deref()
                     .map_or(JsValue::NULL, JsValue::from_str),
@@ -3383,6 +3954,34 @@ async fn upload_intent_response(
                 JsValue::from_f64(now as f64),
             ])?,
     ];
+    if body.transfer_mode == "multipart" {
+        let checksum = body
+            .checksum_sha256
+            .as_deref()
+            .ok_or_else(|| Error::RustError("multipart checksum is missing".into()))?;
+        let expires_at_ms = now
+            .checked_add(MULTIPART_TTL_MS)
+            .ok_or_else(|| Error::RustError("multipart expiry overflowed".into()))?;
+        statements.push(
+            database
+                .prepare(
+                    "INSERT INTO r2_multipart_intents_v1(\
+                     upload_id,integration_id,checksum_sha256,part_size,part_count,expires_at_ms,created_at_ms) \
+                     VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                )
+                .bind(&[
+                    JsValue::from_str(&upload_id),
+                    JsValue::from_str(&integration.id),
+                    JsValue::from_str(checksum),
+                    JsValue::from_f64(MULTIPART_PART_BYTES as f64),
+                    JsValue::from_f64(f64::from(multipart_part_count.ok_or_else(|| {
+                        Error::RustError("multipart geometry is invalid".into())
+                    })?)),
+                    JsValue::from_f64(expires_at_ms as f64),
+                    JsValue::from_f64(now as f64),
+                ])?,
+        );
+    }
     require_batch_success(
         execute_mutation_batch(
             &database,
@@ -3396,6 +3995,7 @@ async fn upload_intent_response(
     let location = response
         .upload_path
         .as_deref()
+        .or(response.multipart_path.as_deref())
         .unwrap_or(response.status_path.as_str());
     json_response(&response, 201, Some(location))
 }
@@ -3421,6 +4021,1219 @@ async fn upload_status_response(
         .public_status()
         .ok_or_else(|| Error::RustError("upload state is invalid".into()))?;
     json_response(&status, 200, None)
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartIntentRow {
+    integration_id: String,
+    checksum_sha256: String,
+    part_size: i64,
+    part_count: i64,
+    expires_at_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct MultipartSessionResponse {
+    schema_version: u16,
+    upload_id: String,
+    state: &'static str,
+    expires_at_ms: u64,
+    part_size: u64,
+    part_count: u16,
+    parts_path: String,
+    complete_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MultipartPartResponse {
+    schema_version: u16,
+    upload_id: String,
+    part_number: u16,
+    bytes: u64,
+    checksum_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MultipartPartsResponse {
+    schema_version: u16,
+    upload_id: String,
+    parts: Vec<MultipartPartResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct MultipartCompleteResponse {
+    schema_version: u16,
+    upload_id: String,
+    state: &'static str,
+    checksum_sha256: String,
+    object_version: String,
+    instant_finalize_path_template: String,
+}
+
+async fn load_multipart_intent(
+    database: &D1Database,
+    upload_id: &str,
+) -> Result<Option<MultipartIntentRow>> {
+    database
+        .prepare(
+            "SELECT integration_id,checksum_sha256,part_size,part_count,expires_at_ms \
+             FROM r2_multipart_intents_v1 WHERE upload_id=?1 LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(upload_id)])?
+        .first::<MultipartIntentRow>(None)
+        .await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthenticatedAbortClaim {
+    Attempt(i64),
+    AlreadyAborted,
+    AlreadyCompleted,
+}
+
+fn multipart_abort_change_assertion(
+    database: &D1Database,
+    operation_id: &str,
+    upload_id: &str,
+    assertion_kind: &str,
+) -> Result<D1PreparedStatement> {
+    database
+        .prepare(
+            "INSERT INTO r2_multipart_abort_batch_assertions_v1(\
+             operation_id,upload_id,assertion_kind,expected_count,actual_count) \
+             VALUES(?1,?2,?3,1,changes())",
+        )
+        .bind(&[
+            JsValue::from_str(operation_id),
+            JsValue::from_str(upload_id),
+            JsValue::from_str(assertion_kind),
+        ])
+}
+
+fn multipart_abort_assertion_cleanup(
+    database: &D1Database,
+    operation_id: &str,
+) -> Result<D1PreparedStatement> {
+    database
+        .prepare("DELETE FROM r2_multipart_abort_batch_assertions_v1 WHERE operation_id=?1")
+        .bind(&[JsValue::from_str(operation_id)])
+}
+
+async fn claim_authenticated_multipart_abort(
+    database: &D1Database,
+    authority_fence: &MutationAuthorityFence,
+    tenant_id: &str,
+    upload_id: &str,
+    now_ms: i64,
+) -> Result<AuthenticatedAbortClaim> {
+    let state = database
+        .prepare(
+            "SELECT session.state FROM r2_multipart_sessions_v1 session \
+             JOIN video_uploads upload ON upload.id=session.upload_id \
+             WHERE session.upload_id=?1 AND upload.organization_id=?2 LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(upload_id), JsValue::from_str(tenant_id)])?
+        .first::<MultipartSessionStateRow>(None)
+        .await?;
+    match state.as_ref().map(|row| row.state.as_str()) {
+        Some("aborted" | "expired") => return Ok(AuthenticatedAbortClaim::AlreadyAborted),
+        Some("complete") => return Ok(AuthenticatedAbortClaim::AlreadyCompleted),
+        Some("open" | "completing") => {}
+        _ => {
+            return Err(Error::RustError(
+                "multipart abort session is unavailable".into(),
+            ));
+        }
+    }
+
+    let operation_id = Uuid::now_v7().to_string();
+    let lock_until = abort_attempt_lock_until(now_ms);
+    let statements = vec![
+        database
+            .prepare(
+                "INSERT INTO r2_multipart_abort_reconciliation_v1(\
+                 upload_id,intent_kind,state,attempt_count,next_attempt_at_ms,last_failure_class,\
+                 started_at_ms,updated_at_ms,terminal_at_ms) \
+                 SELECT ?1,'authenticated_delete','pending',1,?3,NULL,?2,?2,NULL \
+                 WHERE EXISTS (SELECT 1 FROM r2_multipart_sessions_v1 session \
+                   JOIN video_uploads upload ON upload.id=session.upload_id \
+                   WHERE session.upload_id=?1 AND upload.organization_id=?4 \
+                     AND session.state IN ('open','completing') \
+                     AND upload.state IN ('initiated','uploading','finalizing','failed')) \
+                 ON CONFLICT(upload_id) DO UPDATE SET \
+                   intent_kind='authenticated_delete',attempt_count=attempt_count+1,\
+                   next_attempt_at_ms=?3,last_failure_class=NULL,updated_at_ms=?2 \
+                 WHERE state='pending' AND (intent_kind='expiry_cleanup' OR next_attempt_at_ms<=?2)",
+            )
+            .bind(&[
+                JsValue::from_str(upload_id),
+                JsValue::from_f64(now_ms as f64),
+                JsValue::from_f64(lock_until as f64),
+                JsValue::from_str(tenant_id),
+            ])?,
+        multipart_abort_change_assertion(database, &operation_id, upload_id, "attempt_claim")?,
+        multipart_abort_assertion_cleanup(database, &operation_id)?,
+    ];
+    require_batch_success(
+        execute_mutation_batch(database, authority_fence, &operation_id, now_ms, statements)
+            .await?,
+    )?;
+    let claimed = database
+        .prepare(
+            "SELECT intent_kind,state,attempt_count,next_attempt_at_ms,last_failure_class \
+             FROM r2_multipart_abort_reconciliation_v1 WHERE upload_id=?1 LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(upload_id)])?
+        .first::<MultipartAbortAttemptRow>(None)
+        .await?;
+    let Some(claimed) = claimed.filter(|row| {
+        row.intent_kind == "authenticated_delete"
+            && row.state == "pending"
+            && row.next_attempt_at_ms == lock_until
+            && row.last_failure_class.is_none()
+    }) else {
+        return Err(Error::RustError(
+            "multipart abort claim was not retained".into(),
+        ));
+    };
+    Ok(AuthenticatedAbortClaim::Attempt(claimed.attempt_count))
+}
+
+async fn retain_authenticated_multipart_abort_failure(
+    database: &D1Database,
+    authority_fence: &MutationAuthorityFence,
+    upload_id: &str,
+    attempt: i64,
+    failure: StorageFailureKind,
+    now_ms: i64,
+) -> Result<()> {
+    let operation_id = Uuid::now_v7().to_string();
+    let next_attempt = abort_retry_at(now_ms, attempt);
+    let statements = vec![
+        database
+            .prepare(
+                "UPDATE r2_multipart_abort_reconciliation_v1 SET next_attempt_at_ms=?3,\
+                 last_failure_class=?4,updated_at_ms=?5 \
+                 WHERE upload_id=?1 AND intent_kind='authenticated_delete' \
+                   AND state='pending' AND attempt_count=?2",
+            )
+            .bind(&[
+                JsValue::from_str(upload_id),
+                JsValue::from_f64(attempt as f64),
+                JsValue::from_f64(next_attempt as f64),
+                JsValue::from_str(abort_failure_class(failure)),
+                JsValue::from_f64(now_ms as f64),
+            ])?,
+        multipart_abort_change_assertion(database, &operation_id, upload_id, "failure_retained")?,
+        multipart_abort_assertion_cleanup(database, &operation_id)?,
+    ];
+    require_batch_success(
+        execute_mutation_batch(database, authority_fence, &operation_id, now_ms, statements)
+            .await?,
+    )
+}
+
+async fn finish_authenticated_multipart_abort(
+    database: &D1Database,
+    authority_fence: &MutationAuthorityFence,
+    tenant_id: &str,
+    upload_id: &str,
+    attempt: i64,
+    outcome: AuthenticatedAbortOutcomeV1,
+    now_ms: i64,
+) -> Result<()> {
+    let (session_state, reconciliation_state) = match outcome {
+        AuthenticatedAbortOutcomeV1::Confirmed { .. } => ("aborted", "confirmed"),
+        AuthenticatedAbortOutcomeV1::PreservedObject { .. } => ("completing", "preserved_object"),
+        _ => {
+            return Err(Error::RustError(
+                "multipart abort outcome is not terminal".into(),
+            ));
+        }
+    };
+    let operation_id = Uuid::now_v7().to_string();
+    let fingerprint = digest_identifier(
+        "multipart_upload_event",
+        &format!("{upload_id}:{session_state}"),
+    )
+    .map_err(|()| Error::RustError("multipart abort event is invalid".into()))?;
+    let mut statements = Vec::with_capacity(9);
+    statements.push(
+        database
+            .prepare(
+                "UPDATE r2_multipart_sessions_v1 SET state=?2 \
+                 WHERE upload_id=?1 AND state IN ('open','completing')",
+            )
+            .bind(&[
+                JsValue::from_str(upload_id),
+                JsValue::from_str(session_state),
+            ])?,
+    );
+    statements.push(multipart_abort_change_assertion(
+        database,
+        &operation_id,
+        upload_id,
+        "session_transition",
+    )?);
+    if reconciliation_state == "confirmed" {
+        statements.push(
+            database
+                .prepare(
+                    "UPDATE video_uploads SET state='aborted',updated_at_ms=?3,\
+                     revision=revision+1,event_sequence=event_sequence+1,event_fingerprint=?4 \
+                     WHERE id=?1 AND organization_id=?2 \
+                       AND state IN ('initiated','uploading','finalizing','failed')",
+                )
+                .bind(&[
+                    JsValue::from_str(upload_id),
+                    JsValue::from_str(tenant_id),
+                    JsValue::from_f64(now_ms as f64),
+                    JsValue::from_str(&fingerprint),
+                ])?,
+        );
+        statements.push(multipart_abort_change_assertion(
+            database,
+            &operation_id,
+            upload_id,
+            "video_upload_transition",
+        )?);
+    }
+    statements.push(
+        database
+            .prepare(
+                "UPDATE r2_multipart_abort_reconciliation_v1 SET state=?3,\
+                 next_attempt_at_ms=?4,last_failure_class=NULL,updated_at_ms=?4,terminal_at_ms=?4 \
+                 WHERE upload_id=?1 AND intent_kind='authenticated_delete' \
+                   AND state='pending' AND attempt_count=?2",
+            )
+            .bind(&[
+                JsValue::from_str(upload_id),
+                JsValue::from_f64(attempt as f64),
+                JsValue::from_str(reconciliation_state),
+                JsValue::from_f64(now_ms as f64),
+            ])?,
+    );
+    statements.push(multipart_abort_change_assertion(
+        database,
+        &operation_id,
+        upload_id,
+        "reconciliation_transition",
+    )?);
+    statements.push(
+        database
+            .prepare(
+                "INSERT INTO r2_multipart_abort_terminal_assertions_v1(\
+                 upload_id,outcome,asserted_at_ms) VALUES(?1,?2,?3)",
+            )
+            .bind(&[
+                JsValue::from_str(upload_id),
+                JsValue::from_str(reconciliation_state),
+                JsValue::from_f64(now_ms as f64),
+            ])?,
+    );
+    statements.push(multipart_abort_change_assertion(
+        database,
+        &operation_id,
+        upload_id,
+        "terminal_assertion",
+    )?);
+    statements.push(multipart_abort_assertion_cleanup(database, &operation_id)?);
+    require_batch_success(
+        execute_mutation_batch(database, authority_fence, &operation_id, now_ms, statements)
+            .await?,
+    )
+}
+
+fn multipart_values(
+    upload: &UploadRow,
+    intent: &MultipartIntentRow,
+) -> Result<(
+    StorageRequestContext,
+    MultipartUploadId,
+    ScopedObjectKey,
+    MultipartUploadSpecV1,
+)> {
+    let tenant = TenantId::parse(&upload.organization_id)
+        .map_err(|_| Error::RustError("multipart tenant is invalid".into()))?;
+    let correlation = CorrelationId::parse(&upload.id)
+        .map_err(|_| Error::RustError("multipart correlation is invalid".into()))?;
+    let upload_id = MultipartUploadId::parse(&upload.id)
+        .map_err(|_| Error::RustError("multipart upload is invalid".into()))?;
+    let key = ScopedObjectKey::parse(&upload.source_object_key)
+        .map_err(|_| Error::RustError("multipart object key is invalid".into()))?;
+    let total = ByteSize::new(
+        u64::try_from(upload.expected_bytes)
+            .map_err(|_| Error::RustError("multipart size is invalid".into()))?,
+    )
+    .map_err(|_| Error::RustError("multipart size is invalid".into()))?;
+    let part_size = ByteSize::new(
+        u64::try_from(intent.part_size)
+            .map_err(|_| Error::RustError("multipart part size is invalid".into()))?,
+    )
+    .map_err(|_| Error::RustError("multipart part size is invalid".into()))?;
+    let limits = MultipartLimitsV1::new(
+        ByteSize::new(5 * 1_024 * 1_024)
+            .map_err(|_| Error::RustError("multipart limits are invalid".into()))?,
+        ByteSize::new(100 * 1_024 * 1_024)
+            .map_err(|_| Error::RustError("multipart limits are invalid".into()))?,
+        10_000,
+        ByteSize::new(MULTIPART_MAX_BYTES)
+            .map_err(|_| Error::RustError("multipart limits are invalid".into()))?,
+        ByteSize::new(100 * 1_024 * 1_024)
+            .map_err(|_| Error::RustError("multipart limits are invalid".into()))?,
+        DurationMillis::new(MULTIPART_TTL_MS as u64)
+            .map_err(|_| Error::RustError("multipart limits are invalid".into()))?,
+    )
+    .map_err(|_| Error::RustError("multipart limits are invalid".into()))?;
+    let spec = MultipartUploadSpecV1::new(
+        key.clone(),
+        total,
+        part_size,
+        ChecksumSha256::parse(&intent.checksum_sha256)
+            .map_err(|_| Error::RustError("multipart checksum is invalid".into()))?,
+        ContentType::parse(&upload.content_type)
+            .map_err(|_| Error::RustError("multipart content type is invalid".into()))?,
+        limits,
+    )
+    .map_err(|_| Error::RustError("multipart specification is invalid".into()))?;
+    if i64::from(spec.part_count()) != intent.part_count {
+        return Err(Error::RustError("multipart part count is invalid".into()));
+    }
+    Ok((
+        StorageRequestContext::new(tenant, correlation),
+        upload_id,
+        key,
+        spec,
+    ))
+}
+
+async fn multipart_scope(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    upload_id: &str,
+    request_id: &str,
+) -> Result<std::result::Result<(String, UploadRow, MultipartIntentRow), Response>> {
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Write).await?
+    else {
+        return Ok(Err(failure_response(
+            not_found_failure(),
+            request_id,
+            config.production(),
+        )?));
+    };
+    let Some(upload) = load_upload(&database, &tenant_id, upload_id).await? else {
+        return Ok(Err(failure_response(
+            not_found_failure(),
+            request_id,
+            config.production(),
+        )?));
+    };
+    let Some(intent) = load_multipart_intent(&database, upload_id).await? else {
+        return Ok(Err(failure_response(
+            not_found_failure(),
+            request_id,
+            config.production(),
+        )?));
+    };
+    let Some(integration) = r2_integration(&database, &tenant_id, &intent.integration_id).await?
+    else {
+        return Ok(Err(failure_response(
+            storage_unavailable_failure(),
+            request_id,
+            config.production(),
+        )?));
+    };
+    if !integration.supports_multipart() {
+        return Ok(Err(failure_response(
+            storage_unavailable_failure(),
+            request_id,
+            config.production(),
+        )?));
+    }
+    Ok(Ok((tenant_id, upload, intent)))
+}
+
+async fn multipart_session_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    upload_id_text: &str,
+    request_id: &str,
+) -> Result<Response> {
+    let (tenant_id, upload, intent) =
+        match multipart_scope(env, config, request, actor, upload_id_text, request_id).await? {
+            Ok(scope) => scope,
+            Err(response) => return Ok(response),
+        };
+    let database = env.d1("DB")?;
+    let bucket = env.bucket("RECORDINGS")?;
+    let probe = D1TrustedMediaProbeV1::new(&database);
+    let store = R2MultipartObjectStoreV1::new(&bucket, &database, &probe)
+        .map_err(|_| Error::RustError("multipart adapter is invalid".into()))?;
+    let (context, upload_id, key, spec) = multipart_values(&upload, &intent)?;
+    match request.method() {
+        Method::Post => {
+            let Some(authority_fence) = mutation_authority_fence(env, config, &tenant_id).await?
+            else {
+                return failure_response(
+                    mutation_disabled_failure(),
+                    request_id,
+                    config.production(),
+                );
+            };
+            let session = match store
+                .create_multipart(
+                    context,
+                    ProviderCreateMultipartRequestV1::new(
+                        upload_id,
+                        spec.clone(),
+                        TimestampMillis::new(intent.expires_at_ms)
+                            .map_err(|_| Error::RustError("multipart expiry is invalid".into()))?,
+                        context.correlation_id(),
+                    ),
+                )
+                .await
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    return multipart_error_response(error, request_id, config.production());
+                }
+            };
+            let fingerprint = digest_identifier(
+                "multipart_upload_event",
+                &format!("{upload_id_text}:uploading:{}", intent.checksum_sha256),
+            )
+            .map_err(|()| Error::RustError("multipart event is invalid".into()))?;
+            require_batch_success(
+                execute_mutation_batch(
+                    &database,
+                    &authority_fence,
+                    &format!("multipart-create:{upload_id_text}"),
+                    current_time_ms()?,
+                    vec![database
+                        .prepare(
+                            "UPDATE video_uploads SET state='uploading',updated_at_ms=?3,\
+                             revision=revision+1,event_sequence=event_sequence+1,event_fingerprint=?4 \
+                             WHERE id=?1 AND organization_id=?2 AND state='initiated'",
+                        )
+                        .bind(&[
+                            JsValue::from_str(upload_id_text),
+                            JsValue::from_str(&tenant_id),
+                            JsValue::from_f64(current_time_ms()? as f64),
+                            JsValue::from_str(&fingerprint),
+                        ])?],
+                )
+                .await?,
+            )?;
+            json_response(
+                &MultipartSessionResponse {
+                    schema_version: API_SCHEMA_VERSION,
+                    upload_id: upload_id_text.into(),
+                    state: "uploading",
+                    expires_at_ms: u64::try_from(session.expires_at().get())
+                        .map_err(|_| Error::RustError("multipart expiry is invalid".into()))?,
+                    part_size: spec.part_size().get(),
+                    part_count: spec.part_count(),
+                    parts_path: format!(
+                        "/api/v1/uploads/{upload_id_text}/multipart/parts/{{part_number}}"
+                    ),
+                    complete_path: format!("/api/v1/uploads/{upload_id_text}/multipart/complete"),
+                },
+                201,
+                None,
+            )
+        }
+        Method::Get => {
+            let reference = match store.route_reference(context, upload_id, &key).await {
+                Ok(reference) => reference,
+                Err(error) => {
+                    return multipart_error_response(error, request_id, config.production());
+                }
+            };
+            let parts = match store.list_parts(context, reference).await {
+                Ok(parts) => parts,
+                Err(error) => {
+                    return multipart_error_response(error, request_id, config.production());
+                }
+            };
+            json_response(
+                &MultipartPartsResponse {
+                    schema_version: API_SCHEMA_VERSION,
+                    upload_id: upload_id_text.into(),
+                    parts: parts
+                        .parts()
+                        .iter()
+                        .map(|part| MultipartPartResponse {
+                            schema_version: API_SCHEMA_VERSION,
+                            upload_id: upload_id_text.into(),
+                            part_number: part.part_number().get(),
+                            bytes: part.size().get(),
+                            checksum_sha256: part.checksum_sha256().as_str().into(),
+                        })
+                        .collect(),
+                },
+                200,
+                None,
+            )
+        }
+        Method::Delete => {
+            let Some(authority_fence) = mutation_authority_fence(env, config, &tenant_id).await?
+            else {
+                return failure_response(
+                    mutation_disabled_failure(),
+                    request_id,
+                    config.production(),
+                );
+            };
+            let reference = match store.route_reference(context, upload_id, &key).await {
+                Ok(reference) => reference,
+                Err(error) => {
+                    return multipart_error_response(error, request_id, config.production());
+                }
+            };
+            let now = current_time_ms()?;
+            let attempt = match claim_authenticated_multipart_abort(
+                &database,
+                &authority_fence,
+                &tenant_id,
+                upload_id_text,
+                now,
+            )
+            .await?
+            {
+                AuthenticatedAbortClaim::Attempt(attempt) => attempt,
+                AuthenticatedAbortClaim::AlreadyAborted => {
+                    return Ok(Response::empty()?.with_status(204));
+                }
+                AuthenticatedAbortClaim::AlreadyCompleted => {
+                    return failure_response(
+                        ApiFailure::new(
+                            409,
+                            "multipart_already_completed",
+                            "The completed multipart upload can no longer be aborted.",
+                            false,
+                        ),
+                        request_id,
+                        config.production(),
+                    );
+                }
+            };
+            let provider_outcome = match store
+                .reconcile_authenticated_abort_provider(
+                    context,
+                    reference,
+                    attempt,
+                    TimestampMillis::new(now)
+                        .map_err(|_| Error::RustError("multipart abort clock is invalid".into()))?,
+                )
+                .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    retain_authenticated_multipart_abort_failure(
+                        &database,
+                        &authority_fence,
+                        upload_id_text,
+                        attempt,
+                        error.kind(),
+                        now,
+                    )
+                    .await?;
+                    return multipart_error_response(error, request_id, config.production());
+                }
+            };
+            match provider_outcome {
+                AuthenticatedAbortOutcomeV1::Confirmed {
+                    attempt: provider_attempt,
+                }
+                | AuthenticatedAbortOutcomeV1::PreservedObject {
+                    attempt: provider_attempt,
+                } if provider_attempt == attempt => {
+                    finish_authenticated_multipart_abort(
+                        &database,
+                        &authority_fence,
+                        &tenant_id,
+                        upload_id_text,
+                        attempt,
+                        provider_outcome,
+                        now,
+                    )
+                    .await?;
+                }
+                AuthenticatedAbortOutcomeV1::AlreadyAborted => {
+                    return Ok(Response::empty()?.with_status(204));
+                }
+                AuthenticatedAbortOutcomeV1::AlreadyCompleted => {
+                    return failure_response(
+                        ApiFailure::new(
+                            409,
+                            "multipart_already_completed",
+                            "The completed multipart upload can no longer be aborted.",
+                            false,
+                        ),
+                        request_id,
+                        config.production(),
+                    );
+                }
+                AuthenticatedAbortOutcomeV1::Pending
+                | AuthenticatedAbortOutcomeV1::Confirmed { .. }
+                | AuthenticatedAbortOutcomeV1::PreservedObject { .. } => {
+                    return failure_response(
+                        storage_unavailable_failure(),
+                        request_id,
+                        config.production(),
+                    );
+                }
+            }
+            if matches!(
+                provider_outcome,
+                AuthenticatedAbortOutcomeV1::PreservedObject { .. }
+            ) {
+                return failure_response(
+                    ApiFailure::new(
+                        409,
+                        "multipart_already_completed",
+                        "The completed multipart object was preserved and cannot be aborted.",
+                        false,
+                    ),
+                    request_id,
+                    config.production(),
+                );
+            }
+            Ok(Response::empty()?.with_status(204))
+        }
+        _ => failure_response(
+            ApiFailure::new(405, "method_not_allowed", "Method not allowed.", false),
+            request_id,
+            config.production(),
+        ),
+    }
+}
+
+async fn multipart_part_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &mut Request,
+    actor: &AuthenticatedActor,
+    upload_id_text: &str,
+    part_number_value: u16,
+    request_id: &str,
+) -> Result<Response> {
+    let (_tenant_id, upload, intent) =
+        match multipart_scope(env, config, request, actor, upload_id_text, request_id).await? {
+            Ok(scope) => scope,
+            Err(response) => return Ok(response),
+        };
+    let database = env.d1("DB")?;
+    let bucket = env.bucket("RECORDINGS")?;
+    let probe = D1TrustedMediaProbeV1::new(&database);
+    let store = R2MultipartObjectStoreV1::new(&bucket, &database, &probe)
+        .map_err(|_| Error::RustError("multipart adapter is invalid".into()))?;
+    let (context, upload_id, key, spec) = multipart_values(&upload, &intent)?;
+    let part_number = MultipartPartNumberV1::new(part_number_value)
+        .map_err(|_| Error::RustError("multipart part number is invalid".into()))?;
+    let expected = spec
+        .expected_part_size(part_number)
+        .map_err(|_| Error::RustError("multipart part geometry is invalid".into()))?;
+    let content_length = request
+        .headers()
+        .get("content-length")?
+        .and_then(|value| value.parse::<u64>().ok());
+    if content_length != Some(expected.get())
+        || request.headers().get("content-type")?.as_deref() != Some("application/octet-stream")
+        || request
+            .headers()
+            .get("content-encoding")?
+            .is_some_and(|value| value != "identity")
+    {
+        return failure_response(
+            invalid_body_failure("invalid_multipart_part_headers"),
+            request_id,
+            config.production(),
+        );
+    }
+    let checksum_text = request
+        .headers()
+        .get("x-content-sha256")?
+        .filter(|value| contracts::valid_sha256(value));
+    let Some(checksum_text) = checksum_text else {
+        return failure_response(
+            invalid_body_failure("invalid_content_checksum"),
+            request_id,
+            config.production(),
+        );
+    };
+    let bytes = request.bytes().await?;
+    if bytes.len() as u64 != expected.get()
+        || ChecksumSha256::digest_bytes(&bytes).as_str() != checksum_text
+    {
+        return failure_response(
+            invalid_body_failure("content_checksum_mismatch"),
+            request_id,
+            config.production(),
+        );
+    }
+    let reference = match store.route_reference(context, upload_id, &key).await {
+        Ok(reference) => reference,
+        Err(error) => {
+            return multipart_error_response(error, request_id, config.production());
+        }
+    };
+    let receipt = match store
+        .put_part(
+            context,
+            ProviderPutPartRequestV1::new(
+                reference,
+                part_number,
+                ChecksumSha256::parse(checksum_text)
+                    .map_err(|_| Error::RustError("multipart checksum is invalid".into()))?,
+                bytes,
+            ),
+        )
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => return multipart_error_response(error, request_id, config.production()),
+    };
+    json_response(
+        &MultipartPartResponse {
+            schema_version: API_SCHEMA_VERSION,
+            upload_id: upload_id_text.into(),
+            part_number: receipt.part_number().get(),
+            bytes: receipt.size().get(),
+            checksum_sha256: receipt.checksum_sha256().as_str().into(),
+        },
+        200,
+        None,
+    )
+}
+
+async fn multipart_complete_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    upload_id_text: &str,
+    request_id: &str,
+) -> Result<Response> {
+    let (tenant_id, upload, intent) =
+        match multipart_scope(env, config, request, actor, upload_id_text, request_id).await? {
+            Ok(scope) => scope,
+            Err(response) => return Ok(response),
+        };
+    let Some(authority_fence) = mutation_authority_fence(env, config, &tenant_id).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let database = env.d1("DB")?;
+    let bucket = env.bucket("RECORDINGS")?;
+    let probe = D1TrustedMediaProbeV1::new(&database);
+    let store = R2MultipartObjectStoreV1::new(&bucket, &database, &probe)
+        .map_err(|_| Error::RustError("multipart adapter is invalid".into()))?;
+    let (context, upload_id, key, spec) = multipart_values(&upload, &intent)?;
+    let reference = match store.route_reference(context, upload_id, &key).await {
+        Ok(reference) => reference,
+        Err(error) => {
+            return multipart_error_response(error, request_id, config.production());
+        }
+    };
+    let parts = match store.list_parts(context, reference.clone()).await {
+        Ok(parts) => parts,
+        Err(error) => return multipart_error_response(error, request_id, config.production()),
+    };
+    if parts.parts().len() != usize::from(spec.part_count()) {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "multipart_parts_incomplete",
+                "All verified parts are required before completion.",
+                true,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    let completion = store
+        .complete_multipart(
+            context,
+            ProviderCompleteMultipartRequestV1::new(
+                reference,
+                parts.parts().to_vec(),
+                spec.total_size(),
+                spec.checksum_sha256().clone(),
+                spec.content_type().clone(),
+            )
+            .map_err(|_| Error::RustError("multipart completion is invalid".into()))?,
+        )
+        .await;
+    let completed = match completion {
+        Ok(completed) => completed,
+        Err(error) if error.kind() == StorageFailureKind::Unavailable => {
+            ensure_multipart_probe_job(env, &database, &authority_fence, &upload, &intent).await?;
+            return json_response(
+                &serde_json::json!({
+                    "schema_version": API_SCHEMA_VERSION,
+                    "upload_id": upload_id_text,
+                    "state": "probe_pending",
+                    "retryable": true,
+                }),
+                202,
+                None,
+            );
+        }
+        Err(error) => return multipart_error_response(error, request_id, config.production()),
+    };
+    let object_version = instant_r2_object_version(
+        completed
+            .provider_version()
+            .expose_for_provider_comparison(),
+    );
+    json_response(
+        &MultipartCompleteResponse {
+            schema_version: API_SCHEMA_VERSION,
+            upload_id: upload_id_text.into(),
+            state: "provider_complete",
+            checksum_sha256: completed.checksum_sha256().as_str().into(),
+            object_version,
+            instant_finalize_path_template: "/api/v1/instant-recordings/{session_id}/finalize"
+                .into(),
+        },
+        200,
+        None,
+    )
+}
+
+fn multipart_error_response(
+    error: frame_ports::StorageFailure,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    let failure = match error.kind() {
+        StorageFailureKind::NotFound | StorageFailureKind::Unauthorized => not_found_failure(),
+        StorageFailureKind::PreconditionFailed | StorageFailureKind::Integrity => ApiFailure::new(
+            409,
+            "multipart_conflict",
+            "The multipart operation conflicts with durable provider state.",
+            false,
+        ),
+        StorageFailureKind::QuotaExceeded => ApiFailure::new(
+            413,
+            "multipart_limit_exceeded",
+            "The multipart operation exceeds a configured limit.",
+            false,
+        ),
+        StorageFailureKind::InvalidRequest | StorageFailureKind::UnsupportedCapability => {
+            invalid_body_failure("invalid_multipart_request")
+        }
+        StorageFailureKind::Throttled
+        | StorageFailureKind::Timeout
+        | StorageFailureKind::Unavailable => storage_unavailable_failure(),
+    };
+    failure_response(failure, request_id, production)
+}
+
+fn instant_r2_object_version(provider_version: &str) -> String {
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"frame.instant.r2-object-version.v1\0");
+    digest.update((provider_version.len() as u32).to_be_bytes());
+    digest.update(provider_version.as_bytes());
+    instant_hex(&digest.finalize())
+}
+
+fn instant_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+async fn ensure_multipart_probe_job(
+    env: &Env,
+    database: &D1Database,
+    authority_fence: &MutationAuthorityFence,
+    upload: &UploadRow,
+    intent: &MultipartIntentRow,
+) -> Result<()> {
+    let verified = database
+        .prepare(
+            "SELECT provider_version,provider_etag,bytes,checksum_sha256,content_type \
+             FROM r2_multipart_verified_objects_v1 WHERE upload_id=?1 LIMIT 1",
+        )
+        .bind(&[JsValue::from_str(&upload.id)])?
+        .first::<VerifiedMultipartObjectRow>(None)
+        .await?
+        .ok_or_else(|| Error::RustError("multipart verification receipt is unavailable".into()))?;
+    if verified.bytes != upload.expected_bytes
+        || verified.checksum_sha256 != intent.checksum_sha256
+        || verified.content_type != upload.content_type
+    {
+        return Err(Error::RustError(
+            "multipart verification receipt conflicts with the upload".into(),
+        ));
+    }
+    let bucket = env.bucket("RECORDINGS")?;
+    let object = bucket
+        .head(&upload.source_object_key)
+        .await?
+        .ok_or_else(|| Error::RustError("multipart completed object is unavailable".into()))?;
+    let expected_bytes = u64::try_from(upload.expected_bytes)
+        .map_err(|_| Error::RustError("multipart source size is invalid".into()))?;
+    let metadata = object.http_metadata();
+    let custom = object.custom_metadata()?;
+    if object.size() != expected_bytes
+        || object.version() != verified.provider_version
+        || object.etag() != verified.provider_etag
+        || metadata.content_type.as_deref() != Some(upload.content_type.as_str())
+        || metadata.content_encoding.is_some()
+        || metadata.cache_control.as_deref() != Some("private, no-store")
+        || custom.get("frame-sha256").map(String::as_str) != Some(intent.checksum_sha256.as_str())
+        || custom.get("frame-correlation-id").map(String::as_str) != Some(upload.id.as_str())
+        || custom.get("frame-cache-policy").map(String::as_str) != Some("no_store")
+    {
+        return Err(Error::RustError(
+            "multipart completed object failed probe preflight".into(),
+        ));
+    }
+    let integration = r2_integration(database, &upload.organization_id, &intent.integration_id)
+        .await?
+        .filter(IntegrationRow::supports_multipart)
+        .ok_or_else(|| Error::RustError("multipart integration is unavailable".into()))?;
+    let now = current_time_ms()?;
+    let job_id = new_id();
+    let profile_digest = request_digest("media_profile_v1", &"probe_v1")
+        .map_err(|()| Error::RustError("probe profile identity is invalid".into()))?;
+    let output_key = format!(
+        "tenants/{}/videos/{}/derivatives/probe_v1/{profile_digest}",
+        upload.organization_id, upload.video_id
+    );
+    let payload_json = serde_json::json!({
+        "schema_version": API_SCHEMA_VERSION,
+        "tenant_id": upload.organization_id,
+        "video_id": upload.video_id,
+        "source_version": upload.source_version,
+        "profile": "probe_v1",
+    })
+    .to_string();
+    let job_idempotency = digest_identifier(
+        "multipart_probe_job",
+        &format!("{}:{}", upload.id, intent.checksum_sha256),
+    )
+    .map_err(|()| Error::RustError("probe job identity is invalid".into()))?;
+    let storage_object_id = new_id();
+    let statements = vec![
+        database
+            .prepare(
+                "INSERT INTO object_manifests(object_key,video_id,role,bytes,checksum_sha256,\
+                 content_type,created_at_ms,organization_id,object_version,provider_etag,state,updated_at_ms) \
+                 VALUES(?1,?2,'source',?3,?4,?5,?6,?7,?8,?9,'available',?6) \
+                 ON CONFLICT(object_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&upload.source_object_key),
+                JsValue::from_str(&upload.video_id),
+                JsValue::from_f64(expected_bytes as f64),
+                JsValue::from_str(&intent.checksum_sha256),
+                JsValue::from_str(&upload.content_type),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(&upload.organization_id),
+                JsValue::from_f64(upload.source_version as f64),
+                JsValue::from_str(&object.etag()),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO storage_objects(id,organization_id,integration_id,video_id,object_key,role,\
+                 object_version,state,bytes,content_type,checksum_sha256,provider_etag,created_at_ms) \
+                 VALUES(?1,?2,?3,?4,?5,'source',?6,'available',?7,?8,?9,?10,?11) \
+                 ON CONFLICT(integration_id,object_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&storage_object_id),
+                JsValue::from_str(&upload.organization_id),
+                JsValue::from_str(&integration.id),
+                JsValue::from_str(&upload.video_id),
+                JsValue::from_str(&upload.source_object_key),
+                JsValue::from_f64(upload.source_version as f64),
+                JsValue::from_f64(expected_bytes as f64),
+                JsValue::from_str(&upload.content_type),
+                JsValue::from_str(&intent.checksum_sha256),
+                JsValue::from_str(&object.etag()),
+                JsValue::from_f64(now as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO storage_governed_objects_v1(organization_id,object_key,role,visibility,state,\
+                 malware_disposition,immutable_revision,cache_generation,checksum_sha256,bytes,content_type,\
+                 retention_until_ms,created_at_ms,updated_at_ms) \
+                 VALUES(?1,?2,'source','private','active','clean',?3,1,?4,?5,?6,NULL,?7,?7) \
+                 ON CONFLICT(organization_id,object_key) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&upload.organization_id),
+                JsValue::from_str(&upload.source_object_key),
+                JsValue::from_f64(upload.source_version as f64),
+                JsValue::from_str(&intent.checksum_sha256),
+                JsValue::from_f64(expected_bytes as f64),
+                JsValue::from_str(&upload.content_type),
+                JsValue::from_f64(now as f64),
+            ])?,
+        database
+            .prepare(
+                "UPDATE videos SET source_object_key=?3,state='processing',updated_at_ms=?4,revision=revision+1 \
+                 WHERE id=?1 AND organization_id=?2 AND deleted_at_ms IS NULL",
+            )
+            .bind(&[
+                JsValue::from_str(&upload.video_id),
+                JsValue::from_str(&upload.organization_id),
+                JsValue::from_str(&upload.source_object_key),
+                JsValue::from_f64(now as f64),
+            ])?,
+        database
+            .prepare(
+                "INSERT INTO media_jobs(id,video_id,kind,state,idempotency_key,attempt,payload_json,\
+                 created_at_ms,updated_at_ms,organization_id,selected_executor,source_version,\
+                 profile_version,output_object_key,cancel_requested,revision) \
+                 SELECT ?1,?2,'probe','queued',?3,0,?4,?5,?5,?6,'native_gstreamer',?7,1,?8,0,0 \
+                 WHERE NOT EXISTS(SELECT 1 FROM media_jobs j WHERE j.organization_id=?6 \
+                   AND j.video_id=?2 AND j.source_version=?7 \
+                   AND json_extract(j.payload_json,'$.profile')='probe_v1' \
+                   AND j.state IN ('queued','leased','running','succeeded'))",
+            )
+            .bind(&[
+                JsValue::from_str(&job_id),
+                JsValue::from_str(&upload.video_id),
+                JsValue::from_str(&job_idempotency),
+                JsValue::from_str(&payload_json),
+                JsValue::from_f64(now as f64),
+                JsValue::from_str(&upload.organization_id),
+                JsValue::from_f64(upload.source_version as f64),
+                JsValue::from_str(&output_key),
+            ])?,
+    ];
+    require_batch_success(
+        execute_mutation_batch(
+            database,
+            authority_fence,
+            &format!("multipart-probe:{}", upload.id),
+            now,
+            statements,
+        )
+        .await?,
+    )?;
+    let postcondition = database
+        .prepare(
+            "SELECT 1 AS present WHERE EXISTS(SELECT 1 FROM object_manifests m \
+               WHERE m.object_key=?1 AND m.organization_id=?2 AND m.video_id=?3 \
+                 AND m.object_version=?4 AND m.bytes=?5 AND m.checksum_sha256=?6 \
+                 AND m.content_type=?7 AND m.provider_etag=?8 AND m.state='available') \
+             AND EXISTS(SELECT 1 FROM media_jobs j WHERE j.organization_id=?2 \
+               AND j.video_id=?3 AND j.source_version=?4 \
+               AND json_extract(j.payload_json,'$.profile')='probe_v1' \
+               AND j.state IN ('queued','leased','running','succeeded'))",
+        )
+        .bind(&[
+            JsValue::from_str(&upload.source_object_key),
+            JsValue::from_str(&upload.organization_id),
+            JsValue::from_str(&upload.video_id),
+            JsValue::from_f64(upload.source_version as f64),
+            JsValue::from_f64(expected_bytes as f64),
+            JsValue::from_str(&intent.checksum_sha256),
+            JsValue::from_str(&upload.content_type),
+            JsValue::from_str(&verified.provider_etag),
+        ])?
+        .first::<PresenceFlagRow>(None)
+        .await?;
+    if postcondition.is_some_and(|row| row.present == 1) {
+        Ok(())
+    } else {
+        Err(Error::RustError(
+            "multipart probe bootstrap postcondition failed".into(),
+        ))
+    }
+}
+
+async fn instant_finalize_response(
+    env: &Env,
+    config: &RuntimeConfig,
+    request: &Request,
+    actor: &AuthenticatedActor,
+    session_id: &str,
+    body: InstantFinalizeRequestV1,
+    request_id: &str,
+) -> Result<Response> {
+    if body.session_id != session_id || body.validate().is_err() {
+        return failure_response(
+            invalid_body_failure("invalid_instant_finalize"),
+            request_id,
+            config.production(),
+        );
+    }
+    let database = env.d1("DB")?;
+    let Some(tenant_id) =
+        authorized_tenant(&database, request, actor, RequiredAccess::Write).await?
+    else {
+        return failure_response(not_found_failure(), request_id, config.production());
+    };
+    if tenant_id != body.tenant_id {
+        return failure_response(not_found_failure(), request_id, config.production());
+    }
+    let Some(authority_fence) = mutation_authority_fence(env, config, &tenant_id).await? else {
+        return failure_response(mutation_disabled_failure(), request_id, config.production());
+    };
+    let idempotency_key = idempotency_header(request)?;
+    let now = current_time_ms()?;
+    let retained = match instant_finalize_runtime::retain_request(
+        &database,
+        &authority_fence,
+        &idempotency_key,
+        &body,
+        now,
+    )
+    .await
+    {
+        Ok(receipt) => receipt,
+        Err(instant_finalize_runtime::InstantFinalizeFailure::Conflict) => {
+            return failure_response(
+                idempotency_conflict_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+        Err(_) => {
+            return failure_response(
+                storage_unavailable_failure(),
+                request_id,
+                config.production(),
+            );
+        }
+    };
+    if retained.state == frame_client::InstantFinalizeStateV1::Published {
+        return json_response(&retained, 200, None);
+    }
+    match instant_finalize_runtime::reconcile_session(&database, &authority_fence, session_id, now)
+        .await
+    {
+        Ok(receipt) => json_response(&receipt, 200, None),
+        Err(instant_finalize_runtime::InstantFinalizeFailure::Pending) => {
+            json_response(&retained, 202, None)
+        }
+        Err(instant_finalize_runtime::InstantFinalizeFailure::Conflict) => failure_response(
+            idempotency_conflict_failure(),
+            request_id,
+            config.production(),
+        ),
+        Err(instant_finalize_runtime::InstantFinalizeFailure::Persistence) => failure_response(
+            storage_unavailable_failure(),
+            request_id,
+            config.production(),
+        ),
+    }
 }
 
 async fn upload_content_response(
@@ -3452,6 +5265,24 @@ async fn upload_content_response(
                 409,
                 "direct_upload_requires_finalize",
                 "This direct upload must be finalized through its finalize endpoint.",
+                false,
+            ),
+            request_id,
+            config.production(),
+        );
+    }
+    if database
+        .prepare("SELECT 1 AS ready FROM r2_multipart_intents_v1 WHERE upload_id=?1 LIMIT 1")
+        .bind(&[JsValue::from_str(upload_id)])?
+        .first::<ReadyRow>(None)
+        .await?
+        .is_some_and(|row| row.ready == 1)
+    {
+        return failure_response(
+            ApiFailure::new(
+                409,
+                "multipart_endpoint_required",
+                "This upload must use its multipart endpoint.",
                 false,
             ),
             request_id,
@@ -4990,7 +6821,9 @@ async fn native_job_claim_response(
                      WHEN 'probe_v1' THEN 2 WHEN 'audio_presence_v1' THEN 2 ELSE 3 END \
                    AND (j.state = 'queued' OR (j.state IN ('leased', 'running') \
                      AND j.lease_expires_at_ms IS NOT NULL AND j.lease_expires_at_ms <= ?3)) \
-                   AND m.bytes BETWEEN 1 AND ?4 AND m.checksum_sha256 IS NOT NULL \
+                   AND m.bytes BETWEEN 1 AND CASE json_extract(j.payload_json, '$.profile') \
+                     WHEN 'probe_v1' THEN ?4 ELSE ?5 END \
+                   AND m.checksum_sha256 IS NOT NULL \
                    AND length(m.checksum_sha256) = 64 AND lower(m.checksum_sha256) = m.checksum_sha256 \
                    AND m.checksum_sha256 NOT GLOB '*[^0-9a-f]*' \
                    AND m.content_type IN ('video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska') \
@@ -5016,6 +6849,7 @@ async fn native_job_claim_response(
                 JsValue::from_str(&tenant_id),
                 JsValue::from_f64(NATIVE_MAX_ATTEMPTS as f64),
                 JsValue::from_f64(now as f64),
+                JsValue::from_f64(MULTIPART_MAX_BYTES as f64),
                 JsValue::from_f64(MAX_SINGLE_UPLOAD_BYTES as f64),
             ])?
             .first::<NativeJobCandidateRow>(None)
@@ -8610,6 +10444,25 @@ async fn active_r2_integration(
         .await
 }
 
+async fn r2_integration(
+    database: &D1Database,
+    tenant_id: &str,
+    integration_id: &str,
+) -> Result<Option<IntegrationRow>> {
+    database
+        .prepare(
+            "SELECT id, capabilities_json FROM storage_integrations \
+             WHERE id = ?1 AND organization_id = ?2 AND provider = 'r2' AND state = 'active' \
+             LIMIT 1",
+        )
+        .bind(&[
+            JsValue::from_str(integration_id),
+            JsValue::from_str(tenant_id),
+        ])?
+        .first::<IntegrationRow>(None)
+        .await
+}
+
 async fn load_media_job(
     database: &D1Database,
     tenant_id: &str,
@@ -10912,6 +12765,34 @@ const fn not_found_failure() -> ApiFailure {
     )
 }
 
+const fn browser_web_failure(
+    failure: browser_web_runtime::BrowserWebFailure,
+    invalid_code: &'static str,
+) -> ApiFailure {
+    match failure {
+        browser_web_runtime::BrowserWebFailure::Unauthenticated => unauthenticated_failure(),
+        browser_web_runtime::BrowserWebFailure::Forbidden => {
+            ApiFailure::new(403, "forbidden", "The browser request was rejected.", false)
+        }
+        browser_web_runtime::BrowserWebFailure::Invalid => {
+            ApiFailure::new(400, invalid_code, "The browser request is invalid.", false)
+        }
+        browser_web_runtime::BrowserWebFailure::Conflict => ApiFailure::new(
+            409,
+            "conflict",
+            "The workspace changed before the request completed.",
+            false,
+        ),
+        browser_web_runtime::BrowserWebFailure::NotFound => not_found_failure(),
+        browser_web_runtime::BrowserWebFailure::Unavailable => ApiFailure::new(
+            503,
+            "service_unavailable",
+            "The service is temporarily unavailable.",
+            true,
+        ),
+    }
+}
+
 const fn unauthenticated_failure() -> ApiFailure {
     ApiFailure::new(
         401,
@@ -11049,12 +12930,23 @@ mod tests {
         let capabilities = CapabilitiesResponse::default();
         assert_eq!(
             capabilities.upload_intents,
-            "authenticated_d1_r2_single_put"
+            "authenticated_d1_r2_single_put_and_multipart"
         );
-        assert_eq!(capabilities.upload_transfer_modes, ["brokered", "direct"]);
+        assert_eq!(
+            capabilities.upload_transfer_modes,
+            ["brokered", "direct", "multipart"]
+        );
         assert_eq!(
             capabilities.direct_upload_finalize,
             "/api/v1/uploads/{upload_id}/finalize"
+        );
+        assert_eq!(
+            capabilities.multipart_upload,
+            "/api/v1/uploads/{upload_id}/multipart"
+        );
+        assert_eq!(
+            capabilities.instant_finalize,
+            "/api/v1/instant-recordings/{session_id}/finalize"
         );
         assert_eq!(
             capabilities.media_jobs,

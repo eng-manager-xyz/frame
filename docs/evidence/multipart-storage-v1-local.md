@@ -2,9 +2,10 @@
 
 Date: 2026-07-16
 
-Scope: provider-free portions of issue 19 only. This record covers the versioned multipart domain,
+Scope: local portions of issue 19 only. This record covers the versioned multipart domain,
 provider and restart-journal ports, deterministic adversarial fakes, application orchestration,
-authorization abuse tests, and private download response contract described in
+the control-plane R2/D1 call path, authorization abuse tests, and the private download response
+contract described in
 [`docs/architecture/multipart-storage-v1.md`](../architecture/multipart-storage-v1.md).
 
 ## Commands and results
@@ -76,8 +77,8 @@ passed after this evidence file was updated.
 
 ## Evidence this record does not provide
 
-No Cloudflare account, R2 bucket, Worker binding, real provider multipart session, signed PUT, temporary
-credential, D1 journal, hosted reconciler, custom domain, browser, desktop app, media player, large
+No Cloudflare account, R2 bucket, deployed Worker, real provider multipart session, signed PUT, temporary
+credential, hosted D1 database or scheduler, custom domain, browser, desktop app, media player, large
 recording, network/runtime streaming body, capacity run, production log sink, or security-owner
 approval was exercised. The deterministic fake pulls chunks from small in-memory vectors and cannot
 establish R2 compatibility, durability, latency, Worker memory safety, browser playback, CORS
@@ -85,29 +86,43 @@ correctness in production, or operational readiness. Upload parts remain bounded
 local port. Those protected/provider gates remain explicitly open in the architecture document;
 this record must not be used to close issue 19.
 
-## Repository wiring audit
+## Control-plane wiring audit
 
-The later control-plane work adds two distinct R2 implementations, but only one currently has a
-production call path:
+The local repository now contains the complete server call path that was previously missing:
 
-- `r2_direct_upload.rs` is constructed by upload intent, signs a private staging PUT, and is consumed
-  by the authenticated direct-finalize path. That path verifies R2 size, SHA-256, content type, and
-  metadata before an immutable publication and D1 mutation.
-- `r2_multipart.rs` implements the `MultipartObjectStoreV1` provider operations and has D1 tables for
-  sessions, parts, and completion receipts. It is exported by the Worker crate, but no runtime code
-  constructs `R2MultipartObjectStoreV1`, no API route invokes it, and no scheduled task invokes its
-  stale-session cleanup.
+- a capability-gated multipart upload intent returns exact 16 MiB geometry for brokered recordings
+  up to the bounded 2 GB native-probe ceiling;
+- authenticated create, list/resume, part PUT, complete, and abort routes construct
+  `R2MultipartObjectStoreV1` with the real `RECORDINGS` and `DB` bindings while keeping the opaque R2
+  upload handle server-side;
+- each part route enforces canonical part numbering, exact content length, identity encoding,
+  `application/octet-stream`, and a full SHA-256 before provider dispatch;
+- completion streams and hashes the full R2 object, stores an immutable D1 verification receipt,
+  and then accepts only an exact `verified_native_probe` row. Client-supplied codec, duration,
+  dimensions, and frame-rate claims never enter this boundary;
+- the scheduled path replays a `completing` session, idempotently bootstraps the native probe job
+  from the immutable verification receipt, and reconciles stale `open` sessions. Cleanup first
+  checks for a completed object: a present object moves back to `completing`; an abort success or
+  authoritative not-found expires the session; every other provider failure retains a durable
+  retryable abort record with bounded backoff; and
+- completion returns a server-derived immutable object version that the versioned Instant finalize
+  request binds.
 
-The missing constructor is not a cosmetic wiring omission. Multipart completion requires a
-`TrustedR2MediaProbeV1`; the repository has no implementation of that trait. The existing native
-probe is an asynchronous media-job result produced only after a source object manifest exists, so it
-cannot be injected into the current synchronous multipart-complete contract without defining a
-durable provider-completed/reconcile boundary. The current upload-intent path therefore returns
-`multipart_required` for objects above the single-PUT ceiling rather than creating a multipart
-session.
+The offline D1 check is reproducible with:
 
-Only deterministic helper tests exist beside the R2 multipart adapter. There is no Wrangler-local
-or hosted test that constructs the adapter and exercises create/list/part/resume/complete/abort,
-lost acknowledgement, expiry cleanup, or checksum failure through the Worker binding. Consequently
-the checked-in adapter and migrations are useful implementation groundwork, but they do not satisfy
-issue 19's provider-adapter deliverable or acceptance evidence yet.
+```text
+python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
+```
+
+Result: passed. It rejects invalid multipart geometry and a forged verification receipt, proves the
+post-stream receipt cannot be mutated, retains retryable provider-abort failures without expiring
+the session, rejects premature terminal cleanup, proves fair bounded finalize scanning and asserted
+dead-letter transitions, rejects a cross-tenant Instant request, and reaches one exact
+upload/object/job/playable publication postcondition. The focused Rust client and control-plane unit
+suites, migration application, route-classifier tests, and warnings-denied Clippy checks also
+passed.
+
+This wiring is local implementation evidence, not Cloudflare execution evidence. No Wrangler-local
+or hosted test has yet exercised real R2 create/list/part/resume/complete/abort, checksum/etag
+behavior, lost acknowledgements, expiry cleanup, or Worker resource limits. Those protected gates
+remain open and this record still must not be used as a production-readiness claim for issue 19.

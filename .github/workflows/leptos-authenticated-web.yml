@@ -5,9 +5,16 @@ on:
     paths:
       - ".github/workflows/leptos-authenticated-web.yml"
       - "apps/web/**"
+      - "apps/control-plane/src/authenticated_web_runtime.rs"
+      - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/lib.rs"
+      - "apps/control-plane/src/routing.rs"
+      - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
+      - "crates/application/src/identity.rs"
       - "crates/frame-client/**"
       - "fixtures/web-authenticated/**"
       - "scripts/ci/check-web-authenticated-parity.py"
+      - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
       - "scripts/ci/web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-browser.py"
       - "scripts/ci/build-web-hydration.py"
@@ -20,9 +27,16 @@ on:
     paths:
       - ".github/workflows/leptos-authenticated-web.yml"
       - "apps/web/**"
+      - "apps/control-plane/src/authenticated_web_runtime.rs"
+      - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/lib.rs"
+      - "apps/control-plane/src/routing.rs"
+      - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
+      - "crates/application/src/identity.rs"
       - "crates/frame-client/**"
       - "fixtures/web-authenticated/**"
       - "scripts/ci/check-web-authenticated-parity.py"
+      - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
       - "scripts/ci/web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-browser.py"
       - "scripts/ci/build-web-hydration.py"
@@ -54,6 +68,8 @@ jobs:
           mkdir -p target/evidence
           python3 -I scripts/ci/check-web-authenticated-parity.py \
             --evidence target/evidence/web-authenticated-contract-linux.json
+          python3 -I scripts/ci/web-authenticated-action-sqlite-conformance.py \
+            --evidence target/evidence/web-authenticated-action-sqlite-linux.json
       - name: Run focused strict Rust gates
         run: |
           cargo fmt --all -- --check
@@ -61,6 +77,7 @@ jobs:
           cargo clippy --locked -p frame-web --no-default-features --features hydrate \
             --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
           cargo test --locked -p frame-web
+          cargo test --locked -p frame-control-plane browser_web_runtime
       - name: Build exact hydration closure and web binary
         run: |
           python3 -I scripts/ci/build-web-hydration.py \

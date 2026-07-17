@@ -5,8 +5,8 @@ use leptos::prelude::*;
 use crate::authenticated::{RecordingFilter, RouteViewQuery};
 use crate::config::{Deployment, RuntimeConfig};
 use crate::hydration::{
-    HydrationBoundary, PLAYER_HELP_ROOT_ID, PUBLIC_COLLABORATION_ROOT_ID, PlayerKeyboardHelp,
-    PublicCollaborationPanel, ROOT_ID,
+    AUTHENTICATED_ROOT_ID, HydrationBoundary, PLAYER_HELP_ROOT_ID, PUBLIC_COLLABORATION_ROOT_ID,
+    PlayerKeyboardHelp, PublicCollaborationPanel, ROOT_ID,
 };
 use crate::product::{
     AuthenticatedRoute, AuthenticatedState, RecordingState, ShareView, WorkspaceRole, WorkspaceView,
@@ -306,6 +306,7 @@ pub fn authenticated_at(
     query: &RouteViewQuery,
 ) -> Page {
     let canonical = format!("{}{canonical_path}", config.public_origin().as_str());
+    let browser_loader = config.deployment() != Deployment::Local;
     let state = match state {
         AuthenticatedState::Ready(workspace) if !route.permitted_for(workspace.role) => {
             AuthenticatedState::Denied
@@ -355,7 +356,13 @@ pub fn authenticated_at(
             class="workspace-page"
             tabindex="-1"
         >
-            {content}
+            <div
+                id=AUTHENTICATED_ROOT_ID
+                data-frame-authenticated-surface=route.name()
+                data-frame-browser-loader=browser_loader.then_some("true")
+            >
+                {content}
+            </div>
         </main>
     }
     .to_html();

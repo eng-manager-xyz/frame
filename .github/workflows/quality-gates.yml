@@ -56,6 +56,7 @@ jobs:
           python3 -I scripts/ci/organization-sqlite-semantic-conformance.py
           python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
           python3 -I scripts/ci/direct-upload-sqlite-conformance.py
+          python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
           python3 -I scripts/migration/test_cap_id_map.py
           python3 -I scripts/migration/test_etl_cap_id_map.py
           python3 -I scripts/migration/test_cap_business_plan_contract.py

@@ -142,7 +142,9 @@ impl UploadIntentRequest {
         match self.transfer_mode.as_str() {
             "brokered" if self.checksum_sha256.is_none() => {}
             "direct" if self.checksum_sha256.as_deref().is_some_and(valid_sha256) => {}
+            "multipart" if self.checksum_sha256.as_deref().is_some_and(valid_sha256) => {}
             "direct" => return Err(ValidationCode::Checksum),
+            "multipart" => return Err(ValidationCode::Checksum),
             "brokered" => return Err(ValidationCode::Checksum),
             _ => return Err(ValidationCode::TransferMode),
         }
@@ -520,8 +522,10 @@ pub struct CapabilitiesResponse {
     pub public_share_read: &'static str,
     pub video_lifecycle: &'static str,
     pub upload_intents: &'static str,
-    pub upload_transfer_modes: [&'static str; 2],
+    pub upload_transfer_modes: [&'static str; 3],
     pub direct_upload_finalize: &'static str,
+    pub multipart_upload: &'static str,
+    pub instant_finalize: &'static str,
     pub media_jobs: &'static str,
     pub media_executor_selection: &'static str,
     pub native_capture: &'static str,
@@ -538,9 +542,11 @@ impl Default for CapabilitiesResponse {
             api_version: "v1",
             public_share_read: "read_only",
             video_lifecycle: "authenticated_d1_revision_fenced",
-            upload_intents: "authenticated_d1_r2_single_put",
-            upload_transfer_modes: ["brokered", "direct"],
+            upload_intents: "authenticated_d1_r2_single_put_and_multipart",
+            upload_transfer_modes: ["brokered", "direct", "multipart"],
             direct_upload_finalize: "/api/v1/uploads/{upload_id}/finalize",
+            multipart_upload: "/api/v1/uploads/{upload_id}/multipart",
+            instant_finalize: "/api/v1/instant-recordings/{session_id}/finalize",
             media_jobs: "fail_closed_pending_runtime_selection",
             media_executor_selection: "server_controlled",
             native_capture: "external_native_executor",
@@ -766,6 +772,8 @@ mod tests {
         request.transfer_mode = "direct".into();
         assert_eq!(request.validate(), Err(ValidationCode::Checksum));
         request.checksum_sha256 = Some("ab".repeat(32));
+        assert_eq!(request.validate(), Ok(()));
+        request.transfer_mode = "multipart".into();
         assert_eq!(request.validate(), Ok(()));
         request.transfer_mode = "brokered".into();
         assert_eq!(request.validate(), Err(ValidationCode::Checksum));

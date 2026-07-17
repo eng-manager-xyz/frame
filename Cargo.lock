@@ -1162,6 +1162,7 @@ dependencies = [
  "frame-domain",
  "frame-ports",
  "futures",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
@@ -1175,7 +1176,9 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "url",
+ "uuid",
 ]
 
 [[package]]

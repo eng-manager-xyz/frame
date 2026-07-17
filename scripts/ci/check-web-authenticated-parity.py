@@ -12,6 +12,7 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MATRIX_PATH = ROOT / "fixtures/web-authenticated/v1/route-matrix.json"
+BOUNDARY_PATH = ROOT / "fixtures/web-authenticated/v1/browser-direct-boundary.json"
 
 
 def require(condition: bool, message: str) -> None:
@@ -26,6 +27,8 @@ def main() -> int:
 
     encoded = MATRIX_PATH.read_bytes()
     matrix = json.loads(encoded)
+    boundary_encoded = BOUNDARY_PATH.read_bytes()
+    boundary = json.loads(boundary_encoded)
     require(
         matrix.get("schema") == "frame.web-authenticated-route-matrix.v1",
         "unexpected matrix schema",
@@ -88,16 +91,42 @@ def main() -> int:
     )
     product_source = (ROOT / "apps/web/src/product.rs").read_text(encoding="utf-8")
     pages_source = (ROOT / "apps/web/src/pages.rs").read_text(encoding="utf-8")
+    browser_source = (ROOT / "apps/web/src/browser_authenticated.rs").read_text(
+        encoding="utf-8"
+    )
+    hydration_source = (ROOT / "apps/web/src/hydration.rs").read_text(
+        encoding="utf-8"
+    )
+    control_source = (ROOT / "apps/control-plane/src/browser_web_runtime.rs").read_text(
+        encoding="utf-8"
+    )
+    authenticated_runtime_source = (
+        ROOT / "apps/control-plane/src/authenticated_web_runtime.rs"
+    ).read_text(encoding="utf-8")
+    control_lib_source = (ROOT / "apps/control-plane/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
+    routing_source = (ROOT / "apps/control-plane/src/routing.rs").read_text(
+        encoding="utf-8"
+    )
+    action_migration = (
+        ROOT / "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
+    ).read_text(encoding="utf-8")
+    identity_source = (ROOT / "crates/application/src/identity.rs").read_text(
+        encoding="utf-8"
+    )
     workflow = (
         ROOT / ".github/workflows/leptos-authenticated-web.yml"
     ).read_text(encoding="utf-8")
     for command in (
         "check-web-authenticated-parity.py",
+        "web-authenticated-action-sqlite-conformance.py",
         "web-authenticated-parity.py",
         "web-authenticated-browser.py",
         "web-hydration-smoke.py",
         "cargo clippy --locked -p frame-web --all-targets -- -D warnings",
         "cargo test --locked -p frame-web",
+        "cargo test --locked -p frame-control-plane browser_web_runtime",
     ):
         require(command in workflow, f"authenticated-web workflow omits {command}")
     all_aliases: set[str] = set()
@@ -148,16 +177,235 @@ def main() -> int:
         "future typed API boundary is absent",
     )
     require(
+        "pub struct BrowserAuthenticatedClient" in browser_source
+        and "impl<T> BrowserAuthenticatedClient<T>" in browser_source,
+        "production typed browser client is absent",
+    )
+    for marker in (
+        "/api/v1/web/workspace/",
+        "/api/v1/web/actions/",
+        "RequestCredentials::SameOrigin",
+        "decode_workspace",
+        "decode_receipt",
+        "self.cache.borrow_mut().clear",
+    ):
+        require(marker in browser_source, f"typed browser client omits {marker}")
+    require(
+        '"authorization"' not in browser_source
+        and '"x-frame-tenant-id"' not in browser_source,
+        "browser client can supply bearer or tenant authority",
+    )
+    require(
+        "AuthenticatedWorkspacePanel" in hydration_source
+        and "BrowserMutationInput" in hydration_source
+        and "random_operation_id" in hydration_source
+        and "uncertain_mutation" in hydration_source
+        and "Retry exact request" in hydration_source
+        and "Some(input)" in hydration_source
+        and "action.permitted_for(current.role)" in hydration_source
+        and "data-frame-browser-loader" in pages_source,
+        "authenticated browser island or DTO-authorized action gate is not wired",
+    )
+    require(
         "AuthenticatedSsr" not in lib_source
         and '"x-frame-tenant-id"' not in lib_source
         and "AuthenticatedSsr" not in authenticated_source,
         "Render authenticated SSR or credential forwarding is activated contrary to ADR 0004",
     )
+    require(
+        boundary.get("schema") == "frame.web-browser-direct-boundary.v1",
+        "browser-direct boundary schema drifted",
+    )
+    require(
+        boundary.get("render_ssr") == "data-free-no-credential-forwarding",
+        "browser-direct fixture permits credential-bearing Render SSR",
+    )
+    require(
+        boundary.get("forbidden_browser_headers")
+        == ["authorization", "x-frame-tenant-id"],
+        "browser authority header deny-list drifted",
+    )
+    require(
+        boundary.get("load", {}).get("tenant_source")
+        == "users.active_organization_id+organization_preference_revision"
+        and boundary.get("load", {}).get("selection_contract")
+        == "opaque-context+revision"
+        and boundary.get("load", {}).get("cache")
+        == "invalidate-all-workspace-envelopes-after-mutation",
+        "browser organization selection or workspace cache contract drifted",
+    )
+    require(
+        boundary.get("load", {}).get("authority_revalidation")
+        == "exact-selection-membership-before-and-after-dto"
+        and boundary.get("mutation", {}).get("uncertain_outcome")
+        == "retain-exact-request-and-key+invalidate-all+force-refresh",
+        "browser load or uncertain-mutation recovery contract drifted",
+    )
+    expected_actions = [
+        route["mutation"] for route in routes if route.get("mutation") is not None
+    ]
+    require(
+        boundary.get("actions") == expected_actions,
+        "browser action inventory does not match the route matrix",
+    )
+    expected_applied_actions = [
+        "organization.spaces.create.v1",
+        "organization.folders.create.v1",
+        "business.imports.start.v1",
+        "identity.account.update.v1",
+        "organization.settings.update.v1",
+    ]
+    expected_pending_actions = [
+        "organization.onboarding.complete.v1",
+        "organization.members.manage.v1",
+        "business.storage.configure.v1",
+        "business.developer.credentials.manage.v1",
+        "business.billing.manage.v1",
+        "business.admin.execute.v1",
+    ]
+    require(
+        boundary.get("applied_actions") == expected_applied_actions
+        and boundary.get("pending_protected_execution_actions")
+        == expected_pending_actions
+        and set(expected_applied_actions).isdisjoint(expected_pending_actions)
+        and set(expected_applied_actions + expected_pending_actions)
+        == set(expected_actions),
+        "browser action applied/pending execution disposition drifted",
+    )
+    require(
+        boundary.get("mutation", {}).get("atomic_authority_assertions")
+        == [
+            "organization_revision",
+            "active_organization_selection_revision",
+            "membership_role_revision",
+            "one_use_mutation_grant",
+            "replay_current_authority",
+        ],
+        "browser action atomic authority assertions drifted",
+    )
+    require(
+        boundary.get("mutation", {}).get("applied_http_status") == 200
+        and boundary.get("mutation", {}).get(
+            "pending_protected_execution_http_status"
+        )
+        == 202,
+        "browser action applied/pending HTTP status contract drifted",
+    )
+    for action in expected_actions:
+        require(action in browser_source, f"web client omits action {action}")
+        require(action in control_source, f"Worker boundary omits action {action}")
+    for marker in (
+        "D1AuthStateRepository::new",
+        "AuthService::new",
+        "__Host-frame_session",
+        "__Host-frame_csrf",
+        'get("origin")',
+        'get("sec-fetch-site")',
+        'get("x-frame-csrf")',
+        'get("authorization")',
+        'get("x-frame-tenant-id")',
+        "active_membership",
+        "active_organization_id",
+        "organization_preference_revision",
+        "selection_context",
+        "selection_authority",
+        "membership_authority",
+        "m.revision=?5",
+        "supported_browser_role",
+        "PendingProtectedExecution",
+        "auth_session_mutation_grants_v2",
+        "authenticated_web_action_operations_v1",
+        "database.batch(statements)",
+    ):
+        require(marker in control_source, f"Worker browser boundary omits {marker}")
+    for marker in (
+        "u.active_organization_id=?1",
+        "u.organization_preference_revision=?3",
+        "m.role=?4",
+        "m.revision=?5",
+        "m.role IN ('owner','admin','member')",
+    ):
+        require(
+            marker in authenticated_runtime_source,
+            f"authenticated load boundary omits {marker}",
+        )
+    role_helper = re.search(
+        r"fn role_permits_surface.*?fn valid_surface",
+        authenticated_runtime_source,
+        re.DOTALL,
+    )
+    require(
+        role_helper is not None and '"viewer"' not in role_helper.group(0),
+        "authenticated load role helper still admits viewer",
+    )
+    require(
+        "current_membership = active_membership" in control_source
+        and "load_authority_is_current" in control_source
+        and "current == Some(expected)" in control_source
+        and "workspace_role == expected.role" in control_source,
+        "workspace DTO does not revalidate final active selection/membership authority",
+    )
+    mutate_client = re.search(
+        r"pub async fn mutate\(.*?\n    }\n\n    #\[cfg\(test\)\]",
+        browser_source,
+        re.DOTALL,
+    )
+    require(
+        mutate_client is not None
+        and mutate_client.group(0).find("self.cache.borrow_mut().clear")
+        < mutate_client.group(0).find(".transport"),
+        "mutation cache eviction does not precede the uncertain transport boundary",
+    )
+    require(
+        "mutation_grant_id" in identity_source
+        and "session_id" in identity_source
+        and "user_id" in identity_source,
+        "one-use browser mutation proof cannot bind the D1 write",
+    )
+    require(
+        "AuthenticatedWebAction" in routing_source
+        and '"web", "actions", action' in routing_source
+        and "browser_web_runtime::load" in control_lib_source
+        and "browser_web_runtime::mutate" in control_lib_source,
+        "Worker browser routes are not dispatched",
+    )
+    workspace_arm = re.search(
+        r"Route::AuthenticatedWebWorkspace.*?Route::AuthenticatedWebAction",
+        control_lib_source,
+        re.DOTALL,
+    )
+    require(workspace_arm is not None, "Worker workspace route arm is absent")
+    require(
+        "authenticated_command_preflight" not in workspace_arm.group(0)
+        and "authorized_tenant" not in workspace_arm.group(0),
+        "browser workspace route still requires bearer or browser tenant authority",
+    )
+    for marker in (
+        "authenticated_web_action_operations_v1",
+        "authenticated_web_action_effects_v1",
+        "authenticated_web_action_assertions_v1",
+        "CHECK (expected_count = actual_count)",
+        "membership_authority",
+        "selection_authority",
+        "pending_protected_execution",
+        "product_effect",
+        "action_effect",
+        "organization_update",
+        "operation_complete",
+        "grant_consumed",
+    ):
+        require(marker in action_migration, f"browser action migration omits {marker}")
+    require(
+        "PendingProtectedExecution" in browser_source
+        and '"pending_protected_execution"' in browser_source
+        and "No provider change is claimed yet" in hydration_source,
+        "pending protected action receipts can be presented as product success",
+    )
     require("data-form-contract=\"revision-fenced-v1\"" in pages_source, "form state contract marker is absent")
     require("data-unsaved-guard=\"required\"" in pages_source, "unsaved-change marker is absent")
     require("noindex,nofollow" in pages_source, "private metadata policy is absent")
     require(
-        len(matrix.get("protected_evidence_pending", [])) >= 7,
+        len(matrix.get("protected_evidence_pending", [])) >= 5,
         "protected evidence is not explicitly pending",
     )
     for document in (
@@ -170,6 +418,7 @@ def main() -> int:
     evidence = {
         "schema": "frame.web-authenticated-contract-check.v1",
         "matrix_sha256": hashlib.sha256(encoded).hexdigest(),
+        "browser_boundary_sha256": hashlib.sha256(boundary_encoded).hexdigest(),
         "route_count": len(routes),
         "role_route_cases": len(routes) * len(matrix["roles"]),
         "auth_route_count": len(auth_routes),
@@ -178,7 +427,9 @@ def main() -> int:
         "themes": len(matrix["themes"]),
         "breakpoints": len(matrix["breakpoints"]),
         "protected_evidence_pending": len(matrix["protected_evidence_pending"]),
-        "status": "local_contract_complete_production_adapters_pending",
+        "typed_action_count": len(expected_actions),
+        "browser_direct_boundary": "complete",
+        "status": "local_browser_journeys_complete_protected_evidence_pending",
     }
     rendered = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
     if args.evidence:

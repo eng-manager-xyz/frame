@@ -47,11 +47,12 @@
       "migration_authority_present_provider_adapter_pending": 18,
       "provider_sandbox_and_ledger_reconciliation_pending": 15,
       "retirement_response_and_owner_approval_pending": 10,
-      "rust_authority_present_endpoint_adapter_pending": 182,
-      "rust_authority_present_issue_28_adapter_or_protected_evidence_pending": 63
+      "rust_authority_present_endpoint_adapter_pending": 181,
+      "rust_authority_present_issue_28_adapter_or_protected_evidence_pending": 63,
+      "rust_exact_status_adapter_local_success_contract": 1
     },
-    "endpoint_success_proven": 0,
-    "endpoint_success_pending": 288
+    "endpoint_success_proven": 1,
+    "endpoint_success_pending": 287
   },
   "entries": [
     {
@@ -4960,8 +4961,8 @@
         "30"
       ],
       "implementation": {
-        "rust_authority": "frame-domain/application API contracts",
-        "local_status": "rust_authority_present_endpoint_adapter_pending"
+        "rust_authority": "frame-control-plane legacy status semantic adapter",
+        "local_status": "rust_exact_status_adapter_local_success_contract"
       },
       "disposition": "replace",
       "security": {
@@ -4971,7 +4972,7 @@
         "tenant_non_disclosure": false
       },
       "contract_evidence": {
-        "success": "endpoint_adapter_pending",
+        "success": "local_contract",
         "validation": "family_contract",
         "authorization": "family_contract",
         "idempotency_retry": "family_contract",

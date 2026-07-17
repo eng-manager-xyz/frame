@@ -22,6 +22,16 @@ ROOT = Path(__file__).resolve().parents[2]
 CAP = ROOT / ".tmp" / "cap"
 REPORT = ROOT / "fixtures" / "api-parity" / "v1" / "route-workflow-report.json"
 DOC = ROOT / "docs" / "generated" / "api-workflow-parity-v1.md"
+REGISTRY = ROOT / "crates" / "application" / "src" / "legacy_compatibility.rs"
+APPLICATION_LIB = ROOT / "crates" / "application" / "src" / "lib.rs"
+CONTROL_RUNTIME = ROOT / "apps" / "control-plane" / "src" / "legacy_compatibility_runtime.rs"
+CONTROL_LIB = ROOT / "apps" / "control-plane" / "src" / "lib.rs"
+EXECUTION_MIGRATION = (
+    ROOT / "apps" / "control-plane" / "migrations" / "0026_legacy_api_execution.sql"
+)
+EXECUTION_QUERY_ROOT = ROOT / "apps" / "control-plane" / "queries" / "api_workflow"
+EXECUTION_CONFORMANCE = ROOT / "scripts" / "ci" / "legacy-api-execution-sqlite-conformance.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "api-workflow-parity.yml"
 REFERENCE_COMMIT = "6ba69561ac86b8efdb17616d6727f9638015546b"
 SCHEMA_VERSION = "frame.api-parity.v1"
 CONTRACT_VERSION = "frame.api.v1"
@@ -149,6 +159,18 @@ EVIDENCE_VALUES = {
     "endpoint_adapter_pending",
     "protected_evidence_required",
     "dependency_pending",
+}
+
+# Endpoint promotion is deliberately identity- and source-pinned. A family
+# authority or similar route name is never enough to enter this map.
+LOCAL_ENDPOINT_ADAPTERS: dict[tuple[str, str, str], dict[str, str]] = {
+    ("route", "GET", "/api/status"): {
+        "id": "cap-v1-05b6ba3f76daac22",
+        "source_path": "apps/web/app/api/status/route.ts",
+        "source_sha256": "ba3eb1177da489a10f74c9dbc68e0db8324b695c82499e35d6f8d9da8aaf5797",
+        "local_status": "rust_exact_status_adapter_local_success_contract",
+        "rust_authority": "frame-control-plane legacy status semantic adapter",
+    }
 }
 
 
@@ -575,9 +597,22 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
         else evidence_default
     )
 
-    identity = "\0".join((row["kind"], method, row["legacy_path"])).encode()
+    identity_tuple = (row["kind"], method, row["legacy_path"])
+    identity = "\0".join(identity_tuple).encode()
+    operation_id = f"cap-v1-{sha256_bytes(identity)[:16]}"
+    adapter = LOCAL_ENDPOINT_ADAPTERS.get(identity_tuple)
+    if adapter:
+        if operation_id != adapter["id"] or not any(
+            source["path"] == adapter["source_path"]
+            and source["sha256"] == adapter["source_sha256"]
+            for source in row["sources"]
+        ):
+            raise RuntimeError("local endpoint adapter lost its pinned source identity")
+        endpoint_success = "local_contract"
+        local_status = adapter["local_status"]
+        authority = adapter["rust_authority"]
     return {
-        "id": f"cap-v1-{sha256_bytes(identity)[:16]}",
+        "id": operation_id,
         "kind": row["kind"],
         "legacy_path": row["legacy_path"],
         "method": method,
@@ -901,6 +936,43 @@ def render_doc(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Central compatibility registry",
+            "",
+            "`frame-application::LegacyCompatibilityRegistryV1` decodes this exact report in its "
+            "focused test suite. It registers all 288 identities and exercises the common "
+            "compatibility, request validation, authentication/non-disclosure, rate-limit, "
+            "idempotency-header, stable-error, trace-label, and audit-label boundary for every "
+            "retained row. Its compatibility fixture supplies synthetic fallback availability "
+            "to prove routing decisions; it does not claim an external deployment is reachable. "
+            "The test-only evidence-enabled case proves that no row can bypass the common admission "
+            "path. Every retained row also reaches one atomic execution port contract "
+            "that binds its operation ID, request fingerprint, idempotency key, audit labels, "
+            "and durable receipt; replay, conflicting reuse, in-flight work, and closed execution "
+            "failures are covered. All 288 stable identities and all 138 raw HTTP method patterns "
+            "resolve through the same registry without URL decoding; hostile encoded, dot, empty, "
+            "backslash, semicolon, and control-character paths fail closed.",
+            "",
+            "The control-plane runtime constructs that registry behind a raw HTTP transport and "
+            "implements the execution port with a digest-only D1 claim, fenced intent, completion, "
+            "and append-only audit journal. Provider-free SQLite conformance covers a two-contender "
+            "race, restart replay, conflicting key reuse, losing-reservation partial writes, "
+            "tenant scoping, and immutable rows. Its durable semantic-adapter allowlist remains "
+            "empty. The only enabled semantic adapter is the source-pinned `GET /api/status` "
+            "static contract (`cap-v1-05b6ba3f76daac22`): it has no database dependency and returns "
+            "the pinned Fetch response `200`, `text/plain;charset=UTF-8`, body `OK`. Exact path, "
+            "method, empty-body, forbidden-idempotency, source-SHA, response, and digest tests "
+            "guard that promotion. Production fallback availability stays false, so every other "
+            "operation returns a closed unavailable error rather than manufacturing a business "
+            "success or a legacy fallback.",
+            "",
+            "The registry exercises current and previous release decisions for all 267 "
+            "release-managed client associations and rejects older releases. This is local "
+            "registry evidence, not a released client binary/build. Endpoint success is therefore "
+            f"limited to {summary['endpoint_success_proven']} exact static contract; the remaining "
+            f"{summary['endpoint_success_pending']} per-operation request/response and side-effect "
+            "semantics, transport promotions, released-client runs, protected providers, and "
+            "accountable retirement approvals remain explicit gates.",
+            "",
             "## Contract inventory",
             "",
             "| Method | Legacy path / operation | Clients | Auth | Policy | Disposition | Local status |",
@@ -998,6 +1070,25 @@ def validate_report(report: dict[str, Any], *, compare_reference: bool) -> list[
         if identity in identities:
             errors.append(f"{label}: duplicate route/action/workflow identity")
         identities.add(identity)
+        adapter = LOCAL_ENDPOINT_ADAPTERS.get(identity)
+        if adapter:
+            if row["id"] != adapter["id"]:
+                errors.append(f"{label}: local adapter ID drifted")
+            if row["implementation"] != {
+                "rust_authority": adapter["rust_authority"],
+                "local_status": adapter["local_status"],
+            }:
+                errors.append(f"{label}: local adapter implementation evidence drifted")
+            if row["contract_evidence"]["success"] != "local_contract":
+                errors.append(f"{label}: local adapter lost endpoint success evidence")
+            if not any(
+                source["path"] == adapter["source_path"]
+                and source["sha256"] == adapter["source_sha256"]
+                for source in row["sources"]
+            ):
+                errors.append(f"{label}: local adapter source identity drifted")
+        elif row["contract_evidence"]["success"] == "local_contract":
+            errors.append(f"{label}: endpoint success lacks an explicit local adapter")
         if row["method"] not in ALL_METHODS:
             errors.append(f"{label}: unsupported method")
         if row["contract_version"] != CONTRACT_VERSION:
@@ -1098,6 +1189,137 @@ def validate_report(report: dict[str, Any], *, compare_reference: bool) -> list[
     return errors
 
 
+def validate_registry_contract(report: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    try:
+        registry = REGISTRY.read_text(encoding="utf-8")
+        application_lib = APPLICATION_LIB.read_text(encoding="utf-8")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+    except OSError as error:
+        return [f"unable to load central compatibility registry evidence: {error}"]
+    required_registry_tokens = (
+        "LegacyCompatibilityRegistryV1",
+        '../../../fixtures/api-parity/v1/route-workflow-report.json',
+        "pinned_registry_is_exhaustive_and_keeps_every_unproven_operation_on_fallback",
+        "pinned_report_promotes_only_its_exact_status_contract",
+        "every_retained_row_passes_the_shared_admission_axes_when_endpoint_evidence_is_enabled",
+        "every_retained_row_reaches_the_atomic_execution_and_audit_port_boundary",
+        "every_inventory_identity_and_raw_http_pattern_resolves_without_decoding",
+        "retirement_requires_explicit_approval_and_never_fabricates_frame_success",
+        "assert_eq!(registry.len(), 288);",
+        "assert_eq!(released_associations, 267);",
+    )
+    for token in required_registry_tokens:
+        if token not in registry:
+            errors.append(f"central compatibility registry lost required evidence token: {token}")
+    if (
+        "mod legacy_compatibility;" not in application_lib
+        or "pub use legacy_compatibility::*;" not in application_lib
+    ):
+        errors.append("central compatibility registry is not exported by frame-application")
+    if "cargo test --locked -p frame-application --lib legacy_compatibility" not in workflow:
+        errors.append(
+            "API parity workflow does not execute the central compatibility registry suite"
+        )
+
+    try:
+        control_runtime = CONTROL_RUNTIME.read_text(encoding="utf-8")
+        control_lib = CONTROL_LIB.read_text(encoding="utf-8")
+        execution_migration = EXECUTION_MIGRATION.read_text(encoding="utf-8")
+        execution_queries = "\n".join(
+            (EXECUTION_QUERY_ROOT / name).read_text(encoding="utf-8")
+            for name in (
+                "legacy_execution_claim.sql",
+                "legacy_execution_intent.sql",
+                "legacy_execution_complete.sql",
+                "legacy_execution_audit.sql",
+                "legacy_execution_load.sql",
+            )
+        )
+        execution_conformance = EXECUTION_CONFORMANCE.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"unable to load production legacy execution evidence: {error}")
+    else:
+        required_runtime_tokens = (
+            "D1LegacyOperationExecutionPortV1",
+            "LegacyCompatibilityTransportV1",
+            "const ENABLED_SEMANTIC_ADAPTERS: &[&str] = &[LEGACY_STATUS_OPERATION_ID];",
+            "LEGACY_STATUS_SOURCE_SHA256",
+            "LegacySemanticAdapterV1::PublicStatusOk",
+            "new_static_only",
+            "dispatch_http_response",
+            "static_transport_serves_only_the_exact_status_request_and_response",
+            "LegacyExecutionErrorV1::Unsupported",
+            "database\n            .batch(statements)",
+            "execution_outcome(",
+        )
+        for token in required_runtime_tokens:
+            if token not in control_runtime:
+                errors.append(f"legacy control-plane runtime lost required token: {token}")
+        if "pub mod legacy_compatibility_runtime;" not in control_lib:
+            errors.append("legacy compatibility runtime is not exported by the control plane")
+        for token in (
+            "Route::LegacyApiStatus",
+            "legacy_api_status_response",
+            "LegacyCompatibilityTransportV1::new_static_only",
+        ):
+            if token not in control_lib:
+                errors.append(f"legacy status Worker route lost required token: {token}")
+        for token in (
+            "legacy_api_execution_operations_v1",
+            "legacy_api_execution_intents_v1",
+            "legacy_api_execution_audit_v1",
+            "legacy_api_execution_operations_v1_transition_guard",
+        ):
+            if token not in execution_migration:
+                errors.append(f"legacy D1 execution migration lost required token: {token}")
+        for token in (
+            "INSERT OR IGNORE INTO legacy_api_execution_operations_v1",
+            "RETURNING reservation_digest",
+            "reservation_digest = ?4",
+            "request_fingerprint = ?5",
+            "LEFT JOIN legacy_api_execution_intents_v1",
+            "LEFT JOIN legacy_api_execution_audit_v1",
+        ):
+            if token not in execution_queries:
+                errors.append(f"legacy D1 execution queries lost required token: {token}")
+        for token in (
+            '"semantic_adapters_enabled": 1',
+            'STATIC_SEMANTIC_ADAPTER_ID = "cap-v1-05b6ba3f76daac22"',
+            '"inventory_endpoint_success_promoted": 1',
+            "sorted(race_outcomes) != expected_race",
+            "conflicting key reuse mutated the durable journal",
+        ):
+            if token not in execution_conformance:
+                errors.append(f"legacy D1 execution conformance lost required token: {token}")
+        if (
+            "legacy-api-execution-sqlite-conformance.py" not in workflow
+            or "legacy-api-execution-sqlite-conformance.json" not in workflow
+        ):
+            errors.append("API parity workflow does not retain legacy D1 execution evidence")
+        if (
+            "cargo test --locked -p frame-control-plane --lib "
+            "legacy_compatibility_runtime"
+        ) not in workflow:
+            errors.append("API parity workflow does not compile the legacy transport runtime")
+    entries = report.get("entries", [])
+    released_clients = {"web", "desktop", "mobile", "extension", "developer"}
+    associations = sum(
+        client in released_clients for row in entries for client in row.get("clients", [])
+    )
+    if len(entries) != 288 or associations != 267:
+        errors.append("central compatibility registry coverage constants drifted from the report")
+    promoted_ids = {
+        row.get("id")
+        for row in entries
+        if row.get("contract_evidence", {}).get("success") == "local_contract"
+    }
+    expected_promoted_ids = {adapter["id"] for adapter in LOCAL_ENDPOINT_ADAPTERS.values()}
+    if promoted_ids != expected_promoted_ids:
+        errors.append("endpoint success evidence differs from the explicit semantic adapters")
+    return errors
+
+
 def build_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
     by_kind = Counter(row["kind"] for row in entries)
     by_disposition = Counter(row["disposition"] for row in entries)
@@ -1157,6 +1379,7 @@ def main() -> int:
         return 1
 
     errors = validate_report(report, compare_reference=compare_reference)
+    errors.extend(validate_registry_contract(report))
     expected_doc = render_doc(report)
     try:
         actual_doc = DOC.read_text(encoding="utf-8")

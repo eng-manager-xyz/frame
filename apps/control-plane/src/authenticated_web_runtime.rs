@@ -16,6 +16,16 @@ pub enum WebLoadFailure {
 
 pub type WebLoadOutcome<T> = std::result::Result<T, WebLoadFailure>;
 
+#[derive(Debug, Clone, Copy)]
+pub struct WebLoadAuthority<'a> {
+    pub tenant_id: &'a str,
+    pub user_id: &'a str,
+    pub selection_revision: u64,
+    pub selection_context: &'a str,
+    pub membership_role: &'a str,
+    pub membership_revision: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebLoadQuery {
@@ -59,6 +69,8 @@ pub struct WebWorkspaceV1 {
     pub member_label: String,
     pub role: String,
     pub revision: u64,
+    pub selection_revision: u64,
+    pub selection_context: String,
     pub recordings: Vec<WebRecordingV1>,
     pub spaces: Vec<WebResourceV1>,
     pub folders: Vec<WebResourceV1>,
@@ -118,23 +130,40 @@ struct ImportRow {
 
 pub async fn load(
     database: &D1Database,
-    tenant_id: &str,
-    user_id: &str,
+    authority: WebLoadAuthority<'_>,
     surface: &str,
     query: &WebLoadQuery,
 ) -> Result<WebLoadOutcome<WebWorkspaceV1>> {
+    let WebLoadAuthority {
+        tenant_id,
+        user_id,
+        selection_revision,
+        selection_context,
+        membership_role,
+        membership_revision,
+    } = authority;
     if query.validate(surface).is_err() {
         return Ok(Err(WebLoadFailure::Invalid));
     }
     let Some(workspace) = database
         .prepare(
             "SELECT o.name AS organization_name,u.display_name AS member_label,m.role,o.revision \
-             FROM organization_members m \
+             FROM users u \
+             JOIN organization_members m ON m.user_id=u.id \
+               AND m.organization_id=u.active_organization_id AND m.state='active' \
+               AND m.role IN ('owner','admin','member') \
              JOIN organizations o ON o.id=m.organization_id AND o.status='active' \
-             JOIN users u ON u.id=m.user_id AND u.status='active' AND u.deleted_at_ms IS NULL \
-             WHERE m.organization_id=?1 AND m.user_id=?2 AND m.state='active' LIMIT 1",
+             WHERE u.id=?2 AND u.status='active' AND u.deleted_at_ms IS NULL \
+               AND u.active_organization_id=?1 AND u.organization_preference_revision=?3 \
+               AND m.role=?4 AND m.revision=?5 LIMIT 1",
         )
-        .bind(&[JsValue::from_str(tenant_id), JsValue::from_str(user_id)])?
+        .bind(&[
+            JsValue::from_str(tenant_id),
+            JsValue::from_str(user_id),
+            JsValue::from_f64(selection_revision as f64),
+            JsValue::from_str(membership_role),
+            JsValue::from_f64(membership_revision as f64),
+        ])?
         .first::<WorkspaceRow>(None)
         .await?
     else {
@@ -213,6 +242,8 @@ pub async fn load(
             .unwrap_or_else(|| "Workspace member".into()),
         role: workspace.role,
         revision,
+        selection_revision,
+        selection_context: selection_context.to_owned(),
         recordings,
         spaces,
         folders,
@@ -379,7 +410,7 @@ fn role_permits_surface(role: &str, surface: &str) -> bool {
     match surface {
         "dashboard" | "library" | "spaces" | "space" | "folders" | "folder" | "onboarding"
         | "settings" | "account_settings" => {
-            matches!(role, "owner" | "admin" | "member" | "viewer")
+            matches!(role, "owner" | "admin" | "member")
         }
         "imports"
         | "organization_settings"
@@ -439,6 +470,7 @@ mod tests {
         assert_eq!(valid.validate("library"), Ok(()));
         assert!(role_permits_surface("member", "library"));
         assert!(!role_permits_surface("member", "admin"));
+        assert!(!role_permits_surface("viewer", "library"));
         assert!(role_permits_surface("owner", "billing"));
         assert!(!role_permits_surface("admin", "billing"));
         assert!(

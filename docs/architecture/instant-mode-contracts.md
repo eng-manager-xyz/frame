@@ -4,7 +4,8 @@ Instant Mode is a provider-neutral distributed state machine. The media crate
 owns immutable segment identity, bounded payload ownership, local-spool safety,
 journal fencing, multipart scheduling, and publication reconciliation. Native
 GStreamer, filesystem/keychain, R2/multipart, D1/job, desktop, and share-page
-adapters remain outside this module.
+adapters remain outside this module; the control-plane crate now supplies the
+R2/D1 server-finalize adapter without importing the native media dependency.
 
 ```text
 exact native A/V timeline
@@ -204,6 +205,18 @@ generation, object manifest/version, playable master, and distribution
 eligibility match exactly. `Ready` stores one publication identity. An exact
 duplicate complete or callback is stable; another publication is a conflict.
 
+That full request is the native `frame-media` journal contract, not a claim
+about fields the control plane can independently authenticate. The v1 HTTP
+wire DTO is intentionally narrower: tenant, session, retry operation, upload,
+video, ordered-part digest, server-derived object-version digest, job and
+generation, and the canonical request digest. It does not transmit journal
+revision/fence, native manifest digest, or native object ID. Those values have
+no independent D1 authority yet and must be mapped by a future desktop adapter
+instead of being accepted as client assertions. The HTTP receipt binds the
+retained upload and server-derived object version; publication is allowed only
+after the immutable R2 verification receipt, exact trusted probe, and exact D1
+object/video/job postconditions agree.
+
 Cancel/delete first writes `Tombstoned`, which rejects every late publish or
 callback. Cleanup then attempts multipart abort, finalize-job cancellation, and
 spool wipe independently. Lost abort/cancel acknowledgements are inspected.
@@ -215,8 +228,9 @@ and cannot change capture, upload, object, or publication state.
 
 ## Evidence boundary
 
-The local suite proves state, arithmetic, ownership, redaction, and hostile-fake
-invariants. It does not prove that a native GStreamer graph produces playable
+The local suite proves state, arithmetic, ownership, redaction, hostile-fake
+invariants, and the offline D1 server-finalize relational postcondition. It does
+not prove that a native GStreamer graph produces playable
 fMP4, an OS keystore encrypts files, atomic filesystem replacement survives
 power loss, R2 implements the modeled multipart semantics, D1 commits the
 modeled CAS, a browser begins playback within target, or production CPU,

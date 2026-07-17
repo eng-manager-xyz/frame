@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 553,
-    "local_satisfied": 359,
+    "local_satisfied": 364,
     "protected_pending": 187,
-    "local_gap": 7
+    "local_gap": 2
   },
   "issues": {
     "01": {
@@ -132,12 +132,12 @@
     "19": {
       "count": 11,
       "digest": "730a4bed8c9f98a298d0bfc1a78d341f738357f61f9fc45643820bdc46fd59b9",
-      "evidence": ["docs/evidence/multipart-storage-v1-local.md", "docs/architecture/multipart-storage-v1.md", "crates/application/tests/multipart_storage_v1.rs"],
+      "evidence": ["docs/evidence/multipart-storage-v1-local.md", "docs/architecture/multipart-storage-v1.md", "apps/control-plane/src/r2_multipart.rs", "crates/application/tests/multipart_storage_v1.rs"],
       "protected": [
         {"ordinals": [6], "classes": ["provider_execution", "hardware_execution"], "reason": "A restarted real recording and provider multipart session need desktop and R2 evidence."},
         {"ordinals": [11], "classes": ["provider_execution", "browser_accessibility_execution"], "reason": "Wire-level range/CORS/player behavior needs R2, Worker, custom-domain, and supported-browser execution."}
       ],
-      "local_gaps": [{"ordinals": [2], "reason": "Multipart orchestration and fake ports exist, but no production R2 single-PUT/multipart provider adapter is implemented."}]
+      "local_gaps": []
     },
     "20": {
       "count": 10,
@@ -187,14 +187,12 @@
     "26": {
       "count": 11,
       "digest": "acb7ce90bf65d2d95ec90fbae7e17ded6e8bb3b9660e710bf28a1cc6419875ea",
-      "evidence": ["docs/evidence/instant-mode-local.md", "docs/architecture/instant-mode-contracts.md", "crates/media/tests/instant_mode_contract.rs"],
+      "evidence": ["docs/evidence/instant-mode-local.md", "docs/architecture/instant-mode-contracts.md", "apps/control-plane/src/instant_finalize_runtime.rs", "scripts/ci/instant-finalize-sqlite-conformance.py"],
       "protected": [
         {"ordinals": [7, 8, 11], "classes": ["hardware_execution", "provider_execution"], "reason": "Real network-loss recording, crash recovery, and abort/delete cleanup need native storage plus R2/D1 execution."},
         {"ordinals": [10], "classes": ["browser_accessibility_execution", "provider_execution"], "reason": "Playback-start and manifest-replacement behavior need real encoded media, delivery, and supported browsers."}
       ],
-      "local_gaps": [
-        {"ordinals": [4], "reason": "Finalize/reconciliation has an exact state machine, but its D1 transaction, multipart postcondition, immutable object-manifest, and retained-job ports are not wired into one control-plane adapter."}
-      ]
+      "local_gaps": []
     },
     "27": {
       "count": 11,
@@ -229,22 +227,19 @@
       "evidence": ["docs/evidence/api-workflow-parity-local.md", "fixtures/api-parity/v1/route-workflow-report.json", "docs/architecture/api-workflow-parity-v1.md"],
       "protected": [{"ordinals": [11], "classes": ["provider_execution"], "reason": "Managed quota/outage, native fallback, and kill-switch public behavior need protected executor/provider evidence in addition to the local state model."}],
       "local_gaps": [
-        {"ordinals": [2, 7], "reason": "The 288-operation inventory is complete, but retained route/action endpoint adapters and their success/validation/auth/idempotency/failure E2E families are not implemented."},
-        {"ordinals": [12], "reason": "No supported legacy endpoint family has current/N-1 compatibility E2E evidence; no redirect is authorized."}
+        {"ordinals": [7], "reason": "One exact source-pinned status adapter is locally proven, but the other 287 operations still lack their success/validation/auth/idempotency/failure E2E families or approved retirement."},
+        {"ordinals": [12], "reason": "Only the exact status contract has registry-level current/N-1 evidence; no released-client compatibility E2E or additional redirect is authorized."}
       ]
     },
     "31": {
       "count": 10,
       "digest": "7a4cf939709c4a697c8d769178b960638112512424dabe365a97c28a8dc2ae5d",
-      "evidence": ["docs/evidence/leptos-authenticated-web-local.md", "fixtures/web-authenticated/v1/route-matrix.json", "apps/web/src/authenticated.rs"],
+      "evidence": ["docs/evidence/leptos-authenticated-web-local.md", "fixtures/web-authenticated/v1/route-matrix.json", "apps/web/src/browser_authenticated.rs", "apps/control-plane/src/browser_web_runtime.rs"],
       "protected": [
         {"ordinals": [4, 8], "classes": ["browser_accessibility_execution"], "reason": "Cross-browser visual baselines, complete keyboard checks, and named screen-reader reports need supported browsers and AT."},
         {"ordinals": [10], "classes": ["browser_accessibility_execution", "provider_execution"], "reason": "Navigation, interaction, API, and production SSR performance budgets need real browser/edge/API observations."}
       ],
-      "local_gaps": [
-        {"ordinals": [2], "reason": "Typed route/form contracts and a direct-API D1 read model exist, but the launch-approved browser session loader, actions, cache invalidation, and organization/library/import/storage/developer/admin/billing adapters remain disabled; ADR 0004 forbids using Render credential forwarding as a substitute."},
-        {"ordinals": [6], "reason": "Synthetic role SSR covers route states, but retained mutation journeys cannot complete because their adapters fail closed."}
-      ]
+      "local_gaps": []
     },
     "32": {
       "count": 11,

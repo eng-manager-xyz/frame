@@ -3,6 +3,286 @@ use leptos::prelude::*;
 pub const ROOT_ID: &str = "frame-hydration-root";
 pub const PLAYER_HELP_ROOT_ID: &str = "frame-player-help-root";
 pub const PUBLIC_COLLABORATION_ROOT_ID: &str = "frame-public-collaboration-root";
+pub const AUTHENTICATED_ROOT_ID: &str = "frame-authenticated-workspace-root";
+
+/// Authenticated product data is loaded only after browser hydration. The
+/// relative-path transport sends the host-only session cookie directly to the
+/// Worker; this island never receives a credential from Render or SSR HTML.
+#[cfg(target_arch = "wasm32")]
+#[component]
+pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
+    use std::rc::Rc;
+
+    use crate::browser_authenticated::{
+        BrowserAction, BrowserActionEffectState, BrowserAuthenticatedClient, BrowserMutationInput,
+        BrowserWorkspace, WasmSameOriginTransport,
+    };
+
+    let status = RwSignal::new("Checking your same-origin Frame session.".to_owned());
+    let workspace = RwSignal::new(None::<BrowserWorkspace>);
+    let busy = RwSignal::new(false);
+    let action_value = RwSignal::new(String::new());
+    let uncertain_mutation = RwSignal::new(None::<BrowserMutationInput>);
+    let route = current_authenticated_request();
+    let client = Rc::new(BrowserAuthenticatedClient::new(WasmSameOriginTransport));
+
+    if let Ok((surface, query)) = route.clone() {
+        let client = Rc::clone(&client);
+        Effect::new(move |_| {
+            let client = Rc::clone(&client);
+            let query = query.clone();
+            status.set("Loading the authorized workspace.".into());
+            wasm_bindgen_futures::spawn_local(async move {
+                match client.load(surface, &query).await {
+                    Ok(loaded) => {
+                        status.set("Workspace loaded.".into());
+                        workspace.set(Some(loaded));
+                    }
+                    Err(error) => {
+                        workspace.set(None);
+                        status.set(browser_error_message(error).into());
+                    }
+                }
+            });
+        });
+    } else {
+        status.set("This authenticated route is unavailable.".into());
+    }
+
+    let action = route
+        .as_ref()
+        .ok()
+        .and_then(|(surface, _)| surface.action());
+    let submit_client = Rc::clone(&client);
+    let submit_route = route.clone();
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        if busy.get_untracked() {
+            return;
+        }
+        let (Ok((surface, query)), Some(action)) = (submit_route.clone(), action) else {
+            status.set("The action is unavailable.".into());
+            return;
+        };
+        let input = if let Some(input) = uncertain_mutation.get_untracked() {
+            input
+        } else {
+            let Some(current) = workspace.get_untracked() else {
+                status.set("The action is unavailable.".into());
+                return;
+            };
+            if !action.permitted_for(current.role) {
+                status.set("Your workspace role does not permit this action.".into());
+                return;
+            }
+            let Some(idempotency_key) = random_operation_id() else {
+                status.set("A safe operation identifier is unavailable.".into());
+                return;
+            };
+            let value = action_value.get_untracked().trim().to_owned();
+            if action.requires_value() && value.is_empty() {
+                status.set("Enter a value before submitting.".into());
+                return;
+            }
+            BrowserMutationInput {
+                action,
+                expected_revision: current.revision,
+                selection_revision: current.selection_revision,
+                selection_context: current.selection_context.clone(),
+                idempotency_key,
+                value: action.requires_value().then_some(value),
+                resource_id: (action == BrowserAction::CreateFolder)
+                    .then(|| current.spaces.first().map(|space| space.id.clone()))
+                    .flatten(),
+            }
+        };
+        let client = Rc::clone(&submit_client);
+        busy.set(true);
+        status.set(if uncertain_mutation.get_untracked().is_some() {
+            "Retrying the exact request through the authenticated Worker boundary.".into()
+        } else {
+            "Submitting through the authenticated Worker boundary.".into()
+        });
+        wasm_bindgen_futures::spawn_local(async move {
+            match client.mutate(&input).await {
+                Ok(receipt) => {
+                    uncertain_mutation.set(None);
+                    match client.load(surface, &query).await {
+                        Ok(reloaded) => {
+                            action_value.set(String::new());
+                            workspace.set(Some(reloaded));
+                            status.set(match receipt.effect_state {
+                                BrowserActionEffectState::Applied => format!(
+                                    "Action applied at revision {}. Authorized views were refreshed.",
+                                    receipt.revision
+                                ),
+                                BrowserActionEffectState::PendingProtectedExecution => format!(
+                                    "Request recorded at revision {} for protected execution. No provider change is claimed yet.",
+                                    receipt.revision
+                                ),
+                            });
+                        }
+                        Err(error) => {
+                            workspace.set(None);
+                            status.set(browser_error_message(error).into());
+                        }
+                    }
+                }
+                Err(error) => {
+                    let outcome_unknown =
+                        error == crate::browser_authenticated::BrowserClientError::Unavailable;
+                    if outcome_unknown {
+                        if let Some(value) = &input.value {
+                            action_value.set(value.clone());
+                        }
+                        uncertain_mutation.set(Some(input));
+                    } else {
+                        uncertain_mutation.set(None);
+                    }
+                    workspace.set(None);
+                    let refreshed = client.load(surface, &query).await;
+                    if let Ok(reloaded) = refreshed {
+                        workspace.set(Some(reloaded));
+                    }
+                    if outcome_unknown {
+                        status.set(
+                            "The action outcome was not confirmed. Cached workspace data was discarded and authorized data was refreshed where possible. Submit again to retry the exact same request safely."
+                                .into(),
+                        );
+                    } else {
+                        status.set(browser_error_message(error).into());
+                    }
+                }
+            }
+            busy.set(false);
+        });
+    };
+
+    view! {
+        <section class="panel authenticated-browser-panel" aria-labelledby="browser-workspace-title">
+            <p class="eyebrow">"Private workspace"</p>
+            <h1 id="browser-workspace-title">"Frame workspace"</h1>
+            <p role="status" aria-live="polite" aria-atomic="true">
+                {move || status.get()}
+            </p>
+            {move || workspace.get().map(|current| {
+                let recording_items = current.recordings.iter().map(|recording| {
+                    view! { <li>{format!("{} · {}", recording.title, recording.state)}</li> }
+                }).collect_view();
+                let resource_summary = format!(
+                    "{} spaces · {} folders",
+                    current.spaces.len(),
+                    current.folders.len(),
+                );
+                view! {
+                    <div data-frame-authenticated-ready="true">
+                        <h2>{current.organization_name}</h2>
+                        <p>{format!("{} · {}", current.member_label, current.role.as_str())}</p>
+                        <p>{resource_summary}</p>
+                        <ul aria-label="Authorized recordings">{recording_items}</ul>
+                    </div>
+                }
+            })}
+            {action.map(|action| view! {
+                <form
+                    class="stack authenticated-action-form"
+                    data-frame-action=action.as_str()
+                    hidden=move || uncertain_mutation.get().is_none()
+                        && !workspace.get().is_some_and(|current| {
+                            action.permitted_for(current.role)
+                        })
+                    on:submit=submit
+                >
+                    {action.requires_value().then(|| view! {
+                        <label for="authenticated-action-value">"Action value"</label>
+                        <input
+                            id="authenticated-action-value"
+                            maxlength="120"
+                            required
+                            disabled=move || busy.get()
+                                || uncertain_mutation.get().is_some()
+                                || !workspace.get().is_some_and(|current| {
+                                    action.permitted_for(current.role)
+                                })
+                            prop:value=move || action_value.get()
+                            on:input=move |event| action_value.set(event_target_value(&event))
+                        />
+                    })}
+                    <button
+                        class="button"
+                        type="submit"
+                        disabled=move || busy.get()
+                            || uncertain_mutation.get().is_none()
+                                && !workspace.get().is_some_and(|current| {
+                                    action.permitted_for(current.role)
+                                })
+                    >
+                        {move || if busy.get() {
+                            "Submitting…"
+                        } else if uncertain_mutation.get().is_some() {
+                            "Retry exact request"
+                        } else {
+                            "Submit authenticated request"
+                        }}
+                    </button>
+                </form>
+            })}
+        </section>
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_authenticated_request() -> Result<
+    (
+        crate::browser_authenticated::BrowserSurface,
+        crate::browser_authenticated::BrowserQuery,
+    ),
+    crate::browser_authenticated::BrowserClientError,
+> {
+    use crate::browser_authenticated::{BrowserClientError, BrowserQuery, BrowserSurface};
+
+    let location = web_sys::window()
+        .ok_or(BrowserClientError::Unavailable)?
+        .location();
+    let path = location
+        .pathname()
+        .map_err(|_| BrowserClientError::Unavailable)?;
+    let (surface, resource_id) =
+        BrowserSurface::from_path(&path).ok_or(BrowserClientError::Invalid)?;
+    let search = location
+        .search()
+        .map_err(|_| BrowserClientError::Unavailable)?;
+    let params =
+        web_sys::UrlSearchParams::new_with_str(&search).map_err(|_| BrowserClientError::Invalid)?;
+    let page = params
+        .get("page")
+        .map(|page| page.parse::<u16>().map_err(|_| BrowserClientError::Invalid))
+        .transpose()?;
+    let query = BrowserQuery::new(params.get("q"), params.get("filter"), page, resource_id)?;
+    Ok((surface, query))
+}
+
+#[cfg(target_arch = "wasm32")]
+const fn browser_error_message(
+    error: crate::browser_authenticated::BrowserClientError,
+) -> &'static str {
+    use crate::browser_authenticated::BrowserClientError;
+
+    match error {
+        BrowserClientError::Unauthenticated => {
+            "Sign in is required. No private workspace data was displayed."
+        }
+        BrowserClientError::Forbidden | BrowserClientError::NotFound => {
+            "Your workspace role does not permit this view or action."
+        }
+        BrowserClientError::Invalid => "The request is invalid. Review the form and try again.",
+        BrowserClientError::Conflict => {
+            "The workspace changed. Refresh before resubmitting this action."
+        }
+        BrowserClientError::RateLimited => "Too many attempts. Wait before retrying.",
+        BrowserClientError::Unavailable => "The workspace is temporarily unavailable.",
+    }
+}
 
 /// A deliberately data-free hydration boundary shared by the native SSR
 /// renderer and browser Wasm. Private state continues to come only from a

@@ -2,8 +2,9 @@
 
 This document specifies the provider-neutral, locally testable core of issue 19. It builds on the
 canonical `ScopedObjectKey`, immutable-write, and storage failure contracts in
-[`storage-contract-v1.md`](storage-contract-v1.md). It does **not** implement an R2 adapter, issue a
-real provider authorization, exercise a browser or desktop media player, or close issue 19.
+[`storage-contract-v1.md`](storage-contract-v1.md). The control plane now implements the checked-in
+R2/D1 adapter and brokered routes, but this document does **not** prove a real provider operation,
+exercise a browser or desktop media player, or close issue 19's protected promotion gates.
 
 ## Threat model and client contract
 
@@ -19,11 +20,12 @@ restart, complete, and finalize. Clients never receive a storage account credent
 4. list verified parts after restart and skip only exact provider receipts;
 5. abandon the old session and request a new create grant after expiry.
 
-The locally proven v1 transport is brokered. It deliberately does not expose a presigned POST,
+The v1 control-plane transport is brokered through authenticated same-origin Worker routes. It
+deliberately does not expose a presigned POST,
 provider URL, temporary provider credential, or long-lived secret. This replaces Cap's S3 POST-form
-assumption with an operation contract that R2 can implement using its supported primitives. Whether
-a future R2 adapter uses a same-origin Worker stream, an R2-supported signed PUT, or narrowly scoped
-temporary credentials is a protected provider/security decision and is not claimed here.
+assumption with an operation contract implemented over R2 multipart primitives. Whether a later
+client path also supports an R2-signed PUT or narrowly scoped temporary credentials remains a
+protected provider/security decision and is not claimed here.
 
 Small immutable uploads continue to use `ObjectStoreV1` plus `ImmutableStorageService`; the v1
 multipart boundary covers large/resumable objects. Download bodies cross the provider port as a
@@ -182,13 +184,14 @@ must not delete a provider-completed object.
 
 The following work is required before issue 19 can close:
 
-- production construction and endpoint wiring for the checked-in Cloudflare R2/Worker multipart
-  adapter, including a concrete trusted-probe/reconciliation boundary, plus Wrangler-local and
-  hosted evidence for actual R2 create/list/part/complete/abort/checksum/etag behavior and documented
-  provider limits;
+- Wrangler-local and hosted evidence for the constructed Cloudflare R2/Worker multipart adapter's
+  actual create/list/part/complete/abort/checksum/etag behavior, lost-response recovery, and
+  documented provider limits;
 - an approved decision and implementation for same-origin brokering versus R2-supported signed PUT
   or temporary credentials, including signing-key rotation and emergency revocation;
-- D1-backed `MultipartJournalV1` migrations/transactions and hosted reconciliation scheduling;
+- hosted D1 durability/contention evidence for the checked-in session, part, post-stream
+  verification, completion, and scheduled reconciliation records, plus any remaining client-journal
+  parity work;
 - hosted quota, expiry, Worker body/time/memory, retry/backoff, stale-upload cleanup, and concurrent
   load evidence;
 - exact production/custom-domain CORS, TLS, cache, content-disposition, and private-access policy;

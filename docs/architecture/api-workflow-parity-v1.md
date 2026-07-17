@@ -128,6 +128,14 @@ Deprecation has no implicit date. The generated row must name an earliest remova
 and approval before a retirement can be promoted. Current inventory retirement proposals therefore
 remain pending and cannot turn an accidental 404 into policy.
 
+The v1 registry currently contains one deliberately narrow promotion:
+`cap-v1-05b6ba3f76daac22`, exact `GET /api/status`, pinned to the Cap source hash recorded in the
+report. Its typed static adapter returns `200`, `text/plain;charset=UTF-8`, body `OK` through the
+common coordinator without acquiring a D1 dependency. The semantic-adapter allowlist, source
+identity, empty-body/forbidden-idempotency request policy, response digest, current/N-1 decision,
+and hostile-path negatives are tested together. The durable-adapter allowlist remains empty; no
+other report row inherits this evidence by route family or implementation authority.
+
 ## Adapter boundary and remaining gates
 
 Existing identity, organization, business, multipart/storage, governance, backfill, and media
@@ -141,5 +149,6 @@ are served by a Frame adapter. Promotion still requires, per row or approved ret
   retirement approvals;
 - issue 28/29 managed quota/outage/kill-switch/native-fallback evidence.
 
-Until those fields become evidence-backed `local_contract` (and protected evidence where required),
-the route-level fallback remains authoritative.
+Except for the exact status adapter above, until those fields become evidence-backed
+`local_contract` (and protected evidence where required), a proven route-level fallback remains
+authoritative; in the current production registry, an unproven fallback also fails closed.

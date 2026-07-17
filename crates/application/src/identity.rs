@@ -305,6 +305,31 @@ impl fmt::Debug for ValidatedBrowserMutationProof {
     }
 }
 
+impl ValidatedBrowserMutationProof {
+    /// Identifies the principal that passed the complete browser boundary.
+    ///
+    /// Transport adapters may use this only to bind an authorized domain
+    /// mutation to the repository-minted, one-use grant below. It does not
+    /// expose credential or CSRF material.
+    #[must_use]
+    pub const fn user_id(&self) -> UserId {
+        self.principal.user_id
+    }
+
+    /// Identifies the current browser session without exposing its token.
+    #[must_use]
+    pub const fn session_id(&self) -> SessionId {
+        self.grant.session_id()
+    }
+
+    /// Identifies the one-use grant that a transactional adapter must consume
+    /// in the same durable batch as the protected mutation.
+    #[must_use]
+    pub const fn mutation_grant_id(&self) -> frame_domain::SessionMutationGrantId {
+        self.grant.id()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogoutAllReceipt {
     pub new_session_version: u64,

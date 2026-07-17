@@ -1,0 +1,68 @@
+{
+  "schema": "frame.web-browser-direct-boundary.v1",
+  "topology_adr": "docs/adr/0004-engmanager-render-cloudflare-topology.md",
+  "render_ssr": "data-free-no-credential-forwarding",
+  "load": {
+    "method": "GET",
+    "path": "/api/v1/web/workspace/{surface}",
+    "credential": "__Host-frame_session",
+    "tenant_source": "users.active_organization_id+organization_preference_revision",
+    "selection_contract": "opaque-context+revision",
+    "authority_revalidation": "exact-selection-membership-before-and-after-dto",
+    "cache": "invalidate-all-workspace-envelopes-after-mutation"
+  },
+  "mutation": {
+    "method": "POST",
+    "path": "/api/v1/web/actions/{action}",
+    "credential": "__Host-frame_session",
+    "csrf_cookie": "__Host-frame_csrf",
+    "csrf_header": "x-frame-csrf",
+    "origin": "exact-request-origin",
+    "fetch_site": "same-origin",
+    "idempotency_header": "idempotency-key",
+    "uncertain_outcome": "retain-exact-request-and-key+invalidate-all+force-refresh",
+    "one_use_grant": "auth_session_mutation_grants_v2",
+    "atomic_operation_table": "authenticated_web_action_operations_v1",
+    "applied_http_status": 200,
+    "pending_protected_execution_http_status": 202,
+    "atomic_authority_assertions": [
+      "organization_revision",
+      "active_organization_selection_revision",
+      "membership_role_revision",
+      "one_use_mutation_grant",
+      "replay_current_authority"
+    ]
+  },
+  "forbidden_browser_headers": [
+    "authorization",
+    "x-frame-tenant-id"
+  ],
+  "actions": [
+    "organization.spaces.create.v1",
+    "organization.folders.create.v1",
+    "organization.onboarding.complete.v1",
+    "business.imports.start.v1",
+    "identity.account.update.v1",
+    "organization.settings.update.v1",
+    "organization.members.manage.v1",
+    "business.storage.configure.v1",
+    "business.developer.credentials.manage.v1",
+    "business.billing.manage.v1",
+    "business.admin.execute.v1"
+  ],
+  "applied_actions": [
+    "organization.spaces.create.v1",
+    "organization.folders.create.v1",
+    "business.imports.start.v1",
+    "identity.account.update.v1",
+    "organization.settings.update.v1"
+  ],
+  "pending_protected_execution_actions": [
+    "organization.onboarding.complete.v1",
+    "organization.members.manage.v1",
+    "business.storage.configure.v1",
+    "business.developer.credentials.manage.v1",
+    "business.billing.manage.v1",
+    "business.admin.execute.v1"
+  ]
+}

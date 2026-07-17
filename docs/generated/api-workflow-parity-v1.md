@@ -9,8 +9,8 @@ This is an inventory and gap report, not a production-parity attestation. A mapp
 ## Summary
 
 - Total retained/retirement decisions inventoried: **288**
-- Endpoint-level success contracts proven locally: **0**
-- Endpoint-level success or retirement approval still pending: **288**
+- Endpoint-level success contracts proven locally: **1**
+- Endpoint-level success or retirement approval still pending: **287**
 - Kinds: `route` 138, `rpc` 15, `server_action` 121, `workflow` 14
 - Dispositions: `migrate` 18, `protected_parity_required` 15, `replace` 245, `retire` 10
 
@@ -20,7 +20,7 @@ The 138 HTTP method rows represent 128 unique legacy paths. Exactly 0 are alread
 
 | Kind | Inventory rows | Endpoint success proven | Endpoint success pending |
 |---|---:|---:|---:|
-| `route` | 138 | 0 | 138 |
+| `route` | 138 | 1 | 137 |
 | `rpc` | 15 | 0 | 15 |
 | `server_action` | 121 | 0 | 121 |
 | `workflow` | 14 | 0 | 14 |
@@ -29,7 +29,7 @@ Evidence values below are row counts, not endpoint passes inferred from a shared
 
 | Evidence axis | `local_contract` | `family_contract` | `dependency_pending` | `endpoint_adapter_pending` | `protected_evidence_required` | `retirement_contract_pending_approval` |
 |---|---:|---:|---:|---:|---:|---:|
-| `success` | 0 | 0 | 0 | 263 | 15 | 10 |
+| `success` | 1 | 0 | 0 | 262 | 15 | 10 |
 | `validation` | 0 | 200 | 63 | 0 | 15 | 10 |
 | `authorization` | 0 | 200 | 63 | 0 | 15 | 10 |
 | `idempotency_retry` | 14 | 197 | 53 | 0 | 14 | 10 |
@@ -46,7 +46,15 @@ Client counts are associations and can overlap when one operation serves multipl
 | `mobile` | 22 | 0 | 22 |
 | `provider` | 3 | 0 | 3 |
 | `scheduler` | 16 | 0 | 16 |
-| `web` | 186 | 0 | 186 |
+| `web` | 186 | 1 | 185 |
+
+## Central compatibility registry
+
+`frame-application::LegacyCompatibilityRegistryV1` decodes this exact report in its focused test suite. It registers all 288 identities and exercises the common compatibility, request validation, authentication/non-disclosure, rate-limit, idempotency-header, stable-error, trace-label, and audit-label boundary for every retained row. Its compatibility fixture supplies synthetic fallback availability to prove routing decisions; it does not claim an external deployment is reachable. The test-only evidence-enabled case proves that no row can bypass the common admission path. Every retained row also reaches one atomic execution port contract that binds its operation ID, request fingerprint, idempotency key, audit labels, and durable receipt; replay, conflicting reuse, in-flight work, and closed execution failures are covered. All 288 stable identities and all 138 raw HTTP method patterns resolve through the same registry without URL decoding; hostile encoded, dot, empty, backslash, semicolon, and control-character paths fail closed.
+
+The control-plane runtime constructs that registry behind a raw HTTP transport and implements the execution port with a digest-only D1 claim, fenced intent, completion, and append-only audit journal. Provider-free SQLite conformance covers a two-contender race, restart replay, conflicting key reuse, losing-reservation partial writes, tenant scoping, and immutable rows. Its durable semantic-adapter allowlist remains empty. The only enabled semantic adapter is the source-pinned `GET /api/status` static contract (`cap-v1-05b6ba3f76daac22`): it has no database dependency and returns the pinned Fetch response `200`, `text/plain;charset=UTF-8`, body `OK`. Exact path, method, empty-body, forbidden-idempotency, source-SHA, response, and digest tests guard that promotion. Production fallback availability stays false, so every other operation returns a closed unavailable error rather than manufacturing a business success or a legacy fallback.
+
+The registry exercises current and previous release decisions for all 267 release-managed client associations and rejects older releases. This is local registry evidence, not a released client binary/build. Endpoint success is therefore limited to 1 exact static contract; the remaining 287 per-operation request/response and side-effect semantics, transport promotions, released-client runs, protected providers, and accountable retirement approvals remain explicit gates.
 
 ## Contract inventory
 
@@ -144,7 +152,7 @@ Client counts are associations and can overlap when one operation serves multipl
 | `POST` | `/api/settings/billing/subscribe` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
 | `GET` | `/api/settings/billing/usage` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
 | `POST` | `/api/settings/user/name` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/status` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `GET` | `/api/status` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_status_adapter_local_success_contract` |
 | `GET` | `/api/storage/object` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `HEAD` | `/api/storage/object` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
 | `GET` | `/api/thumbnail` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |

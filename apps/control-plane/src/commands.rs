@@ -20,6 +20,12 @@ pub struct UploadIntentResponse {
     pub finalize_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_put: Option<DirectPutCapabilityV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multipart_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_count: Option<u16>,
     pub expected_bytes: u64,
     pub content_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,6 +40,9 @@ impl UploadIntentResponse {
             upload_path: Some(format!("/api/v1/uploads/{upload_id}/content")),
             finalize_path: None,
             direct_put: None,
+            multipart_path: None,
+            part_size: None,
+            part_count: None,
             transfer_mode: "brokered".into(),
             upload_id,
             state: "initiated".into(),
@@ -55,12 +64,40 @@ impl UploadIntentResponse {
             upload_path: None,
             finalize_path: Some(format!("/api/v1/uploads/{upload_id}/finalize")),
             direct_put: Some(direct_put),
+            multipart_path: None,
+            part_size: None,
+            part_count: None,
             transfer_mode: "direct".into(),
             upload_id,
             state: "initiated".into(),
             expected_bytes,
             content_type,
             checksum_header: None,
+        }
+    }
+
+    pub fn multipart(
+        upload_id: String,
+        expected_bytes: u64,
+        content_type: String,
+        part_size: u64,
+        part_count: u16,
+    ) -> Self {
+        Self {
+            schema_version: API_SCHEMA_VERSION,
+            status_path: format!("/api/v1/uploads/{upload_id}"),
+            upload_path: None,
+            finalize_path: None,
+            direct_put: None,
+            multipart_path: Some(format!("/api/v1/uploads/{upload_id}/multipart")),
+            part_size: Some(part_size),
+            part_count: Some(part_count),
+            transfer_mode: "multipart".into(),
+            upload_id,
+            state: "initiated".into(),
+            expected_bytes,
+            content_type,
+            checksum_header: Some("x-content-sha256"),
         }
     }
 }
@@ -277,6 +314,13 @@ impl IntegrationRow {
             .and_then(|value| value.get("conditional_put").and_then(|flag| flag.as_bool()))
             == Some(true)
     }
+
+    pub fn supports_multipart(&self) -> bool {
+        serde_json::from_str::<serde_json::Value>(&self.capabilities_json)
+            .ok()
+            .and_then(|value| value.get("multipart").and_then(|flag| flag.as_bool()))
+            == Some(true)
+    }
 }
 
 pub fn request_digest<T: Serialize>(command_type: &str, value: &T) -> Result<String, ()> {
@@ -491,6 +535,13 @@ mod tests {
             capabilities_json: r#"{"conditional_put":true}"#.into(),
         };
         assert!(supported.supports_single_put());
+        assert!(!supported.supports_multipart());
+        let multipart = IntegrationRow {
+            id: "integration".into(),
+            capabilities_json: r#"{"conditional_put":true,"multipart":true}"#.into(),
+        };
+        assert!(multipart.supports_single_put());
+        assert!(multipart.supports_multipart());
         for capabilities_json in [
             r#"{"conditional_put":false}"#,
             r#"{"conditional_put":"true"}"#,

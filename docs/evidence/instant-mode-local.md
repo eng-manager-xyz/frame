@@ -1,9 +1,9 @@
 # Instant Mode local evidence
 
-Status: provider-free local contract, filesystem-encryption, and native
-GStreamer segmentation evidence. This record does not claim physical-capture
-behavior, live OS-credential-store behavior, R2 multipart behavior, D1/job
-behavior, browser playback, wall-clock performance, or production completion.
+Status: local contract, filesystem-encryption, native GStreamer segmentation,
+and offline D1 reconciliation evidence. This record does not claim physical-capture behavior,
+live OS-credential-store behavior, hosted R2/D1/job behavior, browser
+playback, wall-clock performance, or production completion.
 
 ## Implemented contract surface
 
@@ -61,34 +61,40 @@ adds restart/tamper/quota tests. The sanitized full `frame-media` run is the
 authoritative aggregate count. Provider transitions still use hostile local
 adapters and do not prove Cloudflare execution.
 
-## Remaining repository integration gap
+## Control-plane server-finalize integration
 
-The exact finalize state machine exists, but its D1 transaction, multipart
-postcondition, immutable object-manifest, and retained-job ports are not yet
-wired into one control-plane adapter. That deliverable remains a local gap; it
-is not being reclassified as protected provider evidence.
-
-The missing call path is explicit:
+The exact server-finalize slice is now wired through a versioned Wasm-safe DTO, authenticated route,
+retained D1 request/operation/job rows, multipart/probe postconditions, and scheduled reconciliation:
 
 ```text
 desktop Instant journal
-  -> InstantFinalizePort::reconcile / inspect
-  -> [no concrete HTTP client or wire DTO]
-  -> [no control-plane Instant finalize route]
-  -> [no D1 Instant request/operation/publication authority table]
-  -> r2_multipart_completions_v1 + media job + object manifest + playable result
-  -> [no atomic reconciliation adapter]
+  -> InstantFinalizeRequestV1 (canonical digest; retry operation excluded from semantic identity)
+  -> POST /api/v1/instant-recordings/{session_id}/finalize
+  -> retained instant_finalize_requests/jobs/operations rows
+  -> exact r2_multipart_completions_v1 + verified native probe postconditions
+  -> one D1 batch: upload + immutable object authorities + ready video + publication/job/operations
+  -> 200 published or stable 202 pending, with scheduled reconciliation
 ```
 
-`InstantFinalizeRequest` and its opaque identities are currently internal Rust values. The bounded
-`InstantJournalCodec` can persist the full local journal inside `frame-media`, but it is not a
-versioned client/server finalize protocol, and the control-plane cannot import that crate because
-`frame-media` carries the native GStreamer dependency while the control-plane targets Wasm. The
-desktop crate also does not depend on `frame-media`, so no production caller reaches the finalize
-trait. Control-plane media completion does reconcile generic media-job and object-manifest state,
-but it neither accepts an Instant request digest/job generation/multipart receipt nor returns an
-`InstantFinalizeReceipt`. The fake `InstantFinalizePort` tests therefore prove the state-machine
-semantics only; they do not satisfy issue 26's server-finalize deliverable.
+The server derives the immutable object version from the provider version, never accepts client
+media-probe facts, and validates the exact tenant/session/upload/video, ordered parts, object
+version, job, generation, and request digest on every replay. The HTTP contract deliberately omits
+the native journal revision/fence, manifest digest, and native object ID because D1 has no
+independent authority for those values. They remain covered by the `frame-media` journal tests and
+must be mapped by the future desktop adapter; this evidence does not pretend that echoing them from
+a client would verify them. A missing multipart completion or trusted probe remains `pending`; an
+identity mismatch fails closed. The HTTP idempotency key, semantic request, operation, and retained
+job are reserved in one authority-fenced batch.
+
+The offline SQLite conformance test proves tenant and immutable-row triggers, revoked-writer and
+deleted-video rollback, contingent-row rollback, bounded fair scanning and dead-letter assertions,
+retryable multipart-abort retention, and the final relational publication postcondition. This
+locally satisfies the server-finalize/D1-reconciliation deliverable; it does not prove hosted D1
+contention, R2 execution, callback ordering, or desktop transport.
+
+The remaining local integration edge is conversion/dispatch from the native `frame-media`
+`InstantFinalizeRequest` into this DTO by a production desktop caller. The bounded journal remains
+inside `frame-media` because the control plane cannot import its native GStreamer dependency.
 
 ## Reproduction commands
 
@@ -105,6 +111,8 @@ GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
 cargo clippy -p frame-media --all-targets -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc -p frame-media --no-deps
 cargo fmt --all -- --check
+python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
+python3 scripts/ci/check-migrations.py
 git diff --check
 ```
 
@@ -137,6 +145,6 @@ time:
   retention/deletion, accessibility, privacy, security, product, media, and
   release-owner signoff.
 
-Until the remaining adapter wiring and protected records exist, this slice is
-suitable for integration and local conformance only. It is not a production
+Until the remaining desktop transport and protected records exist, this slice
+is suitable for integration and local conformance only. It is not a production
 promotion record and does not close the protected acceptance gates in issue 26.

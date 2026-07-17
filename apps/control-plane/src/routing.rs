@@ -119,6 +119,7 @@ pub fn validate_host(
 pub enum Route {
     LegacyRoot,
     LegacyHealth,
+    LegacyApiStatus,
     Discovery,
     Capabilities,
     ApiHealth,
@@ -130,6 +131,7 @@ pub enum Route {
     PublicAnalyticsConsent { share_id: String },
     PublicAnalyticsEvents { share_id: String },
     AuthenticatedWebWorkspace { surface: String },
+    AuthenticatedWebAction { action: String },
     StorageGrantCreate,
     StorageGrantRevoke { grant_id: String },
     StorageGrantRead { tenant_id: String, grant_id: String },
@@ -140,6 +142,10 @@ pub enum Route {
     UploadStatus { upload_id: String },
     UploadContent { upload_id: String },
     UploadFinalize { upload_id: String },
+    UploadMultipart { upload_id: String },
+    UploadMultipartPart { upload_id: String, part_number: u16 },
+    UploadMultipartComplete { upload_id: String },
+    InstantFinalize { session_id: String },
     MediaJobCreate,
     MediaJobStatus { job_id: String },
     MediaJobCancel { job_id: String },
@@ -198,6 +204,7 @@ pub fn classify_raw_path(path: &str) -> Route {
     }
     match path {
         "/api" | "/api/" => Route::Discovery,
+        "/api/status" => Route::LegacyApiStatus,
         "/api/v1" | "/api/v1/" => Route::Capabilities,
         "/api/v1/health" => Route::ApiHealth,
         "/api/v1/videos" => Route::VideoCreate,
@@ -272,6 +279,9 @@ fn dynamic_route(path: &str) -> Route {
         ["", "api", "v1", "web", "workspace", surface] => Route::AuthenticatedWebWorkspace {
             surface: (*surface).to_owned(),
         },
+        ["", "api", "v1", "web", "actions", action] => Route::AuthenticatedWebAction {
+            action: (*action).to_owned(),
+        },
         ["", "api", "v1", "storage", "grants", grant_id] => Route::StorageGrantRevoke {
             grant_id: (*grant_id).to_owned(),
         },
@@ -302,6 +312,51 @@ fn dynamic_route(path: &str) -> Route {
         },
         ["", "api", "v1", "uploads", upload_id, "finalize"] => Route::UploadFinalize {
             upload_id: (*upload_id).to_owned(),
+        },
+        ["", "api", "v1", "uploads", upload_id, "multipart"] => Route::UploadMultipart {
+            upload_id: (*upload_id).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "uploads",
+            upload_id,
+            "multipart",
+            "parts",
+            part_number,
+        ] => match part_number.parse::<u16>() {
+            Ok(parsed_part_number)
+                if (1..=10_000).contains(&parsed_part_number)
+                    && parsed_part_number.to_string() == *part_number =>
+            {
+                Route::UploadMultipartPart {
+                    upload_id: (*upload_id).to_owned(),
+                    part_number: parsed_part_number,
+                }
+            }
+            _ => Route::InvalidApiPath,
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "uploads",
+            upload_id,
+            "multipart",
+            "complete",
+        ] => Route::UploadMultipartComplete {
+            upload_id: (*upload_id).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "instant-recordings",
+            session_id,
+            "finalize",
+        ] => Route::InstantFinalize {
+            session_id: (*session_id).to_owned(),
         },
         ["", "api", "v1", "media-jobs", job_id] => Route::MediaJobStatus {
             job_id: (*job_id).to_owned(),
@@ -643,6 +698,7 @@ mod tests {
     #[test]
     fn versioned_routes_are_matched_without_router_decoding() {
         assert_eq!(classify_raw_path("/api"), Route::Discovery);
+        assert_eq!(classify_raw_path("/api/status"), Route::LegacyApiStatus);
         assert_eq!(classify_raw_path("/api/v1"), Route::Capabilities);
         assert_eq!(classify_raw_path("/api/v1/health"), Route::ApiHealth);
         assert_eq!(
@@ -659,6 +715,12 @@ mod tests {
         );
         assert_eq!(classify_raw_path("/api/v2/health"), Route::UnknownApi);
         assert_eq!(classify_raw_path("/api/v1/videos"), Route::VideoCreate);
+        assert_eq!(
+            classify_raw_path("/api/v1/web/actions/organization.spaces.create.v1"),
+            Route::AuthenticatedWebAction {
+                action: "organization.spaces.create.v1".into(),
+            }
+        );
         assert_eq!(
             classify_raw_path("/api/v1/storage/grants"),
             Route::StorageGrantCreate
@@ -688,6 +750,46 @@ mod tests {
             classify_raw_path("/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/finalize"),
             Route::UploadFinalize {
                 upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/multipart"),
+            Route::UploadMultipart {
+                upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
+        assert_eq!(
+            classify_raw_path(
+                "/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/multipart/parts/17"
+            ),
+            Route::UploadMultipartPart {
+                upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into(),
+                part_number: 17,
+            }
+        );
+        assert_eq!(
+            classify_raw_path(
+                "/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/multipart/complete"
+            ),
+            Route::UploadMultipartComplete {
+                upload_id: "018f47a6-7b1c-7f55-8f39-8f8a86900111".into()
+            }
+        );
+        for part_number in ["0", "01", "+1", "10001", "65536", "not-a-number"] {
+            assert_eq!(
+                classify_raw_path(&format!(
+                    "/api/v1/uploads/018f47a6-7b1c-7f55-8f39-8f8a86900111/multipart/parts/{part_number}"
+                )),
+                Route::InvalidApiPath,
+                "{part_number}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path(
+                "/api/v1/instant-recordings/018f47a6-7b1c-7f55-8f39-8f8a86900112/finalize"
+            ),
+            Route::InstantFinalize {
+                session_id: "018f47a6-7b1c-7f55-8f39-8f8a86900112".into()
             }
         );
         assert_eq!(

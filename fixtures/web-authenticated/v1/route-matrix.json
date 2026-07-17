@@ -247,12 +247,16 @@
     "ssr_role_matrix": "scripts/ci/web-authenticated-parity.py",
     "contract_checker": "scripts/ci/check-web-authenticated-parity.py",
     "rust_tests": "cargo test --locked -p frame-web",
+    "typed_browser_client": "apps/web/src/browser_authenticated.rs",
+    "worker_browser_boundary": "apps/control-plane/src/browser_web_runtime.rs",
+    "action_migration": "apps/control-plane/migrations/0025_authenticated_web_actions.sql",
+    "action_atomicity_faults": "scripts/ci/web-authenticated-action-sqlite-conformance.py",
     "browser_fixtures": "scripts/ci/web-authenticated-browser.py",
     "browser_hydration": "scripts/ci/web-hydration-smoke.py"
   },
   "protected_evidence_pending": [
-    "production identity and session adapter journeys",
-    "production organization and business API adapter journeys",
+    "production identity issuance OTP recovery and logout journeys",
+    "authoritative onboarding membership storage developer billing and admin execution beyond pending intents",
     "current and previous stable Firefox Safari and Edge visual journeys",
     "manual keyboard and named screen-reader checks",
     "protected billing provider sandbox journey",

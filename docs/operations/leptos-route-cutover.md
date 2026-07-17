@@ -12,7 +12,12 @@ the route matrix has evidence for the exact release SHA.
    owner/admin/member, denial/non-disclosure, validation, duplicate/retry,
    conflict, unavailable, and N/N-1 client cases.
 3. Confirm real session bootstrap and every mutation use same-origin cookies,
-   CSRF, tenant-scoped idempotency, expected revisions, and privacy-safe audit.
+   CSRF, tenant-scoped idempotency, expected organization revisions, an atomic
+   active-organization selection/revision fence, membership role/revision
+   fence, current-authority replay check, and privacy-safe audit. A
+   `pending_protected_execution` receipt is not product/provider success.
+   Confirm every load binds and finally revalidates the exact active selection,
+   role, and membership revision before returning a private DTO.
 4. Attach current/previous browser visual, automated accessibility, manual
    keyboard/screen-reader, and protected p95 reports. Billing or provider
    families require their protected sandbox evidence and reconciliation.
@@ -43,7 +48,8 @@ the route matrix has evidence for the exact release SHA.
 2. Leave D1/R2 migrations and acknowledged writes intact. Do not delete,
    rewind, reissue a billable action, or permit both legacy and Frame writers.
 3. Reconcile every submitted idempotency key and expected revision before
-   retry. An unknown result remains indeterminate until the authority is read.
+   retry. An unknown result remains indeterminate until authority is refreshed;
+   retry only the retained exact body and key, never a newly generated key.
 4. Confirm private cache revocation inside 60 seconds and route rollback inside
    the charter's 15-minute objective. Preserve evidence and open an incident
    for any privacy, authorization, corruption, duplicate-billing, or lost-write
@@ -51,7 +57,10 @@ the route matrix has evidence for the exact release SHA.
 
 ## Current status
 
-Local route and rendering contracts are available, but production adapters,
-cross-browser/manual accessibility evidence, protected performance/provider
-evidence, flag operation, and timed rollback are pending. This runbook must not
-be used to claim production cutover until those conditions are satisfied.
+Local route/rendering contracts and the browser-direct typed Worker boundary
+are available, including local membership-race rollback evidence and honest
+applied-versus-pending action receipts. Production identity issuance, deployed
+N/N-1 session journeys, cross-browser/manual accessibility evidence, protected
+performance/provider execution, flag operation, and timed rollback remain
+pending. This runbook must not be used to claim production cutover until those
+conditions are satisfied.

@@ -156,6 +156,8 @@ def main() -> int:
                       const main = document.querySelector('main');
                       const heading = document.querySelector('h1#page-title');
                       const nav = document.querySelector('nav[aria-label="Workspace"]');
+                      const authenticatedRoots = document.querySelectorAll('#frame-authenticated-workspace-root');
+                      const authenticatedRoot = authenticatedRoots[0];
                       const skip = document.querySelector('.skip-link');
                       const labels = new Map([...document.querySelectorAll('label[for]')].map(label => [label.htmlFor, label]));
                       const unlabeled = [...document.querySelectorAll('input:not([type="hidden"]), select, textarea')]
@@ -221,6 +223,8 @@ def main() -> int:
                         horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
                         mainVisible: Boolean(main && main.getClientRects().length),
                         navVisible: Boolean(nav && nav.getClientRects().length),
+                        authenticatedRootCount: authenticatedRoots.length,
+                        browserLoaderEnabled: authenticatedRoot?.dataset.frameBrowserLoader === 'true',
                         currentLinks: nav ? nav.querySelectorAll('[aria-current="page"]').length : 0,
                         duplicateIds: duplicateIds.length,
                         unlabeledControls: unlabeled.length,
@@ -239,6 +243,8 @@ def main() -> int:
                 require(isinstance(state, dict), f"{name} browser state is invalid")
                 require(state.get("readyState") == "complete", f"{name} did not load")
                 require(bool(state.get("mainVisible")), f"{name} main is invisible")
+                require(state.get("authenticatedRootCount") == 1, f"{name} browser boundary root drifted")
+                require(not bool(state.get("browserLoaderEnabled")), f"{name} local fixture activated the production browser loader")
                 require(not bool(state.get("horizontalOverflow")), f"{name} overflows horizontally")
                 require(state.get("duplicateIds") == 0, f"{name} has duplicate IDs")
                 require(state.get("unlabeledControls") == 0, f"{name} has unlabeled controls")
@@ -308,6 +314,7 @@ def main() -> int:
         "semantic_accessibility_scan": True,
         "keyboard_focus_scan": True,
         "responsive_overflow_scan": True,
+        "data_free_browser_boundary_scan": True,
         "wcag_aa_body_contrast_scan": True,
         "visual_capture_diff_ready": True,
         "cross_browser_baselines_pending": True,

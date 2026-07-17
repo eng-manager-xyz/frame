@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+pub mod browser_authenticated;
 pub mod hydration;
 pub mod share_player;
 
@@ -1585,7 +1586,7 @@ mod server {
                 diagnostic_token: Some(token.into()),
                 worker_release: Some("worker-1111111".into()),
                 render_deploy: Some("render-deploy-1".into()),
-                migration_level: Some("0023_auth_oauth_direct_upload.sql".into()),
+                migration_level: Some("0026_legacy_api_execution.sql".into()),
                 portfolio_consumer: Some("portfolio-aaaaaaa".into()),
                 ..ConfigValues::default()
             })
@@ -1619,10 +1620,7 @@ mod server {
             assert_eq!(value["contract_major"], 1);
             assert_eq!(value["worker_release"], "worker-1111111");
             assert_eq!(value["render_deploy"], "render-deploy-1");
-            assert_eq!(
-                value["migration_level"],
-                "0023_auth_oauth_direct_upload.sql"
-            );
+            assert_eq!(value["migration_level"], "0026_legacy_api_execution.sql");
             assert_eq!(value["portfolio_consumer"], "portfolio-aaaaaaa");
 
             let hidden = release_health(State(state), HeaderMap::new()).await;

@@ -33,6 +33,39 @@ const MIN_PART_BYTES: u64 = 5 * 1_024 * 1_024;
 const MAX_PART_BYTES: u64 = 100 * 1_024 * 1_024;
 const MAX_TOTAL_BYTES: u64 = 5_000_000_000_000;
 const MAX_RANGE_BYTES: u64 = 16 * 1_024 * 1_024;
+const ABORT_RETRY_BASE_MS: i64 = 1_000;
+const ABORT_RETRY_MAX_MS: i64 = 300_000;
+const ABORT_ATTEMPT_LOCK_MS: i64 = 60_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthenticatedAbortOutcomeV1 {
+    Confirmed { attempt: i64 },
+    PreservedObject { attempt: i64 },
+    AlreadyAborted,
+    AlreadyCompleted,
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbortIntentKind {
+    ExpiryCleanup,
+    AuthenticatedDelete,
+}
+
+impl AbortIntentKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExpiryCleanup => "expiry_cleanup",
+            Self::AuthenticatedDelete => "authenticated_delete",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum AbortProviderAttempt {
+    Terminal(AbortTerminalOutcome),
+    RetryableFailure(StorageFailure),
+}
 
 #[async_trait]
 pub trait TrustedR2MediaProbeV1: Send + Sync {
@@ -44,6 +77,77 @@ pub trait TrustedR2MediaProbeV1: Send + Sync {
         size: ByteSize,
         checksum: &ChecksumSha256,
     ) -> Result<TrustedMediaProbeV1, StorageFailure>;
+}
+
+/// Production trusted-probe boundary. Multipart completion can finish R2
+/// before the native probe job has committed its verified D1 result; that
+/// state is deliberately retryable and never falls back to client metadata.
+#[derive(Debug)]
+pub struct D1TrustedMediaProbeV1<'a> {
+    database: &'a D1Database,
+}
+
+impl<'a> D1TrustedMediaProbeV1<'a> {
+    #[must_use]
+    pub const fn new(database: &'a D1Database) -> Self {
+        Self { database }
+    }
+}
+
+#[async_trait]
+impl TrustedR2MediaProbeV1 for D1TrustedMediaProbeV1<'_> {
+    async fn probe(
+        &self,
+        _bucket: &Bucket,
+        key: &ScopedObjectKey,
+        content_type: &ContentType,
+        size: ByteSize,
+        checksum: &ChecksumSha256,
+    ) -> Result<TrustedMediaProbeV1, StorageFailure> {
+        let row = self
+            .database
+            .prepare(
+                "SELECT p.container,p.video_codec,p.audio_codec,p.width,p.height,p.duration_ms,\
+                 p.frame_rate_numerator,p.frame_rate_denominator \
+                 FROM media_source_probes_v1 p JOIN video_uploads u \
+                   ON u.organization_id=p.organization_id AND u.video_id=p.video_id \
+                  AND u.source_version=p.source_version AND u.source_object_key=p.source_object_key \
+                 WHERE p.organization_id=?1 AND p.source_object_key=?2 \
+                   AND p.source_checksum_sha256=?3 AND p.source_bytes=?4 \
+                   AND p.source_content_type=?5 AND p.trust='verified_native_probe' \
+                   AND p.state='verified' LIMIT 1",
+            )
+            .bind(&[
+                JsValue::from_str(&key.tenant_id().to_string()),
+                JsValue::from_str(key.as_str()),
+                JsValue::from_str(checksum.as_str()),
+                number(size.get())?,
+                JsValue::from_str(content_type.as_str()),
+            ])
+            .map_err(map_worker_error)?
+            .first::<TrustedProbeRow>(None)
+            .into_send()
+            .await
+            .map_err(map_worker_error)?
+            .ok_or_else(unavailable)?;
+        let numerator = u64::try_from(row.frame_rate_numerator).map_err(|_| integrity())?;
+        let denominator = u64::try_from(row.frame_rate_denominator).map_err(|_| integrity())?;
+        let rate = numerator
+            .checked_mul(1_000)
+            .and_then(|value| value.checked_div(denominator))
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(integrity)?;
+        TrustedMediaProbeV1::new(
+            parse_container(&row.container)?,
+            parse_video_codec(&row.video_codec)?,
+            parse_audio_codec(&row.audio_codec)?,
+            u16::try_from(row.width).map_err(|_| integrity())?,
+            u16::try_from(row.height).map_err(|_| integrity())?,
+            u64::try_from(row.duration_ms).map_err(|_| integrity())?,
+            rate,
+        )
+        .map_err(|_| integrity())
+    }
 }
 
 #[derive(Debug)]
@@ -157,6 +261,29 @@ impl<'a, P: TrustedR2MediaProbeV1 + ?Sized> R2MultipartObjectStoreV1<'a, P> {
         ))
     }
 
+    /// Reconstructs the server-only provider reference for an authenticated
+    /// route. The opaque R2 upload handle never crosses the API boundary.
+    pub async fn route_reference(
+        &self,
+        context: StorageRequestContext,
+        upload_id: MultipartUploadId,
+        key: &ScopedObjectKey,
+    ) -> Result<ProviderUploadReferenceV1, StorageFailure> {
+        Self::authorize(context, key)?;
+        let session = self.session(upload_id).await?.ok_or_else(not_found)?;
+        if session.object_key != key.as_str()
+            || session.correlation_id != context.correlation_id().to_string()
+        {
+            return Err(StorageFailure::new(StorageFailureKind::Unauthorized));
+        }
+        Ok(ProviderUploadReferenceV1::new(
+            upload_id,
+            key.clone(),
+            ProviderMultipartHandleV1::parse(encode_handle(&session.provider_upload_id))?,
+            context.correlation_id(),
+        ))
+    }
+
     async fn completion(
         &self,
         request: &ProviderCompleteMultipartRequestV1,
@@ -251,6 +378,61 @@ impl<'a, P: TrustedR2MediaProbeV1 + ?Sized> R2MultipartObjectStoreV1<'a, P> {
         Ok(object)
     }
 
+    async fn persist_verified_object(
+        &self,
+        request: &ProviderCompleteMultipartRequestV1,
+        object: &worker::Object,
+        verified_at: TimestampMillis,
+    ) -> Result<(), StorageFailure> {
+        let upload_id = request.reference().upload_id().to_string();
+        let inserted = self
+            .database
+            .prepare(
+                "INSERT INTO r2_multipart_verified_objects_v1(\
+                 upload_id,provider_version,provider_etag,bytes,checksum_sha256,content_type,verified_at_ms) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(upload_id) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&upload_id),
+                JsValue::from_str(&object.version()),
+                JsValue::from_str(&object.etag()),
+                number(request.expected_size().get())?,
+                JsValue::from_str(request.expected_checksum_sha256().as_str()),
+                JsValue::from_str(request.expected_content_type().as_str()),
+                JsValue::from_f64(verified_at.get() as f64),
+            ])
+            .map_err(map_worker_error)?
+            .run()
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        if !inserted.success() {
+            return Err(unavailable());
+        }
+        let stored = self
+            .database
+            .prepare(
+                "SELECT provider_version,provider_etag,bytes,checksum_sha256,content_type \
+                 FROM r2_multipart_verified_objects_v1 WHERE upload_id=?1 LIMIT 1",
+            )
+            .bind(&[JsValue::from_str(&upload_id)])
+            .map_err(map_worker_error)?
+            .first::<VerifiedObjectRow>(None)
+            .into_send()
+            .await
+            .map_err(map_worker_error)?
+            .ok_or_else(unavailable)?;
+        if stored.provider_version != object.version()
+            || stored.provider_etag != object.etag()
+            || stored.bytes != signed(request.expected_size().get())?
+            || stored.checksum_sha256 != request.expected_checksum_sha256().as_str()
+            || stored.content_type != request.expected_content_type().as_str()
+        {
+            return Err(StorageFailure::new(StorageFailureKind::PreconditionFailed));
+        }
+        Ok(())
+    }
+
     async fn persist_completion(
         &self,
         request: &ProviderCompleteMultipartRequestV1,
@@ -307,12 +489,62 @@ impl<'a, P: TrustedR2MediaProbeV1 + ?Sized> R2MultipartObjectStoreV1<'a, P> {
                 ])
                 .map_err(map_worker_error)?,
         ];
-        self.database
+        let results = self
+            .database
             .batch(statements)
             .into_send()
             .await
             .map_err(map_worker_error)?;
+        if results.len() != 2 || results.iter().any(|result| !result.success()) {
+            return Err(unavailable());
+        }
         Ok(())
+    }
+
+    /// Starts or resumes the provider side of an authenticated abort. The
+    /// pending reconciliation is committed before the R2 call, while the
+    /// caller owns the authority-fenced D1 terminal batch that also updates
+    /// the product upload row.
+    pub async fn reconcile_authenticated_abort_provider(
+        &self,
+        context: StorageRequestContext,
+        reference: ProviderUploadReferenceV1,
+        attempt: i64,
+        now: TimestampMillis,
+    ) -> Result<AuthenticatedAbortOutcomeV1, StorageFailure> {
+        let session = self
+            .session(reference.upload_id())
+            .await?
+            .ok_or_else(not_found)?;
+        Self::validate_reference(context, &reference, &session)?;
+        match session.state.as_str() {
+            "complete" => return Ok(AuthenticatedAbortOutcomeV1::AlreadyCompleted),
+            "aborted" | "expired" => {
+                return Ok(AuthenticatedAbortOutcomeV1::AlreadyAborted);
+            }
+            "open" | "completing" => {}
+            _ => return Err(integrity()),
+        }
+        if !self
+            .abort_attempt_is_current(
+                &session.upload_id,
+                AbortIntentKind::AuthenticatedDelete,
+                attempt,
+                now,
+            )
+            .await?
+        {
+            return Ok(AuthenticatedAbortOutcomeV1::Pending);
+        }
+        match self.attempt_provider_abort(&session).await? {
+            AbortProviderAttempt::Terminal(AbortTerminalOutcome::Confirmed) => {
+                Ok(AuthenticatedAbortOutcomeV1::Confirmed { attempt })
+            }
+            AbortProviderAttempt::Terminal(AbortTerminalOutcome::PreservedObject) => {
+                Ok(AuthenticatedAbortOutcomeV1::PreservedObject { attempt })
+            }
+            AbortProviderAttempt::RetryableFailure(failure) => Err(failure),
+        }
     }
 
     pub async fn cleanup_stale(
@@ -326,10 +558,18 @@ impl<'a, P: TrustedR2MediaProbeV1 + ?Sized> R2MultipartObjectStoreV1<'a, P> {
         let rows = self
             .database
             .prepare(
-                "SELECT upload_id,object_key,provider_upload_id,state,expected_bytes,checksum_sha256,\
-                 content_type,correlation_id,created_at_ms,expires_at_ms,completed_at_ms \
-                 FROM r2_multipart_sessions_v1 WHERE state IN ('open','completing') \
-                 AND expires_at_ms<=?1 ORDER BY expires_at_ms,upload_id LIMIT ?2",
+                "SELECT session.upload_id,session.object_key,session.provider_upload_id,\
+                 session.state,session.expected_bytes,session.checksum_sha256,\
+                 session.content_type,session.correlation_id,session.created_at_ms,\
+                 session.expires_at_ms,session.completed_at_ms \
+                 FROM r2_multipart_sessions_v1 session \
+                 LEFT JOIN r2_multipart_abort_reconciliation_v1 reconciliation \
+                   ON reconciliation.upload_id=session.upload_id \
+                 WHERE session.state='open' AND session.expires_at_ms<=?1 \
+                   AND (reconciliation.upload_id IS NULL OR (reconciliation.state='pending' \
+                     AND reconciliation.intent_kind='expiry_cleanup' \
+                     AND reconciliation.next_attempt_at_ms<=?1)) \
+                 ORDER BY session.expires_at_ms,session.upload_id LIMIT ?2",
             )
             .bind(&[
                 JsValue::from_f64(now.get() as f64),
@@ -344,29 +584,345 @@ impl<'a, P: TrustedR2MediaProbeV1 + ?Sized> R2MultipartObjectStoreV1<'a, P> {
             .map_err(map_worker_error)?;
         let mut cleaned = 0_u16;
         for row in rows {
-            if let Ok(upload) = self
-                .bucket
-                .resume_multipart_upload(&row.object_key, &row.provider_upload_id)
-            {
-                let _ = upload.abort().into_send().await;
+            let Some(attempt) = self
+                .begin_abort_attempt(&row, AbortIntentKind::ExpiryCleanup, now)
+                .await?
+            else {
+                continue;
+            };
+            match self.attempt_provider_abort(&row).await? {
+                AbortProviderAttempt::Terminal(outcome) => {
+                    self.finish_abort_reconciliation(
+                        &row.upload_id,
+                        AbortIntentKind::ExpiryCleanup,
+                        attempt,
+                        outcome,
+                        now,
+                    )
+                    .await?;
+                    cleaned = cleaned.saturating_add(1);
+                }
+                AbortProviderAttempt::RetryableFailure(failure) => {
+                    self.retain_abort_failure(
+                        &row.upload_id,
+                        AbortIntentKind::ExpiryCleanup,
+                        attempt,
+                        &failure,
+                        now,
+                    )
+                    .await?;
+                }
             }
-            self.database
-                .prepare(
-                    "UPDATE r2_multipart_sessions_v1 SET state='expired' \
-                     WHERE upload_id=?1 AND state IN ('open','completing') AND expires_at_ms<=?2",
-                )
-                .bind(&[
-                    JsValue::from_str(&row.upload_id),
-                    JsValue::from_f64(now.get() as f64),
-                ])
-                .map_err(map_worker_error)?
-                .run()
-                .into_send()
-                .await
-                .map_err(map_worker_error)?;
-            cleaned = cleaned.saturating_add(1);
         }
         Ok(cleaned)
+    }
+
+    async fn attempt_provider_abort(
+        &self,
+        session: &SessionRow,
+    ) -> Result<AbortProviderAttempt, StorageFailure> {
+        let head = match self.bucket.head(&session.object_key).into_send().await {
+            Ok(object) => object,
+            Err(error) => {
+                let failure = map_worker_error(error);
+                if failure.kind() == StorageFailureKind::NotFound {
+                    None
+                } else {
+                    return Ok(AbortProviderAttempt::RetryableFailure(failure));
+                }
+            }
+        };
+        if head.is_some() {
+            return Ok(AbortProviderAttempt::Terminal(
+                AbortTerminalOutcome::PreservedObject,
+            ));
+        }
+        let abort_result = match self
+            .bucket
+            .resume_multipart_upload(&session.object_key, &session.provider_upload_id)
+        {
+            Ok(upload) => upload.abort().into_send().await.map_err(map_worker_error),
+            Err(error) => Err(map_worker_error(error)),
+        };
+        match abort_result {
+            Ok(()) => Ok(AbortProviderAttempt::Terminal(
+                AbortTerminalOutcome::Confirmed,
+            )),
+            Err(failure) if failure.kind() == StorageFailureKind::NotFound => Ok(
+                AbortProviderAttempt::Terminal(AbortTerminalOutcome::Confirmed),
+            ),
+            Err(failure) => Ok(AbortProviderAttempt::RetryableFailure(failure)),
+        }
+    }
+
+    async fn abort_attempt_is_current(
+        &self,
+        upload_id: &str,
+        intent: AbortIntentKind,
+        attempt: i64,
+        now: TimestampMillis,
+    ) -> Result<bool, StorageFailure> {
+        let stored = self
+            .database
+            .prepare(
+                "SELECT intent_kind,state,attempt_count,next_attempt_at_ms,last_failure_class \
+                 FROM r2_multipart_abort_reconciliation_v1 WHERE upload_id=?1 LIMIT 1",
+            )
+            .bind(&[JsValue::from_str(upload_id)])
+            .map_err(map_worker_error)?
+            .first::<AbortReconciliationRow>(None)
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        Ok(stored.is_some_and(|row| {
+            row.intent_kind == intent.as_str()
+                && row.state == "pending"
+                && row.attempt_count == attempt
+                && row.next_attempt_at_ms > now.get()
+                && row.last_failure_class.is_none()
+        }))
+    }
+
+    async fn begin_abort_attempt(
+        &self,
+        session: &SessionRow,
+        intent: AbortIntentKind,
+        now: TimestampMillis,
+    ) -> Result<Option<i64>, StorageFailure> {
+        let lock_until = abort_attempt_lock_until(now.get());
+        let result = self
+            .database
+            .prepare(
+                "INSERT INTO r2_multipart_abort_reconciliation_v1(\
+                 upload_id,intent_kind,state,attempt_count,next_attempt_at_ms,last_failure_class,\
+                 started_at_ms,updated_at_ms,terminal_at_ms) \
+                 VALUES(?1,?4,'pending',1,?2,NULL,?3,?3,NULL) \
+                 ON CONFLICT(upload_id) DO UPDATE SET \
+                   attempt_count=attempt_count+1,next_attempt_at_ms=?2,\
+                   last_failure_class=NULL,updated_at_ms=?3 \
+                 WHERE state='pending' AND intent_kind=?4 AND next_attempt_at_ms<=?3",
+            )
+            .bind(&[
+                JsValue::from_str(&session.upload_id),
+                JsValue::from_f64(lock_until as f64),
+                JsValue::from_f64(now.get() as f64),
+                JsValue::from_str(intent.as_str()),
+            ])
+            .map_err(map_worker_error)?
+            .run()
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        if !result.success() {
+            return Err(unavailable());
+        }
+        if result
+            .meta()
+            .map_err(map_worker_error)?
+            .and_then(|meta| meta.changes)
+            != Some(1)
+        {
+            return Ok(None);
+        }
+        let stored = self
+            .database
+            .prepare(
+                "SELECT intent_kind,state,attempt_count,next_attempt_at_ms,last_failure_class \
+                 FROM r2_multipart_abort_reconciliation_v1 WHERE upload_id=?1 LIMIT 1",
+            )
+            .bind(&[JsValue::from_str(&session.upload_id)])
+            .map_err(map_worker_error)?
+            .first::<AbortReconciliationRow>(None)
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        Ok(stored
+            .filter(|row| {
+                row.intent_kind == intent.as_str()
+                    && row.state == "pending"
+                    && row.next_attempt_at_ms == lock_until
+                    && row.last_failure_class.is_none()
+            })
+            .map(|row| row.attempt_count))
+    }
+
+    async fn retain_abort_failure(
+        &self,
+        upload_id: &str,
+        intent: AbortIntentKind,
+        attempt: i64,
+        failure: &StorageFailure,
+        now: TimestampMillis,
+    ) -> Result<(), StorageFailure> {
+        let class = abort_failure_class(failure.kind());
+        let next_attempt = abort_retry_at(now.get(), attempt);
+        let result = self
+            .database
+            .prepare(
+                "UPDATE r2_multipart_abort_reconciliation_v1 SET next_attempt_at_ms=?3,\
+                 last_failure_class=?4,updated_at_ms=?5 \
+                 WHERE upload_id=?1 AND intent_kind=?6 AND state='pending' AND attempt_count=?2",
+            )
+            .bind(&[
+                JsValue::from_str(upload_id),
+                JsValue::from_f64(attempt as f64),
+                JsValue::from_f64(next_attempt as f64),
+                JsValue::from_str(class),
+                JsValue::from_f64(now.get() as f64),
+                JsValue::from_str(intent.as_str()),
+            ])
+            .map_err(map_worker_error)?
+            .run()
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        if !result.success() {
+            return Err(unavailable());
+        }
+        let stored = self
+            .database
+            .prepare(
+                "SELECT intent_kind,state,attempt_count,next_attempt_at_ms,last_failure_class \
+                 FROM r2_multipart_abort_reconciliation_v1 WHERE upload_id=?1 LIMIT 1",
+            )
+            .bind(&[JsValue::from_str(upload_id)])
+            .map_err(map_worker_error)?
+            .first::<AbortReconciliationRow>(None)
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        if stored.is_some_and(|row| {
+            row.intent_kind == intent.as_str()
+                && row.state == "pending"
+                && row.attempt_count == attempt
+                && row.next_attempt_at_ms == next_attempt
+                && row.last_failure_class.as_deref() == Some(class)
+        }) {
+            Ok(())
+        } else {
+            Err(unavailable())
+        }
+    }
+
+    async fn finish_abort_reconciliation(
+        &self,
+        upload_id: &str,
+        intent: AbortIntentKind,
+        attempt: i64,
+        outcome: AbortTerminalOutcome,
+        now: TimestampMillis,
+    ) -> Result<(), StorageFailure> {
+        let operation_id = uuid::Uuid::now_v7().to_string();
+        let mut statements = Vec::with_capacity(9);
+        statements.push(
+            self.database
+                .prepare(
+                    "UPDATE r2_multipart_sessions_v1 SET state=?2 \
+                     WHERE upload_id=?1 AND ((?3='expiry_cleanup' AND state='open' \
+                       AND expires_at_ms<=?4) OR (?3='authenticated_delete' \
+                       AND state IN ('open','completing')))",
+                )
+                .bind(&[
+                    JsValue::from_str(upload_id),
+                    JsValue::from_str(outcome.session_state(intent)),
+                    JsValue::from_str(intent.as_str()),
+                    JsValue::from_f64(now.get() as f64),
+                ])
+                .map_err(map_worker_error)?,
+        );
+        statements.push(abort_change_assertion(
+            self.database,
+            &operation_id,
+            upload_id,
+            "session_transition",
+        )?);
+        if intent == AbortIntentKind::AuthenticatedDelete
+            && outcome == AbortTerminalOutcome::Confirmed
+        {
+            let fingerprint = format!(
+                "{:x}",
+                Sha256::digest(format!("frame.multipart.abort.v1\0{upload_id}").as_bytes())
+            );
+            statements.push(
+                self.database
+                    .prepare(
+                        "UPDATE video_uploads SET state='aborted',updated_at_ms=?2,\
+                         revision=revision+1,event_sequence=event_sequence+1,event_fingerprint=?3 \
+                         WHERE id=?1 AND state IN ('initiated','uploading','finalizing','failed')",
+                    )
+                    .bind(&[
+                        JsValue::from_str(upload_id),
+                        JsValue::from_f64(now.get() as f64),
+                        JsValue::from_str(&fingerprint),
+                    ])
+                    .map_err(map_worker_error)?,
+            );
+            statements.push(abort_change_assertion(
+                self.database,
+                &operation_id,
+                upload_id,
+                "video_upload_transition",
+            )?);
+        }
+        statements.push(
+            self.database
+                .prepare(
+                    "UPDATE r2_multipart_abort_reconciliation_v1 SET state=?3,\
+                     next_attempt_at_ms=?4,last_failure_class=NULL,updated_at_ms=?4,terminal_at_ms=?4 \
+                     WHERE upload_id=?1 AND intent_kind=?5 AND state='pending' AND attempt_count=?2",
+                )
+                .bind(&[
+                    JsValue::from_str(upload_id),
+                    JsValue::from_f64(attempt as f64),
+                    JsValue::from_str(outcome.reconciliation_state()),
+                    JsValue::from_f64(now.get() as f64),
+                    JsValue::from_str(intent.as_str()),
+                ])
+                .map_err(map_worker_error)?,
+        );
+        statements.push(abort_change_assertion(
+            self.database,
+            &operation_id,
+            upload_id,
+            "reconciliation_transition",
+        )?);
+        statements.push(
+            self.database
+                .prepare(
+                    "INSERT INTO r2_multipart_abort_terminal_assertions_v1(\
+                     upload_id,outcome,asserted_at_ms) VALUES(?1,?2,?3)",
+                )
+                .bind(&[
+                    JsValue::from_str(upload_id),
+                    JsValue::from_str(outcome.reconciliation_state()),
+                    JsValue::from_f64(now.get() as f64),
+                ])
+                .map_err(map_worker_error)?,
+        );
+        statements.push(abort_change_assertion(
+            self.database,
+            &operation_id,
+            upload_id,
+            "terminal_assertion",
+        )?);
+        statements.push(
+            self.database
+                .prepare("DELETE FROM r2_multipart_abort_batch_assertions_v1 WHERE operation_id=?1")
+                .bind(&[JsValue::from_str(&operation_id)])
+                .map_err(map_worker_error)?,
+        );
+        let expected_results = statements.len();
+        let results = self
+            .database
+            .batch(statements)
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        if results.len() == expected_results && results.iter().all(worker::D1Result::success) {
+            Ok(())
+        } else {
+            Err(unavailable())
+        }
     }
 
     fn download_metadata(
@@ -663,6 +1219,9 @@ impl<P: TrustedR2MediaProbeV1 + ?Sized> MultipartObjectStoreV1 for R2MultipartOb
         if let Some(completed) = self.completion(&request, context.correlation_id()).await? {
             return Ok(completed);
         }
+        if !matches!(session.state.as_str(), "open" | "completing") {
+            return Err(StorageFailure::new(StorageFailureKind::PreconditionFailed));
+        }
         let stored_parts = self.parts(&session, context.correlation_id()).await?;
         if stored_parts != request.parts()
             || signed(request.expected_size().get())? != session.expected_bytes
@@ -716,6 +1275,8 @@ impl<P: TrustedR2MediaProbeV1 + ?Sized> MultipartObjectStoreV1 for R2MultipartOb
                 request.expected_content_type(),
             )
             .await?;
+        self.persist_verified_object(&request, &object, now()?)
+            .await?;
         let probe = self
             .probe
             .probe(
@@ -740,40 +1301,85 @@ impl<P: TrustedR2MediaProbeV1 + ?Sized> MultipartObjectStoreV1 for R2MultipartOb
         context: StorageRequestContext,
         reference: ProviderUploadReferenceV1,
     ) -> Result<ProviderAbortReceiptV1, StorageFailure> {
-        let session = self
-            .session(reference.upload_id())
-            .await?
-            .ok_or_else(not_found)?;
+        let upload_id = reference.upload_id();
+        let key = reference.key().clone();
+        let correlation_id = reference.correlation_id();
+        let now = now()?;
+        let session = self.session(upload_id).await?.ok_or_else(not_found)?;
         Self::validate_reference(context, &reference, &session)?;
-        let disposition = match session.state.as_str() {
-            "complete" => ProviderAbortDispositionV1::AlreadyCompleted,
-            "aborted" | "expired" => ProviderAbortDispositionV1::AlreadyAborted,
-            "open" | "completing" => {
-                let upload = self
-                    .bucket
-                    .resume_multipart_upload(&session.object_key, &session.provider_upload_id)
-                    .map_err(map_worker_error)?;
-                upload.abort().into_send().await.map_err(map_worker_error)?;
-                self.database
-                    .prepare(
-                        "UPDATE r2_multipart_sessions_v1 SET state='aborted' \
-                         WHERE upload_id=?1 AND state IN ('open','completing')",
-                    )
-                    .bind(&[JsValue::from_str(&reference.upload_id().to_string())])
-                    .map_err(map_worker_error)?
-                    .run()
-                    .into_send()
-                    .await
-                    .map_err(map_worker_error)?;
-                ProviderAbortDispositionV1::Aborted
+        let attempt = match session.state.as_str() {
+            "open" | "completing" => self
+                .begin_abort_attempt(&session, AbortIntentKind::AuthenticatedDelete, now)
+                .await?
+                .ok_or_else(unavailable)?,
+            "complete" => {
+                return Ok(ProviderAbortReceiptV1::new(
+                    upload_id,
+                    key,
+                    ProviderAbortDispositionV1::AlreadyCompleted,
+                    correlation_id,
+                ));
+            }
+            "aborted" | "expired" => {
+                return Ok(ProviderAbortReceiptV1::new(
+                    upload_id,
+                    key,
+                    ProviderAbortDispositionV1::AlreadyAborted,
+                    correlation_id,
+                ));
             }
             _ => return Err(integrity()),
         };
+        let disposition = match self
+            .reconcile_authenticated_abort_provider(context, reference, attempt, now)
+            .await
+        {
+            Ok(AuthenticatedAbortOutcomeV1::Confirmed { attempt }) => {
+                self.finish_abort_reconciliation(
+                    &upload_id.to_string(),
+                    AbortIntentKind::AuthenticatedDelete,
+                    attempt,
+                    AbortTerminalOutcome::Confirmed,
+                    now,
+                )
+                .await?;
+                ProviderAbortDispositionV1::Aborted
+            }
+            Ok(AuthenticatedAbortOutcomeV1::PreservedObject { attempt }) => {
+                self.finish_abort_reconciliation(
+                    &upload_id.to_string(),
+                    AbortIntentKind::AuthenticatedDelete,
+                    attempt,
+                    AbortTerminalOutcome::PreservedObject,
+                    now,
+                )
+                .await?;
+                ProviderAbortDispositionV1::AlreadyCompleted
+            }
+            Ok(AuthenticatedAbortOutcomeV1::AlreadyAborted) => {
+                ProviderAbortDispositionV1::AlreadyAborted
+            }
+            Ok(AuthenticatedAbortOutcomeV1::AlreadyCompleted) => {
+                ProviderAbortDispositionV1::AlreadyCompleted
+            }
+            Ok(AuthenticatedAbortOutcomeV1::Pending) => return Err(unavailable()),
+            Err(failure) => {
+                self.retain_abort_failure(
+                    &upload_id.to_string(),
+                    AbortIntentKind::AuthenticatedDelete,
+                    attempt,
+                    &failure,
+                    now,
+                )
+                .await?;
+                return Err(failure);
+            }
+        };
         Ok(ProviderAbortReceiptV1::new(
-            reference.upload_id(),
-            reference.key().clone(),
+            upload_id,
+            key,
             disposition,
-            context.correlation_id(),
+            correlation_id,
         ))
     }
 
@@ -849,6 +1455,47 @@ impl<P: TrustedR2MediaProbeV1 + ?Sized> MultipartObjectStoreV1 for R2MultipartOb
 }
 
 impl<P: TrustedR2MediaProbeV1 + ?Sized> R2MultipartObjectStoreV1<'_, P> {
+    /// Replays one provider-completed/D1-pending completion. This is invoked
+    /// by the Worker scheduler so a lost HTTP acknowledgement does not require
+    /// the desktop to remain online while a trusted probe finishes.
+    pub async fn reconcile_completing_one(&self) -> Result<bool, StorageFailure> {
+        let row = self
+            .database
+            .prepare(
+                "SELECT upload_id,object_key,provider_upload_id,state,expected_bytes,checksum_sha256,\
+                 content_type,correlation_id,created_at_ms,expires_at_ms,completed_at_ms \
+                 FROM r2_multipart_sessions_v1 WHERE state='completing' \
+                 ORDER BY created_at_ms,upload_id LIMIT 1",
+            )
+            .first::<SessionRow>(None)
+            .into_send()
+            .await
+            .map_err(map_worker_error)?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let key = row.key()?;
+        let correlation = correlation(&row.correlation_id)?;
+        let context = StorageRequestContext::new(key.tenant_id(), correlation);
+        let reference = ProviderUploadReferenceV1::new(
+            row.upload()?,
+            key,
+            ProviderMultipartHandleV1::parse(encode_handle(&row.provider_upload_id))?,
+            correlation,
+        );
+        let parts = self.parts(&row, correlation).await?;
+        let request = ProviderCompleteMultipartRequestV1::new(
+            reference,
+            parts,
+            ByteSize::new(u64::try_from(row.expected_bytes).map_err(|_| integrity())?)
+                .map_err(|_| integrity())?,
+            ChecksumSha256::parse(row.checksum_sha256).map_err(|_| integrity())?,
+            ContentType::parse(row.content_type).map_err(|_| integrity())?,
+        )?;
+        self.complete_multipart(context, request).await?;
+        Ok(true)
+    }
+
     async fn completion_by_key(
         &self,
         key: &ScopedObjectKey,
@@ -894,6 +1541,79 @@ impl ProviderDownloadBodyV1 for R2DownloadBodyV1 {
 #[derive(Debug, Deserialize)]
 struct PresenceRow {
     present: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustedProbeRow {
+    container: String,
+    video_codec: String,
+    audio_codec: String,
+    width: i64,
+    height: i64,
+    duration_ms: i64,
+    frame_rate_numerator: i64,
+    frame_rate_denominator: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifiedObjectRow {
+    provider_version: String,
+    provider_etag: String,
+    bytes: i64,
+    checksum_sha256: String,
+    content_type: String,
+}
+
+fn abort_change_assertion(
+    database: &D1Database,
+    operation_id: &str,
+    upload_id: &str,
+    assertion_kind: &str,
+) -> Result<worker::D1PreparedStatement, StorageFailure> {
+    database
+        .prepare(
+            "INSERT INTO r2_multipart_abort_batch_assertions_v1(\
+             operation_id,upload_id,assertion_kind,expected_count,actual_count) \
+             VALUES(?1,?2,?3,1,changes())",
+        )
+        .bind(&[
+            JsValue::from_str(operation_id),
+            JsValue::from_str(upload_id),
+            JsValue::from_str(assertion_kind),
+        ])
+        .map_err(map_worker_error)
+}
+
+#[derive(Debug, Deserialize)]
+struct AbortReconciliationRow {
+    intent_kind: String,
+    state: String,
+    attempt_count: i64,
+    next_attempt_at_ms: i64,
+    last_failure_class: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbortTerminalOutcome {
+    Confirmed,
+    PreservedObject,
+}
+
+impl AbortTerminalOutcome {
+    const fn session_state(self, intent: AbortIntentKind) -> &'static str {
+        match (self, intent) {
+            (Self::Confirmed, AbortIntentKind::ExpiryCleanup) => "expired",
+            (Self::Confirmed, AbortIntentKind::AuthenticatedDelete) => "aborted",
+            (Self::PreservedObject, _) => "completing",
+        }
+    }
+
+    const fn reconciliation_state(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::PreservedObject => "preserved_object",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1141,6 +1861,33 @@ fn map_worker_error(error: worker::Error) -> StorageFailure {
     StorageFailure::new(kind)
 }
 
+pub const fn abort_failure_class(kind: StorageFailureKind) -> &'static str {
+    match kind {
+        StorageFailureKind::NotFound => "not_found",
+        StorageFailureKind::PreconditionFailed => "precondition_failed",
+        StorageFailureKind::Throttled => "throttled",
+        StorageFailureKind::Unauthorized => "unauthorized",
+        StorageFailureKind::QuotaExceeded => "quota_exceeded",
+        StorageFailureKind::Timeout => "timeout",
+        StorageFailureKind::Integrity => "integrity",
+        StorageFailureKind::Unavailable => "unavailable",
+        StorageFailureKind::UnsupportedCapability => "unsupported_capability",
+        StorageFailureKind::InvalidRequest => "invalid_request",
+    }
+}
+
+pub fn abort_retry_at(now_ms: i64, attempt: i64) -> i64 {
+    let shift = u32::try_from(attempt.saturating_sub(1).min(18)).unwrap_or(18);
+    let delay = ABORT_RETRY_BASE_MS
+        .saturating_mul(1_i64.checked_shl(shift).unwrap_or(i64::MAX))
+        .min(ABORT_RETRY_MAX_MS);
+    now_ms.saturating_add(delay)
+}
+
+pub const fn abort_attempt_lock_until(now_ms: i64) -> i64 {
+    now_ms.saturating_add(ABORT_ATTEMPT_LOCK_MS)
+}
+
 const fn invalid() -> StorageFailure {
     StorageFailure::new(StorageFailureKind::InvalidRequest)
 }
@@ -1191,5 +1938,61 @@ mod tests {
         for value in [AudioCodecV1::None, AudioCodecV1::Aac, AudioCodecV1::Opus] {
             assert_eq!(parse_audio_codec(audio_codec_name(value)), Ok(value));
         }
+    }
+
+    #[test]
+    fn abort_failure_classes_are_exhaustive_and_backoff_is_bounded() {
+        for (kind, class) in [
+            (StorageFailureKind::NotFound, "not_found"),
+            (
+                StorageFailureKind::PreconditionFailed,
+                "precondition_failed",
+            ),
+            (StorageFailureKind::Throttled, "throttled"),
+            (StorageFailureKind::Unauthorized, "unauthorized"),
+            (StorageFailureKind::QuotaExceeded, "quota_exceeded"),
+            (StorageFailureKind::Timeout, "timeout"),
+            (StorageFailureKind::Integrity, "integrity"),
+            (StorageFailureKind::Unavailable, "unavailable"),
+            (
+                StorageFailureKind::UnsupportedCapability,
+                "unsupported_capability",
+            ),
+            (StorageFailureKind::InvalidRequest, "invalid_request"),
+        ] {
+            assert_eq!(abort_failure_class(kind), class);
+        }
+        let mut previous = 0;
+        for attempt in 1..=32 {
+            let next = abort_retry_at(0, attempt);
+            assert!(next >= previous);
+            assert!(next <= ABORT_RETRY_MAX_MS);
+            previous = next;
+        }
+        assert_eq!(abort_retry_at(i64::MAX - 1, 32), i64::MAX);
+    }
+
+    #[test]
+    fn abort_terminal_outcomes_never_conflate_expiry_with_preservation() {
+        assert_eq!(
+            AbortTerminalOutcome::Confirmed.session_state(AbortIntentKind::ExpiryCleanup),
+            "expired"
+        );
+        assert_eq!(
+            AbortTerminalOutcome::Confirmed.session_state(AbortIntentKind::AuthenticatedDelete),
+            "aborted"
+        );
+        assert_eq!(
+            AbortTerminalOutcome::Confirmed.reconciliation_state(),
+            "confirmed"
+        );
+        assert_eq!(
+            AbortTerminalOutcome::PreservedObject.session_state(AbortIntentKind::ExpiryCleanup),
+            "completing"
+        );
+        assert_eq!(
+            AbortTerminalOutcome::PreservedObject.reconciliation_state(),
+            "preserved_object"
+        );
     }
 }
