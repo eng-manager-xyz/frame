@@ -204,6 +204,9 @@ jobs:
           node-version: "22.17.0"
       - name: Install the pinned Worker packager
         run: cargo install worker-build --version 0.8.5 --locked
+      - name: Prebuild the local Worker before bounded readiness probes
+        timeout-minutes: 10
+        run: worker-build --release apps/control-plane
       - name: Run aggregate repositories and storage against isolated local bindings
         run: |
           mkdir -p target/evidence
