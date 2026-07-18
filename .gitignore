@@ -15,3 +15,4 @@ __pycache__/
 /apps/desktop/gen/
 /apps/desktop/ui/dist/
 /apps/web/dist/
+/.idea/
