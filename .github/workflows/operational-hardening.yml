@@ -1,0 +1,58 @@
+name: Operational hardening
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "31 7 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operational-hardening-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-contract:
+    name: Release, privacy, restore, and incident contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Validate the complete operational contract
+        run: |
+          python3 -I scripts/ci/check-operational-hardening.py
+          python3 -I scripts/ci/check-launch-observability.py
+          python3 -I scripts/ci/check-issue-closure.py
+      - name: Prove release signature and tamper semantics
+        run: python3 -I scripts/ci/release-provenance.py --self-test
+      - name: Prove diagnostic privacy rejection
+        run: python3 -I scripts/ci/support-bundle.py --self-test
+      - name: Run isolated restore and deterministic incident games
+        run: |
+          python3 -I scripts/ci/restore-dr-rehearsal.py \
+            --evidence target/evidence/operational-restore-local.json
+          python3 -I scripts/ci/operational-game.py \
+            --evidence target/evidence/operational-game-local.json
+      - name: Exercise launch journeys, drift, alerts, and rollback controls
+        run: |
+          python3 -I scripts/ci/launch-game-day.py --self-test \
+            --evidence target/evidence/launch-game-local.json
+          python3 -I scripts/ci/launch-go-no-go.py --self-test \
+            --output target/evidence/launch-go-no-go-self-test.json
+          python3 -I scripts/ci/release-join-conformance.py --self-test
+      - name: Retain bounded local evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: operational-hardening-${{ github.sha }}
+          path: |
+            target/evidence/operational-restore-local.json
+            target/evidence/operational-game-local.json
+            target/evidence/launch-game-local.json
+            target/evidence/launch-go-no-go-self-test.json
+          if-no-files-found: error
+          retention-days: 14

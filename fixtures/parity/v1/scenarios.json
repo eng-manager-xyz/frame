@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "evidence_class": "test_definition",
+  "data_origin": "deterministic_generated_metadata",
+  "oracle_status": "declared_expected_behavior_not_observed_output",
+  "scenarios": [
+    {
+      "id": "auth-happy-session-accepted",
+      "flow": "auth",
+      "scenario_class": "happy",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_valid_session_metadata",
+      "cap_expected": { "status": 200, "state": "authenticated" },
+      "frame_expected": { "status": 200, "state": "authenticated" },
+      "assertions": ["identity is scoped", "response is non-cacheable"]
+    },
+    {
+      "id": "auth-failure-session-absent",
+      "flow": "auth",
+      "scenario_class": "failure",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "session_metadata_absent",
+      "cap_expected": { "status": 401, "state": "unauthenticated" },
+      "frame_expected": { "status": 401, "state": "unauthenticated" },
+      "assertions": ["error is stable", "response is non-cacheable"]
+    },
+    {
+      "id": "tenant-happy-owned-resource",
+      "flow": "tenant",
+      "scenario_class": "happy",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_same_scope_access",
+      "cap_expected": { "status": 200, "state": "visible" },
+      "frame_expected": { "status": 200, "state": "visible" },
+      "assertions": ["scope predicate is applied", "only approved fields are returned"]
+    },
+    {
+      "id": "tenant-failure-cross-scope",
+      "flow": "tenant",
+      "scenario_class": "failure",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_cross_scope_access",
+      "cap_expected": { "status": 404, "state": "not_found" },
+      "frame_expected": { "status": 404, "state": "not_found" },
+      "assertions": ["resource existence is not disclosed", "no state changes"]
+    },
+    {
+      "id": "upload-happy-idempotent-intent",
+      "flow": "upload",
+      "scenario_class": "happy",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_bounded_upload_metadata_repeated",
+      "cap_expected": { "status": 201, "state": "one_logical_intent" },
+      "frame_expected": { "status": 201, "state": "one_logical_intent" },
+      "assertions": ["duplicate command is idempotent", "storage location is not exposed"]
+    },
+    {
+      "id": "upload-failure-size-bound",
+      "flow": "upload",
+      "scenario_class": "failure",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_metadata_above_declared_limit",
+      "cap_expected": { "status": 413, "state": "rejected_before_storage" },
+      "frame_expected": { "status": 413, "state": "rejected_before_storage" },
+      "assertions": ["no partial manifest is created", "error contains no storage detail"]
+    },
+    {
+      "id": "media-happy-supported-profile",
+      "flow": "media",
+      "scenario_class": "happy",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_supported_profile_metadata",
+      "cap_expected": { "status": 202, "state": "queued" },
+      "frame_expected": { "status": 202, "state": "queued" },
+      "assertions": ["executor choice is server controlled", "result naming is deterministic"]
+    },
+    {
+      "id": "media-failure-unsupported-profile",
+      "flow": "media",
+      "scenario_class": "failure",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_unsupported_profile_metadata",
+      "cap_expected": { "status": 400, "state": "rejected_before_dispatch" },
+      "frame_expected": { "status": 400, "state": "rejected_before_dispatch" },
+      "assertions": ["no provider invocation occurs", "error class is redacted"]
+    },
+    {
+      "id": "share-happy-public-summary",
+      "flow": "share",
+      "scenario_class": "happy",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_public_share_metadata",
+      "cap_expected": { "status": 200, "state": "ready" },
+      "frame_expected": { "status": 200, "state": "ready" },
+      "assertions": ["only public summary fields are returned", "response is non-cacheable"]
+    },
+    {
+      "id": "share-failure-private-nondisclosure",
+      "flow": "share",
+      "scenario_class": "failure",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_nonpublic_share_metadata",
+      "cap_expected": { "status": 404, "state": "not_found" },
+      "frame_expected": { "status": 404, "state": "not_found" },
+      "assertions": ["private and unknown are indistinguishable", "no media location is returned"]
+    },
+    {
+      "id": "cutover-happy-single-authority",
+      "flow": "cutover",
+      "scenario_class": "happy",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_current_epoch_transition",
+      "cap_expected": { "status": 200, "state": "one_authoritative_writer" },
+      "frame_expected": { "status": 200, "state": "one_authoritative_writer" },
+      "assertions": ["epoch advances once", "transition is auditable"]
+    },
+    {
+      "id": "cutover-failure-stale-epoch",
+      "flow": "cutover",
+      "scenario_class": "failure",
+      "lane": "fast",
+      "execution_context": "local_simulated",
+      "input_case": "generated_stale_epoch_transition",
+      "cap_expected": { "status": 409, "state": "unchanged" },
+      "frame_expected": { "status": 409, "state": "unchanged" },
+      "assertions": ["stale transition is fenced", "two writers cannot be enabled"]
+    },
+    {
+      "id": "media-full-native-capture",
+      "flow": "media",
+      "scenario_class": "happy",
+      "lane": "full",
+      "execution_context": "protected_hardware_required",
+      "input_case": "generated_color_bars_and_tone_plan",
+      "cap_expected": { "status": 0, "state": "context_required" },
+      "frame_expected": { "status": 0, "state": "context_required" },
+      "assertions": ["capture geometry is measured", "resource bounds are measured"]
+    },
+    {
+      "id": "media-full-device-loss",
+      "flow": "media",
+      "scenario_class": "failure",
+      "lane": "full",
+      "execution_context": "protected_hardware_required",
+      "input_case": "generated_device_loss_injection_plan",
+      "cap_expected": { "status": 0, "state": "context_required" },
+      "frame_expected": { "status": 0, "state": "context_required" },
+      "assertions": ["terminal result occurs once", "resources are released"]
+    },
+    {
+      "id": "media-full-managed-limit",
+      "flow": "media",
+      "scenario_class": "happy",
+      "lane": "full",
+      "execution_context": "protected_provider_required",
+      "input_case": "generated_exact_limit_metadata_plan",
+      "cap_expected": { "status": 0, "state": "context_required" },
+      "frame_expected": { "status": 0, "state": "context_required" },
+      "assertions": ["provider profile context is recorded", "usage and cost are recorded"]
+    },
+    {
+      "id": "media-full-provider-outage",
+      "flow": "media",
+      "scenario_class": "failure",
+      "lane": "full",
+      "execution_context": "protected_provider_required",
+      "input_case": "generated_provider_outage_plan",
+      "cap_expected": { "status": 0, "state": "context_required" },
+      "frame_expected": { "status": 0, "state": "context_required" },
+      "assertions": ["fallback or kill switch is applied", "one logical result remains"]
+    }
+  ]
+}

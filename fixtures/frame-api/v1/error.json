@@ -1,0 +1,6 @@
+{
+  "code": "temporarily_unavailable",
+  "message": "The public Frame service is temporarily unavailable.",
+  "request_id": "req_fixture_01",
+  "retry": "later"
+}

@@ -10,23 +10,47 @@ permissions:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          components: clippy,rustfmt
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+          cache-on-failure: false
       - name: Install GStreamer
-        run: >-
-          sudo apt-get update && sudo apt-get install -y
-          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-          gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo check -p frame-control-plane --target wasm32-unknown-unknown
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
+      - run: cargo fmt --all -- --check
+      - run: scripts/ci/gstreamer-sanitized-exec cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
+      - run: scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
+      - run: scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-desktop-core --features instant-finalize
+      - run: cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
+      - name: Deterministic ETL and reversible cutover proof
+        run: |
+          python3 -I scripts/migration/test_cap_id_map.py
+          python3 -I scripts/migration/test_etl_cap_id_map.py
+          python3 -I scripts/migration/test_cap_business_plan_contract.py
+          python3 -I scripts/migration/test_local.py
+          python3 -I scripts/migration/test_mysql_snapshot.py
+          python3 -I scripts/migration/test_mysql_cdc.py
+          python3 -I scripts/migration/test_d1_target.py
+          python3 scripts/ci/cutover-authority-conformance.py
+      - name: Supply-chain and credential policy
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check advisories bans licenses sources
+          python3 scripts/ci/check-secrets.py
+          python3 scripts/ci/generate-cyclonedx.py --self-test
       - name: Install Worker packager
         run: cargo install worker-build --version 0.8.5 --locked
       - name: Worker bundle dry run
@@ -35,4 +59,4 @@ jobs:
           --config apps/control-plane/wrangler.toml
           --outdir target/wrangler-dry-run
       - name: GStreamer smoke artifact
-        run: cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
+        run: scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- smoke target/frame-smoke.webm

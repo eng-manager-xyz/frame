@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "fixture_id": "synthetic_transcription_input_v1",
+  "license": {
+    "spdx": "CC0-1.0",
+    "customer_media": false
+  },
+  "media_fixture_id": "frame-synthetic-h264-aac-v1",
+  "sha256": "7e63a1e00ad2f12b52d0b68fd017a615501ab529f666839e1b6c491df4943dd0",
+  "bytes": 292382,
+  "content_type": "video/mp4",
+  "audio_selection": {
+    "track_ordinal": 0,
+    "sample_rate": 48000,
+    "channels": 1,
+    "semantic_content": "procedural_sine_no_speech"
+  },
+  "expected": {
+    "caption_cues": 0,
+    "disposition": "protected_external_provider_adapter_gate"
+  }
+}

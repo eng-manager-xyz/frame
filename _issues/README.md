@@ -1,6 +1,6 @@
 # Frame migration issue program
 
-This directory is a dependency-ordered set of implementation-ready issue specifications for migrating Cap toward Rust, GStreamer, Cloudflare D1, R2, Media Transformations, and Leptos. The files are written as epics: create child tasks when a deliverable needs independent ownership, but do not discard the epic's acceptance and rollout gates.
+This directory is a dependency-ordered set of implementation-ready issue specifications for migrating Cap toward Rust, GStreamer, Cloudflare D1, R2, Media Transformations, and Leptos, then distributing Frame through the EngManager portfolio, Render, and Cloudflare. The files are written as epics: create child tasks when a deliverable needs independent ownership, but do not discard the epic's acceptance and rollout gates.
 
 ## Ground truth and assumptions
 
@@ -11,6 +11,9 @@ This directory is a dependency-ordered set of implementation-ready issue specifi
 - Cloudflare Media Transformations handles capability-matched private-R2 derivatives. GStreamer remains native for capture, editing/export, long/complex work, unsupported inputs, and fallback. The separate `[stream]` managed video-library binding is not enabled.
 - D1, R2, and Media bindings are Worker/Wasm capabilities. GStreamer is native. Issue 03 proves the contract and routing between those runtimes.
 - The ignored parity checkout is `.tmp/cap`; no Cap source is vendored by this backlog.
+- The EngManager portfolio was inspected at `matthewharwood/engmanager.xyz@1de52bc8f25793dea3697e67765d53785c05cdfa`; its ignored reference checkout is `.tmp/engmanager.xyz` and its architecture inventory is in [`docs/upstream-engmanager.md`](../docs/upstream-engmanager.md).
+- `https://frame.engmanager.xyz` is the accepted public origin. A query-safe broad Cloudflare Worker Route plus strict first-segment validation owns `/api` and `/api/*`; unmatched paths go to a dedicated Render `frame-web` service. Frame never runs inside the existing portfolio process.
+- The initial portfolio integration is top-level navigation with no shared cookie or request-time availability dependency. Recorder embedding is not part of the first release.
 
 ## Program flow
 
@@ -26,9 +29,11 @@ flowchart LR
   P2 --> P6["P6 · release and cutover"]
   P3 --> P6
   P5 --> P6
+  P6 --> P7["P7 · EngManager distribution"]
 ```
 
 P2, P3, and P4 can overlap after their explicit dependencies are complete. Issue 07's walking slice should stay deliberately thin so it proves the topology before those tracks scale out.
+P7 work may be proven in staging before P6 closes, but production portfolio, Render, and subdomain launch follows the P6 authority and hardening gates.
 
 ## Issue index
 
@@ -69,6 +74,15 @@ P2, P3, and P4 can overlap after their explicit dependencies are complete. Issue
 | 33 | P5 | [Leptos desktop recorder/editor and accessibility](./33-p5-leptos-desktop-editor-a11y.md) | 08, 24–27, 30 |
 | 34 | P6 | [Release, observability, security, backup, and DR hardening](./34-p6-operational-hardening.md) | 09, 10, 17, 21, 29–33 |
 | 35 | P6 | [Progressive cutover and legacy decommission](./35-p6-progressive-cutover-decommission.md) | 04, 16, 17, 20, 34 |
+| 36 | P7 | [EngManager public contract and `frame-client` crate](./36-p7-frame-client-public-contract.md) | 06, 30, 32 |
+| 37 | P7 | [Portfolio integration without availability coupling](./37-p7-engmanager-portfolio-integration.md) | — (live-data child: 36) |
+| 38 | P7 | [Render web runtime and Blueprint](./38-p7-render-web-runtime-blueprint.md) | 08, 09, 30, 34 |
+| 39 | P7 | [`frame.engmanager.xyz` same-origin Render/Worker routing](./39-p7-cloudflare-render-same-origin-routing.md) | 07, 21, 30, 38 |
+| 40 | P7 | [Protected GitHub Actions multi-runtime delivery](./40-p7-github-actions-multiruntime-delivery.md) | 09, 34, 36, 38, 39 |
+| 41 | P7 | [Cloudflare infrastructure, cache, WAF, rate limits, and R2 browser policy](./41-p7-cloudflare-infrastructure-cache-security.md) | 19, 21, 32, 39, 40 |
+| 42 | P7 | [Portfolio/Frame auth, browser, CSP, and embed boundaries](./42-p7-browser-auth-embed-boundaries.md) | 13, 21, 31, 32, 36, 37, 39 |
+| 43 | P7 | [Cross-repository contract CI, previews, and E2E](./43-p7-cross-repo-contract-preview-e2e.md) | 36–42 |
+| 44 | P7 | [Subdomain launch, observability, SLOs, and rollback](./44-p7-subdomain-launch-observability-rollback.md) | 34, 35, 37–43 |
 
 ## Phase gates
 
@@ -99,6 +113,10 @@ Every retained route/action/workflow has contract coverage. Critical web/share/d
 ### P6 · Production release
 
 Signed releases and restores are proven. Security and operational reviews close. Canary SLOs and reconciliations hold for the observation window. Rollback is timed and rehearsed. Legacy authority is removed only after the irreversible go/no-go approval.
+
+### P7 · EngManager distribution
+
+The public `frame-client` contract passes current and last-released portfolio consumers. Frame's stateless Render service and Worker API share one Cloudflare origin with exact route/cache ownership. Protected CI produces one release per target, previews cannot mutate production, and the portfolio remains healthy during every Frame/provider fault. DNS/TLS, auth/browser boundaries, direct R2 upload, privacy/cache behavior, SLOs, and every rollback layer are tested before the portfolio link is fully launched.
 
 ## Definition of ready
 
@@ -133,3 +151,5 @@ An issue is done only when:
 6. Record provenance. Any implementation adapted from the Cap checkout includes source path, SHA, license, and obligations.
 7. Prefer immutable/versioned artifacts. Mutable media keys and unversioned contracts complicate caches, retries, rollback, and reconciliation.
 8. Roll forward safely, roll back deliberately. Every authority or durable-format change names the reversible boundary and irreversible gate.
+9. Give each deployable resource one authority. Render auto-deploy, Wrangler, infrastructure-as-code, and the portfolio repository cannot race to manage the same service or zone resource.
+10. Keep the portfolio independent. Frame failures may degrade a Frame-specific badge or link destination, but can never block portfolio startup, request rendering, navigation, search, shop, or checkout.

@@ -1,0 +1,303 @@
+name: Protected contract migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      active_source_sha:
+        description: Exact active claim-aware Worker source SHA
+        required: true
+        type: string
+      active_worker_sha256:
+        description: SHA-256 recorded in the active Worker version annotation
+        required: true
+        type: string
+      active_deployment_id:
+        description: Exact current Cloudflare Worker deployment UUID
+        required: true
+        type: string
+      active_version_id:
+        description: Exact current Cloudflare Worker version UUID
+        required: true
+        type: string
+      rollback_source_sha:
+        description: Exact approved N-1 rollback source SHA
+        required: true
+        type: string
+      rollback_worker_sha256:
+        description: SHA-256 recorded in the rollback Worker version annotation
+        required: true
+        type: string
+      rollback_deployment_id:
+        description: Exact approved N-1 deployment UUID
+        required: true
+        type: string
+      rollback_version_id:
+        description: Exact approved N-1 version UUID
+        required: true
+        type: string
+      rollback_expand_migration_level:
+        description: Exact expand level recorded on the approved N-1 version
+        required: true
+        type: string
+      rollback_contract_migration_level:
+        description: Exact contract level recorded on the approved N-1 version
+        required: true
+        type: string
+      confirmation:
+        description: Type apply-protected-contract-migrations
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frame-production-release
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Observe, drain, and apply protected D1 contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      FRAME_EXPECTED_D1_DATABASE_ID: ${{ vars.FRAME_EXPECTED_D1_DATABASE_ID }}
+      FRAME_EXPECTED_D1_DATABASE_NAME: ${{ vars.FRAME_EXPECTED_D1_DATABASE_NAME }}
+      ACTIVE_SOURCE_SHA: ${{ inputs.active_source_sha }}
+      ACTIVE_WORKER_SHA256: ${{ inputs.active_worker_sha256 }}
+      ACTIVE_DEPLOYMENT_ID: ${{ inputs.active_deployment_id }}
+      ACTIVE_VERSION_ID: ${{ inputs.active_version_id }}
+      ROLLBACK_SOURCE_SHA: ${{ inputs.rollback_source_sha }}
+      ROLLBACK_WORKER_SHA256: ${{ inputs.rollback_worker_sha256 }}
+      ROLLBACK_DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
+      ROLLBACK_VERSION_ID: ${{ inputs.rollback_version_id }}
+      ROLLBACK_EXPAND_MIGRATION_LEVEL: ${{ inputs.rollback_expand_migration_level }}
+      ROLLBACK_CONTRACT_MIGRATION_LEVEL: ${{ inputs.rollback_contract_migration_level }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+    steps:
+      - name: Check out the exact active Worker source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.active_source_sha }}
+      - name: Install pinned Node.js for provider commands
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.17.0"
+      - name: Validate manual approval and protected identities
+        run: |
+          test "${CONFIRMATION}" = apply-protected-contract-migrations
+          test "$(git rev-parse HEAD)" = "${ACTIVE_SOURCE_SHA}"
+          [[ "${ACTIVE_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${ROLLBACK_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${ACTIVE_SOURCE_SHA}" != "${ROLLBACK_SOURCE_SHA}"
+          [[ "${ACTIVE_WORKER_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${ROLLBACK_WORKER_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${ACTIVE_DEPLOYMENT_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${ACTIVE_VERSION_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${ROLLBACK_DEPLOYMENT_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${ROLLBACK_VERSION_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9a-f]{32}$ ]]
+          [[ "${CLOUDFLARE_D1_DATABASE_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${FRAME_EXPECTED_D1_DATABASE_ID}" =~ ^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+          [[ "${FRAME_EXPECTED_D1_DATABASE_NAME}" =~ ^[a-z][a-z0-9-]{0,62}$ ]]
+          [[ "${ROLLBACK_EXPAND_MIGRATION_LEVEL}" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]]
+          [[ "${ROLLBACK_CONTRACT_MIGRATION_LEVEL}" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]]
+          test -n "${CLOUDFLARE_API_TOKEN}"
+      - name: Re-run local contract and migration proofs
+        run: |
+          python3 -I scripts/ci/contract-migration-authority.py --self-test
+          python3 scripts/ci/check-migrations.py
+          python3 -I scripts/ci/media-job-inputs-sqlite-conformance.py
+          python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
+      - name: Materialize protected expand and contract binding configurations
+        run: |
+          python3 scripts/ci/prepare-wrangler-config.py \
+            apps/control-plane/wrangler.toml \
+            apps/control-plane/wrangler.production.ci.toml
+          python3 scripts/ci/prepare-wrangler-config.py \
+            apps/control-plane/wrangler.toml \
+            apps/control-plane/wrangler.contract.production.ci.toml \
+            --contract-migrations
+      - name: Observe exact Worker versions, deployments, and D1 identity
+        run: |
+          mkdir -p target/contract-authority
+          api=https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/deployments.json \
+            "${api}/workers/scripts/frame-control-plane/deployments"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/active-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${ACTIVE_VERSION_ID}"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/rollback-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${ROLLBACK_VERSION_ID}"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/d1-info.json \
+            "${api}/d1/database/${CLOUDFLARE_D1_DATABASE_ID}?fields=uuid,name"
+      - name: Capture privacy-safe pre-contract D1 authority
+        run: >-
+          npx --yes wrangler@4.111.0 d1 execute frame --remote --json
+          --file scripts/ci/contract-migration-authority.sql
+          --config apps/control-plane/wrangler.production.ci.toml
+          > target/contract-authority/d1-pre.json
+      - name: Prove exact source fence and zero residuals before mutation
+        run: |
+          python3 -I scripts/ci/contract-migration-authority.py \
+            --phase pre \
+            --deployments target/contract-authority/deployments.json \
+            --active-version target/contract-authority/active-version.json \
+            --rollback-version target/contract-authority/rollback-version.json \
+            --d1-info target/contract-authority/d1-info.json \
+            --d1-authority target/contract-authority/d1-pre.json \
+            --active-source-sha "${ACTIVE_SOURCE_SHA}" \
+            --active-worker-sha256 "${ACTIVE_WORKER_SHA256}" \
+            --active-deployment-id "${ACTIVE_DEPLOYMENT_ID}" \
+            --active-version-id "${ACTIVE_VERSION_ID}" \
+            --rollback-source-sha "${ROLLBACK_SOURCE_SHA}" \
+            --rollback-worker-sha256 "${ROLLBACK_WORKER_SHA256}" \
+            --rollback-deployment-id "${ROLLBACK_DEPLOYMENT_ID}" \
+            --rollback-version-id "${ROLLBACK_VERSION_ID}" \
+            --rollback-expand-migration-level "${ROLLBACK_EXPAND_MIGRATION_LEVEL}" \
+            --rollback-contract-migration-level "${ROLLBACK_CONTRACT_MIGRATION_LEVEL}" \
+            --expected-d1-id "${FRAME_EXPECTED_D1_DATABASE_ID}" \
+            --expected-d1-name "${FRAME_EXPECTED_D1_DATABASE_NAME}" \
+            --now-epoch "$(date +%s)" \
+            --evidence target/contract-authority/pre.json
+      - name: Re-observe the complete authority fence immediately before mutation
+        run: |
+          api=https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/pre-apply-deployments.json \
+            "${api}/workers/scripts/frame-control-plane/deployments"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/pre-apply-active-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${ACTIVE_VERSION_ID}"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/pre-apply-rollback-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${ROLLBACK_VERSION_ID}"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/pre-apply-d1-info.json \
+            "${api}/d1/database/${CLOUDFLARE_D1_DATABASE_ID}?fields=uuid,name"
+          npx --yes wrangler@4.111.0 d1 execute frame --remote --json \
+            --file scripts/ci/contract-migration-authority.sql \
+            --config apps/control-plane/wrangler.production.ci.toml \
+            > target/contract-authority/d1-pre-apply.json
+          python3 -I scripts/ci/contract-migration-authority.py \
+            --phase pre \
+            --deployments target/contract-authority/pre-apply-deployments.json \
+            --active-version target/contract-authority/pre-apply-active-version.json \
+            --rollback-version target/contract-authority/pre-apply-rollback-version.json \
+            --d1-info target/contract-authority/pre-apply-d1-info.json \
+            --d1-authority target/contract-authority/d1-pre-apply.json \
+            --active-source-sha "${ACTIVE_SOURCE_SHA}" \
+            --active-worker-sha256 "${ACTIVE_WORKER_SHA256}" \
+            --active-deployment-id "${ACTIVE_DEPLOYMENT_ID}" \
+            --active-version-id "${ACTIVE_VERSION_ID}" \
+            --rollback-source-sha "${ROLLBACK_SOURCE_SHA}" \
+            --rollback-worker-sha256 "${ROLLBACK_WORKER_SHA256}" \
+            --rollback-deployment-id "${ROLLBACK_DEPLOYMENT_ID}" \
+            --rollback-version-id "${ROLLBACK_VERSION_ID}" \
+            --rollback-expand-migration-level "${ROLLBACK_EXPAND_MIGRATION_LEVEL}" \
+            --rollback-contract-migration-level "${ROLLBACK_CONTRACT_MIGRATION_LEVEL}" \
+            --expected-d1-id "${FRAME_EXPECTED_D1_DATABASE_ID}" \
+            --expected-d1-name "${FRAME_EXPECTED_D1_DATABASE_NAME}" \
+            --now-epoch "$(date +%s)" \
+            --evidence target/contract-authority/pre-apply.json
+      - name: Apply only the protected contract migration directory
+        run: >-
+          npx --yes wrangler@4.111.0 d1 migrations apply frame --remote
+          --config apps/control-plane/wrangler.contract.production.ci.toml
+      - name: Capture privacy-safe post-contract D1 authority
+        run: >-
+          npx --yes wrangler@4.111.0 d1 execute frame --remote --json
+          --file scripts/ci/contract-migration-authority.sql
+          --config apps/control-plane/wrangler.production.ci.toml
+          > target/contract-authority/d1-post.json
+      - name: Re-observe the complete authority fence after contract mutation
+        run: |
+          api=https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/post-deployments.json \
+            "${api}/workers/scripts/frame-control-plane/deployments"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/post-active-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${ACTIVE_VERSION_ID}"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/post-rollback-version.json \
+            "${api}/workers/workers/frame-control-plane/versions/${ROLLBACK_VERSION_ID}"
+          curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 5 --max-time 30 \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --output target/contract-authority/post-d1-info.json \
+            "${api}/d1/database/${CLOUDFLARE_D1_DATABASE_ID}?fields=uuid,name"
+      - name: Prove durable contract ledger and enforcement
+        run: |
+          python3 -I scripts/ci/contract-migration-authority.py \
+            --phase post \
+            --deployments target/contract-authority/post-deployments.json \
+            --active-version target/contract-authority/post-active-version.json \
+            --rollback-version target/contract-authority/post-rollback-version.json \
+            --d1-info target/contract-authority/post-d1-info.json \
+            --d1-authority target/contract-authority/d1-post.json \
+            --active-source-sha "${ACTIVE_SOURCE_SHA}" \
+            --active-worker-sha256 "${ACTIVE_WORKER_SHA256}" \
+            --active-deployment-id "${ACTIVE_DEPLOYMENT_ID}" \
+            --active-version-id "${ACTIVE_VERSION_ID}" \
+            --rollback-source-sha "${ROLLBACK_SOURCE_SHA}" \
+            --rollback-worker-sha256 "${ROLLBACK_WORKER_SHA256}" \
+            --rollback-deployment-id "${ROLLBACK_DEPLOYMENT_ID}" \
+            --rollback-version-id "${ROLLBACK_VERSION_ID}" \
+            --rollback-expand-migration-level "${ROLLBACK_EXPAND_MIGRATION_LEVEL}" \
+            --rollback-contract-migration-level "${ROLLBACK_CONTRACT_MIGRATION_LEVEL}" \
+            --expected-d1-id "${FRAME_EXPECTED_D1_DATABASE_ID}" \
+            --expected-d1-name "${FRAME_EXPECTED_D1_DATABASE_NAME}" \
+            --now-epoch "$(date +%s)" \
+            --evidence target/contract-authority/post.json
+          jq -n \
+            --slurpfile pre target/contract-authority/pre.json \
+            --slurpfile pre_apply target/contract-authority/pre-apply.json \
+            --slurpfile post target/contract-authority/post.json \
+            '{schema_version: 1, pre: $pre[0], pre_apply: $pre_apply[0], post: $post[0]}' \
+            > target/contract-authority/contract-promotion-record.json
+      - name: Retain redacted contract promotion evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: contract-migration-${{ inputs.active_source_sha }}-${{ github.run_id }}
+          path: |
+            target/contract-authority/pre.json
+            target/contract-authority/pre-apply.json
+            target/contract-authority/post.json
+            target/contract-authority/contract-promotion-record.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove ephemeral production binding configurations
+        if: ${{ always() }}
+        run: |
+          rm -f apps/control-plane/wrangler.production.ci.toml
+          rm -f apps/control-plane/wrangler.contract.production.ci.toml

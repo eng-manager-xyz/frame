@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Frame",
+  "version": "0.1.0",
+  "identifier": "xyz.engmanager.frame",
+  "build": {
+    "beforeDevCommand": "trunk serve --config ui/Trunk.toml",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "python ../../scripts/ci/build-desktop-ui.py",
+    "frontendDist": "ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Frame",
+        "width": 1120,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 520,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": true
+      }
+    ],
+    "security": {
+      "capabilities": ["frame-desktop-windows"],
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://frame.engmanager.xyz wss://frame.engmanager.xyz; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+      "freezePrototype": true,
+      "dangerousDisableAssetCspModification": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "Secure screen recording and editing"
+  }
+}

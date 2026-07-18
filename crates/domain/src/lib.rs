@@ -4,6 +4,28 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod api_workflow;
+mod backfill;
+mod business;
+mod contracts;
+mod identity;
+mod multipart;
+mod organization;
+mod public_collaboration;
+mod storage;
+mod storage_governance;
+
+pub use api_workflow::*;
+pub use backfill::*;
+pub use business::*;
+pub use contracts::*;
+pub use identity::*;
+pub use multipart::*;
+pub use organization::*;
+pub use public_collaboration::*;
+pub use storage::*;
+pub use storage_governance::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct VideoId(Uuid);
@@ -90,7 +112,7 @@ impl Video {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ObjectKey(String);
 
@@ -99,9 +121,17 @@ impl ObjectKey {
         let value = value.into();
         let invalid_segment = value
             .split('/')
-            .any(|segment| segment == ".." || segment.is_empty());
+            .any(|segment| matches!(segment, "" | "." | ".."));
+        let invalid_character = !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.'));
 
-        if value.is_empty() || value.len() > 1_024 || value.starts_with('/') || invalid_segment {
+        if value.is_empty()
+            || value.len() > 1_024
+            || value.starts_with('/')
+            || invalid_segment
+            || invalid_character
+        {
             return Err(ObjectKeyError);
         }
 
@@ -114,9 +144,9 @@ impl ObjectKey {
     }
 }
 
-impl fmt::Display for ObjectKey {
+impl fmt::Debug for ObjectKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        formatter.write_str("ObjectKey([redacted])")
     }
 }
 
@@ -128,9 +158,7 @@ pub struct TransitionError {
 }
 
 #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
-#[error(
-    "object keys must be relative, non-empty, at most 1024 bytes, and contain no empty or '..' segments"
-)]
+#[error("object keys must be relative ASCII paths, at most 1024 bytes, with safe non-dot segments")]
 pub struct ObjectKeyError;
 
 #[cfg(test)]
@@ -178,5 +206,10 @@ mod tests {
         assert!(ObjectKey::parse("/absolute.webm").is_err());
         assert!(ObjectKey::parse("users/u1/../secret").is_err());
         assert!(ObjectKey::parse("users//source.webm").is_err());
+        assert!(ObjectKey::parse("users/./source.webm").is_err());
+        assert!(ObjectKey::parse("users\\u1\\source.webm").is_err());
+        assert!(ObjectKey::parse("users/u1/source.webm?token=secret").is_err());
+        let key = ObjectKey::parse("users/u1/videos/v1/source.webm").expect("valid key");
+        assert_eq!(format!("{key:?}"), "ObjectKey([redacted])");
     }
 }

@@ -1,0 +1,58 @@
+name: Same-origin routing contract
+
+on:
+  pull_request:
+    paths:
+      - apps/control-plane/**
+      - fixtures/same-origin-routing/**
+      - infra/cloudflare-zone/**
+      - docs/operations/same-origin-routing.md
+      - docs/evidence/same-origin-routing-local.md
+      - scripts/ci/check-same-origin-routing.py
+      - scripts/ci/same-origin-live-conformance.py
+      - scripts/ci/smoke-canonical-domain.sh
+      - scripts/ci/prepare-wrangler-config.py
+      - render.yaml
+      - .github/workflows/same-origin-routing.yml
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: same-origin-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: Raw route, ownership, and rollback contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - name: Validate declared owners and provider-free policy
+        run: |
+          mkdir -p target/evidence
+          python3 -I scripts/ci/check-same-origin-routing.py \
+            --evidence target/evidence/same-origin-routing-local.json
+          python3 -I scripts/ci/same-origin-live-conformance.py --self-test \
+            --evidence target/evidence/same-origin-live-runner-self-test.json
+          ruby scripts/ci/check-render-blueprint.rb
+          python3 -I scripts/ci/check-cloudflare-zone-contract.py
+          bash -n scripts/ci/smoke-canonical-domain.sh
+      - name: Exercise the production raw router matrix
+        run: cargo test --locked -p frame-control-plane --test same_origin_routing_v1
+      - name: Retain status-only local evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: same-origin-routing-${{ github.sha }}
+          path: |
+            target/evidence/same-origin-routing-local.json
+            target/evidence/same-origin-live-runner-self-test.json
+          if-no-files-found: error
+          retention-days: 14

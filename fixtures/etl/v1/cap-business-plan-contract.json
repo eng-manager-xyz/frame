@@ -1,0 +1,111 @@
+{
+  "contract_version": 1,
+  "execution_mode": "credential_free_template",
+  "source_reference": "CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b:packages/database/schema.ts",
+  "source_id_reference": "CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b:packages/database/helpers.ts",
+  "source_id_shape": {"alphabet": "0123456789abcdefghjkmnpqrstvwxyz", "length": 15},
+  "transform": "cap_nanoid_uuid_v1",
+  "target_migration": "0011_business_authority_expand.sql",
+  "external_id_dependencies": ["users.id", "organizations.id", "folders.id"],
+  "tables": [
+    {"source_table":"videos","target_contract":"videos","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["videos.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"ownerId","role":"foreign_key","references":"users.id","target":["videos.owner_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"orgId","role":"foreign_key","references":"organizations.id","target":["videos.organization_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"bucket","role":"foreign_key_nullable","references":"s3_buckets.id","target":["storage_integrations.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"storageIntegrationId","role":"foreign_key_nullable","references":"storage_integrations.id","target":["storage_integrations.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"folderId","role":"foreign_key_nullable","references":"folders.id","target":["videos.folder_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"video_edits","target_contract":"video_edits","disposition":"retained","identifiers":[
+      {"source":"videoId","role":"primary_and_foreign_key","references":"videos.id","target":["video_edits.id","video_edits.video_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"shared_videos","target_contract":"shared_videos","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["shared_videos.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"videoId","role":"foreign_key","references":"videos.id","target":["shared_videos.video_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"folderId","role":"foreign_key_nullable","references":"folders.id","target":["shared_videos.folder_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"organizationId","role":"foreign_key","references":"organizations.id","target":["shared_videos.organization_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"sharedByUserId","role":"foreign_key","references":"users.id","target":["shared_videos.shared_by_user_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"comments","target_contract":"comments","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["comments.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"authorId","role":"foreign_key","references":"users.id","target":["comments.author_user_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"videoId","role":"foreign_key","references":"videos.id","target":["comments.video_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"parentCommentId","role":"foreign_key_nullable","references":"comments.id","target":["comments.parent_comment_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"notifications","target_contract":"notifications+outbox_events","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["notifications.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"orgId","role":"foreign_key","references":"organizations.id","target":["notifications.organization_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"recipientId","role":"foreign_key","references":"users.id","target":["notifications.recipient_user_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"messenger_conversations","target_contract":"business_messenger_legacy_quarantine_v1","disposition":"excluded_fail_closed","identifiers":[
+      {"source":"id","role":"primary_key","target":["business_messenger_legacy_quarantine_v1.source_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"userId","role":"foreign_key_nullable","references":"users.id","target":[],"target_disposition":"quarantined_payload_not_retained","transform":"cap_nanoid_uuid_v1"},
+      {"source":"takeoverByUserId","role":"foreign_key_nullable","references":"users.id","target":[],"target_disposition":"quarantined_payload_not_retained","transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"messenger_messages","target_contract":"business_messenger_legacy_quarantine_v1","disposition":"excluded_fail_closed","identifiers":[
+      {"source":"id","role":"primary_key","target":["business_messenger_legacy_quarantine_v1.source_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"conversationId","role":"foreign_key","references":"messenger_conversations.id","target":[],"target_disposition":"quarantined_payload_not_retained","transform":"cap_nanoid_uuid_v1"},
+      {"source":"userId","role":"foreign_key_nullable","references":"users.id","target":[],"target_disposition":"quarantined_payload_not_retained","transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"messenger_support_emails","target_contract":"business_messenger_legacy_quarantine_v1","disposition":"excluded_fail_closed","identifiers":[
+      {"source":"id","role":"primary_key","target":["business_messenger_legacy_quarantine_v1.source_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"conversationId","role":"foreign_key","references":"messenger_conversations.id","target":[],"target_disposition":"quarantined_payload_not_retained","transform":"cap_nanoid_uuid_v1"},
+      {"source":"userId","role":"foreign_key","references":"users.id","target":[],"target_disposition":"quarantined_payload_not_retained","transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"s3_buckets","target_contract":"storage_integrations","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["storage_integrations.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"ownerId","role":"foreign_key","references":"users.id","target":["storage_integrations.owner_user_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"organizationId","role":"foreign_key_nullable","references":"organizations.id","target":["storage_integrations.organization_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"storage_integrations","target_contract":"storage_integrations","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["storage_integrations.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"ownerId","role":"foreign_key","references":"users.id","target":["storage_integrations.owner_user_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"organizationId","role":"foreign_key_nullable","references":"organizations.id","target":["storage_integrations.organization_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"storage_objects","target_contract":"storage_objects","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["storage_objects.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"integrationId","role":"foreign_key","references":"storage_integrations.id","target":["storage_objects.integration_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"ownerId","role":"foreign_key","references":"users.id","target":[],"target_disposition":"scope_derived_from_integration","transform":"cap_nanoid_uuid_v1"},
+      {"source":"videoId","role":"foreign_key_nullable","references":"videos.id","target":["storage_objects.video_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"video_uploads","target_contract":"video_uploads","disposition":"retained","identifiers":[
+      {"source":"videoId","role":"primary_and_foreign_key","references":"videos.id","target":["video_uploads.id","video_uploads.video_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"imported_videos","target_contract":"imported_videos+business_event_inbox_v1","disposition":"retained","identifiers":[
+      {"source":"id","role":"identifier_promoted_to_target_primary_key","target":["imported_videos.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"orgId","role":"source_primary_component_and_foreign_key","references":"organizations.id","target":["imported_videos.organization_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"developer_apps","target_contract":"developer_apps","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["developer_apps.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"ownerId","role":"foreign_key","references":"users.id","target":["developer_apps.owner_user_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"developer_app_domains","target_contract":"developer_app_domains","disposition":"retained","identifiers":[
+      {"source":"id","role":"source_surrogate_primary_key","target":[],"target_disposition":"normalized_to_app_domain_composite_key","transform":"cap_nanoid_uuid_v1"},
+      {"source":"appId","role":"foreign_key","references":"developer_apps.id","target":["developer_app_domains.app_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"developer_api_keys","target_contract":"developer_api_keys","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["developer_api_keys.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"appId","role":"foreign_key","references":"developer_apps.id","target":["developer_api_keys.app_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"developer_videos","target_contract":"developer_videos","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["developer_videos.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"appId","role":"foreign_key","references":"developer_apps.id","target":["developer_videos.app_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"developer_credit_accounts","target_contract":"developer_credit_accounts","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["developer_credit_accounts.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"appId","role":"foreign_key","references":"developer_apps.id","target":["developer_credit_accounts.app_id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"ownerId","role":"foreign_key","references":"users.id","target":[],"target_disposition":"owner_derived_from_app","transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"developer_credit_transactions","target_contract":"developer_credit_transactions","disposition":"retained","identifiers":[
+      {"source":"id","role":"primary_key","target":["developer_credit_transactions.id"],"transform":"cap_nanoid_uuid_v1"},
+      {"source":"accountId","role":"foreign_key","references":"developer_credit_accounts.id","target":["developer_credit_transactions.account_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]},
+    {"source_table":"developer_daily_storage_snapshots","target_contract":"developer_daily_storage_snapshots","disposition":"retained","identifiers":[
+      {"source":"id","role":"source_surrogate_primary_key","target":[],"target_disposition":"normalized_to_app_day_composite_key","transform":"cap_nanoid_uuid_v1"},
+      {"source":"appId","role":"foreign_key","references":"developer_apps.id","target":["developer_daily_storage_snapshots.app_id"],"transform":"cap_nanoid_uuid_v1"}
+    ]}
+  ],
+  "derived_aggregates": [
+    {"aggregate":"usage_ledger","provenance":"frame_derived","source_table":null}
+  ]
+}

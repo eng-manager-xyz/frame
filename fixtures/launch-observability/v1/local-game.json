@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "game_id": "frame-subdomain-launch-local-v1",
+  "clock": "deterministic_logical_milliseconds",
+  "evidence_class": "local_semantic_simulation",
+  "uses_generated_media_only": true,
+  "provider_or_production_access": false,
+  "journeys": [
+    {
+      "id": "portfolio_link",
+      "observations": [
+        {"step": "render_portfolio_without_frame_dependency", "duration_ms": 7, "result": "ok"},
+        {"step": "find_accessible_absolute_link", "duration_ms": 1, "result": "ok"},
+        {"step": "navigate_top_level", "duration_ms": 12, "result": "ok"},
+        {"step": "return_to_portfolio", "duration_ms": 8, "result": "ok"}
+      ]
+    },
+    {
+      "id": "landing",
+      "observations": [
+        {"step": "dns", "duration_ms": 2, "result": "ok"},
+        {"step": "tls", "duration_ms": 3, "result": "ok"},
+        {"step": "edge_http", "duration_ms": 4, "result": "ok"},
+        {"step": "ssr", "duration_ms": 9, "result": "ok"},
+        {"step": "fingerprinted_asset", "duration_ms": 3, "result": "ok"},
+        {"step": "readiness", "duration_ms": 2, "result": "ok"}
+      ]
+    },
+    {
+      "id": "api",
+      "observations": [
+        {"step": "api_health", "duration_ms": 4, "result": "ok"},
+        {"step": "version_negotiate", "duration_ms": 1, "result": "ok"},
+        {"step": "rate_limit_classification", "duration_ms": 1, "result": "ok"}
+      ]
+    },
+    {
+      "id": "auth_boundary",
+      "observations": [
+        {"step": "anonymous_denied", "duration_ms": 2, "result": "ok"},
+        {"step": "session_cookie_host_only", "duration_ms": 1, "result": "ok"},
+        {"step": "csrf_required", "duration_ms": 2, "result": "ok"},
+        {"step": "private_not_found_equivalence", "duration_ms": 1, "result": "ok"}
+      ]
+    },
+    {
+      "id": "upload_process",
+      "observations": [
+        {"step": "upload_intent", "duration_ms": 3, "result": "ok"},
+        {"step": "direct_r2_put", "duration_ms": 11, "result": "ok"},
+        {"step": "finalize", "duration_ms": 4, "result": "ok"},
+        {"step": "process", "duration_ms": 19, "result": "ok"},
+        {"step": "deterministic_derivative", "duration_ms": 2, "result": "ok"},
+        {"step": "retention_cleanup", "duration_ms": 2, "result": "ok"}
+      ]
+    },
+    {
+      "id": "public_playback",
+      "observations": [
+        {"step": "share_descriptor", "duration_ms": 3, "result": "ok"},
+        {"step": "head", "duration_ms": 1, "result": "ok"},
+        {"step": "full_get", "duration_ms": 4, "result": "ok"},
+        {"step": "bounded_range", "duration_ms": 2, "result": "ok"},
+        {"step": "suffix_range", "duration_ms": 2, "result": "ok"},
+        {"step": "unsatisfiable_range", "duration_ms": 1, "result": "ok"},
+        {"step": "caption", "duration_ms": 1, "result": "ok"}
+      ]
+    },
+    {
+      "id": "cache_privacy",
+      "observations": [
+        {"step": "api_bypass", "duration_ms": 1, "result": "ok"},
+        {"step": "auth_bypass", "duration_ms": 1, "result": "ok"},
+        {"step": "private_bypass", "duration_ms": 1, "result": "ok"},
+        {"step": "immutable_miss_then_hit", "duration_ms": 2, "result": "ok"},
+        {"step": "stale_delete_revoked", "duration_ms": 2, "result": "ok"},
+        {"step": "cookie_variance_safe", "duration_ms": 1, "result": "ok"}
+      ]
+    },
+    {
+      "id": "portfolio_degradation",
+      "observations": [
+        {"step": "frame_dns_down", "duration_ms": 8, "result": "portfolio_available"},
+        {"step": "render_down", "duration_ms": 8, "result": "portfolio_available"},
+        {"step": "worker_down", "duration_ms": 8, "result": "portfolio_available"},
+        {"step": "d1_down", "duration_ms": 8, "result": "portfolio_available"},
+        {"step": "r2_down", "duration_ms": 8, "result": "portfolio_available"},
+        {"step": "managed_media_down", "duration_ms": 8, "result": "portfolio_available"},
+        {"step": "native_media_down", "duration_ms": 8, "result": "portfolio_available"},
+        {"step": "portfolio_still_available", "duration_ms": 8, "result": "ok"}
+      ]
+    }
+  ],
+  "failure_injections": [
+    {"id": "portfolio_missing_link", "boundary": "portfolio", "seed_at_ms": 1000, "alert_at_ms": 4000, "alert_id": "portfolio_link_failed"},
+    {"id": "certificate_rejected", "boundary": "dns_tls_edge", "seed_at_ms": 2000, "alert_at_ms": 6000, "alert_id": "dns_tls_failed"},
+    {"id": "private_cache_hit", "boundary": "edge_route_cache", "seed_at_ms": 3000, "alert_at_ms": 5000, "alert_id": "edge_route_or_cache_failed"},
+    {"id": "render_not_ready", "boundary": "render_web", "seed_at_ms": 4000, "alert_at_ms": 9000, "alert_id": "render_failed"},
+    {"id": "worker_rate_spike", "boundary": "worker_api", "seed_at_ms": 5000, "alert_at_ms": 10000, "alert_id": "worker_failed"},
+    {"id": "d1_unavailable", "boundary": "d1", "seed_at_ms": 6000, "alert_at_ms": 11000, "alert_id": "d1_failed"},
+    {"id": "r2_finalize_failed", "boundary": "r2", "seed_at_ms": 7000, "alert_at_ms": 12000, "alert_id": "r2_failed"},
+    {"id": "managed_output_drift", "boundary": "managed_media", "seed_at_ms": 8000, "alert_at_ms": 14000, "alert_id": "managed_media_failed"},
+    {"id": "native_queue_stalled", "boundary": "native_media", "seed_at_ms": 9000, "alert_at_ms": 15000, "alert_id": "native_media_failed"},
+    {"id": "range_contract_failed", "boundary": "public_playback", "seed_at_ms": 9500, "alert_at_ms": 14500, "alert_id": "public_playback_failed"},
+    {"id": "private_outcome_leak", "boundary": "auth_privacy", "seed_at_ms": 10000, "alert_at_ms": 12000, "alert_id": "privacy_failed"},
+    {"id": "paired_release_drift", "boundary": "release_contract", "seed_at_ms": 11000, "alert_at_ms": 15000, "alert_id": "release_drift"}
+  ],
+  "cache_privacy_incidents": [
+    {"id": "private_hit", "observed": "HIT", "expected": "BYPASS", "outcome": "release_blocked", "alert_id": "edge_route_or_cache_failed"},
+    {"id": "stale_deletion", "observed": "public_after_delete", "expected": "unavailable_immediately", "outcome": "release_blocked", "alert_id": "privacy_failed"},
+    {"id": "cookie_variance", "observed": "shared_authenticated_variant", "expected": "no_store_or_bypass", "outcome": "release_blocked", "alert_id": "privacy_failed"}
+  ],
+  "release_cases": [
+    {
+      "id": "current_paired",
+      "source_git_sha": "1111111111111111111111111111111111111111",
+      "contract_major": 1,
+      "worker_release": "worker-1111111",
+      "render_deploy": "render-1111111",
+      "migration_level": "0035_instant_finalize_public_share_index.sql",
+      "portfolio_consumer": "portfolio-aaaaaaa",
+      "consumer_contract_major": 1,
+      "expected": "compatible"
+    },
+    {
+      "id": "n_minus_1_consumer",
+      "source_git_sha": "1111111111111111111111111111111111111111",
+      "contract_major": 1,
+      "worker_release": "worker-1111111",
+      "render_deploy": "render-1111111",
+      "migration_level": "0035_instant_finalize_public_share_index.sql",
+      "portfolio_consumer": "portfolio-9999999",
+      "consumer_contract_major": 1,
+      "expected": "compatible"
+    },
+    {
+      "id": "incompatible_consumer",
+      "source_git_sha": "1111111111111111111111111111111111111111",
+      "contract_major": 1,
+      "worker_release": "worker-1111111",
+      "render_deploy": "render-1111111",
+      "migration_level": "0035_instant_finalize_public_share_index.sql",
+      "portfolio_consumer": "portfolio-bbbbbbb",
+      "consumer_contract_major": 2,
+      "expected": "NO_GO"
+    }
+  ],
+  "capacity_cases": [
+    {"id": "startup", "demand_units": 100, "available_units": 140, "duration_seconds": 300},
+    {"id": "ssr_requests", "demand_units": 200, "available_units": 280, "duration_seconds": 1800},
+    {"id": "concurrent_requests", "demand_units": 120, "available_units": 160, "duration_seconds": 300},
+    {"id": "upload_intents", "demand_units": 60, "available_units": 90, "duration_seconds": 1800},
+    {"id": "queued_jobs", "demand_units": 50, "available_units": 70, "duration_seconds": 1800},
+    {"id": "playback_bytes", "demand_units": 100, "available_units": 140, "duration_seconds": 1800}
+  ],
+  "rollback_games": [
+    {"id": "portfolio_status_off", "elapsed_ms": 12000, "scope": "portfolio_optional_status", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "portfolio_link_remove", "elapsed_ms": 15000, "scope": "portfolio_flagged_link", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "optional_browser_off", "elapsed_ms": 10000, "scope": "frame_optional_browser_capabilities", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "edge_rules_off", "elapsed_ms": 18000, "scope": "frame_host_exact_rule_and_purge", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "worker_route_remove", "elapsed_ms": 22000, "scope": "frame_api_and_media_server_routes_only", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "render_rollback", "elapsed_ms": 25000, "scope": "frame_render_service_only", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "proxy_dns_restore", "elapsed_ms": 20000, "scope": "frame_dns_record_only", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "d1_forward_fix", "elapsed_ms": 45000, "scope": "expand_schema_compatible_fix", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "media_fallback", "elapsed_ms": 28000, "scope": "single_profile_revision", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true},
+    {"id": "credential_rotation", "elapsed_ms": 35000, "scope": "single_credential_class", "unrelated_resources_changed": false, "durable_data_deleted": false, "verified": true}
+  ]
+}

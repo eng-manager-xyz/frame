@@ -1,0 +1,81 @@
+name: Desktop real hardware
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact release candidate commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-real-hardware-${{ inputs.release_sha }}
+  cancel-in-progress: false
+
+jobs:
+  hardware:
+    name: ${{ matrix.platform }} protected hardware
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: frame-macos-hardware
+            binary: target/release/frame-desktop
+          - platform: windows
+            runner: frame-windows-hardware
+            binary: target/release/frame-desktop.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact release candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.release_sha }}
+          persist-credentials: false
+      - name: Reject a moving checkout
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+      - name: Install pinned Rust and Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.14.5"
+      - name: Install the declared Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - name: Build the release desktop with the fake adapter disabled
+        shell: bash
+        env:
+          FRAME_DESKTOP_FAKE_PIPELINE: "0"
+        run: cargo build --locked --release -p frame-desktop-core --features tauri-app,custom-protocol --bin frame-desktop
+      - name: Run the protected OS device and assistive-technology driver
+        shell: bash
+        env:
+          FRAME_REAL_HARDWARE: "1"
+        run: >-
+          frame-hardware-driver
+          --schema desktop-hardware-v1
+          --platform ${{ matrix.platform }}
+          --binary ${{ matrix.binary }}
+          --output target/evidence/desktop-real-hardware-${{ matrix.platform }}.json
+      - name: Validate complete non-fake evidence
+        shell: bash
+        env:
+          FRAME_REAL_HARDWARE: "1"
+        run: >-
+          python scripts/ci/desktop-real-hardware.py
+          --require-hardware
+          --evidence target/evidence/desktop-real-hardware-${{ matrix.platform }}.json
+      - name: Retain the exact hardware trace
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-real-hardware-${{ matrix.platform }}-${{ inputs.release_sha }}
+          path: target/evidence/desktop-real-hardware-${{ matrix.platform }}.json
+          if-no-files-found: error
+          retention-days: 30

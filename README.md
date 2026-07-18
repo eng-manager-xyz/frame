@@ -1,8 +1,8 @@
 # Frame
 
-Frame is a Rust migration scaffold for [Cap](https://github.com/CapSoftware/Cap): native media processing with GStreamer, an edge control plane backed by Cloudflare D1, R2, and Media Transformations, and Leptos user interfaces.
+Frame is a Rust migration scaffold for [Cap](https://github.com/CapSoftware/Cap): native media processing with GStreamer, an edge control plane backed by Cloudflare D1, R2, and Media Transformations, and Leptos user interfaces. Its public distribution target is `frame.engmanager.xyz`, with the Leptos web origin on Render and `/api/*` routed by Cloudflare to the Worker control plane.
 
-This repository starts with boundaries and executable seams, not copied Cap source. The reference checkout lives in ignored `.tmp/cap` at commit `6ba69561ac86b8efdb17616d6727f9638015546b`. See [docs/upstream-cap.md](docs/upstream-cap.md) and the dependency-ordered [_issues backlog](_issues/README.md).
+This repository starts with boundaries and executable seams, not copied upstream source. The Cap reference checkout lives in ignored `.tmp/cap` at commit `6ba69561ac86b8efdb17616d6727f9638015546b`; the EngManager portfolio reference lives in ignored `.tmp/engmanager.xyz` at commit `1de52bc8f25793dea3697e67765d53785c05cdfa`. See [the Cap inventory](docs/upstream-cap.md), [the portfolio integration inventory](docs/upstream-engmanager.md), and the dependency-ordered [_issues backlog](_issues/README.md).
 
 ## Architecture
 
@@ -20,11 +20,23 @@ flowchart LR
 
 The split is intentional. D1, R2, and Cloudflare Media Transformations run at the Worker boundary. Media Transformations handles supported R2-native derivatives such as short optimized MP4 clips, still frames, spritesheets, and audio extraction. GStreamer remains the native engine for capture, synchronization, editing/export, long-form or complex processing, unsupported codecs, and fallback. Shared Rust types keep the API, UI, and workers aligned without pretending those environments are interchangeable.
 
+The public-host split is equally explicit: Cloudflare proxies normal
+`frame.engmanager.xyz` page/asset traffic to a dedicated Render `frame-web`
+service and uses a query-safe broad Worker Route with strict path validation to
+intercept `/api` plus `/api/*`. Frame does not run inside the existing
+`engmanager.xyz` portfolio process. The portfolio first
+integrates through top-level navigation, not shared cookies or an embedded
+recorder. [ADR 0004](docs/adr/0004-engmanager-render-cloudflare-topology.md)
+records the decision; issues [36–44](_issues/README.md#issue-index) specify the
+client crate, portfolio work, Render Blueprint, GitHub Actions, Cloudflare
+infrastructure, browser security, E2E, and launch.
+
 ## Repository layout
 
 - `apps/control-plane`: Cloudflare Worker configured with D1, R2, and Media Transformations bindings.
 - `apps/media-worker`: native executable that probes GStreamer and can produce a synthetic WebM smoke artifact.
-- `apps/web`: server-rendered Leptos shell served by Axum.
+- `apps/web`: Axum-served Leptos SSR with authority-free hydration islands.
+- `apps/desktop`: typed workflow core plus a Tauri 2 shell embedding Leptos CSR.
 - `crates/domain`: IDs, recording state, object keys, and transition rules.
 - `crates/media`: GStreamer pipeline construction and runtime checks.
 - `crates/ports`: repository, object-store, and media-transform contracts with deterministic in-memory adapters.
@@ -36,13 +48,17 @@ The split is intentional. D1, R2, and Cloudflare Media Transformations run at th
 Prerequisites are Rust 1.96.1 and GStreamer with the base/good plugin sets. On macOS, `brew install gstreamer` supplies the development runtime. Then run:
 
 ```sh
-cargo test --workspace
-cargo run -p frame-media-worker -- probe
-cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
+scripts/frame test
+scripts/frame doctor
+scripts/frame media-smoke
+python3 -I scripts/ci/build-web-hydration.py
 cargo run -p frame-web
 ```
 
-The web shell listens on `FRAME_ADDR` or `127.0.0.1:3000`. The control-plane Worker is checked separately because it targets `wasm32-unknown-unknown`:
+The web shell listens on `FRAME_ADDR` or `127.0.0.1:3000`. Install the pinned
+`trunk 0.21.14` first; the clean, locked build creates content-addressed browser
+assets while every route remains useful without them. The control-plane Worker
+is checked separately because it targets `wasm32-unknown-unknown`:
 
 ```sh
 cargo check -p frame-control-plane --target wasm32-unknown-unknown

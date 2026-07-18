@@ -1,0 +1,99 @@
+name: Canonical production smoke
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_run:
+    workflows: ["Production gate"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Fixed canonical environment to verify
+        required: true
+        type: choice
+        default: production
+        options:
+          - production
+          - staging
+      expected_release_sha:
+        description: Optional exact web release SHA to await
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-smoke-${{ inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  canonical-smoke:
+    name: Canonical domain contract and cache smoke
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact smoke policy
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - name: Select only an approved canonical origin
+        id: origin
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment || 'production' }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_EXPECTED_SHA: ${{ inputs.expected_release_sha }}
+          RELEASE_HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          case "${TARGET_ENVIRONMENT}" in
+            production) origin=https://frame.engmanager.xyz ;;
+            staging) origin=https://frame-staging.engmanager.xyz ;;
+            *) echo "unsupported smoke environment" >&2; exit 1 ;;
+          esac
+          expected_sha=""
+          if [[ "${EVENT_NAME}" == workflow_run ]]; then
+            expected_sha="$(git log -1 --format=%H "${RELEASE_HEAD_SHA}" -- \
+              apps/web crates 'fixtures/web-authenticated/**' \
+              scripts/ci Cargo.toml Cargo.lock rust-toolchain.toml render.yaml)"
+          elif [[ "${EVENT_NAME}" == workflow_dispatch && -n "${MANUAL_EXPECTED_SHA}" ]]; then
+            [[ "${MANUAL_EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "expected_release_sha must be a full Git SHA" >&2
+              exit 1
+            }
+            git merge-base --is-ancestor "${MANUAL_EXPECTED_SHA}" "${RELEASE_HEAD_SHA}"
+            expected_sha="${MANUAL_EXPECTED_SHA}"
+          fi
+          echo "origin=${origin}" >> "${GITHUB_OUTPUT}"
+          echo "expected_sha=${expected_sha}" >> "${GITHUB_OUTPUT}"
+      - name: Run privacy-safe external verification and await paired Render release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ORIGIN: ${{ steps.origin.outputs.origin }}
+          EXPECTED_SHA: ${{ steps.origin.outputs.expected_sha }}
+        run: |
+          attempts=1
+          if [[ "${EVENT_NAME}" == workflow_run ]]; then
+            attempts=30
+          fi
+          for attempt in $(seq 1 "${attempts}"); do
+            if scripts/ci/smoke-canonical-domain.sh \
+              "${ORIGIN}" target/canonical-smoke.json "${EXPECTED_SHA}"; then
+              exit 0
+            fi
+            if [[ "${attempt}" -lt "${attempts}" ]]; then
+              sleep 20
+            fi
+          done
+          echo "canonical domain did not reach the expected release" >&2
+          exit 1
+      - name: Retain status-only smoke evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: canonical-smoke-${{ inputs.environment || 'production' }}-${{ github.run_id }}
+          path: target/canonical-smoke.json
+          if-no-files-found: error
+          retention-days: 14

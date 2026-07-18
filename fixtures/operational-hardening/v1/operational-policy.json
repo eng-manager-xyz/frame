@@ -1,0 +1,267 @@
+{
+  "schema_version": 1,
+  "policy_id": "frame-operational-hardening-v1",
+  "charter": "docs/migration/charter.md",
+  "release": {
+    "reproducible_build": {
+      "source_identity": "full_git_sha",
+      "dependency_identity": ["Cargo.lock", "cargo-metadata.json", "frame.cdx.json"],
+      "artifact_checksums": "sha256",
+      "provenance_format": "https://slsa.dev/provenance/v1",
+      "signature_namespace": "frame-release",
+      "trusted_signing": "protected_environment_oidc_or_offline_release_key",
+      "local_signature_test": "ephemeral_ed25519_not_release_evidence"
+    },
+    "deployables": [
+      {
+        "id": "control_plane_worker",
+        "build": "wrangler_dry_run_bundle",
+        "identity": "frame-worker.tar.gz",
+        "sbom": "frame.cdx.json",
+        "signature_required": true,
+        "promotion": ["pull_request", "staging", "production"],
+        "rollback": "previous_compatible_worker_source_sha_expand_only_schema"
+      },
+      {
+        "id": "render_web_service",
+        "build": "cargo_release_frame_web_plus_hydration_assets",
+        "identity": "frame-web_and_web-dist",
+        "sbom": "frame.cdx.json",
+        "signature_required": true,
+        "promotion": ["pull_request", "render_preview", "production"],
+        "rollback": "named_previous_compatible_render_deploy"
+      },
+      {
+        "id": "linux_native_worker",
+        "build": "cargo_release_frame_media_worker_plus_pinned_gstreamer_runtime",
+        "identity": "native_worker_archive_and_runtime_manifest",
+        "sbom": "cargo_and_native_dependency_inventory",
+        "signature_required": true,
+        "promotion": ["pull_request", "native_staging", "production"],
+        "rollback": "previous_compatible_native_worker_and_profile_revision"
+      },
+      {
+        "id": "desktop_macos",
+        "build": "tauri_release_universal_or_declared_architecture",
+        "identity": "notarized_desktop_bundle_and_updater_manifest",
+        "sbom": "cargo_and_native_dependency_inventory",
+        "signature_required": true,
+        "promotion": ["pull_request", "internal", "canary", "stable"],
+        "rollback": "previous_signed_compatible_channel"
+      },
+      {
+        "id": "desktop_windows",
+        "build": "tauri_release_x86_64",
+        "identity": "authenticode_desktop_bundle_and_updater_manifest",
+        "sbom": "cargo_and_native_dependency_inventory",
+        "signature_required": true,
+        "promotion": ["pull_request", "internal", "canary", "stable"],
+        "rollback": "previous_signed_compatible_channel"
+      },
+      {
+        "id": "rust_client_package",
+        "build": "cargo_package_frame_client",
+        "identity": "crate_archive_contract_major_and_git_sha",
+        "sbom": "frame.cdx.json",
+        "signature_required": true,
+        "promotion": ["pull_request", "consumer_preview", "release"],
+        "rollback": "previous_compatible_client_minor"
+      }
+    ],
+    "promotion_rules": {
+      "same_subject_digest_across_stages": true,
+      "rebuild_between_stages": false,
+      "separation_of_duties": true,
+      "production_environment_review": true,
+      "rollback_pointer_required": true,
+      "schema_rollback": "forward_fix_only",
+      "first_failure_retained": true
+    },
+    "protected_status": {
+      "trusted_signatures": "not_collected",
+      "desktop_notarization_and_authenticode": "not_collected",
+      "production_promotion_and_rollback": "not_collected"
+    }
+  },
+  "telemetry": {
+    "event_schema": {
+      "required": ["schema_version", "timestamp_ms", "service", "release_id", "environment", "operation", "result_class", "duration_ms", "correlation_id"],
+      "optional": ["attempt", "queue_age_ms", "bytes_bucket", "executor", "profile_revision"],
+      "maximum_events_per_bundle": 10000,
+      "maximum_serialized_bytes": 1048576,
+      "correlation_id": "uuid_v4_random_no_embedded_identifiers",
+      "release_id": "full_git_sha",
+      "environment_values": ["local", "ci", "staging", "production"]
+    },
+    "forbidden_data": [
+      "media_bytes",
+      "tokens",
+      "credentials",
+      "signed_urls",
+      "raw_email",
+      "captions",
+      "private_titles",
+      "object_keys",
+      "tenant_or_user_identifiers",
+      "request_or_response_bodies",
+      "provider_messages",
+      "filesystem_paths"
+    ],
+    "cardinality": {
+      "maximum_operations_per_service": 32,
+      "maximum_result_classes": 32,
+      "unbounded_identifiers_as_dimensions": false
+    },
+    "retention": {
+      "support_bundle_days": 7,
+      "operational_aggregate_days": 30,
+      "security_incident_evidence": "approved_case_retention"
+    }
+  },
+  "security": {
+    "threat_closure": [
+      {"id": "browser_identity_boundary", "control": "docs/security/threat-model.md#browser-and-identity", "verification": "contract_and_browser_gates", "status": "local_control_present_protected_review_pending"},
+      {"id": "api_cache_boundary", "control": "docs/security/threat-model.md#api-and-cache", "verification": "fixture_and_route_gates", "status": "local_control_present_protected_review_pending"},
+      {"id": "upload_object_media_boundary", "control": "docs/security/threat-model.md#upload-object-and-media", "verification": "storage_and_media_conformance", "status": "local_control_present_protected_review_pending"},
+      {"id": "operations_supply_chain_boundary", "control": "docs/security/threat-model.md#operations-and-supply-chain", "verification": "workflow_secret_sbom_and_provenance_gates", "status": "local_control_present_protected_review_pending"}
+    ],
+    "vulnerability_gates": [
+      "cargo_deny_advisories",
+      "cargo_deny_bans",
+      "cargo_deny_licenses",
+      "cargo_deny_sources",
+      "secret_scan",
+      "cyclonedx_1_6",
+      "native_runtime_inventory",
+      "provider_and_os_advisory_review"
+    ],
+    "rotation_classes": [
+      {"id": "cloudflare_deploy", "overlap": "none", "verification": "scoped_dry_run_then_revoke_old", "maximum_rehearsal_age_days": 90},
+      {"id": "r2_signing", "overlap": "bounded_key_version_window", "verification": "new_grants_use_active_version_old_grants_expire", "maximum_rehearsal_age_days": 90},
+      {"id": "session_hash", "overlap": "bounded_hash_version_window", "verification": "active_migration_then_remove_fallback", "maximum_rehearsal_age_days": 90},
+      {"id": "webhook_hmac", "overlap": "bounded_dual_verification_window", "verification": "new_signer_then_replay_safe_cutover", "maximum_rehearsal_age_days": 90},
+      {"id": "desktop_update", "overlap": "dual_public_key_manifest", "verification": "old_client_accepts_transition_new_client_prefers_active", "maximum_rehearsal_age_days": 180},
+      {"id": "backup_recovery", "overlap": "dual_control_recovery_catalog", "verification": "metadata_only_recovery_rehearsal_no_private_key_export", "maximum_rehearsal_age_days": 180}
+    ],
+    "incident_contact_contract": {
+      "source": "protected_incident_contact_registry",
+      "repository_values": "roles_only_no_personal_contact_data",
+      "required_acknowledgement_test": true,
+      "acknowledgement_status": "not_collected"
+    },
+    "penetration_test": {
+      "scope": ["public_web", "api", "auth", "upload", "share", "provider_callbacks", "desktop_update"],
+      "independence_required": true,
+      "critical_high_open_findings_allowed": false,
+      "status": "not_collected"
+    }
+  },
+  "recovery": {
+    "rpo_ms": 300000,
+    "rto_ms": 3600000,
+    "assets": [
+      {"id": "d1_export", "authority": "consistent_export_plus_replay_checkpoint", "restore": "new_isolated_database", "verification": ["foreign_keys", "referential_counts", "auth_session_links", "application_queries"]},
+      {"id": "object_manifest", "authority": "versioned_logical_manifest_not_provider_listing", "restore": "exact_manifest_objects_to_isolated_prefix", "verification": ["size", "sha256", "role", "video_relation", "range_read", "playback_probe"]},
+      {"id": "configuration", "authority": "versioned_non_secret_config_plus_secret_references", "restore": "isolated_environment", "verification": ["schema", "binding_names", "no_secret_values"]},
+      {"id": "signing_key_catalog", "authority": "key_ids_public_material_and_dual_control_receipts_only", "restore": "provider_or_offline_custody_procedure", "verification": ["active_key_id", "public_key_digest", "recovery_receipt"]},
+      {"id": "desktop_projects", "authority": "customer_project_manifest", "restore": "isolated_project_directory", "verification": ["manifest_digest", "segment_digests", "schema", "read_only_open"]}
+    ],
+    "backup_invariants": {
+      "encryption_required": true,
+      "separate_backup_principal": true,
+      "immutable_retention_required": true,
+      "legal_hold_and_erasure_catalog_required": true,
+      "manifest_before_restore": true,
+      "restore_never_targets_production": true,
+      "corruption_and_missing_object_negative_tests": true
+    },
+    "protected_status": {
+      "provider_d1_export": "not_collected",
+      "provider_object_restore": "not_collected",
+      "signing_key_custody_recovery": "not_collected",
+      "production_shaped_timed_restore": "not_collected",
+      "regional_disaster_recovery": "not_collected"
+    }
+  },
+  "capacity_cost_residency": {
+    "minimum_headroom_basis_points": 3000,
+    "launch_load_model": {
+      "required_dimensions": ["requests_per_second", "concurrent_uploads", "queued_jobs", "native_job_seconds", "d1_rows_per_second", "r2_bytes_per_second"],
+      "sustained_seconds": 1800,
+      "burst_seconds": 300
+    },
+    "provider_cost": {
+      "protected_maximum_microunits": null,
+      "named_approval_required": true,
+      "concurrency": 1,
+      "synthetic_inputs_only": true,
+      "hard_timeout_required": true,
+      "scoped_cleanup_required": true,
+      "duplicate_billable_effects_allowed": false
+    },
+    "residency": {
+      "default": "single_approved_primary_location",
+      "cross_region_copy": "disabled_without_customer_and_security_approval",
+      "backup_location": "approved_location_record_required",
+      "provider_execution_location": "record_and_fail_closed_when_profile_requires_a_region"
+    },
+    "regional_failure": {
+      "automatic_cross_residency_failover": false,
+      "approved_target_required": true,
+      "acknowledged_write_replay_required": true,
+      "reconciliation_before_traffic": true
+    },
+    "protected_status": {
+      "production_shaped_load": "not_collected",
+      "provider_invoice_comparison": "not_collected",
+      "residency_audit": "not_collected",
+      "regional_game": "not_collected"
+    }
+  },
+  "managed_media": {
+    "change_watch": {
+      "source": "official_cloudflare_documentation_and_account_notices",
+      "maximum_review_interval_days": 7,
+      "record": ["observed_at", "contract_revision", "limits_digest", "pricing_digest", "regions_digest", "breaking_change", "owner_role"],
+      "unreviewed_change_effect": "disable_affected_profiles"
+    },
+    "managed_profiles": [
+      {"profile": "optimized_clip_v1", "kill_switch": "per_profile_revision", "fallback": "native_gstreamer", "minimum_native_capacity_units": 1},
+      {"profile": "thumbnail_v1", "kill_switch": "per_profile_revision", "fallback": "native_gstreamer", "minimum_native_capacity_units": 1},
+      {"profile": "spritesheet_v1", "kill_switch": "per_profile_revision", "fallback": "native_gstreamer", "minimum_native_capacity_units": 1},
+      {"profile": "audio_extract_v1", "kill_switch": "per_profile_revision", "fallback": "native_gstreamer", "minimum_native_capacity_units": 1}
+    ],
+    "alerts": [
+      "quota_exhaustion",
+      "provider_outage",
+      "provider_error_rate",
+      "managed_output_drift",
+      "usage_cost_budget",
+      "charge_without_terminal_state",
+      "fallback_capacity",
+      "duplicate_publication",
+      "manifest_object_drift"
+    ],
+    "game_invariants": {
+      "profile_scoped_disablement": true,
+      "one_fenced_fallback": true,
+      "native_or_legacy_only": true,
+      "deterministic_final_key": true,
+      "one_logical_publication": true,
+      "one_billable_effect": true,
+      "reconcile_staging_and_final": true,
+      "restore_only_after_contract_probe": true
+    },
+    "protected_status": {
+      "account_quota_and_pricing_watch": "not_collected",
+      "remote_outage_quota_drift_game": "not_collected",
+      "native_fallback_capacity_load": "not_collected"
+    }
+  },
+  "self_hosting": {
+    "support_tier": "operator_managed_preview",
+    "required_components": ["web_service", "control_plane_worker_or_compatible_api", "sqlite_or_d1_compatible_metadata", "s3_or_r2_compatible_private_objects", "native_media_worker"],
+    "required_preflight": ["version_matrix", "private_storage", "tls", "backup_target", "restore_test", "capacity", "outbound_provider_policy"],
+    "unsupported": ["production_managed_media_without_provider_contract", "shared_unsigned_desktop_update", "public_object_bucket", "telemetry_with_personal_data"]
+  }
+}

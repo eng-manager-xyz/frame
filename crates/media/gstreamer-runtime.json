@@ -1,0 +1,140 @@
+{
+  "schema_version": 3,
+  "rust_manifest_version": 3,
+  "minimum_gstreamer": "1.22.0",
+  "plugin_search_policy": {
+    "denied_environment_variables": [
+      "GST_PLUGIN_PATH",
+      "GST_PLUGIN_PATH_1_0",
+      "GST_PLUGIN_SYSTEM_PATH",
+      "GST_PLUGIN_SCANNER",
+      "GST_PLUGIN_SCANNER_1_0",
+      "GST_REGISTRY",
+      "GST_REGISTRY_1_0",
+      "GST_REGISTRY_DISABLE",
+      "GST_REGISTRY_UPDATE",
+      "GST_REGISTRY_FORK",
+      "GST_REGISTRY_MODE",
+      "GST_REGISTRY_REUSE_PLUGIN_SCANNER",
+      "GST_PLUGIN_LOADING_WHITELIST",
+      "GST_PLUGIN_FEATURE_RANK"
+    ],
+    "denied_loader_environment_variables": [
+      "LD_LIBRARY_PATH",
+      "LD_PRELOAD",
+      "LD_AUDIT",
+      "DYLD_LIBRARY_PATH",
+      "DYLD_FALLBACK_LIBRARY_PATH",
+      "DYLD_INSERT_LIBRARIES",
+      "DYLD_FRAMEWORK_PATH",
+      "DYLD_FALLBACK_FRAMEWORK_PATH",
+      "DYLD_ROOT_PATH",
+      "DYLD_IMAGE_SUFFIX",
+      "DYLD_SHARED_REGION"
+    ],
+    "trusted_system_path_variable": "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "trusted_system_path_must_match_build_time_pluginsdir": true,
+    "system_plugin_fallback_allowed_for_bundles": false,
+    "undeclared_frame_authored_factories_allowed": false,
+    "trusted_service_launcher": "scripts/ci/gstreamer-sanitized-exec",
+    "raw_binary_rejects_loader_overrides": true,
+    "signed_launch_chain_gate_pending": true
+  },
+  "factories": [
+    {"factory": "videotestsrc", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "videoconvert", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "audiotestsrc", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "capsfilter", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "identity", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "vp8enc", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "webmmux", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "filesink", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
+    {"factory": "filesrc", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "decodebin", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "videoscale", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "pngenc", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "fakesink", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "appsrc", "capability": "appsrc_bridge", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "queue", "capability": "appsrc_bridge", "requirement": "required", "platform": "all"},
+    {"factory": "appsink", "capability": "appsink_bridge", "requirement": "optional", "platform": "all"},
+    {"factory": "audioconvert", "capability": "audio_mixing", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "audioresample", "capability": "audio_mixing", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "audiomixer", "capability": "audio_mixing", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "volume", "capability": "audio_mixing", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "level", "capability": "audio_metering", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "compositor", "capability": "camera_composition", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "splitmuxsink", "capability": "instant_segmentation", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "playbin3", "capability": "studio_preview", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "decodebin3", "capability": "decode_analysis", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "mp4mux", "capability": "mp4_muxing", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "qtmux", "capability": "quicktime_muxing", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "x264enc", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "avenc_aac", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "h264parse", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "aacparse", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "wavenc", "capability": "studio_multitrack", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "videorate", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "jpegenc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "gifenc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "lamemp3enc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "concat", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "opusenc", "capability": "software_opus", "requirement": "required", "platform": "native_desktop"}
+  ],
+  "targets": [
+    {
+      "target": "linux-x86_64",
+      "delivery_model": "hosted_runner_apt_packages",
+      "release_status": "synthetic_ci_only",
+      "source": "github-hosted-ubuntu-24.04-apt-origin-unverified",
+      "ci_top_level_packages": [
+        "libgstreamer1.0-0",
+        "libgstreamer1.0-dev",
+        "libgstreamer-plugins-base1.0-0",
+        "libgstreamer-plugins-base1.0-dev",
+        "gstreamer1.0-tools",
+        "gstreamer1.0-plugins-base",
+        "gstreamer1.0-plugins-base-apps",
+        "gstreamer1.0-plugins-good"
+      ]
+    },
+    {
+      "target": "linux-aarch64",
+      "delivery_model": "system_package_plan_unapproved",
+      "release_status": "clean_machine_gate_pending",
+      "source": "ubuntu-24.04-origin-and-signature-evidence-pending",
+      "ci_top_level_packages": [
+        "libgstreamer1.0-0",
+        "libgstreamer-plugins-base1.0-0",
+        "gstreamer1.0-tools",
+        "gstreamer1.0-plugins-base",
+        "gstreamer1.0-plugins-base-apps",
+        "gstreamer1.0-plugins-good"
+      ]
+    },
+    {
+      "target": "macos-x86_64",
+      "delivery_model": "signed_app_bundle_pending",
+      "release_status": "bundle_signing_gate_pending",
+      "source": "pinned-gstreamer-runtime-not-yet-approved",
+      "ci_top_level_packages": []
+    },
+    {
+      "target": "macos-aarch64",
+      "delivery_model": "signed_app_bundle_pending",
+      "release_status": "bundle_signing_gate_pending",
+      "source": "pinned-gstreamer-runtime-not-yet-approved",
+      "ci_top_level_packages": []
+    },
+    {
+      "target": "windows-x86_64",
+      "delivery_model": "signed_app_bundle_pending",
+      "release_status": "bundle_signing_gate_pending",
+      "source": "pinned-gstreamer-runtime-not-yet-approved",
+      "ci_top_level_packages": []
+    }
+  ],
+  "codec_decisions": [
+    {"profile": "synthetic_webm", "video": "vp8", "audio": "opus", "container": "webm", "status": "required_for_ci"},
+    {"profile": "distribution_mp4", "video": "h264", "audio": "aac", "container": "mp4", "status": "legal_and_patent_review_required"}
+  ]
+}

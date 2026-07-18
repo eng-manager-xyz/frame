@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "evidence_class": "protected_placeholder",
+  "status": "not_collected",
+  "is_live_evidence": false,
+  "promotion_effect": "blocks_full_release_gate",
+  "records": [
+    {
+      "id": "native-macos-arm64-capture-and-soak",
+      "evidence_class": "protected_placeholder",
+      "status": "not_collected",
+      "is_live_evidence": false,
+      "required_context": {
+        "kind": "os_hardware",
+        "os_family": "macos",
+        "architecture": "arm64",
+        "hardware_class": "representative_capture_device"
+      },
+      "observed_context": null,
+      "observed_at": null,
+      "artifact_sha256": null,
+      "result": null,
+      "blocks_lane": "full"
+    },
+    {
+      "id": "native-windows-x86-64-capture-and-soak",
+      "evidence_class": "protected_placeholder",
+      "status": "not_collected",
+      "is_live_evidence": false,
+      "required_context": {
+        "kind": "os_hardware",
+        "os_family": "windows",
+        "architecture": "x86_64",
+        "hardware_class": "representative_capture_device"
+      },
+      "observed_context": null,
+      "observed_at": null,
+      "artifact_sha256": null,
+      "result": null,
+      "blocks_lane": "full"
+    },
+    {
+      "id": "native-linux-x86-64-capture-and-soak",
+      "evidence_class": "protected_placeholder",
+      "status": "not_collected",
+      "is_live_evidence": false,
+      "required_context": {
+        "kind": "os_hardware",
+        "os_family": "linux",
+        "architecture": "x86_64",
+        "hardware_class": "representative_capture_device"
+      },
+      "observed_context": null,
+      "observed_at": null,
+      "artifact_sha256": null,
+      "result": null,
+      "blocks_lane": "full"
+    },
+    {
+      "id": "managed-cloudflare-media-remote",
+      "evidence_class": "protected_placeholder",
+      "status": "not_collected",
+      "is_live_evidence": false,
+      "required_context": {
+        "kind": "provider",
+        "provider": "cloudflare_media_remote",
+        "isolation": "dedicated_synthetic_namespace",
+        "cost_record_required": true,
+        "provider_version_context_required": true
+      },
+      "observed_context": null,
+      "observed_at": null,
+      "artifact_sha256": null,
+      "result": null,
+      "blocks_lane": "full"
+    },
+    {
+      "id": "cross-executor-generated-media-conformance",
+      "evidence_class": "protected_placeholder",
+      "status": "not_collected",
+      "is_live_evidence": false,
+      "required_context": {
+        "kind": "provider_and_hardware",
+        "provider": "cloudflare_media_remote",
+        "os_families": ["macos", "windows", "linux"],
+        "hardware_class": "representative_codec_path",
+        "generated_inputs_only": true
+      },
+      "observed_context": null,
+      "observed_at": null,
+      "artifact_sha256": null,
+      "result": null,
+      "blocks_lane": "full"
+    }
+  ]
+}

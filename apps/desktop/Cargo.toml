@@ -1,0 +1,44 @@
+[package]
+name = "frame-desktop-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+instant-finalize = ["dep:frame-media"]
+tauri-app = ["dep:tauri"]
+custom-protocol = ["tauri-app", "tauri/custom-protocol"]
+
+[[bin]]
+name = "frame-desktop"
+path = "src/main.rs"
+required-features = ["tauri-app"]
+
+[dependencies]
+frame-client = { path = "../../crates/frame-client" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-trait.workspace = true
+frame-authenticated-client = { path = "../../crates/authenticated-client" }
+frame-media = { path = "../../crates/media", optional = true }
+reqwest.workspace = true
+ring.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tauri = { version = "=2.11.5", optional = true }
+
+[build-dependencies]
+tauri-build = "=2.6.3"
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

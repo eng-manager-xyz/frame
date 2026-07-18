@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "policy_id": "frame-progressive-cutover-v1",
+  "charter": "docs/migration/charter.md",
+  "release_record_required": true,
+  "decision_is_advisory": true,
+  "decision_never_changes_authority": true,
+  "observation": {
+    "minimum_window_ms": 86400000,
+    "maximum_snapshot_age_ms": 300000,
+    "missing_or_stale_data_decision": "NO_GO",
+    "privacy_corruption_duplicate_billing_or_acknowledged_write_loss_budget": 0
+  },
+  "owners": {
+    "release_commander": "release_commander_role",
+    "metadata_authority": "data_migration_owner_role",
+    "object_authority": "storage_migration_owner_role",
+    "routes_and_clients": "application_owner_role",
+    "jobs_and_media": "media_operations_owner_role",
+    "security": "security_approver_role",
+    "support": "support_lead_role",
+    "rollback": "incident_commander_role",
+    "final_approval": "repository_owner_role"
+  },
+  "ramp_stages": [
+    {
+      "id": "preflight",
+      "frame_traffic_basis_points": 0,
+      "cohorts": ["synthetic"],
+      "reversible": true,
+      "minimum_observation_ms": 0,
+      "next": "internal",
+      "authority_intent": "legacy_authoritative_frame_shadow_only"
+    },
+    {
+      "id": "internal",
+      "frame_traffic_basis_points": 100,
+      "cohorts": ["internal_hosted_web", "internal_desktop_native"],
+      "reversible": true,
+      "minimum_observation_ms": 86400000,
+      "next": "representative_5",
+      "authority_intent": "frame_canary_scoped_tenants_only"
+    },
+    {
+      "id": "representative_5",
+      "frame_traffic_basis_points": 500,
+      "cohorts": ["representative_hosted", "representative_byo", "representative_high_risk"],
+      "reversible": true,
+      "minimum_observation_ms": 172800000,
+      "next": "representative_25",
+      "authority_intent": "frame_canary_scoped_tenants_only"
+    },
+    {
+      "id": "representative_25",
+      "frame_traffic_basis_points": 2500,
+      "cohorts": ["representative_hosted", "representative_byo", "representative_high_risk"],
+      "reversible": true,
+      "minimum_observation_ms": 259200000,
+      "next": "majority_50",
+      "authority_intent": "frame_canary_scoped_tenants_only"
+    },
+    {
+      "id": "majority_50",
+      "frame_traffic_basis_points": 5000,
+      "cohorts": ["representative_hosted", "representative_byo", "representative_high_risk"],
+      "reversible": true,
+      "minimum_observation_ms": 604800000,
+      "next": "full_reversible",
+      "authority_intent": "frame_primary_legacy_fenced_replayable"
+    },
+    {
+      "id": "full_reversible",
+      "frame_traffic_basis_points": 10000,
+      "cohorts": ["representative_hosted", "representative_byo", "representative_high_risk"],
+      "reversible": true,
+      "minimum_observation_ms": 1209600000,
+      "next": "irreversible_finalize",
+      "authority_intent": "frame_authoritative_legacy_read_only_retained"
+    },
+    {
+      "id": "irreversible_finalize",
+      "frame_traffic_basis_points": 10000,
+      "cohorts": ["representative_hosted", "representative_byo", "representative_high_risk"],
+      "reversible": false,
+      "minimum_observation_ms": 0,
+      "next": null,
+      "authority_intent": "frame_finalized_legacy_retention_clock_started"
+    }
+  ],
+  "authority_dimensions": [
+    {
+      "id": "metadata",
+      "control": "tenant_domain_cutover_authority",
+      "one_writer_required": true,
+      "irreversible_value": "finalized",
+      "rollback_before_irreversible": "fence_d1_replay_acknowledged_canary_writes_then_restore_legacy"
+    },
+    {
+      "id": "objects",
+      "control": "manifest_bound_storage_authority",
+      "one_writer_required": true,
+      "irreversible_value": "source_release_approved",
+      "rollback_before_irreversible": "retain_sources_stop_new_frame_grants_and_reconcile_manifest"
+    },
+    {
+      "id": "routes",
+      "control": "route_family_and_tenant_cohort_flags",
+      "one_writer_required": true,
+      "irreversible_value": "legacy_route_retired",
+      "rollback_before_irreversible": "disable_exact_frame_family_flag_and_restore_compatible_fallback"
+    },
+    {
+      "id": "jobs",
+      "control": "job_profile_revision_and_cohort_flags",
+      "one_writer_required": true,
+      "irreversible_value": "legacy_queue_retired",
+      "rollback_before_irreversible": "stop_admission_disposition_in_flight_then_route_one_fenced_fallback"
+    },
+    {
+      "id": "storage",
+      "control": "tenant_storage_mode_and_upload_grant_flags",
+      "one_writer_required": true,
+      "irreversible_value": "legacy_credentials_revoked",
+      "rollback_before_irreversible": "stop_new_grants_preserve_committed_objects_and_reconcile_uploads"
+    },
+    {
+      "id": "executor",
+      "control": "per_profile_executor_revision_flags",
+      "one_writer_required": true,
+      "irreversible_value": "legacy_executor_retired",
+      "rollback_before_irreversible": "disable_profile_revision_and preserve_or_quarantine_indeterminate_attempt"
+    },
+    {
+      "id": "clients",
+      "control": "minimum_client_version_and_server_capability_flags",
+      "one_writer_required": false,
+      "irreversible_value": "legacy_client_write_denied_with_migration_response",
+      "rollback_before_irreversible": "restore_compatible_server_flag_without_reissuing_client_effects"
+    }
+  ],
+  "gate_definitions": [
+    {"code": "phase_p0_signed", "path": "/phase_gates/p0/signed", "operator": "eq", "threshold": true, "group": "phase_readiness"},
+    {"code": "phase_p1_signed", "path": "/phase_gates/p1/signed", "operator": "eq", "threshold": true, "group": "phase_readiness"},
+    {"code": "phase_p2_signed", "path": "/phase_gates/p2/signed", "operator": "eq", "threshold": true, "group": "phase_readiness"},
+    {"code": "phase_p3_signed", "path": "/phase_gates/p3/signed", "operator": "eq", "threshold": true, "group": "phase_readiness"},
+    {"code": "phase_p4_signed", "path": "/phase_gates/p4/signed", "operator": "eq", "threshold": true, "group": "phase_readiness"},
+    {"code": "phase_p5_signed", "path": "/phase_gates/p5/signed", "operator": "eq", "threshold": true, "group": "phase_readiness"},
+    {"code": "critical_blockers_owned_or_closed", "path": "/blockers/unowned_critical", "operator": "lte", "threshold": 0, "group": "phase_readiness"},
+    {"code": "high_blockers_owned_or_closed", "path": "/blockers/unowned_high", "operator": "lte", "threshold": 0, "group": "phase_readiness"},
+    {"code": "public_availability", "path": "/slos/public_availability", "operator": "gte", "threshold": 0.999, "group": "slos"},
+    {"code": "api_availability", "path": "/slos/api_availability", "operator": "gte", "threshold": 0.999, "group": "slos"},
+    {"code": "landing_latency_p95_ms", "path": "/slos/landing_latency_p95_ms", "operator": "lte", "threshold": 750, "group": "slos"},
+    {"code": "api_latency_p95_ms", "path": "/slos/api_latency_p95_ms", "operator": "lte", "threshold": 500, "group": "slos"},
+    {"code": "upload_finalize_success", "path": "/slos/upload_finalize_success", "operator": "gte", "threshold": 0.999, "group": "slos"},
+    {"code": "playback_start_p95_ms", "path": "/slos/playback_start_p95_ms", "operator": "lte", "threshold": 2000, "group": "slos"},
+    {"code": "time_to_share_p95_ms", "path": "/slos/time_to_share_p95_ms", "operator": "lte", "threshold": 30000, "group": "slos"},
+    {"code": "privacy_or_corruption_incidents", "path": "/slos/privacy_corruption_or_ack_loss", "operator": "lte", "threshold": 0, "group": "slos"},
+    {"code": "route_parity", "path": "/parity/unexplained_route_differences", "operator": "lte", "threshold": 0, "group": "parity"},
+    {"code": "authorization_parity", "path": "/parity/unexplained_authorization_differences", "operator": "lte", "threshold": 0, "group": "parity"},
+    {"code": "media_parity", "path": "/parity/unexplained_media_differences", "operator": "lte", "threshold": 0, "group": "parity"},
+    {"code": "support_severity", "path": "/support/open_cutover_sev1_or_sev2", "operator": "lte", "threshold": 0, "group": "support"},
+    {"code": "support_budget", "path": "/support/within_signed_volume_budget", "operator": "eq", "threshold": true, "group": "support"},
+    {"code": "metadata_rows", "path": "/reconciliation/unexplained_row_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "metadata_relationships", "path": "/reconciliation/unexplained_relationship_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "metadata_aggregates", "path": "/reconciliation/unexplained_aggregate_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "metadata_field_hashes", "path": "/reconciliation/unexplained_field_hash_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "sampled_semantics", "path": "/reconciliation/unexplained_semantic_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "object_counts", "path": "/reconciliation/unexplained_object_count_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "object_bytes", "path": "/reconciliation/unexplained_object_byte_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "object_checksums", "path": "/reconciliation/unexplained_object_checksum_differences", "operator": "lte", "threshold": 0, "group": "reconciliation"},
+    {"code": "replay_dead_letters", "path": "/backlog/dead_letters", "operator": "lte", "threshold": 0, "group": "backlog"},
+    {"code": "replay_budget", "path": "/backlog/within_signed_lag_and_queue_budget", "operator": "eq", "threshold": true, "group": "backlog"},
+    {"code": "indeterminate_effects", "path": "/backlog/unowned_indeterminate_effects", "operator": "lte", "threshold": 0, "group": "backlog"},
+    {"code": "current_client", "path": "/clients/current_release_ready", "operator": "eq", "threshold": true, "group": "clients"},
+    {"code": "n_minus_1_client", "path": "/clients/n_minus_1_release_ready", "operator": "eq", "threshold": true, "group": "clients"},
+    {"code": "client_adoption", "path": "/clients/within_signed_adoption_budget", "operator": "eq", "threshold": true, "group": "clients"},
+    {"code": "old_client_fence", "path": "/clients/legacy_writers_fenced_or_supported", "operator": "eq", "threshold": true, "group": "clients"},
+    {"code": "capacity_headroom", "path": "/capacity/minimum_headroom_basis_points", "operator": "gte", "threshold": 3000, "group": "capacity"},
+    {"code": "provider_capacity", "path": "/capacity/provider_limits_within_signed_budget", "operator": "eq", "threshold": true, "group": "capacity"},
+    {"code": "native_fallback_capacity", "path": "/capacity/native_fallback_ready", "operator": "eq", "threshold": true, "group": "capacity"},
+    {"code": "rollback_rehearsed", "path": "/rollback/production_scale_rehearsal_succeeded", "operator": "eq", "threshold": true, "group": "rollback"},
+    {"code": "rollback_time", "path": "/rollback/elapsed_ms", "operator": "lte", "threshold": 900000, "group": "rollback"},
+    {"code": "rollback_preserved_writes", "path": "/rollback/canary_writes_preserved", "operator": "eq", "threshold": true, "group": "rollback"},
+    {"code": "rollback_pointer", "path": "/rollback/compatible_pointer_verified", "operator": "eq", "threshold": true, "group": "rollback"},
+    {"code": "media_usage_cost", "path": "/managed_media/usage_and_cost_within_signed_budget", "operator": "eq", "threshold": true, "group": "managed_media"},
+    {"code": "media_limits", "path": "/managed_media/limit_rejection_within_signed_budget", "operator": "eq", "threshold": true, "group": "managed_media"},
+    {"code": "media_provider_errors", "path": "/managed_media/provider_errors_within_signed_budget", "operator": "eq", "threshold": true, "group": "managed_media"},
+    {"code": "media_fallback_rate", "path": "/managed_media/fallback_within_signed_budget", "operator": "eq", "threshold": true, "group": "managed_media"},
+    {"code": "media_output_drift", "path": "/managed_media/unexplained_output_drift", "operator": "lte", "threshold": 0, "group": "managed_media"},
+    {"code": "media_duplicate_artifacts", "path": "/managed_media/duplicate_artifacts", "operator": "lte", "threshold": 0, "group": "managed_media"},
+    {"code": "media_billing_terminal", "path": "/managed_media/billable_effects_without_terminal_state", "operator": "lte", "threshold": 0, "group": "managed_media"},
+    {"code": "stage_record", "path": "/evidence/signed_stage_record", "operator": "eq", "threshold": true, "group": "evidence"},
+    {"code": "immutable_release", "path": "/evidence/release_manifest_digest", "operator": "sha256", "threshold": null, "group": "evidence"},
+    {"code": "dashboard_input", "path": "/evidence/snapshot_digest", "operator": "sha256", "threshold": null, "group": "evidence"}
+  ],
+  "automatic_stop_conditions": [
+    "any_gate_missing_stale_or_failed",
+    "privacy_or_cross_tenant_exposure",
+    "corrupt_media_or_acknowledged_write_loss",
+    "duplicate_billable_or_provider_effect",
+    "two_authoritative_writers_or_stale_fence",
+    "unexplained_reconciliation_or_parity_difference",
+    "rollback_readiness_lost",
+    "provider_or_native_capacity_budget_exceeded"
+  ],
+  "manual_stop_conditions": [
+    "support_or_incident_commander_requests_pause",
+    "operator_cannot_explain_dashboard_change",
+    "provider_contract_or_pricing_change_is_unreviewed",
+    "customer_impact_or_residency_decision_is_unowned",
+    "evidence_chain_or_approver_identity_cannot_be_verified"
+  ],
+  "irreversible_gate": {
+    "requires_stage": "full_reversible",
+    "requires_rollback_expiry_approval": true,
+    "requires_final_reconciliation": true,
+    "requires_source_retention_approval": true,
+    "requires_legacy_write_probe_denial": true,
+    "requires_post_cutover_monitoring": true,
+    "automatic_evaluator_may_execute": false
+  }
+}

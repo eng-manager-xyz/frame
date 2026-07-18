@@ -1,0 +1,94 @@
+{
+  "schema": "frame.same-origin-ownership-inventory.v1",
+  "environments": [
+    {
+      "name": "production",
+      "hostname": "frame.engmanager.xyz",
+      "status": "repository_contract_complete_provider_evidence_pending",
+      "owners": {
+        "render_service": "eng-manager-xyz/frame:render.yaml",
+        "render_custom_domain": "eng-manager-xyz/frame:render_git_sync",
+        "worker_script": "eng-manager-xyz/frame:protected_cloudflare_worker_deploy",
+        "worker_route": "eng-manager-xyz/frame:wrangler.toml",
+        "dns_record": "eng-manager-xyz/engmanager.xyz:infra/cloudflare-zone",
+        "origin_certificate": "render_managed",
+        "edge_certificate": "eng-manager-xyz/engmanager.xyz:infra/cloudflare-zone",
+        "shared_zone_phases": "eng-manager-xyz/engmanager.xyz:infra/cloudflare-zone"
+      },
+      "dns": {
+        "type": "CNAME",
+        "name": "frame",
+        "target_source": "protected_render_service_hostname_output",
+        "initial_proxy": false,
+        "wildcard": false,
+        "conflicting_record_policy": "remove_only_exact_frame_AAAA_after_inventory"
+      },
+      "worker_route": {
+        "pattern": "frame.engmanager.xyz/api*",
+        "compatibility_patterns": ["frame.engmanager.xyz/media-server*"],
+        "zone_name": "engmanager.xyz",
+        "workers_dev": false,
+        "lookalike_policy": "non_cacheable_404"
+      }
+    },
+    {
+      "name": "staging",
+      "hostname": "frame-staging.engmanager.xyz",
+      "status": "protected_provider_configuration_pending",
+      "owners": {
+        "render_service": "protected_staging_render_service",
+        "render_custom_domain": "protected_staging_render_service",
+        "worker_script": "protected_staging_cloudflare_worker_deploy",
+        "worker_route": "protected_staging_cloudflare_worker_deploy",
+        "dns_record": "eng-manager-xyz/engmanager.xyz:infra/cloudflare-zone",
+        "origin_certificate": "render_managed",
+        "edge_certificate": "eng-manager-xyz/engmanager.xyz:infra/cloudflare-zone",
+        "shared_zone_phases": "eng-manager-xyz/engmanager.xyz:infra/cloudflare-zone"
+      },
+      "dns": {
+        "type": "CNAME",
+        "name": "frame-staging",
+        "target_source": "protected_staging_render_service_hostname_output",
+        "initial_proxy": false,
+        "wildcard": false,
+        "conflicting_record_policy": "remove_only_exact_frame_staging_AAAA_after_inventory"
+      },
+      "worker_route": {
+        "pattern": "frame-staging.engmanager.xyz/api*",
+        "compatibility_patterns": ["frame-staging.engmanager.xyz/media-server*"],
+        "zone_name": "engmanager.xyz",
+        "workers_dev": false,
+        "lookalike_policy": "non_cacheable_404"
+      }
+    }
+  ],
+  "shared_zone_non_regression_hosts": [
+    "engmanager.xyz",
+    "www.engmanager.xyz",
+    "shop.engmanager.xyz",
+    "store.engmanager.xyz"
+  ],
+  "url_normalization": {
+    "owner": "eng-manager-xyz/engmanager.xyz:infra/cloudflare-zone",
+    "status": "protected_raw_and_normalized_trace_pending",
+    "worker_observed_source": "request.url",
+    "edge_raw_trace_field": "raw.http.request.uri.path",
+    "encoded_prefix_policy": "never_enter_api_handler",
+    "unsafe_normalization_action": "block_launch_and_add_host_scoped_raw_path_guard_or_approve_gateway_adr",
+    "global_zone_setting_change_for_frame_allowed": false
+  },
+  "protected_evidence_required": [
+    "authoritative_dns_history",
+    "render_domain_verification",
+    "edge_and_origin_certificate_chains",
+    "caa_eligibility",
+    "full_strict_trace",
+    "raw_and_normalized_path_trace",
+    "single_hop_request_id_trace",
+    "cache_status_matrix",
+    "worker_route_removal_rehearsal",
+    "dns_only_rehearsal",
+    "render_default_hostname_disable_rehearsal",
+    "unrelated_host_non_regression"
+  ]
+}

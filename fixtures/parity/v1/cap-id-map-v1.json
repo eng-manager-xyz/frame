@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "contract_version": 1,
+  "source_reference": "CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b:packages/database/helpers.ts",
+  "source_shape": {
+    "alphabet": "0123456789abcdefghjkmnpqrstvwxyz",
+    "length": 15
+  },
+  "algorithm": "uuidv8(first_128_bits(sha256('frame-cap-nanoid-to-uuid-v1\\0' || ascii_nanoid)))",
+  "mappings": [
+    {
+      "cap_nanoid": "000000000000000",
+      "frame_uuid": "229a6452-9523-896c-89cb-19ad6c78f2c6"
+    },
+    {
+      "cap_nanoid": "0123456789abcde",
+      "frame_uuid": "2a6a8a87-d5ca-8c83-8666-2e92c2a69404"
+    },
+    {
+      "cap_nanoid": "zzzzzzzzzzzzzzz",
+      "frame_uuid": "e2a9076f-abad-8f8b-8f84-a7054c9612c8"
+    },
+    {
+      "cap_nanoid": "a1b2c3d4e5f6g7h",
+      "frame_uuid": "b72c7d87-9728-883a-b630-40a15f1d4662"
+    }
+  ],
+  "foreign_key_examples": [
+    {
+      "parent": "videos.id",
+      "child": "comments.videoId",
+      "cap_nanoid": "0123456789abcde",
+      "frame_uuid": "2a6a8a87-d5ca-8c83-8666-2e92c2a69404"
+    },
+    {
+      "parent": "developerApps.id",
+      "child": "developerVideos.appId",
+      "cap_nanoid": "a1b2c3d4e5f6g7h",
+      "frame_uuid": "b72c7d87-9728-883a-b630-40a15f1d4662"
+    }
+  ]
+}

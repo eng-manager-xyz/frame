@@ -1,0 +1,712 @@
+//! Audited Win32 boundary for the encrypted Instant spool.
+//!
+//! This crate is intentionally tiny: it owns the pointer-level calls needed
+//! for Credential Manager, protected file ACLs, reparse-point detection, and
+//! write-through publication. `frame-media` consumes only these safe wrappers.
+//! No media, HTTP, provider, or application contract belongs here.
+
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use std::fmt;
+
+#[cfg(any(windows, test))]
+use std::{ffi::OsStr, path::Path};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsSecureSpoolError;
+
+impl fmt::Display for WindowsSecureSpoolError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the Windows secure-spool operation failed")
+    }
+}
+
+impl std::error::Error for WindowsSecureSpoolError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsPublishError {
+    AlreadyExists,
+    Failed,
+}
+
+impl fmt::Display for WindowsPublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyExists => formatter.write_str("the Windows spool target already exists"),
+            Self::Failed => formatter.write_str("the Windows spool publication failed"),
+        }
+    }
+}
+
+impl std::error::Error for WindowsPublishError {}
+
+#[cfg(any(windows, test))]
+fn destination_leaf(destination: &Path) -> Result<&OsStr, WindowsPublishError> {
+    let parent = destination.parent().ok_or(WindowsPublishError::Failed)?;
+    if parent.as_os_str().is_empty() {
+        return Err(WindowsPublishError::Failed);
+    }
+    let leaf = destination
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or(WindowsPublishError::Failed)?;
+    if leaf.is_empty()
+        || leaf.len() > 255
+        || matches!(leaf, "." | "..")
+        || !leaf
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(WindowsPublishError::Failed);
+    }
+    Ok(OsStr::new(leaf))
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::{
+        fs, mem,
+        os::windows::{
+            ffi::OsStrExt,
+            fs::MetadataExt,
+            io::{FromRawHandle, RawHandle},
+        },
+        path::Path,
+        ptr, slice,
+    };
+
+    use windows_sys::Win32::{
+        Foundation::{
+            CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_INSUFFICIENT_BUFFER,
+            ERROR_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+            HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+        },
+        Security::{
+            Authorization::{
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
+            },
+            Credentials::{
+                CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree,
+                CredReadW, CredWriteW,
+            },
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
+            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+            TOKEN_QUERY, TOKEN_USER, TokenUser,
+        },
+        Storage::FileSystem::{
+            CREATE_NEW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
+            FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
+            FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileRenameInfo,
+            FlushFileBuffers, GetFileInformationByHandleEx, OPEN_EXISTING, SYNCHRONIZE,
+            SetFileInformationByHandle, WRITE_DAC,
+        },
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    use zeroize::{Zeroize, Zeroizing};
+
+    use super::{WindowsPublishError, WindowsSecureSpoolError, destination_leaf};
+
+    #[derive(Clone, Copy)]
+    enum ExpectedObject {
+        File,
+        Directory,
+        FileOrDirectory,
+    }
+
+    pub fn credential_load(
+        service: &str,
+        account: &str,
+    ) -> Result<Option<Zeroizing<[u8; 32]>>, WindowsSecureSpoolError> {
+        let target = credential_target(service, account)?;
+        let mut credential: *mut CREDENTIALW = ptr::null_mut();
+        // SAFETY: `target` is NUL-terminated for the call and `credential` is
+        // a valid out pointer. A successful allocation is immediately guarded.
+        if unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } == 0 {
+            // SAFETY: this reads the error from the immediately preceding call.
+            return if unsafe { GetLastError() } == ERROR_NOT_FOUND {
+                Ok(None)
+            } else {
+                Err(WindowsSecureSpoolError)
+            };
+        }
+        let credential = CredentialAllocation::new(credential)?;
+        let raw = credential.get();
+        if raw.CredentialBlobSize != 32 || raw.CredentialBlob.is_null() {
+            return Err(WindowsSecureSpoolError);
+        }
+        // SAFETY: Credential Manager reports a 32-byte blob owned by the live
+        // allocation. It is copied into a zeroizing value and wiped in place
+        // before CredFree releases the allocation.
+        let blob = unsafe { slice::from_raw_parts_mut(raw.CredentialBlob, 32) };
+        let mut key = Zeroizing::new([0_u8; 32]);
+        key.copy_from_slice(blob);
+        blob.zeroize();
+        if key.iter().all(|byte| *byte == 0) {
+            return Err(WindowsSecureSpoolError);
+        }
+        Ok(Some(key))
+    }
+
+    pub fn credential_store(
+        service: &str,
+        account: &str,
+        key: &[u8; 32],
+    ) -> Result<(), WindowsSecureSpoolError> {
+        if key.iter().all(|byte| *byte == 0) {
+            return Err(WindowsSecureSpoolError);
+        }
+        let mut target = credential_target(service, account)?;
+        let mut username = wide_string(account, 128)?;
+        let credential = CREDENTIALW {
+            Type: CRED_TYPE_GENERIC,
+            TargetName: target.as_mut_ptr(),
+            CredentialBlobSize: 32,
+            CredentialBlob: key.as_ptr().cast_mut(),
+            Persist: CRED_PERSIST_LOCAL_MACHINE,
+            UserName: username.as_mut_ptr(),
+            Comment: ptr::null_mut(),
+            TargetAlias: ptr::null_mut(),
+            Attributes: ptr::null_mut(),
+            ..CREDENTIALW::default()
+        };
+        // SAFETY: every non-null pointer references a live buffer for this
+        // synchronous call; Windows copies the credential into its vault.
+        (unsafe { CredWriteW(&credential, 0) } != 0)
+            .then_some(())
+            .ok_or(WindowsSecureSpoolError)
+    }
+
+    pub fn credential_delete(service: &str, account: &str) -> Result<(), WindowsSecureSpoolError> {
+        let target = credential_target(service, account)?;
+        // SAFETY: `target` is a live NUL-terminated UTF-16 string.
+        if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } != 0 {
+            return Ok(());
+        }
+        // SAFETY: this reads the error from the immediately preceding call.
+        if unsafe { GetLastError() } == ERROR_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(WindowsSecureSpoolError)
+        }
+    }
+
+    pub fn metadata_is_indirect(metadata: &fs::Metadata) -> bool {
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    pub fn create_private_file(path: &Path) -> Result<fs::File, WindowsSecureSpoolError> {
+        let user_sid = current_user_sid()?;
+        let descriptor =
+            security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))?;
+        let path = path_wide(path)?;
+        let security_attributes = SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(mem::size_of::<SECURITY_ATTRIBUTES>())
+                .map_err(|_| WindowsSecureSpoolError)?,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        // SAFETY: the path and self-relative security descriptor stay live for
+        // the synchronous call. CREATE_NEW makes final-component creation
+        // atomic, and Windows copies the descriptor into the new file object.
+        let raw = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &security_attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+                ptr::null_mut(),
+            )
+        };
+        let handle = Handle::new(raw)?;
+        validate_handle(&handle, ExpectedObject::File)?;
+        Ok(handle.into_file())
+    }
+
+    pub fn enforce_private_permissions(path: &Path) -> Result<(), WindowsSecureSpoolError> {
+        let handle = open_path(
+            path,
+            WRITE_DAC | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+        )?;
+        validate_handle(&handle, ExpectedObject::FileOrDirectory)?;
+        apply_private_dacl(&handle)
+    }
+
+    fn apply_private_dacl(handle: &Handle) -> Result<(), WindowsSecureSpoolError> {
+        let user_sid = current_user_sid()?;
+        let descriptor =
+            security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))?;
+        let mut dacl_present = 0;
+        let mut dacl_defaulted = 0;
+        let mut dacl = ptr::null_mut();
+        // SAFETY: the guarded descriptor is valid and owns the returned DACL.
+        if unsafe {
+            GetSecurityDescriptorDacl(
+                descriptor.0,
+                &mut dacl_present,
+                &mut dacl,
+                &mut dacl_defaulted,
+            )
+        } == 0
+            || dacl_present == 0
+            || dacl.is_null()
+        {
+            return Err(WindowsSecureSpoolError);
+        }
+        // SAFETY: the DACL is owned by the live descriptor and the handle pins
+        // the already-validated object. The API retains neither value.
+        if unsafe {
+            SetSecurityInfo(
+                handle.0,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                dacl,
+                ptr::null_mut(),
+            )
+        } != ERROR_SUCCESS
+        {
+            return Err(WindowsSecureSpoolError);
+        }
+        Ok(())
+    }
+
+    pub fn publish_file(source: &Path, destination: &Path) -> Result<(), WindowsPublishError> {
+        let leaf = destination_leaf(destination)?;
+        let parent = destination.parent().ok_or(WindowsPublishError::Failed)?;
+        let source = open_path(
+            source,
+            GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_WRITE_THROUGH,
+        )
+        .map_err(|_| WindowsPublishError::Failed)?;
+        validate_handle(&source, ExpectedObject::File).map_err(|_| WindowsPublishError::Failed)?;
+        let destination_directory = open_path(
+            parent,
+            FILE_ADD_FILE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+        )
+        .map_err(|_| WindowsPublishError::Failed)?;
+        validate_handle(&destination_directory, ExpectedObject::Directory)
+            .map_err(|_| WindowsPublishError::Failed)?;
+        let leaf = leaf.encode_wide().collect::<Vec<_>>();
+        let name_bytes = leaf
+            .len()
+            .checked_mul(mem::size_of::<u16>())
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or(WindowsPublishError::Failed)?;
+        let information_bytes = mem::size_of::<FILE_RENAME_INFO>()
+            .checked_add(usize::try_from(name_bytes).map_err(|_| WindowsPublishError::Failed)?)
+            .ok_or(WindowsPublishError::Failed)?;
+        let information_size =
+            u32::try_from(information_bytes).map_err(|_| WindowsPublishError::Failed)?;
+        let words = information_bytes
+            .checked_add(mem::size_of::<usize>() - 1)
+            .map(|bytes| bytes / mem::size_of::<usize>())
+            .ok_or(WindowsPublishError::Failed)?;
+        let mut information = vec![0_usize; words];
+        let rename = information.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        // SAFETY: `information` is pointer-aligned and sized through the final
+        // UTF-16 code unit. The relative leaf has no separator or stream colon;
+        // the destination directory and source file remain pinned by handles.
+        unsafe {
+            ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFO_0 {
+                ReplaceIfExists: false,
+            });
+            ptr::addr_of_mut!((*rename).RootDirectory).write(destination_directory.0);
+            ptr::addr_of_mut!((*rename).FileNameLength).write(name_bytes);
+            ptr::copy_nonoverlapping(
+                leaf.as_ptr(),
+                ptr::addr_of_mut!((*rename).FileName).cast::<u16>(),
+                leaf.len(),
+            );
+        }
+        // The writer synced before entering this boundary. Flush the exact
+        // source handle once more before changing its directory entry.
+        if unsafe { FlushFileBuffers(source.0) } == 0 {
+            return Err(WindowsPublishError::Failed);
+        }
+        // SAFETY: the variable-sized FILE_RENAME_INFO buffer is initialized as
+        // described above. FileRenameInfo with ReplaceIfExists=false performs
+        // the collision check and rename as one filesystem operation.
+        if unsafe {
+            SetFileInformationByHandle(source.0, FileRenameInfo, rename.cast(), information_size)
+        } == 0
+        {
+            // SAFETY: this reads the error from the immediately preceding call.
+            return match unsafe { GetLastError() } {
+                ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => Err(WindowsPublishError::AlreadyExists),
+                _ => Err(WindowsPublishError::Failed),
+            };
+        }
+        // Flush through the same handle after its no-replace rename. Windows
+        // exposes no unprivileged, documented directory-fsync primitive, so
+        // power-loss behavior remains a protected platform evidence gate.
+        if unsafe { FlushFileBuffers(source.0) } == 0 {
+            return Err(WindowsPublishError::Failed);
+        }
+        Ok(())
+    }
+
+    fn open_path(
+        path: &Path,
+        access: u32,
+        share: u32,
+        flags: u32,
+    ) -> Result<Handle, WindowsSecureSpoolError> {
+        let path = path_wide(path)?;
+        // SAFETY: the path is live and NUL-terminated. OPEN_EXISTING plus
+        // OPEN_REPARSE_POINT returns a handle to the named final object rather
+        // than following a final-component reparse point.
+        Handle::new(unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                access,
+                share,
+                ptr::null(),
+                OPEN_EXISTING,
+                flags,
+                ptr::null_mut(),
+            )
+        })
+    }
+
+    fn validate_handle(
+        handle: &Handle,
+        expected: ExpectedObject,
+    ) -> Result<(), WindowsSecureSpoolError> {
+        let mut information = FILE_ATTRIBUTE_TAG_INFO::default();
+        // SAFETY: the output points to a correctly sized live structure and the
+        // handle remains owned for the call.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                handle.0,
+                FileAttributeTagInfo,
+                ptr::addr_of_mut!(information).cast(),
+                u32::try_from(mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
+                    .map_err(|_| WindowsSecureSpoolError)?,
+            )
+        } == 0
+            || information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        {
+            return Err(WindowsSecureSpoolError);
+        }
+        let is_directory = information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+        match expected {
+            ExpectedObject::File if is_directory => Err(WindowsSecureSpoolError),
+            ExpectedObject::Directory if !is_directory => Err(WindowsSecureSpoolError),
+            _ => Ok(()),
+        }
+    }
+
+    fn credential_target(
+        service: &str,
+        account: &str,
+    ) -> Result<Vec<u16>, WindowsSecureSpoolError> {
+        if !valid_component(service) || !valid_component(account) {
+            return Err(WindowsSecureSpoolError);
+        }
+        wide_string(&format!("FrameInstantSpool:{service}:{account}"), 512)
+    }
+
+    fn valid_component(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    }
+
+    fn wide_string(value: &str, maximum: usize) -> Result<Vec<u16>, WindowsSecureSpoolError> {
+        if value.is_empty() || value.len() > maximum || value.contains('\0') {
+            return Err(WindowsSecureSpoolError);
+        }
+        let mut wide = value.encode_utf16().collect::<Vec<_>>();
+        wide.push(0);
+        Ok(wide)
+    }
+
+    fn path_wide(path: &Path) -> Result<Vec<u16>, WindowsSecureSpoolError> {
+        let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        if wide.is_empty() || wide.len() >= 32_767 || wide.contains(&0) {
+            return Err(WindowsSecureSpoolError);
+        }
+        wide.push(0);
+        Ok(wide)
+    }
+
+    fn current_user_sid() -> Result<String, WindowsSecureSpoolError> {
+        let mut token: HANDLE = ptr::null_mut();
+        // SAFETY: token is a valid out pointer and the process pseudo-handle
+        // remains valid for this call.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(WindowsSecureSpoolError);
+        }
+        let token = Handle(token);
+        let mut required = 0_u32;
+        // SAFETY: sizing call writes only `required`.
+        let sizing_result =
+            unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut required) };
+        // SAFETY: this reads the error from the immediately preceding sizing
+        // call, which must fail specifically because the buffer was absent.
+        if sizing_result != 0
+            || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
+            || required < mem::size_of::<TOKEN_USER>() as u32
+            || required > 64 * 1024
+        {
+            return Err(WindowsSecureSpoolError);
+        }
+        let words = usize::try_from(required)
+            .ok()
+            .and_then(|bytes| bytes.checked_add(mem::size_of::<usize>() - 1))
+            .map(|bytes| bytes / mem::size_of::<usize>())
+            .ok_or(WindowsSecureSpoolError)?;
+        let mut buffer = vec![0_usize; words];
+        let buffer_bytes = u32::try_from(buffer.len() * mem::size_of::<usize>())
+            .map_err(|_| WindowsSecureSpoolError)?;
+        // SAFETY: the aligned buffer is writable for `buffer_bytes`; success
+        // initializes TOKEN_USER and its SID within the allocation.
+        if unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                buffer_bytes,
+                &mut required,
+            )
+        } == 0
+            || required < mem::size_of::<TOKEN_USER>() as u32
+            || required > buffer_bytes
+        {
+            return Err(WindowsSecureSpoolError);
+        }
+        // SAFETY: the successful call initialized TOKEN_USER at the aligned
+        // start of the still-live buffer.
+        let token_user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+        let mut encoded = ptr::null_mut();
+        // SAFETY: the SID stays live in `buffer`; the returned allocation is
+        // immediately guarded and later released with LocalFree.
+        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut encoded) } == 0
+            || encoded.is_null()
+        {
+            return Err(WindowsSecureSpoolError);
+        }
+        let encoded = LocalAllocation(encoded.cast());
+        let length = (0..512)
+            // SAFETY: the API returns a NUL-terminated SID string whose
+            // documented representation is well below this hard bound.
+            .find(|offset| unsafe { *encoded.0.cast::<u16>().add(*offset) } == 0)
+            .ok_or(WindowsSecureSpoolError)?;
+        // SAFETY: `length` is bounded by the first NUL in the live allocation.
+        let sid = String::from_utf16(unsafe { slice::from_raw_parts(encoded.0.cast(), length) })
+            .map_err(|_| WindowsSecureSpoolError)?;
+        if valid_sid_string(&sid) {
+            Ok(sid)
+        } else {
+            Err(WindowsSecureSpoolError)
+        }
+    }
+
+    fn valid_sid_string(value: &str) -> bool {
+        value.len() <= 256
+            && value.strip_prefix("S-1-").is_some_and(|components| {
+                !components.is_empty()
+                    && components.split('-').all(|component| {
+                        !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            })
+    }
+
+    fn security_descriptor(value: &str) -> Result<LocalAllocation, WindowsSecureSpoolError> {
+        let encoded = wide_string(value, 1_024)?;
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: input is NUL-terminated and `descriptor` is a valid out
+        // pointer. Windows allocates the result with LocalAlloc.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                encoded.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                ptr::null_mut(),
+            )
+        } == 0
+            || descriptor.is_null()
+        {
+            return Err(WindowsSecureSpoolError);
+        }
+        Ok(LocalAllocation(descriptor))
+    }
+
+    struct CredentialAllocation(*mut CREDENTIALW);
+
+    impl CredentialAllocation {
+        fn new(value: *mut CREDENTIALW) -> Result<Self, WindowsSecureSpoolError> {
+            (!value.is_null())
+                .then_some(Self(value))
+                .ok_or(WindowsSecureSpoolError)
+        }
+
+        fn get(&self) -> &CREDENTIALW {
+            // SAFETY: construction rejects null; the guard owns the allocation.
+            unsafe { &*self.0 }
+        }
+    }
+
+    impl Drop for CredentialAllocation {
+        fn drop(&mut self) {
+            // SAFETY: CredReadW returned this allocation and it is freed once.
+            unsafe { CredFree(self.0.cast()) };
+        }
+    }
+
+    struct Handle(HANDLE);
+
+    impl Handle {
+        fn new(value: HANDLE) -> Result<Self, WindowsSecureSpoolError> {
+            (!value.is_null() && value != INVALID_HANDLE_VALUE)
+                .then_some(Self(value))
+                .ok_or(WindowsSecureSpoolError)
+        }
+
+        fn into_file(mut self) -> fs::File {
+            let handle = self.0;
+            self.0 = ptr::null_mut();
+            // SAFETY: this transfers the one owned CreateFileW handle into File.
+            unsafe { fs::File::from_raw_handle(handle as RawHandle) }
+        }
+    }
+
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+                // SAFETY: a Win32 open call returned this owned handle.
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+    }
+
+    struct LocalAllocation(HLOCAL);
+
+    impl Drop for LocalAllocation {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: these APIs document LocalAlloc ownership.
+                unsafe { LocalFree(self.0) };
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use windows::{
+    create_private_file, credential_delete, credential_load, credential_store,
+    enforce_private_permissions, metadata_is_indirect, publish_file,
+};
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{WindowsPublishError, destination_leaf};
+
+    #[test]
+    fn publication_leaf_is_a_bounded_ascii_component() {
+        assert_eq!(
+            destination_leaf(Path::new("root/000001-deadbeef.spool")).expect("valid leaf"),
+            "000001-deadbeef.spool"
+        );
+        for invalid in [
+            "target",
+            "root/..",
+            "root/name:stream",
+            "root/name\\child",
+            "root/name child",
+            "root/é.spool",
+        ] {
+            assert_eq!(
+                destination_leaf(Path::new(invalid)),
+                Err(WindowsPublishError::Failed),
+                "{invalid}"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::{
+        fs,
+        io::Write,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        WindowsPublishError, create_private_file, enforce_private_permissions, publish_file,
+    };
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("frame-secure-spool-{}-{nonce}", std::process::id()));
+            fs::create_dir(&path).expect("test directory");
+            enforce_private_permissions(&path).expect("private test directory");
+            Self(path)
+        }
+
+        fn join(&self, leaf: &str) -> PathBuf {
+            self.0.join(leaf)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn private_creation_and_handle_relative_no_replace_publication() {
+        let directory = TestDirectory::new();
+        let source = directory.join("segment.tmp");
+        let destination = directory.join("segment.spool");
+        let mut file = create_private_file(&source).expect("private source");
+        file.write_all(b"authenticated ciphertext")
+            .expect("write source");
+        file.sync_all().expect("sync source");
+
+        publish_file(&source, &destination).expect("publish");
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(&destination).expect("published bytes"),
+            b"authenticated ciphertext"
+        );
+        drop(file);
+
+        let second_source = directory.join("second.tmp");
+        let existing_target = directory.join("existing.spool");
+        drop(create_private_file(&second_source).expect("second source"));
+        drop(create_private_file(&existing_target).expect("existing target"));
+        assert_eq!(
+            publish_file(&second_source, &existing_target),
+            Err(WindowsPublishError::AlreadyExists)
+        );
+        assert!(Path::new(&second_source).exists());
+    }
+}

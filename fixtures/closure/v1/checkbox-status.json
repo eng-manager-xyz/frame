@@ -1,0 +1,349 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-17",
+  "classification_policy": {
+    "local_satisfied": "The checkbox has repository-backed implementation, tests, or an executable policy. This is not production sign-off.",
+    "protected_pending": "The remaining claim intrinsically needs provider credentials, representative hardware, a real browser or assistive technology, production-shaped data, delivery-control settings, another repository, or accountable human approval.",
+    "local_gap": "A required implementation or integration can still be completed in this repository without protected evidence. Protected work cannot hide this status."
+  },
+  "expected_totals": {
+    "checkboxes": 554,
+    "local_satisfied": 363,
+    "protected_pending": 190,
+    "local_gap": 1
+  },
+  "issues": {
+    "01": {
+      "count": 13,
+      "digest": "48a526f385af2e2a3de76352fc4814231da70501f67f52adc9e28555d13b7085",
+      "evidence": ["docs/migration/charter.md", "docs/migration/capability-matrix.md", "docs/upstream-cap.md"],
+      "protected": [
+        {"ordinals": [4, 9], "classes": ["production_scale_data", "human_approval"], "reason": "Measured product baselines and approved regression or rollback budgets require real observations and accountable approval."},
+        {"ordinals": [13], "classes": ["human_approval"], "reason": "Cross-functional approval is an actor-signed release record, not a repository assertion."}
+      ],
+      "local_gaps": []
+    },
+    "02": {
+      "count": 10,
+      "digest": "8328f4db63d09c207cbb36aff808ac9a87ec7a8713ebe0b5303d1ebe3af1efbd",
+      "evidence": ["docs/adr/0002-cloudflare-r2-storage.md", "docs/architecture/storage-contract-v1.md", "docs/evidence/storage-contract-local.md"],
+      "protected": [
+        {"ordinals": [1, 4, 7, 8], "classes": ["human_approval", "provider_execution"], "reason": "The ADR, legacy-provider dispositions, and security/residency decisions require named product/security owners and live provider facts."}
+      ],
+      "local_gaps": []
+    },
+    "03": {
+      "count": 14,
+      "digest": "33221860b50a988d7c5848698bcd7e1b35596b65e52e3fd7db72d71bcffb638c",
+      "evidence": ["docs/adr/0001-runtime-topology.md", "docs/adr/0003-cloudflare-media-transformations.md", "apps/media-worker/NATIVE_EXECUTOR_V1.md"],
+      "protected": [
+        {"ordinals": [2, 11], "classes": ["provider_execution"], "reason": "The R2-to-Media-to-R2 spike and managed immutable-output behavior need an isolated Cloudflare account and bucket."}
+      ],
+      "local_gaps": []
+    },
+    "04": {
+      "count": 13,
+      "digest": "a308046c100ac76fe9de3f1d8997cf9ef475bb82245566d3ccbd98eb1d3234ab",
+      "evidence": ["fixtures/parity/v1/manifest.json", "docs/evidence/parity-fixtures.md", "scripts/ci/check-parity-evidence.py"],
+      "protected": [
+        {"ordinals": [3, 6, 10, 12], "classes": ["hardware_execution", "production_scale_data"], "reason": "Golden capture/device fixtures and statistically meaningful resource/sync baselines require representative platforms and real measurements."},
+        {"ordinals": [5, 11], "classes": ["provider_execution", "hardware_execution"], "reason": "Cross-executor and remote managed-media manifests require actual managed and native outputs with usage context."}
+      ],
+      "local_gaps": []
+    },
+    "05": {"count": 10, "digest": "acf63762d09a074dae9fb45f2cd6f8bbac3621e29358edd25281d42ad1ab0ced", "evidence": ["docs/architecture/workspace-boundaries.md", "docs/security/dependency-policy.md", "scripts/ci/check-workspace-boundaries.sh"], "protected": [], "local_gaps": []},
+    "06": {"count": 13, "digest": "48991f20c2a5c340ab57c8c348399994df678dd962fc2cb22ff04d0cd1b1566d", "evidence": ["crates/domain/src/contracts.rs", "fixtures/hermetic/v1/manifest.json", "docs/migration/charter.md"], "protected": [], "local_gaps": []},
+    "07": {
+      "count": 13,
+      "digest": "ed08ce9df3682d1282240d4a6adc3955e06364fec20298b2f11b5a8d72773239",
+      "evidence": ["apps/media-worker/src/protocol.rs", "apps/media-worker/src/consumer.rs", "apps/control-plane/src/lib.rs"],
+      "protected": [
+        {"ordinals": [6, 10, 13], "classes": ["provider_execution", "hardware_execution"], "reason": "The complete managed/native walking slice, managed artifact reuse, and isolated Cloudflare/native environment need real R2/Media and native runtime evidence."}
+      ],
+      "local_gaps": []
+    },
+    "08": {
+      "count": 10,
+      "digest": "6bf8a655a78416475b0ae41c01945e86d2812ddeb481a5b9c4c1706d91d1f251",
+      "evidence": ["docs/adr/0005-leptos-rendering-and-tauri-shell.md", "docs/evidence/web-hydration-local.md", "apps/desktop/capabilities/main.json"],
+      "protected": [
+        {"ordinals": [9], "classes": ["browser_accessibility_execution"], "reason": "The initial keyboard, contrast, reduced-motion, and named screen-reader audit needs supported browsers and assistive technology."}
+      ],
+      "local_gaps": []
+    },
+    "09": {
+      "count": 13,
+      "digest": "1bb554a7b751c74c25e387411b2944b56b27fb775c0a60e448223cb89bbb26dd",
+      "evidence": [".github/workflows/quality-gates.yml", ".github/workflows/production-gate.yml", "scripts/ci/check-workflow-policy.py"],
+      "protected": [
+        {"ordinals": [7, 9], "classes": ["delivery_control_plane"], "reason": "Merge blocking and required-check enforcement are GitHub repository settings and run history, not workflow YAML alone."},
+        {"ordinals": [11], "classes": ["provider_execution"], "reason": "The remote R2-to-Media-to-R2 lane requires scoped Cloudflare credentials and bounded spend."}
+      ],
+      "local_gaps": []
+    },
+    "10": {
+      "count": 12,
+      "digest": "8b475459e318c06f06a05d88f52dda2cfdae41f7c2a9a3c7725071f21fefde3c",
+      "evidence": ["docs/local-development.md", "scripts/frame", "scripts/ci/hermetic-journey.py"],
+      "protected": [{"ordinals": [10], "classes": ["provider_execution"], "reason": "The opt-in remote smoke must run against isolated live R2/Media resources and retain usage evidence."}],
+      "local_gaps": []
+    },
+    "11": {
+      "count": 10,
+      "digest": "5037380783c429b43103a82b75de70eb7dfe4726b4d5be244b5de2a45f5ac5f5",
+      "evidence": ["apps/control-plane/migrations/0001_initial.sql", "scripts/ci/check-migrations.py", "docs/evidence/etl-local.md"],
+      "protected": [{"ordinals": [10], "classes": ["production_scale_data", "human_approval"], "reason": "Actual dataset growth and a final D1/sharding approval require protected source measurements and an owner decision."}],
+      "local_gaps": []
+    },
+    "12": {"count": 10, "digest": "5552b24c8eacf5186b129a00269f1df6cae1f7d049f041e812d8c2dc06353e87", "evidence": ["docs/evidence/d1-repository-local.md", "scripts/ci/d1-repository-conformance.py", "apps/control-plane/src/repository.rs"], "protected": [], "local_gaps": []},
+    "13": {
+      "count": 10,
+      "digest": "ec4b52fe7e8147cf13b1004610da8f74fb11f6a7f92ac885436d49a5e777d556",
+      "evidence": ["docs/evidence/authentication-local.md", "docs/evidence/auth-d1-repository-local.md", "docs/security/authentication-protocol.md"],
+      "protected": [{"ordinals": [9], "classes": ["human_approval", "browser_accessibility_execution"], "reason": "Compatible-session transition or deliberate forced login needs real supported-client rehearsal and approved communication."}],
+      "local_gaps": []
+    },
+    "14": {"count": 10, "digest": "5fe53ce5bd3f7a418fdcf4d9be6e288e4b178b28552032c0bf12530af4d4408b", "evidence": ["docs/evidence/organization-d1-local.md", "docs/architecture/organizations-rbac-spaces-folders.md", "scripts/ci/organization-sqlite-semantic-conformance.py"], "protected": [], "local_gaps": []},
+    "15": {"count": 12, "digest": "1e2b006d27e8741fb838b99d1d260b08083182a62aed3e8cbe1ac9321e3beda2", "evidence": ["docs/evidence/business-data-v1-local.md", "docs/architecture/business-data-v1.md", "scripts/ci/business-sqlite-semantic-conformance.py"], "protected": [], "local_gaps": []},
+    "16": {
+      "count": 10,
+      "digest": "92a3e5d6223c21b7052dfedf74746f8cb8cb468ea3c18ec60cb8e0d800e23511",
+      "evidence": ["docs/evidence/etl-local.md", "scripts/migration/etl.py", "docs/migration/etl-runbook.md"],
+      "protected": [
+        {"ordinals": [7, 8, 10], "classes": ["production_scale_data", "provider_execution"], "reason": "Production-scale ETL, exact reconciliation, and backup restore/rollback need protected MySQL/D1 data and timed provider runs."},
+        {"ordinals": [9], "classes": ["human_approval", "production_scale_data"], "reason": "Rejected-record disposition requires a privacy-safe real impact list and accountable owner approval."}
+      ],
+      "local_gaps": []
+    },
+    "17": {
+      "count": 10,
+      "digest": "90bfeb6b981f048e7ed5f4bd85578d00cd5bfb501b9181fa8f6a555fe2f7b241",
+      "evidence": ["docs/evidence/cutover-authority-local.md", "scripts/ci/cutover-authority-conformance.py", "docs/operations/metadata-authority-cutover.md"],
+      "protected": [{"ordinals": [9], "classes": ["production_scale_data", "human_approval"], "reason": "Rollback-window timing and preservation of canary writes require a production-shaped authorized rehearsal."}],
+      "local_gaps": []
+    },
+    "18": {
+      "count": 12,
+      "digest": "a2564ade66bd6ce84837b2104c0a9d870bc6558615faa930957e1f8953c902f1",
+      "evidence": ["docs/architecture/storage-contract-v1.md", "docs/evidence/storage-contract-local.md", "scripts/ci/r2-storage-conformance.py"],
+      "protected": [{"ordinals": [12], "classes": ["human_approval", "provider_execution"], "reason": "BYO/self-hosting parity and retained adapters require approved provider dispositions and live compatibility evidence."}],
+      "local_gaps": []
+    },
+    "19": {
+      "count": 11,
+      "digest": "730a4bed8c9f98a298d0bfc1a78d341f738357f61f9fc45643820bdc46fd59b9",
+      "evidence": ["docs/evidence/multipart-storage-v1-local.md", "docs/architecture/multipart-storage-v1.md", "apps/control-plane/src/r2_multipart.rs", "crates/application/tests/multipart_storage_v1.rs"],
+      "protected": [
+        {"ordinals": [6], "classes": ["provider_execution", "hardware_execution"], "reason": "A restarted real recording and provider multipart session need desktop and R2 evidence."},
+        {"ordinals": [11], "classes": ["provider_execution", "browser_accessibility_execution"], "reason": "Wire-level range/CORS/player behavior needs R2, Worker, custom-domain, and supported-browser execution."}
+      ],
+      "local_gaps": []
+    },
+    "20": {
+      "count": 10,
+      "digest": "438ae2ba0d708b23df6a7fcae08b7b4bb427927b1ce5e64da9dd17e24f55cfd9",
+      "evidence": ["docs/evidence/object-backfill-v1-local.md", "docs/architecture/object-backfill-v1.md", "crates/application/tests/object_backfill_v1.rs"],
+      "protected": [
+        {"ordinals": [7, 10], "classes": ["production_scale_data", "provider_execution"], "reason": "Exact real-provider reconciliation and throughput/error/cost budgets need production-scale provider rehearsals."},
+        {"ordinals": [9], "classes": ["human_approval", "production_scale_data"], "reason": "Quarantine disposition and user-impact approval require real source objects and an accountable owner."}
+      ],
+      "local_gaps": []
+    },
+    "21": {
+      "count": 12,
+      "digest": "c8b5ba06bd0db3678c5a435ef4a375965e0f5abd6ca8a6b87d2985942b2a0913",
+      "evidence": ["docs/evidence/storage-governance-local.md", "docs/architecture/storage-lifecycle-v1.md", "docs/security/storage-governance-v1.md"],
+      "protected": [
+        {"ordinals": [7, 8], "classes": ["provider_execution"], "reason": "Cached, signed, custom-domain, deletion, and privacy-revocation timing need real Cloudflare/R2 paths."},
+        {"ordinals": [12], "classes": ["human_approval", "provider_execution", "browser_accessibility_execution"], "reason": "The complete storage/browser security review requires live wire behavior and reviewer sign-off."}
+      ],
+      "local_gaps": []
+    },
+    "22": {
+      "count": 10,
+      "digest": "7130af54eadb8e1470f47878e6b275fe6f3234c5f5526fcfec28e409af3e4b73",
+      "evidence": ["docs/operations/gstreamer-runtime.md", "docs/evidence/media-runtime-local.md", "crates/media/gstreamer-runtime.json"],
+      "protected": [
+        {"ordinals": [2, 5, 6, 7, 10], "classes": ["hardware_execution", "delivery_control_plane", "human_approval"], "reason": "Platform bundles, clean-machine tests, signatures/notarization, updater behavior, and release review require each supported OS and signing authority."},
+        {"ordinals": [4], "classes": ["human_approval", "hardware_execution"], "reason": "Full native SBOM/notices plus codec patent, redistribution, license, and security decisions require packaged artifacts and accountable review."}
+      ],
+      "local_gaps": []
+    },
+    "23": {"count": 10, "digest": "5865b194a6bca0daf1eaeec8d8303833c6e3d88d6a8551c6a42336c2458004d6", "evidence": ["docs/evidence/media-runtime-local.md", "docs/operations/gstreamer-runtime.md", "crates/media/src/lib.rs"], "protected": [], "local_gaps": []},
+    "24": {
+      "count": 10,
+      "digest": "72b5f8f1d6d028c4d88b54c28f144aecad0995064ea78bbc0fe5c1cfb31cf5d7",
+      "evidence": ["docs/evidence/screen-capture-local.md", "docs/architecture/screen-capture-contracts.md", "crates/media/tests/screen_capture_contract.rs"],
+      "protected": [{"ordinals": [1, 2, 3, 5, 6, 7, 8, 9, 10], "classes": ["hardware_execution"], "reason": "Native OS adapters, permission UI, capture geometry/cursor/exclusion, recovery, zero-copy, performance, and fixture parity require representative macOS, Windows, and Linux machines."}],
+      "local_gaps": []
+    },
+    "25": {
+      "count": 10,
+      "digest": "4a6b8211c0eaa63f99e798d8fad533b61b965bf7afc3a7ccd512bba2d3f49695",
+      "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs"],
+      "protected": [{"ordinals": [1, 6, 7, 8], "classes": ["hardware_execution"], "reason": "Native source bridges and measured A/V/device/permission recovery require physical devices and each supported OS."}],
+      "local_gaps": []
+    },
+    "26": {
+      "count": 11,
+      "digest": "acb7ce90bf65d2d95ec90fbae7e17ded6e8bb3b9660e710bf28a1cc6419875ea",
+      "evidence": ["docs/evidence/instant-mode-local.md", "docs/architecture/instant-mode-contracts.md", "apps/control-plane/src/instant_finalize_runtime.rs", "scripts/ci/instant-finalize-sqlite-conformance.py"],
+      "protected": [
+        {"ordinals": [7, 8, 11], "classes": ["hardware_execution", "provider_execution"], "reason": "Real network-loss recording, crash recovery, and abort/delete cleanup need native storage plus R2/D1 execution."},
+        {"ordinals": [10], "classes": ["browser_accessibility_execution", "provider_execution"], "reason": "Playback-start and manifest-replacement behavior need real encoded media, delivery, and supported browsers."}
+      ],
+      "local_gaps": []
+    },
+    "27": {
+      "count": 11,
+      "digest": "244a7013ad0379b0463415960789126a747c13b5d5567bbd666bbd8aefb91a73",
+      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "crates/media/tests/studio_mode_contract.rs"],
+      "protected": [{"ordinals": [7, 8, 9, 10, 11], "classes": ["hardware_execution", "human_approval"], "reason": "Real legacy projects, physical power loss, decoded goldens, long projects, codecs, and hardware fallback require reviewed corpus and platform execution."}],
+      "local_gaps": []
+    },
+    "28": {
+      "count": 15,
+      "digest": "28b66812ea1ec650ba98c5c3c8fd8a9352b54ab7239d8ad520be004e3278968a",
+      "evidence": ["docs/evidence/media-service-local.md", "docs/architecture/media-service-v1.md", "apps/media-worker/NATIVE_EXECUTOR_V1.md"],
+      "protected": [
+        {"ordinals": [5], "classes": ["hardware_execution", "provider_execution"], "reason": "Workload-host network denial and full CPU/GPU/disk sandbox enforcement require the production native/provider environment."},
+        {"ordinals": [11, 12, 13, 14], "classes": ["provider_execution", "hardware_execution"], "reason": "Both backend publication, managed cancellation limits, outage/fallback behavior, and output tolerances need real managed/native outputs."}
+      ],
+      "local_gaps": []
+    },
+    "29": {
+      "count": 14,
+      "digest": "f2aecae1d1e43a528cdb17c3a68e62257cf5f888b11188b8b4d7a524dcdf485b",
+      "evidence": ["docs/evidence/media-conformance-local.md", "fixtures/media-conformance/v1/matrix.json", "scripts/ci/check-media-conformance.py"],
+      "protected": [
+        {"ordinals": [7, 10, 12, 13], "classes": ["hardware_execution"], "reason": "Golden devices, fault recovery, hardware/software paths, and long-duration resource budgets require platform runners and physical hardware."},
+        {"ordinals": [8, 11], "classes": ["provider_execution", "hardware_execution"], "reason": "Cross-executor output parity and managed outage/kill-switch reconciliation need real managed/native executions."}
+      ],
+      "local_gaps": []
+    },
+    "30": {
+      "count": 12,
+      "digest": "08e6e19cef6fcf020e34f2b28358bbd8f6db79fe38d7d23986a68969fbf9bb89",
+      "evidence": ["docs/evidence/api-workflow-parity-local.md", "fixtures/api-parity/v1/route-workflow-report.json", "docs/architecture/api-workflow-parity-v1.md"],
+      "protected": [
+        {"ordinals": [11], "classes": ["provider_execution"], "reason": "Managed quota/outage, native fallback, and kill-switch public behavior need protected executor/provider evidence in addition to the local state model."},
+        {"ordinals": [12], "classes": ["external_repository", "browser_accessibility_execution"], "reason": "Current and N-1 released desktop, mobile, extension, developer, and web artifacts plus their compatibility journeys require consumer-repository builds and real browser/client execution; the local registry is prerequisite evidence only."}
+      ],
+      "local_gaps": [
+        {"ordinals": [7], "reason": "Nine exact source-pinned operations have local success contracts; the per-row completion audit keeps 157 local-only operations and 123 operations with both local work and exact protected gates explicitly unfinished."}
+      ]
+    },
+    "31": {
+      "count": 10,
+      "digest": "7a4cf939709c4a697c8d769178b960638112512424dabe365a97c28a8dc2ae5d",
+      "evidence": ["docs/evidence/leptos-authenticated-web-local.md", "fixtures/web-authenticated/v1/route-matrix.json", "apps/web/src/browser_authenticated.rs", "apps/control-plane/src/browser_web_runtime.rs", "apps/control-plane/src/worker_auth_runtime.rs", "scripts/ci/worker-auth-sqlite-conformance.py"],
+      "protected": [
+        {"ordinals": [4, 8], "classes": ["browser_accessibility_execution"], "reason": "Cross-browser visual baselines, complete keyboard checks, and named screen-reader reports need supported browsers and AT."},
+        {"ordinals": [6], "classes": ["provider_execution"], "reason": "The CSPRNG issuance, encrypted-cookie, session, logout, fixed-shape sealing, and ciphertext-only D1 handoff adapters are local; real OTP delivery and hosted end-to-end browser journeys require protected provider/D1 execution."},
+        {"ordinals": [10], "classes": ["browser_accessibility_execution", "provider_execution"], "reason": "Navigation, interaction, API, and production SSR performance budgets need real browser/edge/API observations."}
+      ],
+      "local_gaps": []
+    },
+    "32": {
+      "count": 11,
+      "digest": "15df0bdd2048a5dff9ad38b26fe5f3cf84c0654c63a6387400a0d69b7a549d94",
+      "evidence": ["docs/evidence/share-player-local.md", "fixtures/web-share-player/v1/contract.json", "apps/web/src/share_player.rs"],
+      "protected": [
+        {"ordinals": [6, 7, 11], "classes": ["provider_execution", "browser_accessibility_execution"], "reason": "Public/custom links, real range/seek, and privacy-cache revocation require Worker/R2/CDN plus supported browser/device execution."},
+        {"ordinals": [9], "classes": ["browser_accessibility_execution"], "reason": "Player/transcript/comment keyboard and screen-reader acceptance needs named assistive technology."}
+      ],
+      "local_gaps": []
+    },
+    "33": {
+      "count": 10,
+      "digest": "4c558f86d18ebee2673d202175fb62bd261a4f358b014e38bf15e1c1e17e2a1c",
+      "evidence": ["docs/evidence/desktop-editor-a11y-local.md", "docs/architecture/desktop-product-v1.md", "scripts/ci/check-desktop-product.py"],
+      "protected": [{"ordinals": [8, 9, 10], "classes": ["hardware_execution", "browser_accessibility_execution", "human_approval"], "reason": "Complete keyboard/AT journeys, OS lifecycle/hotkey/tray/overlay matrices, real adapters, updater, and parity-gate removal need supported platforms and approval."}],
+      "local_gaps": []
+    },
+    "34": {
+      "count": 12,
+      "digest": "ad1e2379f2caa78503da5dfa0341001dbe82cf7a2d9a25647d3dba3d8ccd0e09",
+      "evidence": ["docs/evidence/operational-hardening-local.md", "fixtures/operational-hardening/v1/protected-evidence.json", "scripts/ci/check-operational-hardening.py"],
+      "protected": [{"ordinals": [1, 2, 3, 4, 7, 8, 9, 10, 11, 12], "classes": ["provider_execution", "delivery_control_plane", "production_scale_data", "human_approval", "hardware_execution"], "reason": "Trusted signatures/promotion, real dashboards/pages, independent security review, D1/R2/key restores, provider games, privacy audit, load/cost/region rehearsals, and signed desktop evidence are all uncollected."}],
+      "local_gaps": []
+    },
+    "35": {
+      "count": 12,
+      "digest": "8724b55854c5dcb23f9840d12a7c2621d5998dede1fd14e9e40eecaa5ce0532e",
+      "evidence": ["docs/evidence/cutover-decommission-local.md", "fixtures/cutover-decommission/v1/protected-evidence.json", "scripts/ci/check-cutover-decommission.py"],
+      "protected": [{"ordinals": [5, 7, 8, 9, 10, 11, 12], "classes": ["production_scale_data", "provider_execution", "human_approval"], "reason": "Phase signatures, canary observations, managed-media cost/quality, production rollback, final reconciliation, rollback-expiry approval, and decommission execution remain not_collected."}],
+      "local_gaps": []
+    },
+    "36": {
+      "count": 16,
+      "digest": "2872d85680f118e2d3bda572c44af9c3fbcba8cf30fb8b875b1e77bd031815c7",
+      "evidence": ["docs/evidence/frame-client-local.md", "fixtures/frame-api/v1/contract.schema.json", "scripts/ci/check-frame-client-contract.py"],
+      "protected": [
+        {"ordinals": [1], "classes": ["human_approval"], "reason": "Public-data classification acceptance needs security/privacy/product approval."},
+        {"ordinals": [16], "classes": ["external_repository"], "reason": "The exact Frame Git SHA and committed root lockfile must be proved in the portfolio repository."}
+      ],
+      "local_gaps": []
+    },
+    "37": {
+      "count": 16,
+      "digest": "55fc81f23f48deffe923b562faa7ceb31adff311b30d730de58a7d35a367125a",
+      "evidence": ["docs/evidence/engmanager-portfolio-static-local.md", "fixtures/engmanager-portfolio/v1/engmanager-static-frame.patch", "scripts/ci/check-engmanager-portfolio-integration.py"],
+      "protected": [{"ordinals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], "classes": ["external_repository"], "reason": "The tested patch is only an artifact in Frame; every issue-37 completion claim belongs to an accepted engmanager.xyz change and its deployment/browser evidence."}],
+      "local_gaps": []
+    },
+    "38": {
+      "count": 17,
+      "digest": "5c60e4cb24d0cf6cf5ee8a4e66a45d19529fb5476ac55514470ffe32712164e2",
+      "evidence": ["docs/evidence/render-web-runtime-local.md", "render.yaml", "scripts/ci/render-web-runtime-smoke.py"],
+      "protected": [{"ordinals": [7, 10, 13, 14, 16, 17], "classes": ["provider_execution", "delivery_control_plane"], "reason": "Render preview/CLI schema, real restart/scale/redeploy, preview isolation, failed-deploy preservation, rollback, and default-host controls require an eligible Render workspace."}],
+      "local_gaps": []
+    },
+    "39": {
+      "count": 17,
+      "digest": "e5519b6494f0dcc35e7c764fde49a2a825db9546d90037d6c0df04738c19b0bf",
+      "evidence": ["docs/evidence/same-origin-routing-local.md", "fixtures/same-origin-routing/v1/route-owner-matrix.json", "scripts/ci/check-same-origin-routing.py"],
+      "protected": [{"ordinals": [7, 8, 9, 10, 12, 13, 14, 15, 16, 17], "classes": ["provider_execution", "external_repository"], "reason": "Live owner routing/normalization, host bypass, TLS/CAA, cache, rollback, and unrelated-zone non-regression require Cloudflare, Render, DNS, and portfolio access."}],
+      "local_gaps": []
+    },
+    "40": {
+      "count": 19,
+      "digest": "830f63ab8156b8e846ad3b08b0b9039c9d777a0f2782993b9fc70b9fee492738",
+      "evidence": ["docs/evidence/multiruntime-delivery-local.md", "scripts/ci/check-workflow-policy.py", ".github/workflows/production-gate.yml"],
+      "protected": [{"ordinals": [4, 5, 6, 9, 10, 11, 12, 16, 17, 18], "classes": ["delivery_control_plane", "provider_execution", "external_repository"], "reason": "Render/GitHub/Cloudflare build authority, required checks on every SHA, one-trigger behavior, failure preservation/rollback, and portfolio CI need external settings and run evidence."}],
+      "local_gaps": []
+    },
+    "41": {
+      "count": 21,
+      "digest": "50c29f65d41632f3015e3453a42152448eb98db679cfed3902c0ce2c253b14c5",
+      "evidence": ["docs/evidence/direct-upload-local.md", "scripts/ci/direct-upload-sqlite-conformance.py", "apps/control-plane/src/r2_direct_upload.rs"],
+      "protected": [{"ordinals": [3, 4, 5, 9, 10, 11, 12, 13, 14, 15, 16, 19, 21], "classes": ["provider_execution", "external_repository", "delivery_control_plane"], "reason": "Zone imports/rules, no-op plans, DNS/TLS/cache/WAF behavior, purges, state restore, and provider rollback require the authoritative portfolio state plus Cloudflare execution."}],
+      "local_gaps": []
+    },
+    "42": {
+      "count": 18,
+      "digest": "e8e6bed61cfef854e3e20d8492170ecdf228a27be3bd88a8a8d3a5d61399e270",
+      "evidence": ["docs/evidence/browser-security-local.md", "docs/security/browser-integration-boundaries.md", "scripts/ci/check-browser-security.py"],
+      "protected": [{"ordinals": [9, 10, 11, 15, 17, 18], "classes": ["browser_accessibility_execution", "provider_execution", "external_repository"], "reason": "Sibling-origin navigation/cookies/CSRF, framing, enforcing policies, and cache behavior need supported browsers against deployed portfolio/Frame origins and CDN."}],
+      "local_gaps": []
+    },
+    "43": {
+      "count": 17,
+      "digest": "ed165b23cd957457b7b912e019ba1981b7ac8510c192ef0c574ac60c03d3b1a5",
+      "evidence": ["docs/evidence/cross-repo-preview-local.md", "fixtures/cross-repo-preview/v1/contract.json", "scripts/ci/cross-repo-preview-e2e.py"],
+      "protected": [
+        {"ordinals": [2, 9], "classes": ["external_repository"], "reason": "Portfolio Actions and pinned-toolchain/root-lockfile consumer proof must land in engmanager.xyz."},
+        {"ordinals": [4, 11, 14], "classes": ["provider_execution"], "reason": "Manual preview, staging provider isolation, and repeated edge-cache behavior need Render/Cloudflare resources."},
+        {"ordinals": [13], "classes": ["browser_accessibility_execution"], "reason": "The real browser/device/keyboard/screen-reader matrix needs supported browsers and assistive technology."}
+      ],
+      "local_gaps": []
+    },
+    "44": {
+      "count": 17,
+      "digest": "3c49441058994540521b02b9a332b36f4e1ca9450d8165517f292640b7281fe4",
+      "evidence": ["docs/evidence/subdomain-launch-local.md", "fixtures/launch-observability/v1/protected-evidence.json", "scripts/ci/check-launch-observability.py"],
+      "protected": [{"ordinals": [2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17], "classes": ["provider_execution", "production_scale_data", "human_approval", "external_repository", "browser_accessibility_execution"], "reason": "Provider dashboards/synthetics, capacity/cost, privacy drills, DNS/route/cache/TLS, portfolio outage baseline, timed rollback, observation, and signed launch decisions remain not_collected."}],
+      "local_gaps": []
+    }
+  }
+}

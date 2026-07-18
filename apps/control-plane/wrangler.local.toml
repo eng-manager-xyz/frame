@@ -1,0 +1,26 @@
+name = "frame-control-plane-local"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-07-15"
+workers_dev = true
+
+[build]
+command = "worker-build --release apps/control-plane"
+
+[vars]
+FRAME_DEPLOYMENT = "local"
+FRAME_PUBLIC_HOST = "localhost"
+FRAME_MEDIA_MODE = "fake"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "frame-local"
+database_id = "frame-local-only"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "RECORDINGS"
+bucket_name = "frame-recordings-local"
+
+# The local stack intentionally has no remote Media binding. Application code
+# selects the deterministic fake through FRAME_MEDIA_MODE. The real beta
+# binding is exercised only by the protected, cost-bounded remote lane.

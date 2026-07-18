@@ -1,0 +1,40 @@
+name: Progressive cutover and decommission contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cutover-decommission-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-contract:
+    name: Non-mutating cutover, rollback, and retention gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Validate the complete Issue-35 contract
+        run: python3 -I scripts/ci/check-cutover-decommission.py
+      - name: Prove deterministic advisory decisions
+        run: |
+          python3 -I scripts/ci/cutover_go_no_go.py --self-test \
+            --output target/evidence/cutover-dashboard-local.json
+      - name: Prove tenant and domain authority fencing
+        run: |
+          python3 scripts/ci/cutover-authority-conformance.py
+          cargo test --locked -p frame-control-plane --test cutover_authority_v1
+      - name: Retain bounded synthetic evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cutover-decommission-local-${{ github.sha }}
+          path: target/evidence/cutover-dashboard-local.json
+          if-no-files-found: error
+          retention-days: 14

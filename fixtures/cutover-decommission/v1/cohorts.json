@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "cohort_set_id": "frame-cutover-cohorts-v1",
+  "repository_contains_tenant_identifiers": false,
+  "production_membership_source": "protected_immutable_release_record",
+  "selection_rules": {
+    "stable_assignment": "sha256_release_stage_tenant_digest_mod_10000",
+    "explicit_allowlist_precedes_percentage": true,
+    "tenant_atomic": true,
+    "route_family_atomic": true,
+    "cross_tenant_sampling_forbidden": true,
+    "assignment_changes_require_new_stage_record": true
+  },
+  "required_dimensions": {
+    "tenant_class": ["synthetic", "internal", "representative"],
+    "storage_mode": ["hosted_r2", "legacy_s3", "minio", "byo_s3_compatible", "google_drive_migration_input"],
+    "platform": ["web_current", "web_n_minus_1", "desktop_macos_current", "desktop_windows_current"],
+    "browser": ["chrome", "firefox", "safari", "edge"],
+    "media_mode": ["managed_cloudflare", "native_gstreamer", "managed_to_native_fallback", "external_provider_adapter"],
+    "workflow_risk": ["standard", "authorization", "privacy", "billing", "webhook", "long_running_upload", "cancellation", "deletion", "organization_membership", "provider_indeterminate"]
+  },
+  "cohorts": [
+    {
+      "id": "synthetic",
+      "tenant_class": "synthetic",
+      "membership": "versioned_seed_only",
+      "storage_modes": ["hosted_r2"],
+      "platforms": ["web_current", "web_n_minus_1", "desktop_macos_current", "desktop_windows_current"],
+      "browsers": ["chrome", "firefox", "safari", "edge"],
+      "media_modes": ["managed_cloudflare", "native_gstreamer", "managed_to_native_fallback", "external_provider_adapter"],
+      "workflow_risks": ["standard", "authorization", "privacy", "billing", "webhook", "long_running_upload", "cancellation", "deletion", "organization_membership", "provider_indeterminate"],
+      "customer_communication_required": false,
+      "protected_membership_evidence": false
+    },
+    {
+      "id": "internal_hosted_web",
+      "tenant_class": "internal",
+      "membership": "explicit_protected_allowlist",
+      "storage_modes": ["hosted_r2"],
+      "platforms": ["web_current", "web_n_minus_1"],
+      "browsers": ["chrome", "firefox", "safari", "edge"],
+      "media_modes": ["managed_cloudflare", "native_gstreamer", "managed_to_native_fallback"],
+      "workflow_risks": ["standard", "authorization", "privacy", "long_running_upload", "cancellation", "deletion"],
+      "customer_communication_required": false,
+      "protected_membership_evidence": true
+    },
+    {
+      "id": "internal_desktop_native",
+      "tenant_class": "internal",
+      "membership": "explicit_protected_allowlist",
+      "storage_modes": ["hosted_r2"],
+      "platforms": ["desktop_macos_current", "desktop_windows_current"],
+      "browsers": [],
+      "media_modes": ["native_gstreamer"],
+      "workflow_risks": ["standard", "privacy", "long_running_upload", "cancellation", "provider_indeterminate"],
+      "customer_communication_required": false,
+      "protected_membership_evidence": true
+    },
+    {
+      "id": "representative_hosted",
+      "tenant_class": "representative",
+      "membership": "approved_stable_hash_bucket_plus_explicit_exclusions",
+      "storage_modes": ["hosted_r2"],
+      "platforms": ["web_current", "web_n_minus_1", "desktop_macos_current", "desktop_windows_current"],
+      "browsers": ["chrome", "firefox", "safari", "edge"],
+      "media_modes": ["managed_cloudflare", "native_gstreamer", "managed_to_native_fallback", "external_provider_adapter"],
+      "workflow_risks": ["standard", "authorization", "privacy", "cancellation", "deletion", "organization_membership"],
+      "customer_communication_required": true,
+      "protected_membership_evidence": true
+    },
+    {
+      "id": "representative_byo",
+      "tenant_class": "representative",
+      "membership": "explicit_consent_and_adapter_readiness_allowlist",
+      "storage_modes": ["legacy_s3", "minio", "byo_s3_compatible", "google_drive_migration_input"],
+      "platforms": ["web_current", "web_n_minus_1", "desktop_macos_current", "desktop_windows_current"],
+      "browsers": ["chrome", "firefox", "safari", "edge"],
+      "media_modes": ["native_gstreamer", "external_provider_adapter"],
+      "workflow_risks": ["privacy", "long_running_upload", "cancellation", "deletion", "provider_indeterminate"],
+      "customer_communication_required": true,
+      "protected_membership_evidence": true
+    },
+    {
+      "id": "representative_high_risk",
+      "tenant_class": "representative",
+      "membership": "explicit_protected_allowlist_after_provider_and_support_approval",
+      "storage_modes": ["hosted_r2", "byo_s3_compatible"],
+      "platforms": ["web_current", "web_n_minus_1"],
+      "browsers": ["chrome", "firefox", "safari", "edge"],
+      "media_modes": ["managed_cloudflare", "native_gstreamer", "managed_to_native_fallback", "external_provider_adapter"],
+      "workflow_risks": ["authorization", "privacy", "billing", "webhook", "long_running_upload", "cancellation", "deletion", "organization_membership", "provider_indeterminate"],
+      "customer_communication_required": true,
+      "protected_membership_evidence": true
+    }
+  ],
+  "exclusion_rules": [
+    "active_security_or_privacy_incident",
+    "unapproved_residency_or_customer_consent",
+    "unsupported_or_unreconciled_storage_adapter",
+    "client_below_minimum_safe_version",
+    "unowned_quarantine_or_indeterminate_provider_effect",
+    "legal_hold_or_retention_conflict",
+    "support_owner_unavailable"
+  ]
+}

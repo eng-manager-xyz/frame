@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "base_health_fixture": "fixtures/frame-api/v1/health.ok.json",
+  "base_share_fixture": "fixtures/frame-api/v1/share.public.json",
+  "cases": [
+    {
+      "id": "additive_unknown_health_field",
+      "classification": "compatible",
+      "resource": "health",
+      "operation": "add",
+      "pointer": "/future_consumer_hint",
+      "value": {"revision": 2},
+      "expected_current_consumer": "accept",
+      "expected_last_released_consumer": "accept"
+    },
+    {
+      "id": "breaking_required_field_removal",
+      "classification": "breaking",
+      "resource": "health",
+      "operation": "remove",
+      "pointer": "/service",
+      "expected_current_consumer": "reject",
+      "expected_last_released_consumer": "reject"
+    },
+    {
+      "id": "breaking_major_version_change",
+      "classification": "breaking",
+      "resource": "health",
+      "operation": "replace",
+      "pointer": "/api_version/major",
+      "value": 2,
+      "expected_current_consumer": "reject",
+      "expected_last_released_consumer": "reject"
+    },
+    {
+      "id": "breaking_release_type_change",
+      "classification": "breaking",
+      "resource": "health",
+      "operation": "replace",
+      "pointer": "/release",
+      "value": {"revision": 2},
+      "expected_current_consumer": "reject",
+      "expected_last_released_consumer": "reject"
+    },
+    {
+      "id": "breaking_status_semantic_change",
+      "classification": "breaking",
+      "resource": "health",
+      "operation": "replace",
+      "pointer": "/status",
+      "value": "healthy",
+      "expected_current_consumer": "reject",
+      "expected_last_released_consumer": "reject"
+    },
+    {
+      "id": "breaking_public_media_path_change",
+      "classification": "breaking",
+      "resource": "public_share",
+      "operation": "replace",
+      "pointer": "/playback/path",
+      "value": "/api/v2/public/shares/public-demo/media",
+      "expected_current_consumer": "reject",
+      "expected_last_released_consumer": "reject"
+    }
+  ]
+}

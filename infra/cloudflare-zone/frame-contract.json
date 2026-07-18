@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "ownership": {
+    "authoritative_repository": "eng-manager-xyz/engmanager.xyz",
+    "state_directory": "infra/cloudflare-zone",
+    "frame_repository_is_read_only_consumer": true,
+    "requires_complete_phase_import": true,
+    "requires_semantic_noop_before_frame_rules": true
+  },
+  "dns": {
+    "hostname": "frame.engmanager.xyz",
+    "record_type": "CNAME",
+    "target_input": "frame_render_hostname",
+    "wildcard_allowed": false,
+    "initial_proxy": false,
+    "activation_order": [
+      "render_domain_attached",
+      "dns_only_certificate_valid",
+      "cloudflare_proxy_enabled",
+      "full_strict_verified",
+      "worker_route_enabled"
+    ],
+    "assert_absent_record_types": ["AAAA"]
+  },
+  "worker_route": {
+    "pattern": "frame.engmanager.xyz/api*",
+    "compatibility_patterns": ["frame.engmanager.xyz/media-server*"],
+    "script_owner": "wrangler",
+    "lookalike_policy": "non_cacheable_404",
+    "owned_pathnames": ["/api", "/api/", "/media-server"],
+    "workers_dev": false
+  },
+  "cache": {
+    "default": "bypass",
+    "always_bypass": [
+      "api",
+      "authorization_header",
+      "auth_session_account",
+      "cookie",
+      "health",
+      "legacy_compatibility",
+      "mutation_method",
+      "private_or_deleted_share",
+      "range_media",
+      "set_cookie_response",
+      "signed_url",
+      "upload_or_finalize",
+      "websocket_or_sse"
+    ],
+    "immutable_only": {
+      "requires_content_fingerprint": true,
+      "allowed_methods": ["GET", "HEAD"],
+      "max_age_seconds": 31536000
+    },
+    "public_share_html_enabled": false,
+    "origin_cache_control_required": true
+  },
+  "purge": {
+    "allowed_hostname": "frame.engmanager.xyz",
+    "allowed_cache_tag_prefix": "frame:",
+    "exact_urls_only": true,
+    "zone_wide_purge_allowed": false
+  },
+  "security": {
+    "initial_enforcement": "observe",
+    "host_scope": "frame.engmanager.xyz",
+    "separate_rate_budgets": [
+      "auth",
+      "otp",
+      "upload_intent",
+      "upload_finalize",
+      "comment",
+      "view_reaction",
+      "job_mutation"
+    ],
+    "user_controlled_identifier_may_be_sole_key": false,
+    "cloudflare_access_public_app": false
+  },
+  "rollback": [
+    "disable_exact_frame_rule",
+    "remove_worker_route",
+    "switch_frame_cname_dns_only",
+    "restore_prior_frame_record"
+  ]
+}

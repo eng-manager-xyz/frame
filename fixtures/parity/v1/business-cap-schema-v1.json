@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "source_reference": "CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b:packages/database/schema.ts",
+  "source_file_sha256": "7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9",
+  "source_column_contract_sha256": "1eaab20cf10260f727aaef539d51bdd933157814f7cbd327dddb40bee6ae4fce",
+  "source_id_contract": "15-character Cap NanoID",
+  "target_id_contract": "deterministic RFC 9562 UUIDv8",
+  "source_tables": [
+    {"source_table":"videos","target_contract":"videos+business_repository_operations_v1","source_columns":["id","ownerId","orgId","name","bucket","storageIntegrationId","duration","width","height","fps","metadata","public","settings","transcriptionStatus","source","folderId","createdAt","effectiveCreatedAt","updatedAt","password","xStreamInfo","firstViewEmailSentAt","isScreenshot","awsRegion","awsBucket","videoStartTime","audioStartTime","jobId","jobStatus","skipProcessing"],"intentional_drifts":[
+      {"kind":"identifier","source":"NanoID identifiers","target":"UUIDv8 identifiers","rationale":"one deterministic PK/FK mapping"},
+      {"kind":"privacy","source":"public boolean plus encrypted password","target":"closed privacy enum; no password material","rationale":"explicit access policy and secret exclusion"},
+      {"kind":"document","source":"metadata/settings JSON","target":"canonical versioned metadata with checksum","rationale":"bounded forward-compatible documents"},
+      {"kind":"storage","source":"legacy bucket/provider fields","target":"storage integration/object manifests","rationale":"provider-neutral metadata authority"}
+    ]},
+    {"source_table":"video_edits","target_contract":"video_edits","source_columns":["videoId","sourceKey","editSpec","createdAt","updatedAt"],"intentional_drifts":[
+      {"kind":"key","source":"videoId primary key","target":"UUID edit id plus video FK","rationale":"versioned edit aggregate"},
+      {"kind":"document","source":"unbounded editSpec JSON","target":"canonical checksummed 1 MiB document","rationale":"compatibility and size enforcement"}
+    ]},
+    {"source_table":"shared_videos","target_contract":"shared_videos","source_columns":["id","videoId","folderId","organizationId","sharedByUserId","sharedAt"],"intentional_drifts":[
+      {"kind":"scope","source":"implicit sharing shape","target":"closed organization/space/public-link mode plus revision/revocation","rationale":"tenant and lifecycle enforcement"}
+    ]},
+    {"source_table":"comments","target_contract":"comments","source_columns":["id","type","content","timestamp","authorId","videoId","createdAt","updatedAt","parentCommentId"],"intentional_drifts":[
+      {"kind":"timeline","source":"floating-point seconds","target":"integer microseconds","rationale":"cross-runtime exactness"},
+      {"kind":"author","source":"required user NanoID","target":"user ID or keyed anonymous digest","rationale":"public-comment privacy contract"},
+      {"kind":"deletion","source":"no tombstone","target":"revisioned deleted_at tombstone","rationale":"retention executor"}
+    ]},
+    {"source_table":"notifications","target_contract":"notifications+outbox_events","source_columns":["id","orgId","recipientId","type","data","videoId","dedupKey","readAt","createdAt"],"intentional_drifts":[
+      {"kind":"delivery","source":"notification row only","target":"notification plus durable ordered outbox","rationale":"duplicate/gap-safe async delivery"},
+      {"kind":"document","source":"data JSON","target":"canonical checksummed payload","rationale":"bounded event contract"}
+    ]},
+    {"source_table":"messenger_conversations","target_contract":"business_messenger_legacy_quarantine_v1","source_columns":["id","agent","mode","userId","anonymousId","takeoverByUserId","takeoverAt","createdAt","updatedAt","lastMessageAt"],"intentional_drifts":[
+      {"kind":"disposition","source":"product messenger data","target":"excluded fail-closed quarantine","rationale":"not retained by Frame product scope"}
+    ]},
+    {"source_table":"messenger_messages","target_contract":"business_messenger_legacy_quarantine_v1","source_columns":["id","conversationId","role","content","userId","anonymousId","createdAt"],"intentional_drifts":[
+      {"kind":"disposition","source":"message content","target":"excluded fail-closed quarantine","rationale":"no repository read/write capability"}
+    ]},
+    {"source_table":"messenger_support_emails","target_contract":"business_messenger_legacy_quarantine_v1","source_columns":["id","conversationId","userId","userEmail","subject","message","createdAt"],"intentional_drifts":[
+      {"kind":"disposition","source":"support email PII/content","target":"excluded fail-closed quarantine","rationale":"bounded authorized purge only"}
+    ]},
+    {"source_table":"s3_buckets","target_contract":"storage_integrations","source_columns":["id","ownerId","organizationId","region","endpoint","bucketName","accessKeyId","secretAccessKey","provider","active","createdAt","updatedAt"],"intentional_drifts":[
+      {"kind":"normalization","source":"legacy S3 bucket record","target":"provider-neutral storage integration","rationale":"one storage capability model"},
+      {"kind":"secret","source":"encrypted credential fields","target":"single opaque ciphertext excluded from export","rationale":"no recoverable credential in business contracts"}
+    ]},
+    {"source_table":"storage_integrations","target_contract":"storage_integrations","source_columns":["id","ownerId","organizationId","provider","displayName","status","active","encryptedConfig","googleDriveAccessToken","googleDriveAccessTokenExpiresAt","googleDriveTokenRefreshLeaseId","googleDriveTokenRefreshLeaseExpiresAt","googleDriveStorageQuotaCache","createdAt","updatedAt"],"intentional_drifts":[
+      {"kind":"capabilities","source":"provider-specific columns","target":"versioned capability document plus opaque config","rationale":"provider-neutral port"},
+      {"kind":"secret","source":"token/config fields","target":"ciphertext only; non-exportable","rationale":"least disclosure"}
+    ]},
+    {"source_table":"storage_objects","target_contract":"storage_objects","source_columns":["id","integrationId","ownerId","videoId","objectKey","objectKeyHash","providerObjectId","uploadSessionUrl","uploadStatus","contentType","contentLength","metadata","createdAt","updatedAt"],"intentional_drifts":[
+      {"kind":"manifest","source":"provider object/upload fields","target":"role/version/state/bytes/checksum/content-type manifest","rationale":"D1/provider reconciliation"},
+      {"kind":"secret","source":"encrypted upload-session URL","target":"not retained","rationale":"private URL exclusion"}
+    ]},
+    {"source_table":"video_uploads","target_contract":"video_uploads+business_event_inbox_v1","source_columns":["videoId","uploaded","total","startedAt","updatedAt","mode","phase","processingProgress","processingMessage","processingError","rawFileKey"],"intentional_drifts":[
+      {"kind":"lifecycle","source":"phase/progress row","target":"canonical ordered initiated/uploading/finalizing/complete lifecycle","rationale":"duplicate and out-of-order convergence"},
+      {"kind":"failure","source":"free-form processing error","target":"redacted stable failure class","rationale":"secret-safe diagnostics"}
+    ]},
+    {"source_table":"imported_videos","target_contract":"imported_videos+business_event_inbox_v1","source_columns":["id","orgId","source","sourceId"],"intentional_drifts":[
+      {"kind":"external_id","source":"plaintext sourceId","target":"keyed digest","rationale":"external identifier privacy"},
+      {"kind":"lifecycle","source":"no workflow state","target":"ordered queued/running/terminal lifecycle","rationale":"durable async import"}
+    ]},
+    {"source_table":"developer_apps","target_contract":"developer_apps","source_columns":["id","ownerId","name","environment","logoUrl","deletedAt","createdAt","updatedAt"],"intentional_drifts":[
+      {"kind":"scope","source":"owner-scoped app","target":"organization-scoped app with authority version","rationale":"tenant administration"},
+      {"kind":"enum","source":"development/production","target":"test/live","rationale":"stable API vocabulary"}
+    ]},
+    {"source_table":"developer_app_domains","target_contract":"developer_app_domains","source_columns":["id","appId","domain","createdAt"],"intentional_drifts":[
+      {"kind":"key","source":"surrogate NanoID","target":"normalized app/domain composite key","rationale":"domain uniqueness and lookup"},
+      {"kind":"normalization","source":"domain string","target":"lowercase validated ASCII domain plus verification time","rationale":"unambiguous host identity"}
+    ]},
+    {"source_table":"developer_api_keys","target_contract":"developer_api_keys","source_columns":["id","appId","keyType","keyPrefix","keyHash","encryptedKey","lastUsedAt","revokedAt","createdAt"],"intentional_drifts":[
+      {"kind":"secret","source":"encrypted recoverable key","target":"digest and display prefix only","rationale":"non-recoverable key storage"},
+      {"kind":"enum","source":"public/secret","target":"publishable/secret","rationale":"stable API vocabulary"}
+    ]},
+    {"source_table":"developer_videos","target_contract":"developer_videos","source_columns":["id","appId","externalUserId","name","duration","width","height","fps","s3Key","transcriptionStatus","metadata","deletedAt","createdAt","updatedAt"],"intentional_drifts":[
+      {"kind":"external_id","source":"plaintext externalUserId","target":"SHA-256 digest","rationale":"developer-user privacy"},
+      {"kind":"document","source":"metadata JSON","target":"bounded canonical checksummed document","rationale":"forward compatibility"}
+    ]},
+    {"source_table":"developer_credit_accounts","target_contract":"developer_credit_accounts","source_columns":["id","appId","ownerId","balanceMicroCredits","stripeCustomerId","stripePaymentMethodId","autoTopUpEnabled","autoTopUpThresholdMicroCredits","autoTopUpAmountCents","createdAt","updatedAt"],"intentional_drifts":[
+      {"kind":"payment_secret","source":"Stripe customer/payment references","target":"not retained in business aggregate","rationale":"external payment boundary"},
+      {"kind":"accounting","source":"materialized balance only","target":"balance plus exact ledger sequence/revision","rationale":"reconciliation fence"}
+    ]},
+    {"source_table":"developer_credit_transactions","target_contract":"developer_credit_transactions","source_columns":["id","accountId","type","amountMicroCredits","balanceAfterMicroCredits","referenceId","referenceType","metadata","createdAt"],"intentional_drifts":[
+      {"kind":"accounting","source":"unordered transaction rows","target":"append-only exact account sequence with semantic idempotency","rationale":"financial reconciliation"},
+      {"kind":"reference","source":"plaintext provider/reference ID","target":"reference digest","rationale":"deduplication without provider data leakage"}
+    ]},
+    {"source_table":"developer_daily_storage_snapshots","target_contract":"developer_daily_storage_snapshots","source_columns":["id","appId","snapshotDate","totalDurationMinutes","videoCount","microCreditsCharged","processedAt","createdAt"],"intentional_drifts":[
+      {"kind":"key","source":"surrogate NanoID","target":"app/day composite key","rationale":"idempotent daily materialization"},
+      {"kind":"measure","source":"duration/video counters","target":"exact total bytes plus source checksum","rationale":"storage usage reconciliation"}
+    ]}
+  ],
+  "derived_aggregates": [
+    {"aggregate":"usage_ledger","provenance":"frame_derived","rationale":"auditable usage facts absent from pinned Cap schema"}
+  ]
+}

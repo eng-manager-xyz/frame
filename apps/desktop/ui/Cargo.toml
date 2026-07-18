@@ -1,0 +1,31 @@
+[package]
+name = "frame-desktop-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+csr = [
+    "dep:js-sys",
+    "dep:leptos",
+    "dep:serde-wasm-bindgen",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+]
+
+[dependencies]
+frame-desktop-core = { path = ".." }
+frame-client = { path = "../../../crates/frame-client" }
+js-sys = { workspace = true, optional = true }
+leptos = { workspace = true, optional = true, features = ["csr"] }
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { version = "0.4.64", optional = true }
+
+[lints]
+workspace = true

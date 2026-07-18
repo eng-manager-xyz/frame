@@ -1,0 +1,155 @@
+name: Leptos authenticated web
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/leptos-authenticated-web.yml"
+      - "apps/web/**"
+      - "apps/control-plane/src/authenticated_web_runtime.rs"
+      - "apps/control-plane/src/auth_repository.rs"
+      - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/compatibility_rate_limit.rs"
+      - "apps/control-plane/src/worker_auth_runtime.rs"
+      - "apps/control-plane/src/lib.rs"
+      - "apps/control-plane/src/routing.rs"
+      - "apps/control-plane/queries/auth/**"
+      - "apps/control-plane/queries/api_workflow/compatibility_rate_limit_*.sql"
+      - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
+      - "apps/control-plane/migrations/0029_worker_auth_delivery_handoff.sql"
+      - "apps/control-plane/migrations/0034_compatibility_rate_limits.sql"
+      - "crates/application/src/identity.rs"
+      - "crates/domain/src/identity.rs"
+      - "crates/frame-client/**"
+      - "crates/ports/src/identity.rs"
+      - "fixtures/web-authenticated/**"
+      - "scripts/ci/check-web-authenticated-parity.py"
+      - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
+      - "scripts/ci/worker-auth-sqlite-conformance.py"
+      - "scripts/ci/web-authenticated-parity.py"
+      - "scripts/ci/web-authenticated-browser.py"
+      - "scripts/ci/build-web-hydration.py"
+      - "scripts/ci/check-web-hydration-bundle.py"
+      - "scripts/ci/web-hydration-smoke.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/leptos-authenticated-web.yml"
+      - "apps/web/**"
+      - "apps/control-plane/src/authenticated_web_runtime.rs"
+      - "apps/control-plane/src/auth_repository.rs"
+      - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/compatibility_rate_limit.rs"
+      - "apps/control-plane/src/worker_auth_runtime.rs"
+      - "apps/control-plane/src/lib.rs"
+      - "apps/control-plane/src/routing.rs"
+      - "apps/control-plane/queries/auth/**"
+      - "apps/control-plane/queries/api_workflow/compatibility_rate_limit_*.sql"
+      - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
+      - "apps/control-plane/migrations/0029_worker_auth_delivery_handoff.sql"
+      - "apps/control-plane/migrations/0034_compatibility_rate_limits.sql"
+      - "crates/application/src/identity.rs"
+      - "crates/domain/src/identity.rs"
+      - "crates/frame-client/**"
+      - "crates/ports/src/identity.rs"
+      - "fixtures/web-authenticated/**"
+      - "scripts/ci/check-web-authenticated-parity.py"
+      - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
+      - "scripts/ci/worker-auth-sqlite-conformance.py"
+      - "scripts/ci/web-authenticated-parity.py"
+      - "scripts/ci/web-authenticated-browser.py"
+      - "scripts/ci/build-web-hydration.py"
+      - "scripts/ci/check-web-hydration-bundle.py"
+      - "scripts/ci/web-hydration-smoke.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+permissions:
+  contents: read
+
+jobs:
+  local-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: Install pinned Leptos bundler
+        run: cargo install trunk --version 0.21.14 --locked
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Check closed route and evidence contract
+        run: |
+          mkdir -p target/evidence
+          python3 -I scripts/ci/check-web-authenticated-parity.py \
+            --evidence target/evidence/web-authenticated-contract-linux.json
+          python3 -I scripts/ci/web-authenticated-action-sqlite-conformance.py \
+            --evidence target/evidence/web-authenticated-action-sqlite-linux.json
+          python3 -I scripts/ci/worker-auth-sqlite-conformance.py \
+            --evidence target/evidence/worker-auth-sqlite-linux.json
+      - name: Run focused strict Rust gates
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked -p frame-web --all-targets -- -D warnings
+          cargo clippy --locked -p frame-web --no-default-features --features hydrate \
+            --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
+          cargo test --locked -p frame-web
+          cargo test --locked -p frame-control-plane browser_web_runtime
+          cargo test --locked -p frame-control-plane worker_auth_runtime
+      - name: Build exact hydration closure and web binary
+        run: |
+          python3 -I scripts/ci/build-web-hydration.py \
+            --runtime-dir target/release/web-dist
+          python3 -I scripts/ci/check-web-hydration-bundle.py \
+            --evidence target/evidence/web-hydration-bundle-authenticated-linux.json
+          cargo build --locked --release -p frame-web
+      - name: Run role, auth, accessibility, privacy, and performance journeys
+        run: |
+          FRAME_ADDR=127.0.0.1:3817 \
+            FRAME_DEPLOYMENT=local \
+            FRAME_RELEASE_ID=${GITHUB_SHA} \
+            target/release/frame-web >target/frame-web-authenticated.log 2>&1 &
+          server_pid=$!
+          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 2 \
+              http://127.0.0.1:3817/health/ready >/dev/null; then
+              break
+            fi
+            test "${attempt}" -ne 30
+            sleep 1
+          done
+          python3 -I scripts/ci/web-authenticated-parity.py \
+            --origin http://127.0.0.1:3817 \
+            --evidence target/evidence/web-authenticated-http-linux.json
+          google-chrome --version
+          python3 -I scripts/ci/web-authenticated-browser.py \
+            --origin http://127.0.0.1:3817 \
+            --evidence target/evidence/web-authenticated-browser-linux.json \
+            --screenshots target/evidence/web-authenticated-screenshots
+          python3 -I scripts/ci/web-hydration-smoke.py \
+            --origin http://127.0.0.1:3817 \
+            --evidence target/evidence/web-hydration-smoke-authenticated-linux.json
+          kill "${server_pid}"
+          wait "${server_pid}" || true
+          trap - EXIT
+      - name: Prove lockfile stability
+        run: git diff --exit-code -- Cargo.lock
+      - name: Retain exact local evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: leptos-authenticated-web-${{ github.sha }}
+          path: |
+            target/evidence/web-authenticated-*.json
+            target/evidence/worker-auth-*.json
+            target/evidence/web-authenticated-screenshots
+            target/evidence/web-hydration-*-authenticated-*.json
+            target/frame-web-authenticated.log
+            apps/web/dist
+          if-no-files-found: error
+          retention-days: 14

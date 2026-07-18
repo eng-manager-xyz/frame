@@ -1,0 +1,19 @@
+[[permission]]
+identifier = "allow-bootstrap-desktop"
+description = "Allows the main WebView to obtain opaque logical window scopes and backend-confirmed desktop state."
+commands.allow = ["bootstrap_desktop"]
+
+[[permission]]
+identifier = "deny-bootstrap-desktop"
+description = "Denies the versioned desktop bootstrap command."
+commands.deny = ["bootstrap_desktop"]
+
+[[permission]]
+identifier = "allow-dispatch-main"
+description = "Allows the main WebView to submit only the versioned, internally scoped Frame desktop request envelope."
+commands.allow = ["dispatch_main"]
+
+[[permission]]
+identifier = "deny-dispatch-main"
+description = "Denies the versioned Frame desktop request dispatcher."
+commands.deny = ["dispatch_main"]

@@ -1,0 +1,37 @@
+{
+  "platform": "MacOS",
+  "pretty_name": "Synthetic Studio Schema Fixture",
+  "sharing": null,
+  "segments": [
+    {
+      "display": {
+        "path": "content/segments/segment-0/display.mp4",
+        "fps": 30,
+        "start_time": 0.0
+      },
+      "camera": {
+        "path": "content/segments/segment-0/camera.mp4",
+        "fps": 30,
+        "start_time": 0.0
+      },
+      "mic": {
+        "path": "content/segments/segment-0/audio-input.ogg",
+        "start_time": 0.0
+      },
+      "system_audio": {
+        "path": "content/segments/segment-0/system_audio.ogg",
+        "start_time": 0.0
+      }
+    },
+    {
+      "display": {
+        "path": "content/segments/segment-1/display.mp4",
+        "fps": 30,
+        "start_time": 0.0
+      }
+    }
+  ],
+  "status": {
+    "status": "Complete"
+  }
+}

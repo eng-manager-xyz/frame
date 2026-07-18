@@ -1,0 +1,59 @@
+name: Media conformance schedule
+
+on:
+  schedule:
+    - cron: "17 6 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: media-conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  offline-fuzz:
+    name: Deterministic matrix and seeded fuzz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install the declared Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component clippy
+      - name: Restore the Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install the native media build contract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
+      - name: Run the immutable offline matrix and mutation corpus
+        run: |
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media --test conformance_contract
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media conformance::tests --lib
+          scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-media --test conformance_contract -- -D warnings
+          python3 -I scripts/ci/check-media-conformance.py \
+            --evidence target/evidence/media-conformance-offline.json \
+            --dashboard target/evidence/media-conformance-dashboard.json
+      - name: Retain the bounded report and release dashboard
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: media-conformance-offline-${{ github.sha }}
+          path: |
+            target/evidence/media-conformance-offline.json
+            target/evidence/media-conformance-dashboard.json
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "suite_id": "media-conformance-offline-v1",
+  "seed": "frame-media-conformance-20260716",
+  "media_pairs": [
+    {
+      "id": "cross-executor-equivalent-not-byte-identical",
+      "reference": {"container":"mp4","video_codec":"h264","audio_codec":"aac","width":1920,"height":1080,"duration_ms":10000,"frame_rate_milli":30000,"av_offset_ms":5,"playable":true},
+      "candidate": {"container":"quicktime","video_codec":"h264","audio_codec":"aac","width":1920,"height":1080,"duration_ms":10050,"frame_rate_milli":30020,"av_offset_ms":-10,"playable":true},
+      "measurements": {"perceptual_milli":950,"waveform_correlation_milli":980,"max_caption_timing_delta_ms":100},
+      "budget": {"duration_tolerance_ms":100,"frame_rate_tolerance_milli":100,"av_offset_tolerance_ms":80,"minimum_perceptual_milli":900,"minimum_waveform_correlation_milli":950,"caption_timing_tolerance_ms":200,"require_same_dimensions":true,"require_same_container":false,"require_same_codecs":true},
+      "expected_failures": []
+    },
+    {
+      "id": "seed-quality",
+      "reference": {"container":"mp4","video_codec":"h264","audio_codec":"aac","width":1920,"height":1080,"duration_ms":10000,"frame_rate_milli":30000,"av_offset_ms":0,"playable":true},
+      "candidate": {"container":"mp4","video_codec":"h264","audio_codec":"aac","width":1920,"height":1080,"duration_ms":10000,"frame_rate_milli":30000,"av_offset_ms":0,"playable":true},
+      "measurements": {"perceptual_milli":899,"waveform_correlation_milli":950,"max_caption_timing_delta_ms":200},
+      "budget": {"duration_tolerance_ms":100,"frame_rate_tolerance_milli":100,"av_offset_tolerance_ms":80,"minimum_perceptual_milli":900,"minimum_waveform_correlation_milli":950,"caption_timing_tolerance_ms":200,"require_same_dimensions":true,"require_same_container":true,"require_same_codecs":true},
+      "expected_failures": ["perceptual"]
+    },
+    {
+      "id": "seed-sync-and-caption",
+      "reference": {"container":"webm","video_codec":"vp8","audio_codec":"opus","width":1920,"height":1080,"duration_ms":3600000,"frame_rate_milli":30000,"av_offset_ms":0,"playable":true},
+      "candidate": {"container":"webm","video_codec":"vp8","audio_codec":"opus","width":1920,"height":1080,"duration_ms":3600000,"frame_rate_milli":30000,"av_offset_ms":81,"playable":true},
+      "measurements": {"perceptual_milli":950,"waveform_correlation_milli":950,"max_caption_timing_delta_ms":201},
+      "budget": {"duration_tolerance_ms":100,"frame_rate_tolerance_milli":100,"av_offset_tolerance_ms":80,"minimum_perceptual_milli":900,"minimum_waveform_correlation_milli":950,"caption_timing_tolerance_ms":200,"require_same_dimensions":true,"require_same_container":true,"require_same_codecs":true},
+      "expected_failures": ["av_sync","caption_timing"]
+    }
+  ],
+  "progress_traces": [
+    {"id":"determinate-complete","require_complete":true,"samples":[[0,0],[10,2500],[20,2500],[30,10000]],"expected":"pass"},
+    {"id":"seed-progress-regression","require_complete":true,"samples":[[0,0],[10,5000],[20,4999]],"expected":"non_monotonic_progress"},
+    {"id":"indeterminate-terminal","require_complete":true,"samples":[[0,null],[20,null]],"expected":"pass"}
+  ],
+  "resource_traces": [
+    {
+      "id":"bounded-repeat",
+      "samples":[[0,100000000,20,4,0,50000,10000,45000,1000,0,0],[60000,110000000,21,4,1000000,55000,12000,50000,1200,20,100]],
+      "budget":[200000000,20000000,50,4,12,2000000,100000,100000,90000,2000,50,1000],
+      "expected_failures":[]
+    },
+    {
+      "id":"seed-resource-and-cost",
+      "samples":[[0,100000000,20,4,0,50000,10000,45000,1000,0,0],[60000,130000001,25,13,2000001,100001,100001,90001,2001,51,1001]],
+      "budget":[200000000,20000000,50,4,12,2000000,100000,100000,90000,2000,50,1000],
+      "expected_failures":["memory_growth","handle_growth","thread_limit","disk_limit","cpu_limit","gpu_limit","temperature_limit","latency_limit","av_drift","cost_limit"]
+    }
+  ],
+  "latency_distributions": [
+    {"id":"p95-boundary-pass","samples_ms":[10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200],"budget":[100,190,200,200],"expected_failures":[]},
+    {"id":"seed-p95-regression","samples_ms":[10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,191,200],"budget":[100,190,200,200],"expected_failures":["p95"]}
+  ],
+  "fault_matrix": [
+    ["device_lost","fail_actionable"],
+    ["permission_denied","fail_actionable"],
+    ["process_crash","recover_artifact"],
+    ["disk_full","suppress_publication"],
+    ["network_lost","resume"],
+    ["provider_error","fallback"],
+    ["provider_outage","fallback"],
+    ["provider_quota","fallback"],
+    ["managed_output_drift","fallback"],
+    ["cancellation","suppress_publication"],
+    ["unsupported_codec","fail_actionable"],
+    ["hardware_encoder_failure","fallback"],
+    ["timeout","fail_actionable"]
+  ],
+  "routing_observations": [
+    ["managed-exact","managed",1,0,0,"pass"],
+    ["native-preflight-fallback","native",0,1,0,"pass"],
+    ["unsupported-preflight","rejected_before_invocation",0,0,0,"pass"],
+    ["seed-hidden-managed-call","rejected_before_invocation",1,0,0,"unexpected_invocation"]
+  ],
+  "logical_results": [
+    {"id":"idempotent-replay","require_publication":true,"observations":[["tenants/t/videos/v/derivatives/p/v1/result.mp4","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",1,1],["tenants/t/videos/v/derivatives/p/v1/result.mp4","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",0,0]],"expected":"pass"},
+    {"id":"seed-repeat-cost","require_publication":true,"observations":[["tenants/t/videos/v/derivatives/p/v1/result.mp4","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",1,1],["tenants/t/videos/v/derivatives/p/v1/result.mp4","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",1,1]],"expected":"duplicate_logical_effect"}
+  ],
+  "regression_gates": [
+    ["quality","perceptual"],
+    ["sync","av_sync"],
+    ["recovery","recovery_state"],
+    ["resource","resource_trend"],
+    ["routing","executor_routing"],
+    ["provider_limit","provider_preflight"],
+    ["managed_output_drift","output_compatibility"],
+    ["fallback","fallback_policy"],
+    ["repeat_cost","cost_idempotency"]
+  ]
+}

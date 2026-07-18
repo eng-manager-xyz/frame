@@ -1,0 +1,7 @@
+cloudflare_account_id = "00000000000000000000000000000000"
+environment           = "production"
+bucket_name           = "frame-recordings"
+location              = "wnam"
+allowed_browser_origins = [
+  "https://frame.engmanager.xyz",
+]

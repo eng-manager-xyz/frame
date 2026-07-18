@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This entrypoint is for a trusted CI/service-manager launch context. It keeps
+# native loader injection/redirect variables from propagating into GStreamer
+# processes and their children. It cannot repair a launcher that was itself
+# started by an already-hostile dynamic loader.
+unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT
+unset DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_INSERT_LIBRARIES
+unset DYLD_FRAMEWORK_PATH DYLD_FALLBACK_FRAMEWORK_PATH DYLD_ROOT_PATH
+unset DYLD_IMAGE_SUFFIX DYLD_SHARED_REGION
+
+if [[ ${1:-} == -- ]]; then
+  shift
+fi
+if [[ $# -eq 0 ]]; then
+  printf 'usage: scripts/ci/gstreamer-sanitized-exec <command> [args...]\n' >&2
+  exit 2
+fi
+exec "$@"

@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+previews:
+  generation: manual
+  expireAfterDays: 3
+
+services:
+  - type: web
+    name: frame-web
+    runtime: rust
+    plan: starter
+    region: oregon
+    numInstances: 2
+    buildCommand: >-
+      cargo install trunk --version 0.21.14 --locked &&
+      python3 -I scripts/ci/build-web-hydration.py --runtime-dir target/release/web-dist &&
+      python3 -I scripts/ci/check-web-hydration-bundle.py &&
+      cargo build --locked --release -p frame-web
+    startCommand: ./target/release/frame-web
+    healthCheckPath: /health/ready
+    maxShutdownDelaySeconds: 60
+    autoDeployTrigger: checksPass
+    renderSubdomainPolicy: enabled
+    domains:
+      - frame.engmanager.xyz
+    buildFilter:
+      paths:
+        - apps/web/**
+        - crates/**
+        - fixtures/web-authenticated/**
+        - Cargo.toml
+        - Cargo.lock
+        - rust-toolchain.toml
+        - scripts/ci/**
+        - render.yaml
+    envVars:
+      - key: FRAME_DEPLOYMENT
+        value: production
+        previewValue: preview
+      - key: FRAME_PUBLIC_ORIGIN
+        value: https://frame.engmanager.xyz
+        # Preview runtime ignores this sentinel and validates
+        # RENDER_EXTERNAL_URL as the canonical preview origin.
+        previewValue: https://frame-preview.invalid
+      - key: FRAME_API_ORIGIN
+        value: https://frame.engmanager.xyz
+        previewValue: https://frame-staging.engmanager.xyz
+      - key: FRAME_PROXY_TRUST
+        value: render
+        previewValue: render
+      - key: FRAME_ENABLE_PUBLIC_EMBED
+        value: "false"
+        previewValue: "false"
+      - key: RUSTUP_TOOLCHAIN
+        value: 1.96.1
+        previewValue: 1.96.1
+      - key: RUST_LOG
+        value: info
+        previewValue: info
+      - key: FRAME_DIAGNOSTIC_TOKEN
+        sync: false
+      - key: FRAME_WORKER_RELEASE
+        sync: false
+      - key: FRAME_RENDER_DEPLOY
+        sync: false
+      - key: FRAME_MIGRATION_LEVEL
+        sync: false
+      - key: FRAME_PORTFOLIO_CONSUMER
+        sync: false

@@ -4,15 +4,65 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["ssr"]
+ssr = []
+hydrate = []
 
 [dependencies]
+frame-client = { path = "../../crates/frame-client", features = ["client"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow.workspace = true
 axum.workspace = true
-leptos.workspace = true
-serde.workspace = true
+leptos = { workspace = true, features = ["ssr"] }
+reqwest.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+leptos = { workspace = true, features = ["hydrate"] }
+serde-wasm-bindgen.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures = "0.4.64"
+web-sys = { version = "0.3", features = [
+    "Crypto",
+    "Document",
+    "DomStringMap",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlElement",
+    "HtmlMediaElement",
+    "HtmlVideoElement",
+    "Headers",
+    "Location",
+    "MessageEvent",
+    "Request",
+    "RequestCredentials",
+    "RequestInit",
+    "Response",
+    "UrlSearchParams",
+    "Window",
+] }
+
+[[bin]]
+name = "frame-web"
+path = "src/main.rs"
+required-features = ["ssr"]
+
+[[bin]]
+name = "frame-web-hydrate"
+path = "src/bin/hydrate.rs"
+required-features = ["hydrate"]
 
 [lints]
 workspace = true

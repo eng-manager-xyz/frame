@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "contract_version": 1,
+  "cap_reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "authorization_matrix": [
+    {"case": "public_ready_anonymous", "privacy": "public", "lifecycle": "ready", "viewer": "anonymous", "surface": "top_level", "resolution": "ready", "status": 200, "metadata": "public_indexable"},
+    {"case": "unlisted_ready_anonymous", "privacy": "unlisted", "lifecycle": "ready", "viewer": "anonymous", "surface": "top_level", "resolution": "ready", "status": 200, "metadata": "title_noindex"},
+    {"case": "tenant_ready_anonymous", "privacy": "tenant", "lifecycle": "ready", "viewer": "anonymous", "surface": "top_level", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "tenant_ready_same_tenant", "privacy": "tenant", "lifecycle": "ready", "viewer": "same_tenant_member", "surface": "top_level", "resolution": "ready", "status": 200, "metadata": "authorized_noindex"},
+    {"case": "tenant_ready_cross_tenant", "privacy": "tenant", "lifecycle": "ready", "viewer": "cross_tenant_owner", "surface": "top_level", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "private_ready_owner", "privacy": "private", "lifecycle": "ready", "viewer": "same_tenant_owner", "surface": "top_level", "resolution": "ready", "status": 200, "metadata": "authorized_noindex"},
+    {"case": "private_ready_explicit_grant", "privacy": "private", "lifecycle": "ready", "viewer": "exact_unexpired_grant", "surface": "top_level", "resolution": "ready", "status": 200, "metadata": "authorized_noindex"},
+    {"case": "private_ready_member", "privacy": "private", "lifecycle": "ready", "viewer": "same_tenant_member", "surface": "top_level", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "password_ready_absent", "privacy": "password", "lifecycle": "ready", "viewer": "anonymous", "surface": "top_level", "resolution": "password_challenge", "status": 401, "metadata": "generic"},
+    {"case": "password_ready_verified", "privacy": "password", "lifecycle": "ready", "viewer": "exact_password_grant", "surface": "top_level", "resolution": "ready", "status": 200, "metadata": "authorized_noindex"},
+    {"case": "password_ready_embed", "privacy": "password", "lifecycle": "ready", "viewer": "exact_password_grant", "surface": "embed", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "public_processing_anonymous", "privacy": "public", "lifecycle": "processing", "viewer": "anonymous", "surface": "top_level", "resolution": "processing", "status": 202, "metadata": "generic"},
+    {"case": "private_processing_anonymous", "privacy": "private", "lifecycle": "processing", "viewer": "anonymous", "surface": "top_level", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "public_failed_anonymous", "privacy": "public", "lifecycle": "failed", "viewer": "anonymous", "surface": "top_level", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "public_deleted_owner", "privacy": "public", "lifecycle": "deleted", "viewer": "same_tenant_owner", "surface": "top_level", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "public_unavailable_anonymous", "privacy": "public", "lifecycle": "unavailable", "viewer": "anonymous", "surface": "top_level", "resolution": "unavailable", "status": 404, "metadata": "generic"},
+    {"case": "public_embed_enabled", "privacy": "public", "lifecycle": "ready", "viewer": "anonymous", "surface": "embed", "resolution": "ready", "status": 200, "metadata": "generic"},
+    {"case": "public_embed_disabled", "privacy": "public", "lifecycle": "ready", "viewer": "anonymous", "surface": "embed_disabled", "resolution": "unavailable", "status": 404, "metadata": "generic"}
+  ],
+  "range_cases": [
+    {"header": null, "if_range_matches": true, "length": 100, "resolution": "full"},
+    {"header": "bytes=10-19", "if_range_matches": true, "length": 100, "resolution": "partial_10_19"},
+    {"header": "bytes=90-", "if_range_matches": true, "length": 100, "resolution": "partial_90_99"},
+    {"header": "bytes=-10", "if_range_matches": true, "length": 100, "resolution": "partial_90_99"},
+    {"header": "bytes=10-19", "if_range_matches": false, "length": 100, "resolution": "full"},
+    {"header": "bytes=100-", "if_range_matches": true, "length": 100, "resolution": "unsatisfiable"},
+    {"header": "bytes=20-10", "if_range_matches": true, "length": 100, "resolution": "unsatisfiable"},
+    {"header": "bytes=0-1,5-6", "if_range_matches": true, "length": 100, "resolution": "unsatisfiable"}
+  ],
+  "compatibility": [
+    {"surface": "canonical_share", "input": "/s/public-demo", "result": "serve"},
+    {"surface": "legacy_share", "input": "/share/public-demo", "result": "308:/s/public-demo"},
+    {"surface": "canonical_embed", "input": "/embed/public-demo", "result": "serve_when_enabled"},
+    {"surface": "custom_domain", "input": "watch.example.com/s/public-demo", "result": "serve_exact_verified_binding_only"},
+    {"surface": "cache", "input": "privacy_or_deletion_revision_change", "result": "new_partition_and_no_store"}
+  ],
+  "browser_matrix": [
+    {"browser": "chromium", "platform": "desktop", "expected": ["range_seek", "captions", "speed", "fullscreen", "pip", "keyboard", "screen_reader"], "evidence": "protected_execution_pending"},
+    {"browser": "firefox", "platform": "desktop", "expected": ["range_seek", "captions", "speed", "fullscreen", "keyboard", "screen_reader"], "evidence": "protected_execution_pending"},
+    {"browser": "webkit", "platform": "desktop", "expected": ["range_seek", "captions", "speed", "fullscreen", "pip", "keyboard", "screen_reader"], "evidence": "protected_execution_pending"},
+    {"browser": "mobile_safari", "platform": "mobile", "expected": ["range_seek", "captions", "speed", "fullscreen", "pip", "touch", "voiceover"], "evidence": "protected_execution_pending"},
+    {"browser": "mobile_chromium", "platform": "mobile", "expected": ["range_seek", "captions", "speed", "fullscreen", "pip", "touch", "talkback"], "evidence": "protected_execution_pending"}
+  ],
+  "protected_evidence": [
+    "production_share_authorization_adapter",
+    "d1_comment_transcript_analytics_adapters",
+    "r2_range_and_revocation_traces",
+    "verified_custom_domain_routing",
+    "password_hash_and_delivery_service",
+    "browser_device_accessibility_execution",
+    "cdn_privacy_invalidation_slo",
+    "canary_and_rollback_observation"
+  ]
+}

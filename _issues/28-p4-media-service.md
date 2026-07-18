@@ -42,7 +42,7 @@ Rebuilding third-party AI models is not required; caption/transcription and AI c
 
 - [ ] Versioned job catalog with input/output roles, normalized transform profile, executor capabilities/limits, progress/cancel support, timeout, retryability, fallback, and idempotency.
 - [ ] A provider-neutral `MediaTransformer`/derivative-executor port with isolated Cloudflare `wasm-bindgen` interop and an offline fake.
-- [ ] Cloudflare Media implementations for approved bounded derivatives and GStreamer/Rust implementations for the remaining catalog, with documented exceptions.
+- [x] Cloudflare Media implementations for approved bounded derivatives and GStreamer/Rust implementations for the remaining catalog, with documented exceptions.
 - [ ] Canonical Media-compatible distribution-master profile without sacrificing editable/source originals.
 - [ ] Sandbox/input validation, SSRF prevention, local scratch policy, memory/CPU/GPU/disk limits, cancellation, and cleanup.
 - [ ] Durable progress/result/error handling and R2 output-manifest reconciliation across both executor types.
@@ -50,7 +50,7 @@ Rebuilding third-party AI models is not required; caption/transcription and AI c
 
 ## Acceptance criteria
 
-- [ ] Every retained Cap media job has a parity fixture and declared implementation, executor, limits, and fallback/disposition.
+- [x] Every retained Cap media job has a parity fixture and declared implementation, executor, limits, and fallback/disposition.
 - [ ] The router preflights documented size, duration, resolution, format, and output limits and never sends known-unsupported work to Cloudflare Media.
 - [ ] Malformed, oversized, adversarial, decompression-bomb, timeout, and unsupported-codec inputs cannot escape resource or sandbox limits.
 - [ ] Retrying either backend HEADs/reuses or atomically publishes a deterministic immutable R2 result and never exposes partial objects.
@@ -79,3 +79,25 @@ Rebuilding third-party AI models is not required; caption/transcription and AI c
 Shadow selected jobs and compare Cloudflare Media, GStreamer, and legacy outputs before serving them. Route each job/profile independently to native or legacy fallback, retain a managed-media kill switch, and keep deterministic R2 artifacts for reconciliation.
 
 Before closing, attach links to implementation changes, test artifacts, operational documentation, and any ADR or parity-matrix update produced by this issue.
+
+## Local completion note (2026-07-16)
+
+The four approved Cloudflare modes (`video`, `frame`, `spritesheet`, and
+`audio`) have bounded private-R2 binding implementations and exact/just-over
+contract tests. The native worker now has a machine-checked entry for all 14
+native profiles: four executable local graphs and ten stable graph recipes with
+typed codec, sampling, loudness, demux, unaudited-graph, or timeline exceptions.
+The exception state fails closed and is not a production-output claim.
+
+Migration 0027 independently completes the dense multi-source authority and
+transport prerequisite: every ordered immutable source occurrence is bound to
+current manifest/governance state, while segment mux is rejected at admission
+with `profile_unavailable` until its documented GStreamer graph exception is
+resolved.
+
+Parity matrix schema 2 maps all 16 retained jobs to a concrete SHA-pinned CC0
+fixture artifact, primary/fallback executor and implementation, limit profile,
+fallback disposition, evidence state, and exception. Remote Cloudflare output,
+protected codec graphs, external providers, capacity/cost, and perceptual review
+remain open gates elsewhere in this issue; these two completed checkboxes do not
+waive them.

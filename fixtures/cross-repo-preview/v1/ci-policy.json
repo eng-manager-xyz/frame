@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "evidence_class": "executable_policy_definition",
+  "canonical_contract": {
+    "owner_repository": "eng-manager-xyz/frame",
+    "directory": "fixtures/frame-api/v1",
+    "version": 1,
+    "version_policy": "append_new_major_never_rewrite_released_major",
+    "consumer_copy_requires": [
+      "source_repository",
+      "source_commit_sha",
+      "fixture_set_sha256",
+      "drift_check"
+    ],
+    "inventory": {
+      "contract.schema.json": "6bed148205c02e2dc02f3694e9c9033ddf5669d8ba009e651efca285b5941c78",
+      "error.json": "022c2d46f4180f7677429ac0d6ffd66a2c44355832fa252e9c06ec1651eeabcf",
+      "health.additive.json": "a8260a75916855baf94605ab36d70722ea7b6aab870e76cdf521de73f9b0bd32",
+      "health.ok.json": "b393aecba03cc513be7c9fa9326ee31150cbbbbbd0b7c3ebc7bdd3c1d10c079d",
+      "share.deleted.json": "43fbca4bfaa83a7f5e9c2fce9f69554cd27a3a2ceaaff4029ba350eb40ea2faa",
+      "share.failed.json": "43fbca4bfaa83a7f5e9c2fce9f69554cd27a3a2ceaaff4029ba350eb40ea2faa",
+      "share.private.json": "43fbca4bfaa83a7f5e9c2fce9f69554cd27a3a2ceaaff4029ba350eb40ea2faa",
+      "share.processing.json": "0f212e9714599ad15428eba560d64dd1c48c0f8bdaf9dd3dc9ad47ef481aea36",
+      "share.public.json": "30b037850f4319ba56a92a52737b84e7d38fe293d3952f01f0567e256737a2f8",
+      "share.unavailable.json": "43fbca4bfaa83a7f5e9c2fce9f69554cd27a3a2ceaaff4029ba350eb40ea2faa"
+    }
+  },
+  "producer_consumer_matrix": [
+    {
+      "id": "frame_candidate_current_frame",
+      "producer": "frame_candidate",
+      "consumer": "frame_current_client_worker_web",
+      "trigger": "every_frame_pull_request_and_main_push",
+      "toolchain_owner": "frame",
+      "cache_namespace": "frame-contract",
+      "evidence": "required_untrusted_local"
+    },
+    {
+      "id": "frame_candidate_last_released_portfolio",
+      "producer": "frame_candidate",
+      "consumer": "portfolio_last_released",
+      "trigger": "protected_manual_and_weekly_advisory",
+      "toolchain_owner": "portfolio",
+      "cache_namespace": "portfolio-consumer",
+      "evidence": "protected_external_consumer"
+    },
+    {
+      "id": "released_frame_portfolio_candidate",
+      "producer": "released_frame_fixture_and_sha",
+      "consumer": "portfolio_candidate",
+      "trigger": "every_portfolio_pull_request",
+      "toolchain_owner": "portfolio",
+      "cache_namespace": "portfolio-candidate",
+      "evidence": "protected_external_consumer"
+    },
+    {
+      "id": "frame_main_portfolio_default",
+      "producer": "frame_main",
+      "consumer": "portfolio_default_branch",
+      "trigger": "weekly_read_only_advisory",
+      "toolchain_owner": "portfolio",
+      "cache_namespace": "portfolio-advisory",
+      "evidence": "protected_external_consumer"
+    },
+    {
+      "id": "frame_current_and_n_minus_one",
+      "producer": "frame_current_api",
+      "consumer": "frame_current_and_n_minus_one_clients",
+      "trigger": "every_release_promotion",
+      "toolchain_owner": "each_consumer",
+      "cache_namespace": "release-compatibility",
+      "evidence": "protected_release_compatibility"
+    }
+  ],
+  "portfolio_integration_stage": {
+    "manifest": "fixtures/engmanager-portfolio/v1/static-integration.json",
+    "base_commit": "1de52bc8f25793dea3697e67765d53785c05cdfa",
+    "stage": "static_link_only",
+    "external_repository_mutated_by_frame": false,
+    "frame_client_consumer": false,
+    "last_released_consumer_evidence": "not_collected"
+  },
+  "local_gate": {
+    "command": "scripts/frame preview-e2e",
+    "attempts": 1,
+    "orchestration_timeout_seconds": 20,
+    "provider_credentials_allowed": false,
+    "production_configuration_allowed": false,
+    "uploads_artifacts": false,
+    "synthetic_media_max_bytes": 1048576,
+    "max_response_bytes": 65536,
+    "distinct_origins": 2
+  },
+  "artifact_policy": {
+    "successful_summary_retention_days": 3,
+    "first_failure_retention_days": 14,
+    "approved_payload_classes": [
+      "synthetic_fixture_digest",
+      "status_code",
+      "header_name_and_redacted_value",
+      "bounded_timing",
+      "tool_and_release_version"
+    ],
+    "forbidden_fields": [
+      "authorization",
+      "cookie",
+      "cookie_value",
+      "email",
+      "internal_key",
+      "object_key",
+      "personal_data",
+      "private_response_body",
+      "provider_identifier",
+      "raw_body",
+      "session",
+      "signed_url",
+      "tenant_id",
+      "token"
+    ],
+    "forbidden_value_markers": [
+      "authorization:",
+      "bearer ",
+      "cookie:",
+      "set-cookie:",
+      "x-amz-credential=",
+      "x-amz-signature=",
+      "r2.cloudflarestorage.com"
+    ]
+  },
+  "retry_and_flake_policy": {
+    "local_attempts": 1,
+    "protected_max_attempts": 2,
+    "preserve_first_failure_before_retry": true,
+    "retry_may_replace_required_result": false,
+    "quarantine_required_fields": [
+      "assertion",
+      "owner",
+      "deadline",
+      "seed",
+      "browser_or_provider_version",
+      "release_blocking"
+    ],
+    "quarantine_may_satisfy_required_coverage": false
+  },
+  "trusted_preview_profile": {
+    "trigger": "manual_trusted_only",
+    "environment": "cross-repository-preview",
+    "maximum_lifetime_hours": 72,
+    "noindex_required": true,
+    "production_secrets_allowed": false,
+    "production_data_allowed": false,
+    "production_dns_mutation_allowed": false,
+    "isolated_resources": ["render_preview", "staging_worker", "staging_d1", "staging_r2"],
+    "pairing_record_fields": [
+      "frame_commit_sha",
+      "portfolio_commit_sha",
+      "frame_preview_identifier",
+      "portfolio_preview_identifier",
+      "fixture_set_sha256",
+      "operator",
+      "expires_at",
+      "cleanup_owner"
+    ],
+    "cleanup_proofs": [
+      "preview_url_gone",
+      "staging_route_gone",
+      "staging_storage_empty_or_incident_hold",
+      "production_dns_unchanged"
+    ]
+  },
+  "protected_provider_canary": {
+    "trigger": "scheduled_or_manual_protected",
+    "environment": "cross-repository-canary",
+    "concurrency": 1,
+    "maximum_requests": 100,
+    "maximum_media_bytes": 1048576,
+    "maximum_runtime_minutes": 20,
+    "monthly_budget_usd": 25,
+    "generated_data_only": true,
+    "cleanup_required": true,
+    "kill_switch_required": true,
+    "journeys": [
+      "canonical_domain_and_worker_route",
+      "render_public_and_health",
+      "isolated_r2_upload_finalize_derivative_playback",
+      "dynamic_private_cache_bypass",
+      "immutable_asset_cache_hit",
+      "privacy_change_purge_slo",
+      "provider_outage_and_rollback"
+    ]
+  },
+  "protected_evidence": [
+    {
+      "id": "portfolio_consumer_build",
+      "status": "not_collected",
+      "requires": "merged portfolio workflow, committed lockfile, pinned nightly, and exact Frame fixture SHA"
+    },
+    {
+      "id": "trusted_preview_cleanup",
+      "status": "not_collected",
+      "requires": "Render preview and isolated Worker D1 R2 resources with timed cleanup"
+    },
+    {
+      "id": "real_browser_accessibility_security",
+      "status": "not_collected",
+      "requires": "supported browsers, mobile and desktop viewports, keyboard, screen reader, reduced motion, CSP, CORS, Range, and enabled optional capability matrix"
+    },
+    {
+      "id": "provider_canary",
+      "status": "not_collected",
+      "requires": "protected Cloudflare Render R2 Media canonical-domain run with bounded cost and cleanup"
+    }
+  ]
+}

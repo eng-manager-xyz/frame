@@ -1,0 +1,136 @@
+name: Cross-repository contract
+
+on:
+  pull_request:
+    paths:
+      - "crates/frame-client/**"
+      - "fixtures/frame-api/**"
+      - "fixtures/cross-repo-preview/**"
+      - "fixtures/engmanager-portfolio/v1/**"
+      - "scripts/ci/cross-repo-*"
+      - "scripts/ci/check-cross-repo-contract.py"
+      - "scripts/ci/test-cross-repo-contract.py"
+      - "scripts/ci/verify-portfolio-consumer.py"
+      - "scripts/frame"
+      - "docs/architecture/cross-repository-contract-ci.md"
+      - "docs/operations/cross-repository-preview.md"
+      - ".github/workflows/cross-repository-contract.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - "crates/frame-client/**"
+      - "fixtures/frame-api/**"
+      - "fixtures/cross-repo-preview/**"
+      - "fixtures/engmanager-portfolio/v1/**"
+      - "scripts/ci/cross-repo-*"
+      - "scripts/ci/check-cross-repo-contract.py"
+      - "scripts/ci/test-cross-repo-contract.py"
+      - "scripts/ci/verify-portfolio-consumer.py"
+      - "scripts/frame"
+      - ".github/workflows/cross-repository-contract.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      run_external_consumer:
+        description: Run the protected last-released portfolio consumer
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-repository-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frame_contract:
+    name: Frame producer and current consumer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact Frame revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install the Frame-owned pinned toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --target wasm32-unknown-unknown
+      - name: Restore the Frame-only contract cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: frame-contract
+          cache-on-failure: false
+      - name: Validate ownership, compatibility, and evidence policy
+        run: |
+          python3 -I scripts/ci/check-cross-repo-contract.py
+          python3 -I scripts/ci/test-cross-repo-contract.py
+          python3 scripts/ci/check-fixtures.py
+      - name: Exercise the current native and Wasm consumers
+        run: |
+          cargo test --locked -p frame-client --all-features
+          cargo check --locked -p frame-client --no-default-features --target wasm32-unknown-unknown
+      - name: Run the credential-free two-origin journey once
+        run: scripts/frame preview-e2e
+      - name: Prove the Frame lockfile was not rewritten
+        run: git diff --exit-code -- Cargo.lock
+
+  last_released_portfolio_consumer:
+    name: Protected last-released portfolio consumer
+    if: >-
+      ${{ github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' && inputs.run_external_consumer) }}
+    environment: cross-repository-consumer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact Frame revision without mutation authority
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          path: frame
+      - name: Check out the recorded last-released portfolio revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: matthewharwood/engmanager.xyz
+          ref: 1de52bc8f25793dea3697e67765d53785c05cdfa
+          path: portfolio
+          persist-credentials: false
+      - name: Require portfolio-owned consumer and lockfile evidence
+        run: |
+          test -f portfolio/Cargo.lock
+          test -f portfolio/.github/workflows/frame-contract.yml
+          test -f portfolio/fixtures/frame-api/v1/source.json
+      - name: Install the portfolio-owned pinned nightly
+        run: >-
+          rustup toolchain install nightly-2026-05-08 --profile minimal
+          --component clippy,rustfmt
+      - name: Restore the portfolio-only consumer cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: portfolio
+          shared-key: portfolio-consumer
+          cache-on-failure: false
+      - name: Verify the exact fixture source and run portfolio tests
+        run: >-
+          python3 -I frame/scripts/ci/verify-portfolio-consumer.py
+          --portfolio-root portfolio
+          --candidate-root frame
+          --expected-portfolio-sha 1de52bc8f25793dea3697e67765d53785c05cdfa
+      - name: Test the last-released consumer against the Frame candidate fixtures
+        working-directory: portfolio
+        env:
+          FRAME_CONTRACT_FIXTURE_ROOT: ${{ github.workspace }}/frame/fixtures/frame-api/v1
+        run: cargo test --locked -p website --test frame_contract
+      - name: Compile router and golden consumer tests under the portfolio toolchain
+        working-directory: portfolio
+        run: cargo test --locked --workspace
+      - name: Prove neither checkout was rewritten
+        run: |
+          git -C frame diff --exit-code
+          git -C portfolio diff --exit-code

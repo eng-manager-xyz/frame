@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "deterministic_zero_row_sample",
+  "tenant": "00000000-0000-0000-0000-000000000001",
+  "generated_at_ms": 0,
+  "source_revision": 0,
+  "class_counts": {
+    "video_metadata": 0,
+    "video_edit": 0,
+    "share": 0,
+    "comment": 0,
+    "notification": 0,
+    "outbox": 0,
+    "storage_integration": 0,
+    "storage_object": 0,
+    "derivative_job": 0,
+    "upload": 0,
+    "import": 0,
+    "developer_app": 0,
+    "developer_domain": 0,
+    "developer_api_key": 0,
+    "developer_video": 0,
+    "credit_account": 0,
+    "credit_transaction": 0,
+    "usage_ledger": 0,
+    "daily_storage_snapshot": 0,
+    "messenger_legacy": 0
+  },
+  "rows": [],
+  "content_checksum": "88edd832bddc940755501b809d975856160f4fd1555b220f24bfacfd7884770e",
+  "excludes_secrets": true,
+  "excluded_secret_classes": [
+    "storage_integration_credentials",
+    "developer_api_key_material",
+    "private_media_urls"
+  ]
+}

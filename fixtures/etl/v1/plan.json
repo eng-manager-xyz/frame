@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "run_id": "local-etl-rehearsal-v1",
+  "source_schema": "mysql-fixture-v1",
+  "target_migration": "d1-fixture-v1",
+  "code_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "window": {
+    "start_ms": 1735689600000,
+    "end_ms": 1735689660000
+  },
+  "tables": [
+    {
+      "name": "accounts",
+      "tenant_column": "tenant_id",
+      "primary_key": ["id"],
+      "columns": [
+        {"source": "id", "target": "id", "transform": "identity"},
+        {"source": "tenant", "target": "tenant_id", "transform": "identity"},
+        {"source": "email", "target": "email_normalized", "transform": "casefold_nfkc"},
+        {"source": "enabled", "target": "enabled", "transform": "boolean"},
+        {"source": "quota", "target": "quota_micros", "transform": "decimal_scaled", "options": {"scale": 6}},
+        {"source": "profile", "target": "profile_json", "transform": "canonical_json"},
+        {"source": "created_at", "target": "created_at_ms", "transform": "timestamp_ms"},
+        {"source": "legacy_tier", "target": "tier", "transform": "enum", "options": {"mapping": {"free_legacy": "free", "pro_legacy": "pro"}}},
+        {"source": "deleted_at", "target": "deleted_at_ms", "transform": "timestamp_ms", "nullable": true}
+      ],
+      "foreign_keys": [],
+      "aggregates": [
+        {"name": "account_count", "operation": "count", "column": "*"},
+        {"name": "quota_total", "operation": "sum", "column": "quota_micros"}
+      ]
+    },
+    {
+      "name": "organizations",
+      "tenant_column": "tenant_id",
+      "primary_key": ["id"],
+      "columns": [
+        {"source": "id", "target": "id", "transform": "identity"},
+        {"source": "tenant", "target": "tenant_id", "transform": "identity"},
+        {"source": "owner_id", "target": "owner_account_id", "transform": "identity"},
+        {"source": "name", "target": "name", "transform": "identity"},
+        {"source": "created_at", "target": "created_at_ms", "transform": "timestamp_ms"}
+      ],
+      "foreign_keys": [
+        {"columns": ["owner_account_id"], "references": {"table": "accounts", "columns": ["id"]}, "same_tenant": true}
+      ],
+      "aggregates": [
+        {"name": "organization_count", "operation": "count", "column": "*"}
+      ]
+    },
+    {
+      "name": "organization_members",
+      "tenant_column": "tenant_id",
+      "primary_key": ["organization_id", "account_id"],
+      "columns": [
+        {"source": "tenant", "target": "tenant_id", "transform": "identity"},
+        {"source": "organization_id", "target": "organization_id", "transform": "identity"},
+        {"source": "account_id", "target": "account_id", "transform": "identity"},
+        {"source": "legacy_role", "target": "role", "transform": "enum", "options": {"mapping": {"administrator": "admin", "member": "member", "proprietor": "owner"}}},
+        {"source": "legacy_state", "target": "state", "transform": "enum", "options": {"mapping": {"on": "active", "off": "suspended"}}},
+        {"source": "created_at", "target": "created_at_ms", "transform": "timestamp_ms"}
+      ],
+      "foreign_keys": [
+        {"columns": ["organization_id"], "references": {"table": "organizations", "columns": ["id"]}, "same_tenant": true},
+        {"columns": ["account_id"], "references": {"table": "accounts", "columns": ["id"]}, "same_tenant": true}
+      ],
+      "aggregates": [
+        {"name": "membership_count", "operation": "count", "column": "*"}
+      ]
+    },
+    {
+      "name": "projects",
+      "tenant_column": "tenant_id",
+      "primary_key": ["id"],
+      "columns": [
+        {"source": "id", "target": "id", "transform": "identity"},
+        {"source": "tenant", "target": "tenant_id", "transform": "identity"},
+        {"source": "organization_id", "target": "organization_id", "transform": "identity"},
+        {"source": "owner_id", "target": "owner_account_id", "transform": "identity"},
+        {"source": "budget", "target": "budget_micros", "transform": "decimal_scaled", "options": {"scale": 6}},
+        {"source": "revision", "target": "revision", "transform": "wire_integer"},
+        {"source": "settings", "target": "settings_json", "transform": "canonical_json"},
+        {"source": "created_at", "target": "created_at_ms", "transform": "timestamp_ms"}
+      ],
+      "foreign_keys": [
+        {"columns": ["organization_id"], "references": {"table": "organizations", "columns": ["id"]}, "same_tenant": true},
+        {"columns": ["owner_account_id"], "references": {"table": "accounts", "columns": ["id"]}, "same_tenant": true}
+      ],
+      "aggregates": [
+        {"name": "project_count", "operation": "count", "column": "*"},
+        {"name": "budget_total", "operation": "sum", "column": "budget_micros"}
+      ]
+    }
+  ],
+  "semantic_rules": [
+    {"name": "normalized_email_unique", "kind": "unique_per_tenant", "table": "accounts", "column": "email_normalized"},
+    {
+      "name": "organization_owner_is_active_owner_member",
+      "kind": "owner_membership",
+      "parent_table": "organizations",
+      "parent_id_column": "id",
+      "owner_column": "owner_account_id",
+      "membership_table": "organization_members",
+      "membership_parent_column": "organization_id",
+      "membership_user_column": "account_id",
+      "role_column": "role",
+      "required_role": "owner",
+      "state_column": "state",
+      "required_state": "active"
+    }
+  ],
+  "cutover": {
+    "authorized_operator_digests": ["bfb6f5278ff3bc2c308a382564e7b971db98bb5cac642aed5ddb65becd1804a5"],
+    "authorized_tenant_digests": [
+      "16aec69986a7b51b9fcec7f51320211bbf5af1a59559b8bfd506d7b96494be59",
+      "5abbcec4436addd00a4b8cdf18c22405288499a065a92dae34b49591cb5e08bc",
+      "f86b82a2b7a1d17fa403410d61a6916d48c82916b3633bd239c544d2ba22db09"
+    ],
+    "domains": ["metadata"],
+    "maintenance_windows": [
+      {
+        "end_ms": 1735693300000,
+        "start_ms": 1735689699000
+      }
+    ],
+    "slo": {
+      "max_contention_events": 0,
+      "max_dead_letter_events": 0,
+      "max_pending_lag_ms": 5000,
+      "max_shadow_mismatches": 0,
+      "minimum_shadow_observations": 1,
+      "shadow_window_ms": 60000
+    },
+    "shadow_queries": {
+      "account_list": {
+        "order_by": ["id"],
+        "casefold_fields": ["email_normalized"],
+        "ignored_fields": ["trace_id"],
+        "timestamp_fields": ["created_at_ms"],
+        "timestamp_precision_ms": 1000
+      }
+    }
+  }
+}

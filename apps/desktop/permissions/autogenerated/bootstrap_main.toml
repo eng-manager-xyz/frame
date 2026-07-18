@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-bootstrap-main"
+description = "Enables the bootstrap_main command without any pre-configured scope."
+commands.allow = ["bootstrap_main"]
+
+[[permission]]
+identifier = "deny-bootstrap-main"
+description = "Denies the bootstrap_main command without any pre-configured scope."
+commands.deny = ["bootstrap_main"]

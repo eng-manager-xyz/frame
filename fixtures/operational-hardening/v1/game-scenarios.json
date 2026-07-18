@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "plan_id": "frame-operational-game-v1",
+  "clock": "deterministic_logical_milliseconds",
+  "failure_localization": [
+    {"id": "worker_5xx", "boundary": "worker", "service": "control_plane_worker", "seed_at_ms": 10000, "signal_at_ms": 15000, "detection_target_ms": 60000, "safe_error_class": "worker_unavailable", "runbook_anchor": "worker-or-api"},
+    {"id": "d1_contention", "boundary": "d1", "service": "d1_metadata", "seed_at_ms": 20000, "signal_at_ms": 27000, "detection_target_ms": 60000, "safe_error_class": "metadata_contention", "runbook_anchor": "d1"},
+    {"id": "queue_lease_stall", "boundary": "queue_job", "service": "media_execution", "seed_at_ms": 30000, "signal_at_ms": 42000, "detection_target_ms": 60000, "safe_error_class": "job_lease_stalled", "runbook_anchor": "queue-or-job"},
+    {"id": "object_manifest_mismatch", "boundary": "object", "service": "r2_objects", "seed_at_ms": 40000, "signal_at_ms": 55000, "detection_target_ms": 60000, "safe_error_class": "object_reconciliation_failed", "runbook_anchor": "object"},
+    {"id": "native_worker_crash", "boundary": "media_worker", "service": "native_media_worker", "seed_at_ms": 50000, "signal_at_ms": 60000, "detection_target_ms": 60000, "safe_error_class": "native_worker_unavailable", "runbook_anchor": "media-worker"},
+    {"id": "desktop_update_rejected", "boundary": "desktop_update", "service": "desktop_client", "seed_at_ms": 60000, "signal_at_ms": 90000, "detection_target_ms": 300000, "safe_error_class": "desktop_update_rejected", "runbook_anchor": "desktop-update"},
+    {"id": "client_contract_decode", "boundary": "client", "service": "frame_client", "seed_at_ms": 70000, "signal_at_ms": 90000, "detection_target_ms": 60000, "safe_error_class": "client_contract_incompatible", "runbook_anchor": "client-contract"}
+  ],
+  "managed_media_games": [
+    {"id": "managed_provider_outage", "fault": "provider_outage", "profiles": ["optimized_clip_v1", "thumbnail_v1", "spritesheet_v1", "audio_extract_v1"], "expected": "disable_faulted_profile_revision_and_publish_one_native_result"},
+    {"id": "managed_quota_exhausted", "fault": "provider_quota", "profiles": ["optimized_clip_v1", "thumbnail_v1", "spritesheet_v1", "audio_extract_v1"], "expected": "disable_faulted_profile_revision_before_invocation_and_publish_one_native_result"},
+    {"id": "managed_breaking_output", "fault": "managed_output_drift", "profiles": ["optimized_clip_v1", "thumbnail_v1", "spritesheet_v1", "audio_extract_v1"], "expected": "quarantine_drifted_staging_disable_profile_and_publish_one_native_result"}
+  ],
+  "capacity_scenarios": [
+    {"id": "sustained_launch", "demand_units": 100, "available_units": 140, "minimum_headroom_basis_points": 3000, "duration_seconds": 1800, "expected": "within_local_model"},
+    {"id": "burst_launch", "demand_units": 120, "available_units": 160, "minimum_headroom_basis_points": 3000, "duration_seconds": 300, "expected": "within_local_model"},
+    {"id": "fallback_exhaustion", "demand_units": 130, "available_units": 140, "minimum_headroom_basis_points": 3000, "duration_seconds": 300, "expected": "block_managed_promotion_and_require_scaling_action"},
+    {"id": "regional_target_unapproved", "demand_units": 1, "available_units": 0, "minimum_headroom_basis_points": 3000, "duration_seconds": 0, "expected": "fail_closed_without_cross_residency_copy"}
+  ],
+  "protected_admission": {
+    "synthetic_inputs_only": true,
+    "isolated_namespace_required": true,
+    "scoped_credentials_required": true,
+    "concurrency": 1,
+    "hard_timeout_required": true,
+    "numeric_cost_cap_required": true,
+    "exact_cleanup_required": true,
+    "first_failure_retained": true
+  }
+}

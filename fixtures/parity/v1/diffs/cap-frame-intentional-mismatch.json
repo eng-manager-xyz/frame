@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "corpus_version": "parity-v1",
+  "evidence_class": "local_simulated",
+  "oracle_status": "declared_expected_behavior_not_observed_output",
+  "fixture_purpose": "negative_comparator_control_intentional_mismatch",
+  "expected_gate": "mismatch",
+  "comparisons": [
+    {
+      "path": "share.private.response.status",
+      "strategy": "exact",
+      "cap_value": 404,
+      "frame_value": 200
+    },
+    {
+      "path": "share.private.response.availability",
+      "strategy": "exact",
+      "cap_value": "unavailable",
+      "frame_value": "public"
+    },
+    {
+      "path": "share.private.response.cache_policy",
+      "strategy": "exact",
+      "cap_value": "no_store",
+      "frame_value": "no_store"
+    }
+  ],
+  "expected_mismatch_paths": [
+    "share.private.response.availability",
+    "share.private.response.status"
+  ]
+}

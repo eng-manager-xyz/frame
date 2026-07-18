@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id":"landing_default_bypass","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/"},"response":{"cache_control":"public, max-age=300","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"public_share_default_bypass","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/s/public-demo"},"response":{"cache_control":"public, max-age=60","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"private_share","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/s/private-demo"},"response":{"cache_control":"private, no-store","set_cookie":false,"privacy":"private"},"expected":"bypass"},
+    {"id":"api_query","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/api?version=1"},"response":{"cache_control":"public, max-age=60","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"api_version","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/api/v1/health"},"response":{"cache_control":"no-store","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"health","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/health/ready"},"response":{"cache_control":"no-store","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"auth","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/login"},"response":{"cache_control":"no-store","set_cookie":true,"privacy":"private"},"expected":"bypass"},
+    {"id":"upload","request":{"host":"frame.engmanager.xyz","method":"PUT","path":"/api/v1/uploads/demo/content"},"response":{"cache_control":"no-store","set_cookie":false,"privacy":"private"},"expected":"bypass"},
+    {"id":"mutation","request":{"host":"frame.engmanager.xyz","method":"POST","path":"/settings"},"response":{"cache_control":"public, max-age=60","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"authorization","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js","authorization":true},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"session_cookie","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js","cookie":true},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"set_cookie","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js"},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":true,"privacy":"public"},"expected":"bypass"},
+    {"id":"range","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/video.a1b2c3d4e5f6.mp4","range":true},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"upgrade","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js","upgrade":true},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"signed_query","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js?X-Amz-Signature=synthetic"},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"mutable_asset","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.js"},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"wrong_host","request":{"host":"engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js"},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"origin_no_store","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js"},"response":{"cache_control":"no-store","set_cookie":false,"privacy":"public"},"expected":"bypass"},
+    {"id":"fingerprinted_get","request":{"host":"frame.engmanager.xyz","method":"GET","path":"/assets/app.a1b2c3d4e5f6.js"},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"immutable"},
+    {"id":"fingerprinted_head","request":{"host":"frame.engmanager.xyz","method":"HEAD","path":"/assets/style.0123456789abcdef.css"},"response":{"cache_control":"public, max-age=31536000, immutable","set_cookie":false,"privacy":"public"},"expected":"immutable"}
+  ]
+}

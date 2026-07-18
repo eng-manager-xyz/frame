@@ -1,0 +1,467 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  policy:
+    name: Policy, fixtures, and configuration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Validate workflow policy
+        run: |
+          python3 scripts/ci/check-workflow-policy.py
+          python3 -I scripts/ci/test-workflow-policy.py
+          python3 -I scripts/ci/test-release-change-plan.py
+      - name: Validate YAML and Render authority
+        run: |
+          ruby scripts/ci/check-yaml-syntax.rb
+          ruby scripts/ci/check-render-blueprint.rb
+      - name: Validate public fixtures and expand-only migrations
+        run: |
+          python3 scripts/ci/check-fixtures.py
+          python3 -I scripts/ci/check-frame-client-contract.py
+          python3 -I scripts/ci/check-cross-repo-contract.py
+          python3 -I scripts/ci/test-cross-repo-contract.py
+          python3 -I scripts/ci/check-desktop-product.py
+          python3 -I scripts/ci/check-media-service.py
+          python3 -I scripts/ci/check-engmanager-portfolio-integration.py
+          python3 scripts/ci/check-parity-evidence.py
+          python3 scripts/ci/check-migrations.py
+          python3 scripts/ci/check-cloudflare-zone-contract.py
+          python3 -I scripts/ci/check-cloudflare-edge-policy.py
+          python3 -I scripts/ci/test-frame-cache-purge.py
+          python3 -I scripts/ci/check-browser-security.py
+          python3 -I scripts/ci/check-launch-observability.py
+          python3 -I scripts/ci/check-issue-closure.py
+          python3 scripts/ci/test-migration.py
+          python3 scripts/ci/cutover-authority-conformance.py
+          python3 -I scripts/ci/business-sqlite-semantic-conformance.py
+          python3 -I scripts/ci/organization-sqlite-semantic-conformance.py
+          python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
+          python3 -I scripts/ci/direct-upload-sqlite-conformance.py
+          python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
+          python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
+          python3 -I scripts/ci/media-job-inputs-sqlite-conformance.py
+          python3 -I scripts/ci/worker-auth-sqlite-conformance.py
+          python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
+          python3 -I scripts/migration/test_cap_id_map.py
+          python3 -I scripts/migration/test_etl_cap_id_map.py
+          python3 -I scripts/migration/test_cap_business_plan_contract.py
+          python3 -I scripts/migration/test_local.py
+          python3 -I scripts/migration/test_mysql_snapshot.py
+          python3 -I scripts/migration/test_mysql_cdc.py
+          python3 -I scripts/migration/test_d1_target.py
+      - name: Validate pinned Terraform installer metadata
+        run: scripts/ci/install-terraform.sh --check
+      - name: Reject checked-in credentials and validate the SBOM generator
+        run: |
+          python3 scripts/ci/check-secrets.py
+          python3 scripts/ci/generate-cyclonedx.py --self-test
+      - name: Run the provider-free semantic walking slice
+        run: python3 -I scripts/ci/hermetic-journey.py --timeout 20
+      - name: Run the credential-free two-origin preview contract
+        run: >-
+          python3 -I scripts/ci/cross-repo-preview-e2e.py
+          --self-test --timeout 20
+
+  native:
+    name: Native workspace and production web
+    needs: policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: Install the pinned Leptos web asset bundler
+        run: cargo install trunk --version 0.21.14 --locked
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install GStreamer build and runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
+      - name: Check formatting and lints
+        run: |
+          cargo fmt --all -- --check
+          scripts/ci/gstreamer-sanitized-exec cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked -p frame-web --no-default-features --features hydrate --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
+      - name: Enforce dependency, advisory, license, and source policy
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check advisories bans licenses sources
+      - name: Generate the release-format CycloneDX inventory
+        run: |
+          mkdir -p target/evidence
+          python3 scripts/ci/generate-cyclonedx.py \
+            --require-registry-checksums \
+            --output target/evidence/frame.cdx.json
+          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' \
+            target/evidence/frame.cdx.json >/dev/null
+      - name: Test the complete workspace
+        run: scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
+      - name: Enforce dependency and target boundaries
+        run: scripts/ci/check-workspace-boundaries.sh
+      - name: Build and smoke the production web binary
+        run: |
+          python3 -I scripts/ci/build-web-hydration.py \
+            --runtime-dir target/release/web-dist
+          python3 -I scripts/ci/check-web-hydration-bundle.py \
+            --evidence target/evidence/web-hydration-bundle-linux.json
+          cargo build --locked --release -p frame-web
+          FRAME_ADDR=127.0.0.1:3810 \
+            FRAME_DEPLOYMENT=local \
+            FRAME_RELEASE_ID=${GITHUB_SHA} \
+            target/release/frame-web >target/frame-web-smoke.log 2>&1 &
+          server_pid=$!
+          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3810/health/ready >/dev/null; then
+              break
+            fi
+            if [[ "${attempt}" -eq 20 ]]; then
+              echo "frame-web did not become ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          google-chrome --version
+          python3 -I scripts/ci/web-hydration-smoke.py \
+            --origin http://127.0.0.1:3810 \
+            --evidence target/evidence/web-hydration-smoke-linux.json
+          kill "${server_pid}"
+          wait "${server_pid}" || true
+          trap - EXIT
+          python3 -I scripts/ci/render-web-runtime-smoke.py \
+            --binary target/release/frame-web \
+            --evidence target/evidence/render-web-runtime-linux.json
+      - name: Prove lockfile stability
+        run: git diff --exit-code -- Cargo.lock
+      - name: Retain the exact web build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frame-web-${{ github.sha }}
+          path: |
+            target/release/frame-web
+            apps/web/dist
+            target/evidence/web-hydration-*.json
+            target/evidence/render-web-runtime-linux.json
+          if-no-files-found: error
+          retention-days: 5
+      - name: Retain the dependency inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frame-sbom-${{ github.sha }}
+          path: target/evidence/frame.cdx.json
+          if-no-files-found: error
+          retention-days: 5
+
+  contract_worker:
+    name: Public contract and Worker dry run
+    needs: policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --target wasm32-unknown-unknown
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.17.0"
+      - name: Install the pinned Worker packager
+        run: cargo install worker-build --version 0.8.5 --locked
+      - name: Run aggregate repositories and storage against isolated local bindings
+        run: |
+          mkdir -p target/evidence
+          python3 -I scripts/ci/d1-repository-conformance.py \
+            --evidence target/evidence/d1-repository-conformance.json
+          python3 -I scripts/ci/auth-d1-conformance.py \
+            --evidence target/evidence/auth-d1-conformance.json
+          python3 -I scripts/ci/organization-d1-conformance.py \
+            --evidence target/evidence/organization-d1-conformance.json
+          python3 -I scripts/ci/api-workflow-d1-conformance.py \
+            --evidence target/evidence/api-workflow-d1-conformance.json
+          python3 -I scripts/ci/r2-storage-conformance.py \
+            --evidence target/evidence/r2-storage-conformance.json
+      - name: Test frame-client feature and target matrix
+        run: |
+          cargo test --locked -p frame-client --all-features
+          cargo test --locked -p frame-authenticated-client
+          cargo check --locked -p frame-client --no-default-features
+          cargo check --locked -p frame-authenticated-client
+          cargo check --locked -p frame-client --no-default-features --target wasm32-unknown-unknown
+          cargo check --locked -p frame-authenticated-client --target wasm32-unknown-unknown
+          cargo check --locked -p frame-control-plane --target wasm32-unknown-unknown
+      - name: Build a provider-free Worker bundle
+        run: >-
+          npx --yes wrangler@4.111.0 deploy --dry-run
+          --config apps/control-plane/wrangler.toml
+          --outdir "${GITHUB_WORKSPACE}/target/wrangler-ci"
+      - name: Prove lockfile stability
+        run: git diff --exit-code -- Cargo.lock
+      - name: Retain the synthetic Worker build and local binding evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frame-worker-dry-run-${{ github.sha }}
+          path: |
+            target/wrangler-ci
+            target/evidence/*-d1-conformance.json
+            target/evidence/r2-storage-conformance.json
+          if-no-files-found: error
+          retention-days: 5
+
+  media:
+    name: GStreamer runtime and synthetic media
+    needs: policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install GStreamer build and runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good
+          plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+          test -d "${plugin_dir}"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
+      - name: Test media contracts and runtime catalog
+        run: |
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media -p frame-media-worker
+          scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-desktop-core --features instant-finalize
+          scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- doctor
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- catalog
+          scripts/ci/gstreamer-sanitized-exec cargo build --locked -p frame-media-worker
+          scripts/ci/gstreamer-sanitized-exec python3 -I scripts/ci/hostile-gstreamer-readiness.py \
+            --worker target/debug/frame-media-worker \
+            --evidence target/evidence/gstreamer-worker-hostile-readiness-ci.json
+      - name: Verify the audited runtime and factory contract
+        run: |
+          mkdir -p target/evidence
+          dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Status}\n' \
+            libgstreamer1.0-0 libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-0 libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good \
+            | sort > target/evidence/gstreamer-packages-ci.tsv
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_doctor \
+            > target/evidence/gstreamer-doctor-ci.json
+          python3 -I scripts/ci/check-gstreamer-runtime.py \
+            --doctor target/evidence/gstreamer-doctor-ci.json \
+            --packages target/evidence/gstreamer-packages-ci.tsv \
+            --evidence target/evidence/gstreamer-runtime-contract-ci.json
+          mkdir -p target/hostile-xdg/gstreamer-1.0/plugins
+          mkdir -p target/hostile-xdg/cache
+          cp "${GST_PLUGIN_SYSTEM_PATH_1_0}/libgstvideotestsrc.so" \
+            target/hostile-xdg/gstreamer-1.0/plugins/libgstvideotestsrc.so
+          XDG_DATA_HOME=target/hostile-xdg \
+            XDG_CACHE_HOME=target/hostile-xdg/cache \
+            scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_doctor \
+            > target/evidence/gstreamer-doctor-hostile-xdg-ci.json
+          XDG_DATA_HOME=target/hostile-xdg \
+            XDG_CACHE_HOME=target/hostile-xdg/cache \
+            python3 -I scripts/ci/check-gstreamer-runtime.py \
+            --doctor target/evidence/gstreamer-doctor-hostile-xdg-ci.json \
+            --packages target/evidence/gstreamer-packages-ci.tsv \
+            --evidence target/evidence/gstreamer-runtime-hostile-xdg-ci.json
+      - name: Record and inspect synthetic A/V media
+        run: |
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -p frame-media-worker -- smoke target/frame-smoke.webm
+          scripts/ci/gstreamer-sanitized-exec gst-discoverer-1.0 -v target/frame-smoke.webm \
+            > target/gstreamer-discoverer-ci.raw.txt
+          python3 -I scripts/ci/check-gstreamer-discoverer.py \
+            --input target/gstreamer-discoverer-ci.raw.txt \
+            --evidence target/evidence/gstreamer-media-probe-ci.json
+      - name: Gate repeated start-stop and resource trends
+        run: >-
+          scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_soak --
+          --cycles 16
+          --evidence target/evidence/media-runtime-soak-ci.json
+      - name: Gate the deterministic conformance matrix and dashboard
+        run: >-
+          python3 -I scripts/ci/check-media-conformance.py
+          --evidence target/evidence/media-conformance-offline.json
+          --dashboard target/evidence/media-conformance-dashboard.json
+      - name: Retain synthetic media evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gstreamer-synthetic-${{ github.sha }}
+          path: |
+            target/frame-smoke.webm
+            target/evidence/gstreamer-*.json
+            target/evidence/gstreamer-*.tsv
+            target/evidence/media-runtime-soak-ci.json
+            target/evidence/media-conformance-offline.json
+            target/evidence/media-conformance-dashboard.json
+          if-no-files-found: warn
+          retention-days: 3
+
+  portability:
+    name: Core contracts on ${{ matrix.os }}
+    needs: policy
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install declared minimum Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Test portable domain, clients, application, ports, and desktop core
+        run: >-
+          cargo test --locked
+          -p frame-domain -p frame-ports -p frame-application
+          -p frame-client -p frame-authenticated-client -p frame-desktop-core
+      - name: Compile the Windows encrypted Instant spool and credential adapter
+        if: runner.os == 'Windows'
+        env:
+          # cargo check does not link; this skips native GStreamer probing while
+          # still type-checking every Windows-only Rust/Win32 code path.
+          DOCS_RS: "1"
+        run: |
+          cargo test --locked -p frame-windows-secure-spool
+          cargo clippy --locked -p frame-windows-secure-spool --all-targets -- -D warnings
+          cargo check --locked -p frame-media --all-targets
+
+  desktop_shell:
+    name: Tauri desktop shell on ${{ matrix.os }}
+    needs: policy
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install pinned Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.14.5"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component clippy --target wasm32-unknown-unknown
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          cache-on-failure: false
+      - name: Install the pinned Leptos asset bundler
+        run: cargo install trunk --version 0.21.14 --locked
+      - name: Lint and test the native Tauri command boundary
+        env:
+          # The shell does not execute media. Bypass only GStreamer's discovery
+          # and link metadata; DOCS_RS would also suppress unrelated native sys
+          # crates and produce an invalid Tauri executable on macOS.
+          FRAME_GSTREAMER_COMPILE_ONLY: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_LIB: ${{ runner.os == 'Windows' && 'kernel32' || 'c' }}
+        run: |
+          cargo test --locked -p frame-desktop-core --features tauri-app --bin frame-desktop
+          cargo clippy --locked -p frame-desktop-core --features tauri-app --bin frame-desktop -- -D warnings
+      - name: Lint and bundle the wasm shell
+        working-directory: apps/desktop
+        run: |
+          cargo clippy --locked -p frame-desktop-ui --no-default-features --features csr --target wasm32-unknown-unknown -- -D warnings
+          python ../../scripts/ci/build-desktop-ui.py
+      - name: Verify the closed frontend bundle and advisory boundary
+        run: |
+          python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-${{ runner.os }}.json
+          python scripts/ci/check-desktop-advisory-exception.py
+      - name: Build the native desktop executable
+        env:
+          FRAME_GSTREAMER_COMPILE_ONLY: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG: "1"
+          SYSTEM_DEPS_GSTREAMER_1_0_LIB: ${{ runner.os == 'Windows' && 'kernel32' || 'c' }}
+        run: >-
+          cargo build --locked --release -p frame-desktop-core
+          --features tauri-app,custom-protocol --bin frame-desktop
+      - name: Exercise the production-CSP WebView command boundary
+        run: >-
+          python scripts/ci/desktop-shell-smoke.py
+          --evidence target/evidence/desktop-smoke-${{ runner.os }}.json
+      - name: Prove lockfile stability
+        run: git diff --exit-code -- Cargo.lock
+      - name: Retain the exact desktop shell outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frame-desktop-shell-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            apps/desktop/ui/dist
+            target/release/frame-desktop
+            target/release/frame-desktop.exe
+            target/evidence/desktop-*.json
+          if-no-files-found: error
+          retention-days: 5
+
+  quality-gate:
+    name: quality-gate
+    if: ${{ always() }}
+    needs: [policy, native, contract_worker, media, portability, desktop_shell]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Resolve every required lane to a binary result
+        env:
+          POLICY_RESULT: ${{ needs.policy.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          CONTRACT_WORKER_RESULT: ${{ needs.contract_worker.result }}
+          MEDIA_RESULT: ${{ needs.media.result }}
+          PORTABILITY_RESULT: ${{ needs.portability.result }}
+          DESKTOP_SHELL_RESULT: ${{ needs.desktop_shell.result }}
+        run: |
+          test "${POLICY_RESULT}" = success
+          test "${NATIVE_RESULT}" = success
+          test "${CONTRACT_WORKER_RESULT}" = success
+          test "${MEDIA_RESULT}" = success
+          test "${PORTABILITY_RESULT}" = success
+          test "${DESKTOP_SHELL_RESULT}" = success

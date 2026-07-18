@@ -1,0 +1,21 @@
+{
+  "api_version": { "major": 1 },
+  "availability": "public",
+  "title": "Public product walkthrough",
+  "description": "A deliberately public synthetic recording.",
+  "canonical_url": "https://frame.engmanager.xyz/s/public-demo",
+  "duration_ms": 42000,
+  "playback": {
+    "path": "/api/v1/public/shares/public-demo/media",
+    "content_type": "video/mp4",
+    "supports_range": true,
+    "captions": [
+      {
+        "path": "/api/v1/public/shares/public-demo/captions/en",
+        "language": "en",
+        "label": "English",
+        "default": true
+      }
+    ]
+  }
+}
