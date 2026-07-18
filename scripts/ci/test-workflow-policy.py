@@ -87,6 +87,12 @@ def main() -> int:
         mutations = (
             (
                 production,
+                "on:\n  pull_request:\n  push:",
+                "on:\n  push:",
+                "main-only unprivileged release path",
+            ),
+            (
+                production,
                 "  push:\n    branches: [main]",
                 "  push:\n    branches: [main]\n    paths: [apps/control-plane/**]",
                 "path-filtered sentinel",
@@ -108,6 +114,36 @@ def main() -> int:
                 "      - name: Resolve every release phase to a binary result",
                 "      - name: Resolve every release phase to a binary result\n        continue-on-error: true",
                 "advisory sentinel",
+            ),
+            (
+                production,
+                "  provider_release:\n    name: Protected Worker deploy or compatibility verify\n    if: ${{ github.event_name != 'pull_request' }}",
+                "  provider_release:\n    name: Protected Worker deploy or compatibility verify",
+                "provider access reachable from pull requests",
+            ),
+            (
+                production,
+                "run: worker-build --release apps/control-plane",
+                "run: worker-build --help",
+                "production Worker readiness probe without prebuild",
+            ),
+            (
+                production,
+                "python3 scripts/ci/check-parity-evidence.py\n",
+                "python3 scripts/ci/check-parity-evidence.py --require-full\n",
+                "protected evidence required inside shared PR build preflight",
+            ),
+            (
+                production,
+                "python3 scripts/ci/check-parity-evidence.py --require-full",
+                "python3 scripts/ci/check-parity-evidence.py",
+                "provider mutation without protected parity evidence",
+            ),
+            (
+                production,
+                'pull_request) test "${PROVIDER_RESULT}" = skipped ;;',
+                'pull_request) test "${PROVIDER_RESULT}" = success ;;',
+                "pull requests required protected provider execution",
             ),
             (
                 share,

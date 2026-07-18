@@ -18,19 +18,28 @@ them.
 
 ## Per-SHA release graph
 
-Every main SHA immediately creates `Production gate` without path filters. Its
-unprivileged preflight runs policy, format, lint, test, contract, migration,
-fixture, dependency, supply-chain, native/wasm, browser, media, Worker dry-run,
-and release-package checks. A checksummed handoff binds the Git SHA, API major,
-D1 migration level, web assets/binary, Worker bundle, cargo metadata, and SBOM.
+Every pull request and every main SHA creates `Production gate` without path
+filters. Both events run the same secret-free preflight and immutable release
+build: policy, format, lint, test, contract, migration, fixture, dependency,
+supply-chain, native/wasm, browser, media, compiled Worker binding, and release-
+package checks. The Worker is built before bounded D1/R2 readiness probes, so a
+cold compiler cannot consume a service-readiness timeout. Branch protection
+must require the final `production-gate` context before merge.
 
-The protected job verifies that handoff. A Worker-impacting SHA applies only
-expand-first migrations, deploys the prebuilt Worker, and smokes the canonical
-API. An irrelevant SHA performs the same compatibility smoke and records why
-no Worker deploy occurred. The final `production-gate` job uses `always()` and
-converts every dependency result into success or failure; skipped or neutral
-provider work cannot satisfy it. Production concurrency is serialized and is
-never cancelled mid-migration.
+Pull requests validate only the shared build path; the provider job is
+structurally unreachable and the final sentinel accepts that one explicit
+`skipped` result. Main and manual events require provider success. A checksummed
+handoff binds the Git SHA, API major, D1 migration level, web assets/binary,
+Worker bundle, cargo metadata, and SBOM.
+
+The protected job first requires the protected parity corpus, then verifies the
+handoff. A Worker-impacting SHA applies only expand-first migrations, deploys
+the prebuilt Worker, and smokes the canonical API. An irrelevant SHA performs
+the same compatibility smoke and records why no Worker deploy occurred. The
+final `production-gate` job uses `always()` and converts every dependency
+result into success or failure; skipped or neutral provider work cannot satisfy
+a main/manual release. Production concurrency is serialized and is never
+cancelled mid-migration.
 
 Render sees that same commit's checks. A web/shared-impacting SHA triggers one
 checks-pass build; a correctly filtered SHA triggers none. The secret-free
