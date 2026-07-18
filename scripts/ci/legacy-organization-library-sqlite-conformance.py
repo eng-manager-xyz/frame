@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -559,9 +559,10 @@ def prove_fixture_and_source_pins() -> None:
     for operation in operations:
         assert operation["id"] in application
         assert operation["legacy_identity"] in application
-        source = ROOT / ".tmp/cap" / operation["source_path"]
-        if source.exists():
-            assert hashlib.sha256(source.read_bytes()).hexdigest() == operation["source_sha256"]
+        source = PurePosixPath(operation["source_path"])
+        assert source.parts and not source.is_absolute()
+        assert ".." not in source.parts
+        assert re.fullmatch(r"[0-9a-f]{64}", operation["source_sha256"])
     assert "VerifyCollectionPassword" in runtime and "PASSWORD_SNAPSHOT_SQL" in runtime
     assert "authenticate_compatibility_mutation" in web_runtime
     assert "admit_edge_request" in web_runtime

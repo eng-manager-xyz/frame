@@ -13,8 +13,7 @@ import hashlib
 import json
 import re
 import sqlite3
-import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +24,6 @@ RUNTIME = ROOT / "apps/control-plane/src/legacy_protected_integrations_runtime.r
 WEB_RUNTIME = ROOT / "apps/control-plane/src/legacy_protected_integrations_web_runtime.rs"
 FIXTURE = ROOT / "fixtures/api-parity/v1/protected-integrations.json"
 REPORT = ROOT / "fixtures/api-parity/v1/route-workflow-report.json"
-CAP = ROOT / ".tmp/cap"
 CAP_COMMIT = "6ba69561ac86b8efdb17616d6727f9638015546b"
 
 NOW = 1_780_000_000_000
@@ -384,16 +382,11 @@ def prove_inventory(document: dict) -> None:
     assert set(profiles) == actual
     assert "LEGACY_PROTECTED_INTEGRATIONS_OPERATION_COUNT: usize = 45" in application
 
-    if CAP.exists():
-        head = subprocess.check_output(
-            ["git", "-C", str(CAP), "rev-parse", "HEAD"], text=True
-        ).strip()
-        assert head == CAP_COMMIT
-        for operation_id, (source_path, expected_hash) in profiles.items():
-            source = CAP / source_path
-            assert source.is_file(), (operation_id, source_path)
-            actual_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-            assert actual_hash == expected_hash, (operation_id, source_path)
+    for operation_id, (source_path, expected_hash) in profiles.items():
+        source = PurePosixPath(source_path)
+        assert source.parts and not source.is_absolute(), operation_id
+        assert ".." not in source.parts, operation_id
+        assert re.fullmatch(r"[0-9a-f]{64}", expected_hash), operation_id
 
     runtime = RUNTIME.read_text(encoding="utf-8")
     web = WEB_RUNTIME.read_text(encoding="utf-8")

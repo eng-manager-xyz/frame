@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +18,6 @@ APPLICATION = ROOT / "crates/application/src/legacy_protected_media.rs"
 RUNTIME = ROOT / "apps/control-plane/src/legacy_protected_media_runtime.rs"
 WEB = ROOT / "apps/control-plane/src/legacy_protected_media_web_runtime.rs"
 QUERIES = ROOT / "apps/control-plane/queries/legacy_protected_media"
-CAP = ROOT / ".tmp/cap"
 
 OWNER_ID = "11111111-1111-4111-8111-111111111111"
 MEMBER_ID = "22222222-2222-4222-8222-222222222222"
@@ -329,9 +329,11 @@ def validate_fixture() -> dict:
         assert operation["method"] in {"GET", "HEAD", "POST", "RPC", "ACTION", "WORKFLOW"}
         assert operation["idempotency"] in {"required", "forbidden"}
         for source in operation["source_manifest"]:
-            source_path = CAP / source["path"]
-            assert source_path.is_file(), source_path
-            assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source["sha256"]
+            source_path = PurePosixPath(source["path"])
+            assert source_path.parts and not source_path.is_absolute()
+            assert ".." not in source_path.parts
+            assert source["symbol"]
+            assert re.fullmatch(r"[0-9a-f]{64}", source["sha256"])
     return fixture
 
 

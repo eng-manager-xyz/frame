@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,7 +19,6 @@ RUNTIME = ROOT / "apps/control-plane/src/legacy_protected_billing_auth_runtime.r
 WEB = ROOT / "apps/control-plane/src/legacy_protected_billing_auth_web_runtime.rs"
 QUERIES = ROOT / "apps/control-plane/queries/legacy_protected_billing_auth"
 AUTH_QUERIES = ROOT / "apps/control-plane/queries/auth"
-CAP = ROOT / ".tmp/cap"
 USER_SESSION_ID = "10000000-0000-4000-8000-000000000001"
 ADMIN_SESSION_ID = "10000000-0000-4000-8000-000000000002"
 USER_SESSION_DIGEST = hashlib.sha256(b"user-session-token").hexdigest()
@@ -332,9 +332,11 @@ def validate_fixture() -> dict:
         assert operation["id"] in application
         assert operation["idempotency"] in {"required", "optional", "forbidden"}
         for source in operation["source_manifest"]:
-            source_path = CAP / source["path"]
-            assert source_path.is_file(), source_path
-            assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source["sha256"]
+            source_path = PurePosixPath(source["path"])
+            assert source_path.parts and not source_path.is_absolute()
+            assert ".." not in source_path.parts
+            assert source["symbol"]
+            assert re.fullmatch(r"[0-9a-f]{64}", source["sha256"])
     assert "checkout_success" in fixture["local_contract"]["never_implies"]
     assert "video_reprocessing" in fixture["local_contract"]["never_implies"]
     return fixture

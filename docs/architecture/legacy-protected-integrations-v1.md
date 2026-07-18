@@ -230,8 +230,8 @@ here would create a second source of truth.
 ## Verification
 
 `scripts/ci/legacy-protected-integrations-sqlite-conformance.py` proves the
-exact 45-ID inventory against the parity report, verifies pinned Cap source
-hashes when `.tmp/cap` is available, applies every migration, and exercises
+exact 45-ID inventory against the committed parity report and source-pin
+manifests, applies every migration, and exercises
 alias resolution, credential and authority freshness, secret exclusion,
 transaction rollback, generated and natural replay, cross-family ancestry,
 credential-rotation uniqueness, field-level workflow identity and raw-key

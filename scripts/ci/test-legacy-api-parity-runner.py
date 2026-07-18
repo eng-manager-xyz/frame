@@ -91,6 +91,20 @@ def validate_local_entrypoints() -> None:
         )
 
 
+def validate_hermetic_conformance() -> None:
+    offenders = []
+    for script in sorted(
+        (ROOT / "scripts/ci").glob("legacy-*-sqlite-conformance.py")
+    ):
+        if ".tmp/cap" in script.read_text(encoding="utf-8"):
+            offenders.append(script.name)
+    if offenders:
+        raise AssertionError(
+            "legacy conformance must use committed source-pin evidence, not the "
+            f"discardable Cap checkout: {', '.join(offenders)}"
+        )
+
+
 def write_fixture_script(path: pathlib.Path, status: int) -> None:
     path.write_text(
         "import pathlib\n"
@@ -125,8 +139,11 @@ def validate_fail_fast() -> None:
 def main() -> int:
     validate_real_inventory()
     validate_local_entrypoints()
+    validate_hermetic_conformance()
     validate_fail_fast()
-    print("legacy/API parity runner inventory, evidence, and fail-fast tests passed")
+    print(
+        "legacy/API parity runner inventory, hermetic evidence, and fail-fast tests passed"
+    )
     return 0
 
 
