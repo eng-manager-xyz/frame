@@ -30,6 +30,7 @@ pub const MAX_CAPTURE_HEIGHT: u32 = 4_320;
 pub const MAX_OWNED_FRAME_BYTES: usize = 256 * 1024 * 1024;
 const MIN_FRAME_DURATION_NS: u64 = 1_000_000;
 const MAX_FRAME_DURATION_NS: u64 = 1_000_000_000;
+#[cfg(any(target_os = "macos", test))]
 const TIMESTAMP_GAP_DISCONTINUITY_NS: u64 = 2_000_000_000;
 
 /// Why this crate does not implement [`frame_media::ScreenCaptureSource`].
@@ -271,6 +272,7 @@ fn bgra_frame_bytes(width: u32, height: u32) -> Result<usize, MacOsCaptureError>
         .ok_or(MacOsCaptureError::FrameAllocationExceedsLimit)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn copy_bgra_rows(
     bytes: &[u8],
     width: usize,
@@ -311,6 +313,7 @@ fn copy_bgra_rows(
     Ok(output)
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy)]
 struct RawMediaTime {
     value: i64,
@@ -319,6 +322,7 @@ struct RawMediaTime {
     numeric: bool,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl RawMediaTime {
     #[cfg(test)]
     const fn numeric(value: i64, timescale: i32, epoch: i64) -> Self {
@@ -351,12 +355,14 @@ impl RawMediaTime {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy)]
 struct NormalizedTimestamp {
     timestamp: FrameTimestamp,
     used_nominal_duration: bool,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Default)]
 struct TimestampNormalizer {
     segment_epoch: Option<i64>,
@@ -366,6 +372,7 @@ struct TimestampNormalizer {
     last_output_end_ns: u64,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl TimestampNormalizer {
     #[cfg(target_os = "macos")]
     const fn new() -> Self {
