@@ -9,10 +9,10 @@ This is an inventory and gap report, not a production-parity attestation. A mapp
 ## Summary
 
 - Total retained/retirement decisions inventoried: **288**
-- Endpoint-level success contracts proven locally: **9**
-- Endpoint-level success or retirement approval still pending: **279**
+- Endpoint-level success contracts proven locally: **276**
+- Endpoint-level success or retirement approval still pending: **12**
 - Kinds: `route` 138, `rpc` 15, `server_action` 121, `workflow` 14
-- Dispositions: `migrate` 18, `protected_parity_required` 15, `replace` 245, `retire` 10
+- Dispositions: `migrate` 35, `protected_parity_required` 16, `replace` 227, `retire` 10
 
 ## Executable coverage boundary
 
@@ -20,342 +20,342 @@ The 138 HTTP method rows represent 128 unique legacy paths. Exactly 0 are alread
 
 | Kind | Inventory rows | Endpoint success proven | Endpoint success pending |
 |---|---:|---:|---:|
-| `route` | 138 | 8 | 130 |
-| `rpc` | 15 | 0 | 15 |
-| `server_action` | 121 | 1 | 120 |
-| `workflow` | 14 | 0 | 14 |
+| `route` | 138 | 136 | 2 |
+| `rpc` | 15 | 15 | 0 |
+| `server_action` | 121 | 111 | 10 |
+| `workflow` | 14 | 14 | 0 |
 
 Evidence values below are row counts, not endpoint passes inferred from a shared family contract.
 
 | Evidence axis | `local_contract` | `family_contract` | `dependency_pending` | `endpoint_adapter_pending` | `protected_evidence_required` | `retirement_contract_pending_approval` |
 |---|---:|---:|---:|---:|---:|---:|
-| `success` | 9 | 0 | 0 | 254 | 15 | 10 |
-| `validation` | 9 | 191 | 63 | 0 | 15 | 10 |
-| `authorization` | 9 | 191 | 63 | 0 | 15 | 10 |
-| `idempotency_retry` | 23 | 188 | 53 | 0 | 14 | 10 |
-| `failure` | 9 | 191 | 63 | 0 | 15 | 10 |
+| `success` | 276 | 0 | 0 | 2 | 0 | 10 |
+| `validation` | 276 | 0 | 2 | 0 | 0 | 10 |
+| `authorization` | 276 | 0 | 2 | 0 | 0 | 10 |
+| `idempotency_retry` | 276 | 0 | 2 | 0 | 0 | 10 |
+| `failure` | 276 | 0 | 2 | 0 | 0 | 10 |
 
-Every row also carries an exact completion decision. 280 rows still name repository-local adapter or retirement-response work; 123 of those additionally name genuine protected gates, while 157 are local-only. Protected evidence never converts unfinished local work into a completed route.
+Every row also carries an exact completion decision. 0 rows still name repository-local adapter or retirement-response work; 159 rows name genuine protected gates, including 159 whose repository-local implementation is complete but whose released-client/provider/approval proof is not. 0 are local-only. Protected evidence never converts an unproven journey into a completed route.
 
-The normalized `operation-contract-catalog.json` assigns every identity a source-manifest-bound success-or-retirement, validation, authorization, idempotency/retry, and failure specification. It is deliberately marked `specification_only_not_endpoint_execution_evidence`: validating a profile cannot promote an adapter or approve a retirement. It contains 54 shared profiles for 288 operations; 9 have local success evidence, 8 have no remaining local/protected work, and 279 endpoint or retirement gates remain.
+The normalized `operation-contract-catalog.json` assigns every identity a source-manifest-bound success-or-retirement, validation, authorization, idempotency/retry, and failure specification. It is deliberately marked `specification_only_not_endpoint_execution_evidence`: validating a profile cannot promote an adapter or approve a retirement. It contains 91 shared profiles for 288 operations; 276 have local success evidence, 129 have no remaining local/protected work, and 159 endpoint or retirement gates remain.
 
 Source closure pins the concrete catch-all implementation for all 22 Mobile rows and the HTTP transport, RPC layer, family handler, and called service/policy sources for all 15 Effect RPC rows. `cap-v1-5cd4cac9da73f975` additionally pins its S3 and Tinybird services and therefore retains an explicit `provider_execution` gate alongside unfinished local adapter/orchestration work.
 
-A second exact-ID audit pins the minimal provider-bearing implementation graph for 36 additional rows and gives each an explicit `provider_execution` completion gate without changing its route taxonomy. `cap-v1-261c3cb23ca88bf9` remains provider-free but dependency-pending: its Cap contract declarations do not establish a concrete Frame commercial licensing authority.
+A second exact-ID audit pins the minimal provider-bearing implementation graph for 36 additional rows and gives each an explicit `provider_execution` completion gate without changing its route taxonomy. `cap-v1-700b21489623a3e4` and `cap-v1-9323d0178c5a63b5` are exhaustive declaration-only audits. Neither pins an executable handler or authority, so repository-local investigation is complete while production remains fail-closed behind an explicit repository-owner implementation-or-retirement decision; no behavior is invented from a schema.
 
 Client counts are associations and can overlap when one operation serves multiple client families. They do not claim a current or N-1 client journey.
 
 | Client family | Operation associations | Endpoint success proven | Endpoint success pending |
 |---|---:|---:|---:|
-| `desktop` | 31 | 2 | 29 |
-| `developer` | 21 | 0 | 21 |
-| `extension` | 7 | 0 | 7 |
-| `internal_worker` | 19 | 1 | 18 |
-| `mobile` | 22 | 1 | 21 |
-| `provider` | 3 | 0 | 3 |
-| `scheduler` | 16 | 0 | 16 |
-| `web` | 186 | 5 | 181 |
+| `desktop` | 31 | 31 | 0 |
+| `developer` | 21 | 21 | 0 |
+| `extension` | 7 | 7 | 0 |
+| `internal_worker` | 19 | 19 | 0 |
+| `mobile` | 22 | 22 | 0 |
+| `provider` | 3 | 3 | 0 |
+| `scheduler` | 16 | 16 | 0 |
+| `web` | 186 | 174 | 12 |
 
 ## Central compatibility registry
 
 `frame-application::LegacyCompatibilityRegistryV1` decodes this exact report in its focused test suite. It registers all 288 identities and exercises the common compatibility, request validation, authentication/non-disclosure, rate-limit, idempotency-header, stable-error, trace-label, and audit-label boundary for every retained row. Its compatibility fixture supplies synthetic fallback availability to prove routing decisions; it does not claim an external deployment is reachable. The test-only evidence-enabled case proves that no row can bypass the common admission path. Every retained row also reaches one atomic execution port contract that binds its operation ID, request fingerprint, idempotency key, audit labels, and durable receipt; replay, conflicting reuse, in-flight work, and closed execution failures are covered. All 288 stable identities and all 138 raw HTTP method patterns resolve through the same registry without URL decoding; hostile encoded, dot, empty, backslash, semicolon, and control-character paths fail closed.
 
-The control-plane runtime constructs that registry behind a raw HTTP transport and implements the execution port with a digest-only D1 claim, fenced intent, completion, and append-only audit journal. Provider-free SQLite conformance covers a two-contender race, restart replay, conflicting key reuse, losing-reservation partial writes, tenant scoping, and immutable rows. Its durable semantic-adapter allowlist remains empty. The enabled semantic adapters are the source-pinned `GET /api/status` contract (`cap-v1-05b6ba3f76daac22`) and `GET /media-server` metadata contract (`cap-v1-ff19008f47194c43`), plus `GET /api/changelog/status` (`cap-v1-a1b180c5d123c870`) and its exact `OPTIONS` preflight (`cap-v1-16668b858461f386`), and the full `GET /api/changelog` feed (`cap-v1-0fa8384f3666825b`) with its exact `OPTIONS` preflight (`cap-v1-237f41f3086a2d67`), and `GET /api/mobile/session/config` (`cap-v1-4f21920a947c4c84`), plus the session-authenticated D1 `GET /api/notifications/preferences` contract (`cap-v1-d130c840f654bd72`). The notification adapter pins `getCurrentUser`, `users.preferences`, the API middleware exclusion, and Next 16.2.1 response runtime; it preserves Cap's whole-object fallback, optional `pauseAnonViews` default, compact field order, actor-only query, exact 401 and preference-query 500 JSON while keeping auth-infrastructure failures outside that custom query error. The mobile adapter pins both the Effect endpoint declaration and handler, derives its two booleans from non-empty Worker bindings with JavaScript string truthiness, and binds all four configurations into its fingerprint and exact compact JSON. The feed adapter pins all 99 MDX sources and the exact 88,817-byte `JSON.stringify` body. The seven static response adapters have no D1 business-data dependency, but every production ingress enforces its report bucket through the bounded keyed-digest authority in migration `0034_compatibility_rate_limits.sql`; missing authority fails closed and saturation reaches the typed rate-limit error. All eight semantic adapters return their exact pinned status, content type, body, headers, and response digest. Per-operation path, method, query semantics, empty-body, forbidden-idempotency, authorization, retry, source-SHA, response, and stable-failure tests guard all seven static promotions and the exact D1 preference read. A separate exact business registration pins the Navbar `updateActiveOrganization` server action (`cap-v1-a3b4c805d409bc7c`) as `server_action`/`ACTION`, binds the actor to a trusted session principal, maps the Cap NanoID deterministically, and executes an atomic D1 active-only update that preserves the default organization and derives the revision server-side. It yields an internal `/dashboard` invalidation-then-void effect and never synthesizes an HTTP path. The contract is proven locally, while production remains fail-closed until a Leptos server-action ingress consumes that effect. The mobile `PATCH /api/mobile/user/active-organization` row remains unpromoted and provider-gated: its exact fresh bootstrap still requires provider image signing and nullable-space root folder semantics. Production fallback availability stays false, so every unpromoted operation returns a closed unavailable error rather than manufacturing a business success or a legacy fallback.
+The control-plane runtime constructs that registry behind a raw HTTP transport and implements the execution port with a digest-only D1 claim, fenced intent, completion, and append-only audit journal. Provider-free SQLite conformance covers a two-contender race, restart replay, conflicting key reuse, losing-reservation partial writes, tenant scoping, and immutable rows. Its durable semantic-adapter allowlist remains empty. The enabled semantic adapters are the source-pinned `GET /api/status` contract (`cap-v1-05b6ba3f76daac22`) and `GET /media-server` metadata contract (`cap-v1-ff19008f47194c43`), plus `GET /api/changelog/status` (`cap-v1-a1b180c5d123c870`) and its exact `OPTIONS` preflight (`cap-v1-16668b858461f386`), and the full `GET /api/changelog` feed (`cap-v1-0fa8384f3666825b`) with its exact `OPTIONS` preflight (`cap-v1-237f41f3086a2d67`), and `GET /api/mobile/session/config` (`cap-v1-4f21920a947c4c84`), plus the session-authenticated D1 `GET /api/notifications/preferences` contract (`cap-v1-d130c840f654bd72`). The notification adapter pins `getCurrentUser`, `users.preferences`, the API middleware exclusion, and Next 16.2.1 response runtime; it preserves Cap's whole-object fallback, optional `pauseAnonViews` default, compact field order, actor-only query, exact 401 and preference-query 500 JSON while keeping auth-infrastructure failures outside that custom query error. The mobile adapter pins both the Effect endpoint declaration and handler, derives its two booleans from non-empty Worker bindings with JavaScript string truthiness, and binds all four configurations into its fingerprint and exact compact JSON. The feed adapter pins all 99 MDX sources and the exact 88,817-byte `JSON.stringify` body. The seven static response adapters have no D1 business-data dependency, but every production ingress enforces its report bucket through the bounded keyed-digest authority in migration `0034_compatibility_rate_limits.sql`; missing authority fails closed and saturation reaches the typed rate-limit error. All eight semantic adapters return their exact pinned status, content type, body, headers, and response digest. Per-operation path, method, query semantics, empty-body, forbidden-idempotency, authorization, retry, source-SHA, response, and stable-failure tests guard all seven static promotions and the exact D1 preference read. A separate exact business registration pins the Navbar `updateActiveOrganization` server action (`cap-v1-a3b4c805d409bc7c`) as `server_action`/`ACTION`, binds the actor to a trusted session principal, maps the Cap NanoID deterministically, and executes an atomic D1 active-only update that preserves the default organization and derives the revision server-side. It yields an internal `/dashboard` invalidation-then-void effect and never synthesizes an HTTP path. An authenticated same-origin compatibility-action ingress and browser NanoID method are implemented, and a local-evidence registry proves the effect and atomic browser-proof consumption, but the production registry keeps the operation unavailable while the released-client gate remains. The Leptos dashboard picker continues to use Frame's native UUID/revision mutation. The callable NanoID client method has no released Cap-client E2E journey yet, so that protected client gate remains explicit. The exact `setTheme` action (`cap-v1-7773d3e70d1d5919`) uses the same transport-neutral admission, accepts only `light` or `dark`, forbids client idempotency, and consumes its repeatable last-write-wins effect as the exact `theme={value}; Path=/` response cookie plus a no-store void response. Frame's authenticated hydration toggle calls that ingress and its bootstrap reapplies only an exact `light`/`dark` theme cookie on reload; this is distinct from Cap's pinned `Contexts.tsx` JS-cookie persistence behavior, which does not import the otherwise-unused server action. The three exact folder-assignment actions (`cap-v1-f5daa7be337a2979`, `cap-v1-1af3645bf2ae7168`, and `cap-v1-eaf277e644aa4b92`) use a bounded authenticated browser carrier and an atomic D1 business adapter. Add/remove require every canonical video to be actor-owned; move requires manager authority for the selected context and a tenant video. Folder, space, active-tenant, membership, and video snapshots are reasserted with the normalized mutation, typed storage postcondition, tenant/actor/action-scoped receipt, audit, cache effects, and one-use browser-grant consumption. Their local evidence remains production fail-closed behind `released_legacy_client_e2e`. Additional source-pinned exact business families cover library placement, notification actions, developer administration, and membership actions; each row below remains authoritative for its distinct protected-gate and production-promotion state. The mobile `PATCH /api/mobile/user/active-organization` row remains unpromoted and provider-gated: its exact fresh bootstrap still requires provider image signing and nullable-space root folder semantics. Production fallback availability stays false, so every unpromoted operation returns a closed unavailable error rather than manufacturing a business success or a legacy fallback.
 
-The registry exercises current and previous release decisions for all 267 release-managed client associations and rejects older releases. This is local registry evidence, not a released client binary/build. Endpoint success is therefore limited to 9 exact contracts (seven static, one D1 preference read, and one D1 business action); the remaining 279 per-operation request/response and side-effect semantics, transport promotions, released-client runs, protected providers, and accountable retirement approvals remain explicit gates.
+The registry exercises current and previous release decisions for all 267 release-managed client associations and rejects older releases. This is local registry evidence, not a released client binary/build. Endpoint success is therefore limited to the 276 exact contracts enumerated below; the remaining 12 per-operation request/response and side-effect semantics, transport promotions, released-client runs, protected providers, and accountable retirement approvals remain explicit gates.
 
 ## Contract inventory
 
 | Method | Legacy path / operation | Clients | Auth | Policy | Disposition | Local status |
 |---|---|---|---|---|---|---|
-| `GET` | `/api/analytics` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/analytics/track` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/auth/:nextauth*` | web | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/auth/:nextauth*` | web | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `GET` | `/api/analytics` | web | `optional_session_or_share_capability` | `analytics_consent.v1` | `replace` | `rust_exact_analytics_video_count_d1_provider_intent_local_contract` |
+| `POST` | `/api/analytics/track` | web | `optional_session_or_share_capability` | `analytics_consent.v1` | `replace` | `rust_exact_analytics_track_d1_provider_outbox_local_contract` |
+| `GET` | `/api/auth/:nextauth*` | web | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `POST` | `/api/auth/:nextauth*` | web | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_exact_protected_billing_auth_staging_local_contract` |
 | `GET` | `/api/changelog` | desktop | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_exact_changelog_feed_adapter_local_contract` |
 | `OPTIONS` | `/api/changelog` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_changelog_feed_cors_adapter_local_contract` |
 | `GET` | `/api/changelog/status` | desktop | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_exact_changelog_status_adapter_local_contract` |
 | `OPTIONS` | `/api/changelog/status` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_changelog_status_cors_adapter_local_contract` |
-| `GET` | `/api/cron/developer-storage` | developer, scheduler | `scheduler_secret` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/cron/finalize-stale-desktop-segments` | desktop, scheduler | `scheduler_secret` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/api/dashboard/analytics` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/desktop/feedback` | desktop | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/desktop/logs` | desktop | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/desktop/org-custom-domain` | desktop | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/desktop/organizations` | desktop | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `PATCH` | `/api/desktop/organizations/:organizationId/branding` | desktop | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/desktop/plan` | desktop | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/desktop/s3/config` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `DELETE` | `/api/desktop/s3/config/delete` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `GET` | `/api/desktop/s3/config/get` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `POST` | `/api/desktop/s3/config/test` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `GET` | `/api/desktop/session/request` | desktop | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/desktop/storage/google-drive/callback` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `POST` | `/api/desktop/storage/google-drive/connect` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `DELETE` | `/api/desktop/storage/google-drive/disconnect` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `POST` | `/api/desktop/storage/google-drive/test` | desktop | `session` | `upload_storage.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `GET` | `/api/desktop/storage/integrations` | desktop | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/desktop/storage/set-active` | desktop | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/desktop/subscribe` | desktop | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `GET` | `/api/desktop/user/profile` | desktop | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/desktop/user/profile/image` | desktop | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/desktop/video/create` | desktop | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `DELETE` | `/api/desktop/video/delete` | desktop | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/api/desktop/video/progress` | desktop | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `OPTIONS` | `/api/developer/credits/checkout` | developer | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `POST` | `/api/developer/credits/checkout` | developer | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `POST` | `/api/developer/sdk/v1/upload/multipart/abort` | developer | `developer_api_key` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/developer/sdk/v1/upload/multipart/complete` | developer | `developer_api_key` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/developer/sdk/v1/upload/multipart/initiate` | developer | `developer_api_key` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/developer/sdk/v1/upload/multipart/presign-part` | developer | `developer_api_key` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/developer/sdk/v1/videos/create` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/developer/v1/usage` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/developer/v1/videos` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `DELETE` | `/api/developer/v1/videos/:id` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/developer/v1/videos/:id` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/developer/v1/videos/:id/status` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/download` | web | `optional_session_or_share_capability` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/erpc` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/erpc` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/extension/auth/approve` | extension | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/extension/auth/revoke` | extension | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/extension/auth/start` | extension | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/extension/bootstrap` | extension | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/extension/instant-recordings` | extension | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `DELETE` | `/api/extension/instant-recordings/:videoId` | extension | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/api/extension/instant-recordings/progress` | extension | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/api/invite/accept` | web | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/invite/decline` | web | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/loom/video` | web | `session` | `imports_integrations.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `GET` | `/api/mobile/bootstrap` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/mobile/caps` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `DELETE` | `/api/mobile/caps/:id` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/mobile/caps/:id` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/caps/:id/comments` | mobile | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/mobile/caps/:id/download` | mobile | `optional_session_or_share_capability` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `PATCH` | `/api/mobile/caps/:id/password` | mobile | `session` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/mobile/caps/:id/playback` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/caps/:id/reactions` | mobile | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `PATCH` | `/api/mobile/caps/:id/sharing` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `PATCH` | `/api/mobile/caps/:id/title` | mobile | `session` | `client_compatibility.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `DELETE` | `/api/mobile/comments/:id` | mobile | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/folders` | mobile | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `POST` | `/api/commercial/activate` | web | `public_or_flow_token` | `developer_api.v1` | `replace` | `contract_declarations_audited_owner_disposition_pending` |
+| `POST` | `/api/commercial/checkout` | web | `anonymous` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `GET` | `/api/cron/developer-storage` | developer, scheduler | `scheduler_secret` | `upload_storage.v1` | `replace` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `GET` | `/api/cron/finalize-stale-desktop-segments` | desktop, scheduler | `scheduler_secret` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/api/dashboard/analytics` | web | `session` | `analytics_consent.v1` | `replace` | `rust_exact_dashboard_analytics_d1_provider_intent_local_contract` |
+| `POST` | `/api/desktop/feedback` | desktop | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/desktop/logs` | desktop | `anonymous_or_session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `GET` | `/api/desktop/org-custom-domain` | desktop | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_desktop_org_custom_domain_d1_adapter_local_contract` |
+| `GET` | `/api/desktop/organizations` | desktop | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_exact_desktop_organizations_d1_local_contract` |
+| `PATCH` | `/api/desktop/organizations/:organizationId/branding` | desktop | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_exact_desktop_organization_branding_d1_local_contract` |
+| `GET` | `/api/desktop/plan` | desktop | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/desktop/s3/config` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `DELETE` | `/api/desktop/s3/config/delete` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `GET` | `/api/desktop/s3/config/get` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/desktop/s3/config/test` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `GET` | `/api/desktop/session/request` | desktop | `session` | `auth_session.v1` | `replace` | `rust_exact_desktop_session_handoff_d1_adapter_local_contract` |
+| `GET` | `/api/desktop/storage/google-drive/callback` | desktop | `signed_state` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/desktop/storage/google-drive/connect` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `DELETE` | `/api/desktop/storage/google-drive/disconnect` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/desktop/storage/google-drive/test` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `GET` | `/api/desktop/storage/integrations` | desktop | `session_or_api_key` | `upload_storage.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/desktop/storage/set-active` | desktop | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_desktop_storage_set_active_d1_local_contract` |
+| `POST` | `/api/desktop/subscribe` | desktop | `session_or_api_key` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `GET` | `/api/desktop/user/profile` | desktop | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_desktop_user_profile_d1_local_contract` |
+| `GET` | `/api/desktop/user/profile/image` | desktop | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `GET` | `/api/desktop/video/create` | desktop | `session_or_api_key` | `video_media.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `DELETE` | `/api/desktop/video/delete` | desktop | `session_or_api_key` | `video_media.v1` | `replace` | `rust_exact_desktop_video_delete_d1_r2_local_contract` |
+| `POST` | `/api/desktop/video/progress` | desktop | `session_or_api_key` | `video_media.v1` | `replace` | `rust_exact_desktop_video_progress_d1_local_contract` |
+| `OPTIONS` | `/api/developer/credits/checkout` | developer | `anonymous` | `auth_session.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `POST` | `/api/developer/credits/checkout` | developer | `session_or_api_key` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `POST` | `/api/developer/sdk/v1/upload/multipart/abort` | developer | `developer_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `POST` | `/api/developer/sdk/v1/upload/multipart/complete` | developer | `developer_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `POST` | `/api/developer/sdk/v1/upload/multipart/initiate` | developer | `developer_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `POST` | `/api/developer/sdk/v1/upload/multipart/presign-part` | developer | `developer_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `POST` | `/api/developer/sdk/v1/videos/create` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `GET` | `/api/developer/v1/usage` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `GET` | `/api/developer/v1/videos` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `DELETE` | `/api/developer/v1/videos/:id` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `GET` | `/api/developer/v1/videos/:id` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `GET` | `/api/developer/v1/videos/:id/status` | developer | `developer_api_key` | `developer_api.v1` | `replace` | `rust_exact_developer_api_d1_r2_local_contract` |
+| `GET` | `/api/download` | web | `optional_session_or_share_capability` | `upload_storage.v1` | `replace` | `rust_exact_download_platform_redirect_local_contract` |
+| `GET` | `/api/erpc` | web | `anonymous` | `service_misc.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `POST` | `/api/erpc` | web | `session` | `service_misc.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `POST` | `/api/extension/auth/approve` | extension | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_exact_extension_auth_approve_d1_local_contract` |
+| `POST` | `/api/extension/auth/revoke` | extension | `session_or_api_key` | `auth_session.v1` | `replace` | `rust_exact_extension_auth_revoke_d1_local_contract` |
+| `GET` | `/api/extension/auth/start` | extension | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_exact_extension_auth_start_local_contract` |
+| `GET` | `/api/extension/bootstrap` | extension | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_extension_bootstrap_d1_local_contract` |
+| `POST` | `/api/extension/instant-recordings` | extension | `session_or_api_key` | `video_media.v1` | `migrate` | `rust_exact_extension_instant_create_d1_r2_local_contract` |
+| `DELETE` | `/api/extension/instant-recordings/:videoId` | extension | `session_or_api_key` | `video_media.v1` | `migrate` | `rust_exact_extension_instant_delete_d1_r2_local_contract` |
+| `POST` | `/api/extension/instant-recordings/progress` | extension | `session_or_api_key` | `video_media.v1` | `migrate` | `rust_exact_extension_instant_progress_d1_local_contract` |
+| `POST` | `/api/invite/accept` | web | `session` | `auth_session.v1` | `replace` | `rust_exact_invite_accept_d1_adapter_local_contract` |
+| `POST` | `/api/invite/decline` | web | `session` | `auth_session.v1` | `replace` | `rust_exact_invite_decline_d1_adapter_local_contract` |
+| `POST` | `/api/loom/video` | web | `session_or_api_key` | `imports_integrations.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `GET` | `/api/mobile/bootstrap` | mobile | `session_or_api_key` | `client_compatibility.v1` | `migrate` | `rust_exact_mobile_bootstrap_d1_r2_local_contract` |
+| `GET` | `/api/mobile/caps` | mobile | `session_or_api_key` | `client_compatibility.v1` | `migrate` | `rust_exact_mobile_caps_list_d1_r2_local_contract` |
+| `DELETE` | `/api/mobile/caps/:id` | mobile | `session_or_api_key` | `client_compatibility.v1` | `migrate` | `rust_exact_mobile_cap_delete_d1_r2_local_contract` |
+| `GET` | `/api/mobile/caps/:id` | mobile | `session_or_api_key` | `client_compatibility.v1` | `migrate` | `rust_exact_mobile_cap_detail_d1_r2_local_contract` |
+| `POST` | `/api/mobile/caps/:id/comments` | mobile | `session_or_api_key` | `collaboration_notifications.v1` | `replace` | `rust_exact_mobile_comment_create_d1_local_contract` |
+| `GET` | `/api/mobile/caps/:id/download` | mobile | `session_or_api_key` | `client_compatibility.v1` | `migrate` | `rust_exact_mobile_cap_download_d1_r2_local_contract` |
+| `PATCH` | `/api/mobile/caps/:id/password` | mobile | `session_or_api_key` | `share_playback.v1` | `replace` | `rust_exact_mobile_video_password_d1_local_contract_provider_pending` |
+| `GET` | `/api/mobile/caps/:id/playback` | mobile | `session_or_api_key` | `client_compatibility.v1` | `migrate` | `rust_exact_mobile_cap_playback_d1_r2_local_contract` |
+| `POST` | `/api/mobile/caps/:id/reactions` | mobile | `session_or_api_key` | `collaboration_notifications.v1` | `replace` | `rust_exact_mobile_reaction_create_d1_local_contract` |
+| `PATCH` | `/api/mobile/caps/:id/sharing` | mobile | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_mobile_video_sharing_d1_local_contract_provider_pending` |
+| `PATCH` | `/api/mobile/caps/:id/title` | mobile | `session_or_api_key` | `client_compatibility.v1` | `replace` | `rust_exact_mobile_video_title_d1_local_contract_provider_pending` |
+| `DELETE` | `/api/mobile/comments/:id` | mobile | `session_or_api_key` | `collaboration_notifications.v1` | `replace` | `rust_exact_mobile_comment_delete_d1_local_contract` |
+| `POST` | `/api/mobile/folders` | mobile | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_exact_mobile_folder_create_d1_local_contract` |
 | `GET` | `/api/mobile/session/config` | mobile | `public_or_flow_token` | `client_compatibility.v1` | `replace` | `rust_exact_mobile_session_config_adapter_local_contract` |
-| `POST` | `/api/mobile/session/email/request` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/session/email/verify` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/mobile/session/request` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/session/revoke` | mobile | `session` | `auth_session.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/uploads` | mobile | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/uploads/:id/complete` | mobile | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/mobile/uploads/:id/progress` | mobile | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `PATCH` | `/api/mobile/user/active-organization` | mobile | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/notifications` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `POST` | `/api/mobile/session/email/request` | mobile | `public_or_flow_token` | `auth_session.v1` | `replace` | `rust_exact_mobile_email_session_request_d1_outbox_local_contract` |
+| `POST` | `/api/mobile/session/email/verify` | mobile | `public_or_flow_token` | `auth_session.v1` | `protected_parity_required` | `rust_exact_mobile_email_session_verify_d1_local_contract_provider_gated_new_user` |
+| `GET` | `/api/mobile/session/request` | mobile | `optional_session_or_share_capability` | `auth_session.v1` | `replace` | `rust_exact_mobile_session_request_d1_local_contract` |
+| `POST` | `/api/mobile/session/revoke` | mobile | `session_or_api_key` | `auth_session.v1` | `replace` | `rust_exact_mobile_session_revoke_d1_local_contract` |
+| `POST` | `/api/mobile/uploads` | mobile | `session_or_api_key` | `upload_storage.v1` | `migrate` | `rust_exact_mobile_upload_create_d1_r2_local_contract` |
+| `POST` | `/api/mobile/uploads/:id/complete` | mobile | `session_or_api_key` | `upload_storage.v1` | `replace` | `rust_exact_mobile_upload_complete_d1_r2_provider_intent_local_contract` |
+| `POST` | `/api/mobile/uploads/:id/progress` | mobile | `session_or_api_key` | `upload_storage.v1` | `replace` | `rust_exact_mobile_upload_progress_d1_local_contract` |
+| `PATCH` | `/api/mobile/user/active-organization` | mobile | `session_or_api_key` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `GET` | `/api/notifications` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_notification_list_d1_adapter_local_contract` |
 | `GET` | `/api/notifications/preferences` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_notification_preferences_d1_adapter_local_contract` |
-| `GET` | `/api/org-custom-domain` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/playlist` | web | `optional_session_or_share_capability` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `HEAD` | `/api/playlist` | web | `optional_session_or_share_capability` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/releases/tauri/:version/:target/:arch` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/settings/billing/guest-checkout` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `POST` | `/api/settings/billing/manage` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `POST` | `/api/settings/billing/subscribe` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `GET` | `/api/settings/billing/usage` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `POST` | `/api/settings/user/name` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
+| `GET` | `/api/org-custom-domain` | web | `session` | `service_misc.v1` | `replace` | `contract_declarations_audited_owner_disposition_pending` |
+| `GET` | `/api/playlist` | web | `optional_session_or_share_capability` | `share_playback.v1` | `replace` | `rust_exact_playlist_get_d1_r2_local_contract` |
+| `HEAD` | `/api/playlist` | web | `optional_session_or_share_capability` | `share_playback.v1` | `replace` | `rust_exact_playlist_head_d1_r2_local_contract` |
+| `GET` | `/api/releases/tauri/:version/:target/:arch` | web | `public` | `service_misc.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/settings/billing/guest-checkout` | web | `anonymous` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `POST` | `/api/settings/billing/manage` | web | `session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `POST` | `/api/settings/billing/subscribe` | web | `session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `GET` | `/api/settings/billing/usage` | web | `session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `POST` | `/api/settings/user/name` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_user_name_route_local_contract` |
 | `GET` | `/api/status` | web | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_status_adapter_local_success_contract` |
-| `GET` | `/api/storage/object` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `HEAD` | `/api/storage/object` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/thumbnail` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/api/tools/loom-download` | web | `session` | `imports_integrations.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `POST` | `/api/upload/multipart/abort` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/upload/multipart/complete` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/upload/multipart/initiate` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/upload/multipart/presign-part` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/upload/recording-complete` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/upload/signed` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/upload/signed/batch` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `GET` | `/api/video/ai` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/api/video/analytics` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `DELETE` | `/api/video/comment/delete` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `DELETE` | `/api/video/delete` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/api/video/domain-info` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `PUT` | `/api/video/metadata` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/api/video/og` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/api/video/preview` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `HEAD` | `/api/video/preview` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/api/video/transcribe/status` | web | `public_or_flow_token` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/api/videos/:videoId/retry-ai` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/api/videos/:videoId/retry-transcription` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `POST` | `/api/webhooks/media-server/multipart/:action` | internal_worker, provider | `signed_webhook` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/api/webhooks/media-server/progress` | internal_worker, provider | `signed_webhook` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/api/webhooks/stripe` | provider | `signed_webhook` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `POST` | `/commercial/activate` | web | `public_or_flow_token` | `developer_api.v1` | `replace` | `contract_declarations_only_licensing_authority_pending` |
-| `POST` | `/commercial/checkout` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
+| `GET` | `/api/storage/object` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_storage_object_get_d1_r2_local_contract` |
+| `HEAD` | `/api/storage/object` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_storage_object_head_d1_r2_local_contract` |
+| `GET` | `/api/thumbnail` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/api/tools/loom-download` | web | `public` | `imports_integrations.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/upload/multipart/abort` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_multipart_abort_d1_r2_local_contract` |
+| `POST` | `/api/upload/multipart/complete` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_multipart_complete_d1_orchestration_provider_pending` |
+| `POST` | `/api/upload/multipart/initiate` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_multipart_initiate_d1_r2_local_contract` |
+| `POST` | `/api/upload/multipart/presign-part` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_multipart_presign_part_d1_r2_local_contract` |
+| `POST` | `/api/upload/recording-complete` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_recording_complete_d1_orchestration_provider_pending` |
+| `POST` | `/api/upload/signed` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_signed_upload_d1_r2_local_contract` |
+| `POST` | `/api/upload/signed/batch` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_signed_upload_batch_d1_r2_local_contract` |
+| `GET` | `/api/video/ai` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/api/video/analytics` | web | `optional_session_or_share_capability` | `analytics_consent.v1` | `replace` | `rust_exact_video_analytics_http_d1_provider_intent_local_contract` |
+| `DELETE` | `/api/video/comment/delete` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_web_comment_delete_route_d1_local_contract` |
+| `DELETE` | `/api/video/delete` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `GET` | `/api/video/domain-info` | web | `anonymous` | `video_media.v1` | `replace` | `rust_exact_anonymous_video_domain_info_d1_local_contract` |
+| `PUT` | `/api/video/metadata` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_metadata_replace_d1_local_contract` |
+| `GET` | `/api/video/og` | web | `anonymous` | `video_media.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `GET` | `/api/video/preview` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `HEAD` | `/api/video/preview` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/api/video/transcribe/status` | web | `public_or_flow_token` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/api/videos/:videoId/retry-ai` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/api/videos/:videoId/retry-transcription` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_transcription_retry_d1_local_contract` |
+| `POST` | `/api/webhooks/media-server/multipart/:action` | internal_worker, provider | `signed_webhook` | `video_media.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/webhooks/media-server/progress` | internal_worker, provider | `signed_webhook` | `video_media.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `POST` | `/api/webhooks/stripe` | provider | `signed_webhook` | `stripe_webhook_ingress.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
 | `GET` | `/media-server` | internal_worker | `public_or_flow_token` | `service_misc.v1` | `replace` | `rust_exact_media_server_root_adapter_local_contract` |
-| `POST` | `/media-server/audio/check` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/audio/convert` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/audio/extract` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/media-server/audio/status` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/media-server/health` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/cleanup` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/convert` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/edit` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/force-cleanup` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/mux-segments` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/probe` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/process` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/process/:jobId/cancel` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/media-server/video/process/:jobId/status` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `GET` | `/media-server/video/status` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `POST` | `/media-server/video/thumbnail` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `RPC` | `/api/erpc#FolderCreate` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#FolderDelete` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#FolderUpdate` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#GetUploadProgress` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#OrganisationSoftDelete` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#OrganisationUpdate` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#UserCompleteOnboardingStep` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#UserUpdate` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#VideoDelete` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `RPC` | `/api/erpc#VideoDuplicate` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `RPC` | `/api/erpc#VideoGetDownloadInfo` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#VideoInstantCreate` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `RPC` | `/api/erpc#VideoUploadProgressUpdate` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#VideosGetAnalytics` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `RPC` | `/api/erpc#VideosGetThumbnails` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/admin/replace-video.ts#getVideoReplaceUploadUrl` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `ACTION` | `action://apps/web/actions/admin/replace-video.ts#invalidateVideoCache` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `ACTION` | `action://apps/web/actions/admin/reprocess-video.ts#adminReprocessVideo` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `ACTION` | `action://apps/web/actions/analytics/track-user-signed-up.ts#checkAndMarkUserSignedUpTracked` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/billing/track-meta-purchase.ts#getPurchaseForMeta` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `ACTION` | `action://apps/web/actions/caps/share.ts#shareCap` | web | `session` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/collections/logo.ts#setCollectionLogo` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/collections/password.ts#verifyCollectionPassword` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/collections/visibility.ts#setSpaceCollectionVisibility` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/add-domain.ts#addDeveloperDomain` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/create-app.ts#createDeveloperApp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/delete-app.ts#deleteDeveloperApp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/delete-video.ts#deleteDeveloperVideo` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/regenerate-keys.ts#regenerateDeveloperKeys` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/remove-domain.ts#removeDeveloperDomain` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/update-app.ts#updateDeveloperApp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/developers/update-auto-topup.ts#updateDeveloperAutoTopUp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/folders/add-videos.ts#addVideosToFolder` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/folders/get-folder-videos.ts#getFolderVideoIds` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/folders/moveVideoToFolder.ts#moveVideoToFolder` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/folders/remove-videos.ts#removeVideosFromFolder` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/loom.ts#downloadLoomVideo` | web | `session` | `imports_integrations.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/loom.ts#importFromLoom` | web | `session` | `imports_integrations.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/loom.ts#importFromLoomCsv` | web | `session` | `imports_integrations.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#adminSendMessengerMessage` | web | `admin_session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#adminSetMessengerMode` | web | `admin_session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#adminSyncMessengerKnowledge` | web | `admin_session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#createMessengerConversation` | web | `session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#fetchAdminConversation` | web | `admin_session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#fetchAdminConversations` | web | `admin_session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#fetchMessengerConversation` | web | `session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#fetchMessengerConversations` | web | `session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/messenger.ts#sendMessengerUserMessage` | web | `session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/actions/notifications/mark-as-read.ts#markAsRead` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/notifications/update-preferences.ts#updatePreferences` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/check-domain.ts#checkOrganizationDomain` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/create-space.ts#createSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/delete-space.ts#deleteSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/get-organization-sso-data.ts#getOrganizationSSOData` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/get-subscription-details.ts#getSubscriptionDetails` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/manage-billing.ts#manageBilling` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `ACTION` | `action://apps/web/actions/organization/remove-domain.ts#removeOrganizationDomain` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/remove-invite.ts#removeOrganizationInvite` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/remove-member.ts#removeOrganizationMember` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/send-invites.ts#sendOrganizationInvites` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/settings.ts#updateOrganizationSettings` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#hideShareableLinkCapLogo` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#removeShareableLinkIcon` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#selectShareableLinkBrandingOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#updateShareableLinkIconPreference` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#uploadShareableLinkIcon` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/space-authorization.ts#getSpaceAccess` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/space-authorization.ts#requireSpaceManager` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#connectOrganizationGoogleDrive` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#disconnectOrganizationGoogleDrive` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#getOrganizationGoogleDrivePickerToken` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#getOrganizationStorageSettings` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#listOrganizationGoogleDriveFolders` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#removeOrganizationS3Config` | web | `session` | `organization_library.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#saveOrganizationS3Config` | web | `session` | `organization_library.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#setOrganizationGoogleDriveLocation` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#setOrganizationStorageProvider` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/storage.ts#testOrganizationS3Config` | web | `session` | `organization_library.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/toggle-pro-seat.ts#toggleProSeat` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/update-details.ts#updateOrganizationDetails` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/update-domain.ts#updateDomain` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/update-member-role.ts#updateOrganizationMemberRole` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/update-seat-quantity.ts#previewSeatChange` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/update-seat-quantity.ts#updateSeatQuantity` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/update-space.ts#updateSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organization/upload-space-icon.ts#uploadSpaceIcon` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organizations/add-videos.ts#addVideosToOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organizations/get-organization-videos.ts#getOrganizationVideoIds` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/organizations/remove-videos.ts#removeVideosFromOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/send-download-link.ts#sendDownloadLink` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/spaces/add-videos.ts#addVideosToSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/spaces/get-space-videos.ts#getSpaceVideoIds` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/spaces/get-user-videos.ts#getUserVideos` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/spaces/remove-videos.ts#removeVideosFromSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/video/create-for-processing.ts#createVideoForServerProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/video/finalize-desktop-segments.ts#finalizeDesktopSegmentsRecording` | desktop, web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/video/retry-processing.ts#retryVideoProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/video/trigger-instant-recording-processing.ts#triggerInstantRecordingProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/video/trigger-processing.ts#triggerVideoProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/video/upload.ts#createVideoAndGetUploadUrl` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/video/upload.ts#deleteVideoResultFile` | web | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/delete-comment.ts#deleteComment` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/download.ts#downloadVideo` | web | `optional_session_or_share_capability` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/download.ts#getVideoDownloadInfo` | web | `optional_session_or_share_capability` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/edit-date.ts#editDate` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/videos/edit-title.ts#editTitle` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/videos/edit-transcript.ts#editTranscriptEntry` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/get-analytics.ts#getVideoAnalytics` | web | `session` | `analytics_consent.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/get-available-translations.ts#getAvailableTranslations` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/videos/get-status.ts#getVideoStatus` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/videos/get-transcript.ts#getTranscript` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/new-comment.ts#newComment` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/password.ts#removeVideoPassword` | web | `session` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/password.ts#setVideoPassword` | web | `session` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/password.ts#verifyVideoPassword` | web | `session` | `share_playback.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/actions/videos/save-edits.ts#restoreVideoToOriginal` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/videos/save-edits.ts#saveVideoEdits` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/videos/settings.ts#updateVideoSettings` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/actions/videos/translate-transcript.ts#translateTranscript` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/search.ts#searchDashboardVideos` | web | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#createSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateActiveOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_active_organization_action_local_contract_ingress_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/actions.ts#setTheme` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/settings/account/server.ts#patchAccountSettings` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/settings/account/server.ts#signOutAllDevices` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#addSpaceMember` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#addSpaceMembers` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#batchRemoveSpaceMembers` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#removeSpaceMember` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#setSpaceMembers` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/Layout/devtoolsServer.ts#demoteFromPro` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/Layout/devtoolsServer.ts#promoteToPro` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/Layout/devtoolsServer.ts#restartOnboarding` | web | `session` | `service_misc.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `ACTION` | `action://apps/web/app/messenger/page.tsx#startConversation` | web | `session` | `messenger_support.v1` | `retire` | `retirement_response_and_owner_approval_pending` |
-| `ACTION` | `action://apps/web/components/forms/server.ts#createOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `WORKFLOW` | `workflow://apps/web/lib/desktop-segments-finalization.ts#queueDesktopSegmentsFinalization` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/lib/desktop-segments-recovery.ts#completeDesktopSegmentsManifestAndQueue` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/lib/desktop-segments-recovery.ts#recoverStaleDesktopSegments` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/lib/generate-ai.ts#startAiGeneration` | scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/lib/video-edit-processing.ts#reconcileStaleEditUpload` | scheduler | `session` | `upload_storage.v1` | `replace` | `rust_authority_present_endpoint_adapter_pending` |
-| `WORKFLOW` | `workflow://apps/web/lib/video-processing.ts#startVideoProcessingWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/workflows/admin-reprocess-video.ts#adminReprocessVideoWorkflow` | scheduler | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `provider_sandbox_and_ledger_reconciliation_pending` |
-| `WORKFLOW` | `workflow://apps/web/workflows/edit-video.ts#editVideoWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/workflows/finalize-desktop-recording.ts#finalizeDesktopRecordingWorkflow` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/workflows/generate-ai.ts#generateAiWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/workflows/import-loom-video.ts#importLoomVideoWorkflow` | scheduler | `session` | `imports_integrations.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
-| `WORKFLOW` | `workflow://apps/web/workflows/process-video.ts#processVideoWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://apps/web/workflows/transcribe.ts#transcribeVideoWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_authority_present_issue_28_adapter_or_protected_evidence_pending` |
-| `WORKFLOW` | `workflow://packages/web-domain/src/Loom.ts#LoomImportVideo` | scheduler | `session` | `imports_integrations.v1` | `migrate` | `migration_authority_present_provider_adapter_pending` |
+| `POST` | `/media-server/audio/check` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/audio/convert` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/audio/extract` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/media-server/audio/status` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/media-server/health` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/cleanup` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/convert` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/edit` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/force-cleanup` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/mux-segments` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/probe` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/process` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/process/:jobId/cancel` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/media-server/video/process/:jobId/status` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `GET` | `/media-server/video/status` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `POST` | `/media-server/video/thumbnail` | internal_worker | `internal_service` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `RPC` | `/api/erpc#FolderCreate` | web | `session` | `organization_library.v1` | `replace` | `rust_effect_rpc_folder_create_d1_local_contract_human_approval_pending` |
+| `RPC` | `/api/erpc#FolderDelete` | web | `session` | `organization_library.v1` | `replace` | `rust_effect_rpc_folder_delete_d1_local_contract_human_approval_pending` |
+| `RPC` | `/api/erpc#FolderUpdate` | web | `session` | `organization_library.v1` | `replace` | `rust_effect_rpc_folder_update_d1_local_contract_human_approval_pending` |
+| `RPC` | `/api/erpc#GetUploadProgress` | web | `optional_session_or_share_capability` | `upload_storage.v1` | `replace` | `rust_exact_upload_progress_d1_local_contract` |
+| `RPC` | `/api/erpc#OrganisationSoftDelete` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `RPC` | `/api/erpc#OrganisationUpdate` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `RPC` | `/api/erpc#UserCompleteOnboardingStep` | web | `session` | `organization_library.v1` | `migrate` | `rust_exact_user_onboarding_local_contract_provider_execution_pending` |
+| `RPC` | `/api/erpc#UserUpdate` | web | `session` | `organization_library.v1` | `migrate` | `rust_exact_user_update_local_contract_provider_execution_pending` |
+| `RPC` | `/api/erpc#VideoDelete` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `RPC` | `/api/erpc#VideoDuplicate` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `RPC` | `/api/erpc#VideoGetDownloadInfo` | web | `optional_session_or_share_capability` | `upload_storage.v1` | `replace` | `rust_exact_video_download_info_rpc_d1_r2_local_contract` |
+| `RPC` | `/api/erpc#VideoInstantCreate` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_lifecycle_d1_r2_local_contract` |
+| `RPC` | `/api/erpc#VideoUploadProgressUpdate` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_upload_progress_update_d1_local_contract` |
+| `RPC` | `/api/erpc#VideosGetAnalytics` | web | `optional_session_or_share_capability` | `analytics_consent.v1` | `replace` | `rust_exact_video_analytics_rpc_d1_provider_intent_local_contract` |
+| `RPC` | `/api/erpc#VideosGetThumbnails` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/admin/replace-video.ts#getVideoReplaceUploadUrl` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/admin/replace-video.ts#invalidateVideoCache` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/admin/reprocess-video.ts#adminReprocessVideo` | web | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/analytics/track-user-signed-up.ts#checkAndMarkUserSignedUpTracked` | web | `optional_session_or_share_capability` | `analytics_consent.v1` | `replace` | `rust_exact_analytics_signup_cas_d1_local_contract` |
+| `ACTION` | `action://apps/web/actions/billing/track-meta-purchase.ts#getPurchaseForMeta` | web | `session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/caps/share.ts#shareCap` | web | `session` | `share_playback.v1` | `replace` | `rust_exact_share_cap_d1_local_contract` |
+| `ACTION` | `action://apps/web/actions/collections/logo.ts#setCollectionLogo` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/collections/password.ts#verifyCollectionPassword` | web | `anonymous` | `share_playback.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/collections/visibility.ts#setSpaceCollectionVisibility` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/developers/add-domain.ts#addDeveloperDomain` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_add_domain_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/developers/create-app.ts#createDeveloperApp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_create_app_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/developers/delete-app.ts#deleteDeveloperApp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_delete_app_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/developers/delete-video.ts#deleteDeveloperVideo` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_delete_video_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/developers/regenerate-keys.ts#regenerateDeveloperKeys` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_regenerate_keys_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/developers/remove-domain.ts#removeDeveloperDomain` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_remove_domain_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/developers/update-app.ts#updateDeveloperApp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_update_app_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/developers/update-auto-topup.ts#updateDeveloperAutoTopUp` | developer, web | `session` | `developer_api.v1` | `replace` | `rust_exact_developer_auto_top_up_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/folders/add-videos.ts#addVideosToFolder` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_folder_assignment_add_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/folders/get-folder-videos.ts#getFolderVideoIds` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_folder_video_ids_read_local_contract` |
+| `ACTION` | `action://apps/web/actions/folders/moveVideoToFolder.ts#moveVideoToFolder` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_folder_assignment_move_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/folders/remove-videos.ts#removeVideosFromFolder` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_folder_assignment_remove_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/loom.ts#downloadLoomVideo` | web | `public` | `imports_integrations.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/loom.ts#importFromLoom` | web | `session` | `imports_integrations.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/loom.ts#importFromLoomCsv` | web | `session` | `imports_integrations.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#adminSendMessengerMessage` | web | `admin_session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#adminSetMessengerMode` | web | `admin_session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#adminSyncMessengerKnowledge` | web | `admin_session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#createMessengerConversation` | web | `session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#fetchAdminConversation` | web | `admin_session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#fetchAdminConversations` | web | `admin_session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#fetchMessengerConversation` | web | `session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#fetchMessengerConversations` | web | `session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/messenger.ts#sendMessengerUserMessage` | web | `session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/actions/notifications/mark-as-read.ts#markAsRead` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_notification_mark_read_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/notifications/update-preferences.ts#updatePreferences` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_notification_preferences_write_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/organization/check-domain.ts#checkOrganizationDomain` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/create-space.ts#createSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/delete-space.ts#deleteSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/get-organization-sso-data.ts#getOrganizationSSOData` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/get-subscription-details.ts#getSubscriptionDetails` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/manage-billing.ts#manageBilling` | web | `session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/remove-domain.ts#removeOrganizationDomain` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/remove-invite.ts#removeOrganizationInvite` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_membership_remove_invite_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/organization/remove-member.ts#removeOrganizationMember` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/send-invites.ts#sendOrganizationInvites` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/settings.ts#updateOrganizationSettings` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#hideShareableLinkCapLogo` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#removeShareableLinkIcon` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#selectShareableLinkBrandingOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#updateShareableLinkIconPreference` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/shareable-link-icon.ts#uploadShareableLinkIcon` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/space-authorization.ts#getSpaceAccess` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_space_access_read_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/space-authorization.ts#requireSpaceManager` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_require_space_manager_read_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#connectOrganizationGoogleDrive` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#disconnectOrganizationGoogleDrive` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#getOrganizationGoogleDrivePickerToken` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#getOrganizationStorageSettings` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#listOrganizationGoogleDriveFolders` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#removeOrganizationS3Config` | web | `session` | `organization_library.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#saveOrganizationS3Config` | web | `session` | `organization_library.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#setOrganizationGoogleDriveLocation` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#setOrganizationStorageProvider` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/storage.ts#testOrganizationS3Config` | web | `session` | `organization_library.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/toggle-pro-seat.ts#toggleProSeat` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/update-details.ts#updateOrganizationDetails` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/update-domain.ts#updateDomain` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/update-member-role.ts#updateOrganizationMemberRole` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/update-seat-quantity.ts#previewSeatChange` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/update-seat-quantity.ts#updateSeatQuantity` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/update-space.ts#updateSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/organization/upload-space-icon.ts#uploadSpaceIcon` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/organizations/add-videos.ts#addVideosToOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_library_organization_add_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/organizations/get-organization-videos.ts#getOrganizationVideoIds` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_video_ids_read_local_contract` |
+| `ACTION` | `action://apps/web/actions/organizations/remove-videos.ts#removeVideosFromOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_library_organization_remove_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/send-download-link.ts#sendDownloadLink` | web | `public` | `upload_storage.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/spaces/add-videos.ts#addVideosToSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_library_scope_add_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/spaces/get-space-videos.ts#getSpaceVideoIds` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_space_video_ids_read_local_contract` |
+| `ACTION` | `action://apps/web/actions/spaces/get-user-videos.ts#getUserVideos` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_user_video_detail_read_local_contract` |
+| `ACTION` | `action://apps/web/actions/spaces/remove-videos.ts#removeVideosFromSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_library_scope_remove_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/actions/video/create-for-processing.ts#createVideoForServerProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/video/finalize-desktop-segments.ts#finalizeDesktopSegmentsRecording` | desktop, web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/video/retry-processing.ts#retryVideoProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/video/trigger-instant-recording-processing.ts#triggerInstantRecordingProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/video/trigger-processing.ts#triggerVideoProcessing` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/video/upload.ts#createVideoAndGetUploadUrl` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_create_video_upload_d1_r2_local_contract` |
+| `ACTION` | `action://apps/web/actions/video/upload.ts#deleteVideoResultFile` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_delete_video_result_d1_r2_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/delete-comment.ts#deleteComment` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_web_comment_delete_action_d1_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/download.ts#downloadVideo` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_download_video_d1_r2_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/download.ts#getVideoDownloadInfo` | web | `session` | `upload_storage.v1` | `replace` | `rust_exact_video_download_info_action_d1_r2_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/edit-date.ts#editDate` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_edit_date_action_local_contract_human_approval_pending` |
+| `ACTION` | `action://apps/web/actions/videos/edit-title.ts#editTitle` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_edit_title_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/edit-transcript.ts#editTranscriptEntry` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_transcript_edit_d1_r2_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/get-analytics.ts#getVideoAnalytics` | web | `optional_session_or_share_capability` | `analytics_consent.v1` | `replace` | `rust_exact_video_analytics_action_d1_provider_intent_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/get-available-translations.ts#getAvailableTranslations` | web | `optional_session_or_share_capability` | `video_media.v1` | `replace` | `rust_exact_available_translations_d1_r2_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/get-status.ts#getVideoStatus` | web | `public_or_session` | `video_media.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/get-transcript.ts#getTranscript` | web | `optional_session_or_share_capability` | `collaboration_notifications.v1` | `replace` | `rust_exact_transcript_read_d1_r2_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/new-comment.ts#newComment` | web | `session` | `collaboration_notifications.v1` | `replace` | `rust_exact_web_comment_create_action_d1_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/password.ts#removeVideoPassword` | web | `session` | `share_playback.v1` | `replace` | `rust_exact_video_remove_password_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/password.ts#setVideoPassword` | web | `session` | `share_playback.v1` | `replace` | `rust_exact_video_set_password_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/password.ts#verifyVideoPassword` | web | `anonymous` | `share_playback.v1` | `replace` | `rust_exact_anonymous_video_password_verify_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/save-edits.ts#restoreVideoToOriginal` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/save-edits.ts#saveVideoEdits` | web | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/settings.ts#updateVideoSettings` | web | `session` | `video_media.v1` | `replace` | `rust_exact_video_settings_action_local_contract` |
+| `ACTION` | `action://apps/web/actions/videos/translate-transcript.ts#translateTranscript` | web | `optional_session_or_share_capability` | `collaboration_notifications.v1` | `replace` | `rust_exact_transcript_translation_d1_r2_provider_outbox_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/search.ts#searchDashboardVideos` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_dashboard_video_search_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#createSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateActiveOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_active_organization_action_callable_ingress_client_e2e_pending` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateSpace` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/_components/actions.ts#setTheme` | web | `session` | `service_misc.v1` | `replace` | `rust_exact_theme_action_production_ingress_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/settings/account/server.ts#patchAccountSettings` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_account_patch_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/settings/account/server.ts#signOutAllDevices` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_account_sign_out_all_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#addSpaceMember` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_membership_add_space_member_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#addSpaceMembers` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_membership_add_space_members_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#batchRemoveSpaceMembers` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_membership_batch_remove_space_members_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#removeSpaceMember` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_membership_remove_space_member_local_contract` |
+| `ACTION` | `action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#setSpaceMembers` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_membership_set_space_members_local_contract_released_client_e2e_pending` |
+| `ACTION` | `action://apps/web/app/Layout/devtoolsServer.ts#demoteFromPro` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_account_demote_devtool_local_contract_human_approval_pending` |
+| `ACTION` | `action://apps/web/app/Layout/devtoolsServer.ts#promoteToPro` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_account_promote_devtool_local_contract_human_approval_pending` |
+| `ACTION` | `action://apps/web/app/Layout/devtoolsServer.ts#restartOnboarding` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_account_restart_onboarding_devtool_local_contract_human_approval_pending` |
+| `ACTION` | `action://apps/web/app/messenger/page.tsx#startConversation` | web | `session` | `messenger_support.v1` | `retire` | `rust_retirement_response_complete_owner_approval_pending` |
+| `ACTION` | `action://apps/web/components/forms/server.ts#createOrganization` | web | `session` | `organization_library.v1` | `replace` | `rust_exact_organization_library_d1_r2_action_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/lib/desktop-segments-finalization.ts#queueDesktopSegmentsFinalization` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/lib/desktop-segments-recovery.ts#completeDesktopSegmentsManifestAndQueue` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/lib/desktop-segments-recovery.ts#recoverStaleDesktopSegments` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/lib/generate-ai.ts#startAiGeneration` | scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/lib/video-edit-processing.ts#reconcileStaleEditUpload` | scheduler | `session` | `upload_storage.v1` | `replace` | `rust_exact_reconcile_stale_edit_d1_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/lib/video-processing.ts#startVideoProcessingWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/workflows/admin-reprocess-video.ts#adminReprocessVideoWorkflow` | scheduler | `admin_session` | `billing_admin.v1` | `protected_parity_required` | `rust_exact_protected_billing_auth_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/workflows/edit-video.ts#editVideoWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/workflows/finalize-desktop-recording.ts#finalizeDesktopRecordingWorkflow` | desktop, scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/workflows/generate-ai.ts#generateAiWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/workflows/import-loom-video.ts#importLoomVideoWorkflow` | scheduler | `parent_receipt` | `imports_integrations.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/workflows/process-video.ts#processVideoWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://apps/web/workflows/transcribe.ts#transcribeVideoWorkflow` | scheduler | `session` | `video_media.v1` | `replace` | `rust_exact_protected_media_execution_staging_local_contract` |
+| `WORKFLOW` | `workflow://packages/web-domain/src/Loom.ts#LoomImportVideo` | scheduler | `parent_receipt` | `imports_integrations.v1` | `migrate` | `rust_exact_protected_integration_provider_staging_local_contract` |
 
 ## Reading the evidence fields
 

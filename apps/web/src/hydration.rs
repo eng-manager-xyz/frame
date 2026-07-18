@@ -15,13 +15,19 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
 
     use crate::browser_authenticated::{
         BrowserAction, BrowserActionEffectState, BrowserAuthenticatedClient, BrowserMutationInput,
-        BrowserWorkspace, WasmSameOriginTransport,
+        BrowserThemeV1, BrowserWorkspace, WasmSameOriginTransport,
     };
 
     let status = RwSignal::new("Checking your same-origin Frame session.".to_owned());
     let workspace = RwSignal::new(None::<BrowserWorkspace>);
     let busy = RwSignal::new(false);
     let logout_busy = RwSignal::new(false);
+    let theme_busy = RwSignal::new(false);
+    let persisted_theme = crate::browser_authenticated::browser_theme_cookie();
+    let theme = RwSignal::new(persisted_theme.unwrap_or_else(initial_browser_theme));
+    if let Some(persisted_theme) = persisted_theme {
+        apply_browser_theme(persisted_theme);
+    }
     let action_value = RwSignal::new(String::new());
     let uncertain_mutation = RwSignal::new(None::<BrowserMutationInput>);
     let route = current_authenticated_request();
@@ -85,6 +91,30 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                     logout_busy.set(false);
                 }
             }
+        });
+    };
+    let theme_client = Rc::clone(&client);
+    let toggle_theme = move |_| {
+        if theme_busy.get_untracked() {
+            return;
+        }
+        let next = match theme.get_untracked() {
+            BrowserThemeV1::Light => BrowserThemeV1::Dark,
+            BrowserThemeV1::Dark => BrowserThemeV1::Light,
+        };
+        let client = Rc::clone(&theme_client);
+        theme_busy.set(true);
+        status.set(format!("Saving the {} theme.", next.as_str()));
+        wasm_bindgen_futures::spawn_local(async move {
+            match client.set_theme(next).await {
+                Ok(()) => {
+                    apply_browser_theme(next);
+                    theme.set(next);
+                    status.set(format!("The {} theme is active.", next.as_str()));
+                }
+                Err(error) => status.set(browser_error_message(error).into()),
+            }
+            theme_busy.set(false);
         });
     };
     let submit_client = Rc::clone(&client);
@@ -207,6 +237,22 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
             >
                 {move || if logout_busy.get() { "Signing out…" } else { "Sign out" }}
             </button>
+            <button
+                class="button secondary"
+                type="button"
+                disabled=move || theme_busy.get()
+                on:click=toggle_theme
+            >
+                {move || if theme_busy.get() {
+                    "Saving theme…".to_owned()
+                } else {
+                    let next = match theme.get() {
+                        BrowserThemeV1::Light => "dark",
+                        BrowserThemeV1::Dark => "light",
+                    };
+                    format!("Switch to {next} theme")
+                }}
+            </button>
             {move || workspace.get().map(|current| {
                 let recording_items = current.recordings.iter().map(|recording| {
                     view! { <li>{format!("{} · {}", recording.title, recording.state)}</li> }
@@ -299,6 +345,31 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                 </form>
             })}
         </section>
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn initial_browser_theme() -> crate::browser_authenticated::BrowserThemeV1 {
+    use crate::browser_authenticated::BrowserThemeV1;
+
+    let body_theme = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+        .and_then(|body| body.get_attribute("data-theme"));
+    if body_theme.as_deref() == Some("dark") {
+        BrowserThemeV1::Dark
+    } else {
+        BrowserThemeV1::Light
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn apply_browser_theme(theme: crate::browser_authenticated::BrowserThemeV1) {
+    if let Some(body) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+    {
+        let _ = body.set_attribute("data-theme", theme.as_str());
     }
 }
 

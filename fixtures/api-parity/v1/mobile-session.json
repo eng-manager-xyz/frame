@@ -1,0 +1,95 @@
+{
+  "schema_version": "frame.legacy-mobile-session.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "operations": [
+    {
+      "id": "cap-v1-e16563e40f697519",
+      "method": "POST",
+      "legacy_identity": "/api/mobile/session/email/request",
+      "source_count": 10,
+      "source_manifest_sha256": "2c92c8fa1625007f094af3279b2a84c40b6103a260a4fb5934863f7245efb2ba",
+      "authentication": "public_or_flow_token",
+      "idempotency": "forbidden",
+      "protected_gates": ["provider_execution"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-139a189f8a00b38c",
+      "method": "POST",
+      "legacy_identity": "/api/mobile/session/email/verify",
+      "source_count": 13,
+      "source_manifest_sha256": "52f971ccd6df308d8de5bd71209a8c73f2a97ce3b2e82cec6bae21f986cbec97",
+      "authentication": "public_or_flow_token",
+      "idempotency": "forbidden",
+      "protected_gates": ["provider_execution"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-ea999fdc5829fbd1",
+      "method": "GET",
+      "legacy_identity": "/api/mobile/session/request",
+      "source_count": 8,
+      "source_manifest_sha256": "06c54e1ea054d18b3dd6aa45cdbb393f8df3d4b72a452082c027b836c9410739",
+      "authentication": "optional_session_or_share_capability",
+      "idempotency": "forbidden",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-1eef72e518a37abd",
+      "method": "POST",
+      "legacy_identity": "/api/mobile/session/revoke",
+      "source_count": 8,
+      "source_manifest_sha256": "6b824b47d20686a7f05a480faf76a8444f20801d294dae3bd969c220eb14ecfd",
+      "authentication": "session_or_api_key",
+      "idempotency": "forbidden",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    }
+  ],
+  "wire_contract": {
+    "email_pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$ after ECMAScript trim+toLowerCase",
+    "code_pattern": "^\\d{6}$ after ECMAScript trim",
+    "code_generation": "uniform integer 100000..999999",
+    "ttl_ms": 600000,
+    "token_hash": "sha256(code || NEXTAUTH_SECRET)",
+    "identifier": "mobile:sha256(normalized_email)",
+    "success": [
+      "{success:true}",
+      "{type:'api_key',apiKey:<uuid>,userId:<Cap NanoID>}",
+      "HTTP 302 Location"
+    ],
+    "errors": {
+      "400": {"_tag": "BadRequest"},
+      "401": {"_tag": "Unauthorized"},
+      "403": {"_tag": "Forbidden"},
+      "404": {"_tag": "NotFound"},
+      "500": {"_tag": "InternalServerError"}
+    }
+  },
+  "semantic_invariants": {
+    "signup_domains": "restrictions apply only to absent users; configured domains are trimmed, lowercased, hostname-validated, and exact-matched",
+    "verification": "missing is forbidden; expired and wrong attempts delete the identifier; matching delete must affect exactly one row; every attempt is one-use",
+    "existing_user": "getUserByEmail-visible users only update emailVerified and never execute Stripe",
+    "provisioned_user": "a user without linked accounts who has both a pending invite and membership follows createUser, fills a missing provisioned name, and truthfully queues Stripe when configured",
+    "new_user": "create a Cap NanoID user; pending invite leaves active/default organization empty; otherwise create My Organization, owner membership, and all source-ID aliases",
+    "stripe_failure_boundary": "createUser database state commits before Stripe; no mobile key is returned or minted while the protected effect is pending",
+    "mobile_keys": "delete every prior source=mobile key and mint one UUID; unrelated extension/desktop/developer keys survive",
+    "request_session": "anonymous users receive a deployment-origin /login redirect preserving path/query plus google/workos and WorkOS organization propagation",
+    "redirect_allowlist": "only cap://auth and the exact exp+cap Expo development-client forms are accepted before credentials are appended",
+    "revoke_auth": "middleware selects any 36-byte second authorization segment before handler parsing; handler then requires case-insensitive Bearer and a nonempty second segment",
+    "revoke_effect": "delete by bearer token identity and return success even when no row is affected"
+  },
+  "provider_orchestration": {
+    "email": "fixed-size AES-GCM ciphertext-only auth_delivery_provider_handoffs_v1 row committed with the challenge; success remains provider_execution-gated",
+    "stripe": "immutable user-bound legacy_mobile_session_stripe_effects_v1 pending intent; existing-user update branch remains provider-free"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_mobile_session.rs",
+    "apps/control-plane/src/legacy_mobile_session_runtime.rs",
+    "apps/control-plane/src/legacy_mobile_session_web_runtime.rs",
+    "apps/control-plane/migrations/0049_legacy_mobile_session_expand.sql",
+    "apps/control-plane/queries/legacy_mobile_session",
+    "scripts/ci/legacy-mobile-session-sqlite-conformance.py"
+  ]
+}

@@ -281,15 +281,76 @@ fn random_one_time_code() -> std::result::Result<String, PortError> {
 }
 
 #[derive(Clone)]
-struct WorkerDeliverySealer {
+pub(crate) struct WorkerDeliverySealer {
     key: AeadKey,
 }
 
 impl WorkerDeliverySealer {
-    fn from_env(env: &Env) -> BrowserWebOutcome<Self> {
+    pub(crate) fn from_env(env: &Env) -> BrowserWebOutcome<Self> {
         Ok(Self {
             key: AeadKeyRing::from_env(env, DELIVERY_KEYRING_SECRET)?.active,
         })
+    }
+
+    /// Seal Cap's mobile email/code pair without narrowing the source route's
+    /// Unicode email regex to Frame's ASCII `VerificationDestination` type.
+    /// The ciphertext format is deliberately identical to the normal
+    /// one-time-code handoff so the protected provider dispatcher has one
+    /// fixed-size authenticated envelope contract.
+    pub(crate) fn seal_mobile_email(
+        &self,
+        email: &str,
+        code: &str,
+        expires_at: TimestampMillis,
+        now: TimestampMillis,
+    ) -> std::result::Result<SealedDeliveryEnvelope, PortError> {
+        if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(PortError::InvalidRequest(
+                "mobile email code is invalid".into(),
+            ));
+        }
+        let destination = email.as_bytes();
+        let secret = code.as_bytes();
+        let destination_len = u16::try_from(destination.len()).map_err(|_| {
+            PortError::InvalidRequest("mobile delivery destination is too large".into())
+        })?;
+        let secret_len = u16::try_from(secret.len())
+            .map_err(|_| PortError::InvalidRequest("mobile delivery secret is too large".into()))?;
+        if 5 + destination.len() + secret.len() > DELIVERY_PLAINTEXT_BYTES {
+            return Err(PortError::InvalidRequest(
+                "mobile delivery material exceeds fixed envelope".into(),
+            ));
+        }
+
+        let mut plaintext = random_bytes::<DELIVERY_PLAINTEXT_BYTES>()?;
+        plaintext[..2].copy_from_slice(&destination_len.to_be_bytes());
+        plaintext[2..4].copy_from_slice(&secret_len.to_be_bytes());
+        plaintext[4] = verification_channel_code(VerificationChannel::OneTimeCode);
+        let destination_end = 5 + destination.len();
+        plaintext[5..destination_end].copy_from_slice(destination);
+        plaintext[destination_end..destination_end + secret.len()].copy_from_slice(secret);
+
+        let nonce = random_bytes::<AEAD_NONCE_BYTES>()?;
+        let mut header = Vec::with_capacity(DELIVERY_HEADER_BYTES);
+        header.extend_from_slice(&self.key.version.to_be_bytes());
+        header.extend_from_slice(&nonce);
+        header.push(verification_purpose_code(VerificationPurpose::SignIn));
+        header.extend_from_slice(&expires_at.get().to_be_bytes());
+        header.extend_from_slice(&now.get().to_be_bytes());
+        let aad = delivery_aad(&header);
+        let mut ciphertext = plaintext.to_vec();
+        plaintext.zeroize();
+        seal_in_place(&self.key, nonce, &aad, &mut ciphertext)?;
+        header.extend_from_slice(&ciphertext);
+        ciphertext.zeroize();
+        if header.len() != DELIVERY_PAYLOAD_BYTES {
+            header.zeroize();
+            return Err(PortError::Adapter(
+                "fixed mobile delivery envelope construction failed".into(),
+            ));
+        }
+        SealedDeliveryEnvelope::new(header, now)
+            .map_err(|error| PortError::Adapter(error.to_string()))
     }
 }
 

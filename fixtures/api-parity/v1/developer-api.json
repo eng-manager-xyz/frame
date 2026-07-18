@@ -1,0 +1,237 @@
+{
+  "schema_version": "frame.legacy-developer-api.v1",
+  "cap_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "completion": {
+    "decision": "serve_frame_exact_business",
+    "local_work": "complete",
+    "protected_gates": [],
+    "production_behavior": "serve_exact_d1"
+  },
+  "corrected_issue_aliases": {
+    "cap-v1-5914c280b14ba739": "cap-v1-5914aa6459d24ff1",
+    "cap-v1-5c98d28b577890ab": "cap-v1-5c98b9755e4643ba",
+    "cap-v1-0d39abfe8b33690b": "cap-v1-0d3940728bc19e0e",
+    "cap-v1-b6fe0d399f94c289": "cap-v1-b6fe5aec600a2e1a",
+    "cap-v1-c904df94374ab384": "cap-v1-c904ef9c11983a40",
+    "cap-v1-cbf029d42a0b86a1": "cap-v1-cbf22d62a64d3486",
+    "cap-v1-6e227329e3b4d880": "cap-v1-6e2296f9695261a3",
+    "cap-v1-1cbe6087c0d0fd0e": "cap-v1-1cbfe3ecac36f198",
+    "cap-v1-aed8207796eecfc4": "cap-v1-aed411f91e977fe5",
+    "cap-v1-71839c3bb617dffe": "cap-v1-718e84b39180c0ac"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-0f178cf038854d4a",
+      "method": "GET",
+      "path": "/api/cron/developer-storage",
+      "clients": ["developer", "scheduler"],
+      "auth": "scheduler_secret",
+      "source_count": 5,
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "forbidden",
+      "rate_limit_bucket": "upload_storage.v1"
+    },
+    {
+      "id": "cap-v1-5914aa6459d24ff1",
+      "method": "POST",
+      "path": "/api/developer/sdk/v1/upload/multipart/abort",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 11,
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "upload_storage.v1"
+    },
+    {
+      "id": "cap-v1-5c98b9755e4643ba",
+      "method": "POST",
+      "path": "/api/developer/sdk/v1/upload/multipart/complete",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 11,
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "upload_storage.v1"
+    },
+    {
+      "id": "cap-v1-0d3940728bc19e0e",
+      "method": "POST",
+      "path": "/api/developer/sdk/v1/upload/multipart/initiate",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 11,
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "upload_storage.v1"
+    },
+    {
+      "id": "cap-v1-b6fe5aec600a2e1a",
+      "method": "POST",
+      "path": "/api/developer/sdk/v1/upload/multipart/presign-part",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 11,
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "upload_storage.v1"
+    },
+    {
+      "id": "cap-v1-c904ef9c11983a40",
+      "method": "POST",
+      "path": "/api/developer/sdk/v1/videos/create",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 10,
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "developer_api.v1"
+    },
+    {
+      "id": "cap-v1-cbf22d62a64d3486",
+      "method": "GET",
+      "path": "/api/developer/v1/usage",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 7,
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "forbidden",
+      "rate_limit_bucket": "developer_api.v1"
+    },
+    {
+      "id": "cap-v1-6e2296f9695261a3",
+      "method": "GET",
+      "path": "/api/developer/v1/videos",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 7,
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "forbidden",
+      "rate_limit_bucket": "developer_api.v1"
+    },
+    {
+      "id": "cap-v1-1cbfe3ecac36f198",
+      "method": "DELETE",
+      "path": "/api/developer/v1/videos/:id",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 7,
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "optional",
+      "rate_limit_bucket": "developer_api.v1"
+    },
+    {
+      "id": "cap-v1-aed411f91e977fe5",
+      "method": "GET",
+      "path": "/api/developer/v1/videos/:id",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 7,
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "forbidden",
+      "rate_limit_bucket": "developer_api.v1"
+    },
+    {
+      "id": "cap-v1-718e84b39180c0ac",
+      "method": "GET",
+      "path": "/api/developer/v1/videos/:id/status",
+      "clients": ["developer"],
+      "auth": "developer_api_key",
+      "source_count": 7,
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "forbidden",
+      "rate_limit_bucket": "developer_api.v1"
+    }
+  ],
+  "authentication": {
+    "sdk": "authorization split on one literal space at index one; cpk_ prefix; keyed digest lookup; active public key and live app required",
+    "sdk_production_origin": "Origin is required and must exactly equal an app domain; development apps do not require Origin",
+    "rest": "authorization split on one literal space at index one; csk_ prefix; keyed digest lookup; active secret key and live app required",
+    "cron": "CRON_SECRET must exist and Authorization must constant-time match Bearer plus the secret",
+    "last_used_debounce_ms": 300000,
+    "rate_limit": "60 requests per 60-second edge source window",
+    "cors": {
+      "allow_origin": "*",
+      "credentials": false,
+      "allow_methods": "GET, POST, OPTIONS",
+      "allow_headers": "Content-Type, Authorization"
+    }
+  },
+  "wire_contracts": {
+    "video_create": {
+      "optional": ["name", "userId", "metadata"],
+      "name_and_user_utf16_max": 255,
+      "metadata_json_utf16_max": 8192,
+      "default_name": "Untitled",
+      "object_key": "developer/{legacyAppId}/{legacyVideoId}/video",
+      "response": "{videoId,s3Key,shareUrl,embedUrl}"
+    },
+    "multipart": {
+      "content_types": [
+        "video/mp4",
+        "video/webm",
+        "video/quicktime",
+        "video/x-matroska",
+        "video/avi",
+        "application/octet-stream"
+      ],
+      "unknown_content_type": "defaults_to_video_mp4",
+      "part_number": "integer_1_through_10000",
+      "presigned_put_headers": "none",
+      "presigned_url_ttl_seconds": 900,
+      "complete_parts": "sorted_by_partNumber_before_R2_complete",
+      "durationInSecs": "required_positive_finite_then_clamped_to_four_hours"
+    },
+    "usage": "{data:{balanceMicroCredits,balanceDollars,totalVideos,totalDurationMinutes}}",
+    "videos_list": "{data:[video]} ordered createdAt descending; userId exact filter; default limit 50, maximum 100; nonnegative offset",
+    "video_get": "{data:video}; deleted, foreign, and absent all return Video not found",
+    "video_status": "{data:{id,duration,width,height,transcriptionStatus,ready}} where ready requires duration and width",
+    "video_delete": "soft tombstone and {success:true}",
+    "cron": "{success:true,date,appsProcessed} using the UTC YYYY-MM-DD snapshot day"
+  },
+  "billing": {
+    "create_minimum_balance_microcredits": 5000,
+    "completion_microcredits_per_minute": 5000,
+    "completion_max_duration_seconds": 14400,
+    "completion_size_floor_bytes_per_second": 2500000,
+    "completion_formula": "floor(min(14400,max(min(durationInSecs,14400),sum(part.size)/2500000))/60*5000)",
+    "daily_storage_microcredits_per_minute": "3.33",
+    "daily_storage_formula": "floor(total_live_duration_minutes*333/100)",
+    "zero_charge_or_no_account": "skip",
+    "insufficient_balance": "atomic debit is rejected and app is not counted processed"
+  },
+  "idempotency": {
+    "released_sdk_sends_header": false,
+    "mutations": "optional supplied header is durable; absent header receives a unique server execution key",
+    "same_key_same_request": "replay immutable receipt",
+    "same_key_different_request": "409 Idempotency conflict",
+    "reads": "forbidden",
+    "provider_effects": "D1 effect_pending outbox claims before R2 create, complete, or abort; complete and abort resume; an unbound create fails closed"
+  },
+  "persistence": {
+    "migration": "0054_legacy_developer_api_expand.sql",
+    "query_root": "apps/control-plane/queries/legacy_developer_api",
+    "tables": [
+      "legacy_developer_api_operations_v1",
+      "legacy_developer_api_receipts_v1",
+      "legacy_developer_provider_outbox_v1",
+      "legacy_developer_multipart_sessions_v1",
+      "legacy_developer_part_capabilities_v1",
+      "legacy_developer_credit_transactions_v1",
+      "legacy_developer_daily_storage_snapshots_v1",
+      "legacy_developer_cron_runs_v1",
+      "legacy_developer_api_audit_v1"
+    ],
+    "providers": "Cloudflare D1 plus the RECORDINGS R2 binding and R2 S3 SigV4 credentials"
+  }
+}

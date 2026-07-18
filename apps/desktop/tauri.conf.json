@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "xyz.engmanager.frame",
   "build": {
-    "beforeDevCommand": "trunk serve --config ui/Trunk.toml",
+    "beforeDevCommand": "trunk serve --config desktop/ui/Trunk.toml",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "python ../../scripts/ci/build-desktop-ui.py",
+    "beforeBuildCommand": "python3 ../scripts/ci/build-desktop-ui.py",
     "frontendDist": "ui/dist"
   },
   "app": {
@@ -36,6 +36,10 @@
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "targets": "all",
     "category": "Productivity",
-    "shortDescription": "Secure screen recording and editing"
+    "shortDescription": "Secure screen recording and editing",
+    "macOS": {
+      "minimumSystemVersion": "12.3",
+      "infoPlist": "Info.plist"
+    }
   }
 }

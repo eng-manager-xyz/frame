@@ -1,0 +1,80 @@
+{
+  "schema_version": "frame.legacy-organization-library.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-organization-library-action.v1",
+    "max_body_bytes": 4194304,
+    "content_type": "application/json",
+    "authentication": "host_only_session_except_public_verifyCollectionPassword",
+    "same_origin": "required_for_session_actions",
+    "csrf": "double_submit_one_use_grant_atomically_consumed_for_session_actions",
+    "idempotency": "required_for_20_session_actions_forbidden_for_public_password_verification",
+    "rate_limit": "organization_library.v1_for_session_share_playback.v1_for_password",
+    "cache_control": "private_no_store"
+  },
+  "password_contract": {
+    "visibility": "public_space_or_public_folder_inheriting_its_parent_space_password",
+    "algorithm": "PBKDF2-HMAC-SHA256",
+    "iterations": 100000,
+    "salt_bytes": 16,
+    "derived_bytes": 32,
+    "wire": "standard_base64_of_salt_then_hash_48_bytes",
+    "failure": "missing_collection_missing_hash_and_wrong_password_are_indistinguishable",
+    "journal": "plaintext_password_and_verification_outcome_are_never_persisted",
+    "cookie": "shared_AES-256-GCM_x-cap-password_httpOnly_secure_sameSite_lax"
+  },
+  "storage_contract": {
+    "object_authority": "first_party_RECORDINGS_R2_binding",
+    "writes": "deterministic_checksum_keys_are_written_before_the_D1_visibility_mutation",
+    "deletes": "durable_pending_effect_rows_are_retried_then_the_operation_transitions_to_complete",
+    "delete_space": "bounded_R2_prefix_delete_max_10000_objects_and_10_pages",
+    "google_connect": "local_HMAC_signed_OAuth_state_and_URL_projection_only_no_Google_network_call",
+    "settings": "credentials_are_never_returned",
+    "arbitrary_s3": "save_remove_test_provider_actions_remain_excluded"
+  },
+  "operations": [
+    {"id":"cap-v1-2cbdd906b6b7e371","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/collections/logo.ts#setCollectionLogo","source_path":"apps/web/actions/collections/logo.ts","source_sha256":"6da1160c77a218c7d7610f091efac9ab82f4f423734fd4e034590e66b9b3d86a","authentication":"session","idempotency":"required","authority":"collection_manager_and_organization_owner_pro","effect":"D1_settings_patch_plus_R2_put_or_resumable_delete"},
+    {"id":"cap-v1-61e089033a34d239","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/collections/password.ts#verifyCollectionPassword","source_path":"apps/web/actions/collections/password.ts","source_sha256":"b9279c5520cfe51eb327f31c93bbcf5a1d9c99308e9ccc54fb9343e2c2fb37ec","authentication":"anonymous","idempotency":"forbidden","authority":"public_collection","effect":"local_PBKDF2_and_encrypted_cookie"},
+    {"id":"cap-v1-79eeb0016e42f711","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/collections/visibility.ts#setSpaceCollectionVisibility","source_path":"apps/web/actions/collections/visibility.ts","source_sha256":"37cebf7e6b86a5b81184b29120771680651b3584d18751f6ca6c36994e2b76ba","authentication":"session","idempotency":"required","authority":"space_manager_owner_pro_only_when_publishing_or_customizing","effect":"D1_atomic_public_page_patch"},
+    {"id":"cap-v1-120aa129daa79b1e","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/delete-space.ts#deleteSpace","source_path":"apps/web/actions/organization/delete-space.ts","source_sha256":"62b0fb5e690021a4fff8f7790da7406c3848e71d068c494fa80464320fdca213","authentication":"session","idempotency":"required","authority":"space_manager","effect":"D1_cascade_plus_bounded_resumable_R2_prefix_delete"},
+    {"id":"cap-v1-9227b0da852f2745","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/get-organization-sso-data.ts#getOrganizationSSOData","source_path":"apps/web/actions/organization/get-organization-sso-data.ts","source_sha256":"d95337ff755ff0a76e076b5086af79b0087729a32f1b4fbbbea42144092b59ca","authentication":"session","idempotency":"required","authority":"active_organization_member","effect":"D1_read_receipt"},
+    {"id":"cap-v1-575866e31832347a","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/remove-member.ts#removeOrganizationMember","source_path":"apps/web/actions/organization/remove-member.ts","source_sha256":"f41c5ff6f58aecc8e8462adafabb9cf5749b36b97802827c7304c9ff419b2729","authentication":"session","idempotency":"required","authority":"organization_manager_role_hierarchy","effect":"atomic_membership_space_invite_alias_removal"},
+    {"id":"cap-v1-3a1228254de4338a","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/settings.ts#updateOrganizationSettings","source_path":"apps/web/actions/organization/settings.ts","source_sha256":"1395abd9ebf7b71c53fb6395aa71566d0114ee36d7d3ebfef886f163bf2bbd7b","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro_controls_pro_keys","effect":"D1_settings_replace_with_non_pro_preservation"},
+    {"id":"cap-v1-1bed8d446a1553b1","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/shareable-link-icon.ts#hideShareableLinkCapLogo","source_path":"apps/web/actions/organization/shareable-link-icon.ts","source_sha256":"a14b88b3ee917aa16c2e4d4c7800c35fb8042cd508cd926f60d2b74883d0334f","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro","effect":"D1_branding_patch"},
+    {"id":"cap-v1-b5f1312195f03a0e","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/shareable-link-icon.ts#removeShareableLinkIcon","source_path":"apps/web/actions/organization/shareable-link-icon.ts","source_sha256":"a14b88b3ee917aa16c2e4d4c7800c35fb8042cd508cd926f60d2b74883d0334f","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro","effect":"D1_icon_clear_plus_resumable_R2_delete"},
+    {"id":"cap-v1-7e1553af9e9427af","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/shareable-link-icon.ts#selectShareableLinkBrandingOrganization","source_path":"apps/web/actions/organization/shareable-link-icon.ts","source_sha256":"a14b88b3ee917aa16c2e4d4c7800c35fb8042cd508cd926f60d2b74883d0334f","authentication":"session","idempotency":"required","authority":"manager_of_target_organization_independent_of_current_selection","effect":"D1_active_organization_selection"},
+    {"id":"cap-v1-ff1b0a4f37fb9130","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/shareable-link-icon.ts#updateShareableLinkIconPreference","source_path":"apps/web/actions/organization/shareable-link-icon.ts","source_sha256":"a14b88b3ee917aa16c2e4d4c7800c35fb8042cd508cd926f60d2b74883d0334f","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro_and_icon_required_when_enabled","effect":"D1_branding_patch"},
+    {"id":"cap-v1-ce276ebd911b73f8","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/shareable-link-icon.ts#uploadShareableLinkIcon","source_path":"apps/web/actions/organization/shareable-link-icon.ts","source_sha256":"a14b88b3ee917aa16c2e4d4c7800c35fb8042cd508cd926f60d2b74883d0334f","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro","effect":"D1_icon_key_plus_R2_put_and_resumable_old_delete"},
+    {"id":"cap-v1-531e69b5e2915e10","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/storage.ts#connectOrganizationGoogleDrive","source_path":"apps/web/actions/organization/storage.ts","source_sha256":"25c64e9cacfe2048160d6a8fb37c95b75ec06f07de8f04b94fad939f40a86de5","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro","effect":"deterministic_local_signed_OAuth_URL"},
+    {"id":"cap-v1-408f009a56471811","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/storage.ts#disconnectOrganizationGoogleDrive","source_path":"apps/web/actions/organization/storage.ts","source_sha256":"25c64e9cacfe2048160d6a8fb37c95b75ec06f07de8f04b94fad939f40a86de5","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro","effect":"D1_disable_and_credential_clear"},
+    {"id":"cap-v1-dd736ee15a42f26b","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/storage.ts#getOrganizationStorageSettings","source_path":"apps/web/actions/organization/storage.ts","source_sha256":"25c64e9cacfe2048160d6a8fb37c95b75ec06f07de8f04b94fad939f40a86de5","authentication":"session","idempotency":"required","authority":"organization_manager","effect":"credential_redacted_D1_projection"},
+    {"id":"cap-v1-0d56f082dce4f861","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/storage.ts#setOrganizationStorageProvider","source_path":"apps/web/actions/organization/storage.ts","source_sha256":"25c64e9cacfe2048160d6a8fb37c95b75ec06f07de8f04b94fad939f40a86de5","authentication":"session","idempotency":"required","authority":"organization_manager_actor_pro_configured_target","effect":"atomic_D1_provider_selection"},
+    {"id":"cap-v1-989b3a5027a3f5c0","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/toggle-pro-seat.ts#toggleProSeat","source_path":"apps/web/actions/organization/toggle-pro-seat.ts","source_sha256":"33744f1aa115a4fb9d4b505a6fa93eb7640a0b029eb9261d0e4f5287e377bb9d","authentication":"session","idempotency":"required","authority":"organization_seat_manager_quota_and_owner_pro","effect":"atomic_seat_and_subscription_link_update"},
+    {"id":"cap-v1-91184d308c393034","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/update-details.ts#updateOrganizationDetails","source_path":"apps/web/actions/organization/update-details.ts","source_sha256":"82b1702a9592e8e6224e447312554eb2afbdcb2b3abc352c1218162d4c2c4946","authentication":"session","idempotency":"required","authority":"organization_manager","effect":"lossless_name_and_allowed_email_D1_update"},
+    {"id":"cap-v1-1ffe1392bb59f2ca","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/update-member-role.ts#updateOrganizationMemberRole","source_path":"apps/web/actions/organization/update-member-role.ts","source_sha256":"6561e95488476e58a39a98ead43ae40af9078059347625188c77b0a05da477ee","authentication":"session","idempotency":"required","authority":"organization_manager_role_hierarchy","effect":"D1_membership_role_and_authority_version"},
+    {"id":"cap-v1-67377a620262de2c","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/actions/organization/upload-space-icon.ts#uploadSpaceIcon","source_path":"apps/web/actions/organization/upload-space-icon.ts","source_sha256":"0b66960cfe59616dd4d64390f9db0dc537a9d7ccad4ef5311dc97b5e6a0d2063","authentication":"session","idempotency":"required","authority":"space_manager","effect":"D1_icon_key_plus_R2_put_and_resumable_old_delete"},
+    {"id":"cap-v1-404c6ea8306ad5a7","kind":"server_action","method":"ACTION","legacy_identity":"action://apps/web/components/forms/server.ts#createOrganization","source_path":"apps/web/components/forms/server.ts","source_sha256":"73cbaead68461609716d42e4b4e4e9d12d286b9b4d866d23550d40a8df7a4d26","authentication":"session","idempotency":"required","authority":"active_actor_no_current_organization_required","effect":"atomic_organization_owner_alias_selection_plus_optional_R2_icon"}
+  ],
+  "protected_gates": [],
+  "production_behavior": "serve_exact_d1_r2_action",
+  "excluded_provider_actions": [
+    "WorkOS_domain_management",
+    "Stripe_subscription_billing_and_quantity",
+    "email_invite_delivery",
+    "Google_Drive_API_picker_folder_and_location_calls",
+    "arbitrary_S3_save_remove_and_test",
+    "Tinybird_organization_soft_delete",
+    "analytics"
+  ],
+  "local_evidence": [
+    "crates/application/src/legacy_organization_library.rs",
+    "apps/control-plane/src/legacy_organization_library_runtime.rs",
+    "apps/control-plane/src/legacy_organization_library_web_runtime.rs",
+    "apps/control-plane/migrations/0058_legacy_organization_library_expand.sql",
+    "apps/control-plane/queries/legacy_organization_library",
+    "scripts/ci/legacy-organization-library-sqlite-conformance.py"
+  ]
+}

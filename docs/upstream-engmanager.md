@@ -1,19 +1,20 @@
 # EngManager portfolio integration reference
 
-Frame uses a shallow, ignored checkout of
+Frame's integration research used a shallow checkout of
 [`matthewharwood/engmanager.xyz`](https://github.com/matthewharwood/engmanager.xyz)
-in `.tmp/engmanager.xyz` as the integration reference. The design and backlog
-were researched against commit
+as an integration reference. The design and backlog were researched against commit
 `1de52bc8f25793dea3697e67765d53785c05cdfa` on 2026-07-15.
 
-Recreate the checkout with:
+The resulting architecture inventory is committed here; no portfolio checkout
+is required to build, test, deploy, or operate Frame. An independent audit may
+recreate the historical checkout with:
 
 ```sh
 mkdir -p .tmp
 git clone --depth 1 https://github.com/matthewharwood/engmanager.xyz.git .tmp/engmanager.xyz
 ```
 
-The checkout is a reference, not a vendored dependency. Frame and the
+The disposable checkout was a reference, not a vendored dependency. Frame and the
 portfolio remain independently deployable repositories with separate release
 cadences and rollback controls.
 

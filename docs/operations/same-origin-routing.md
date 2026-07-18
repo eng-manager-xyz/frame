@@ -42,14 +42,38 @@ compatibility prefix catches query strings on `/media-server`, as Cloudflare
 cannot express an exact path plus arbitrary query parameters without a
 trailing wildcard; it therefore also catches suffix lookalikes. The control
 plane parses the request target before application dispatch and owns only the
-exact raw pathname `/api`, a pathname beginning `/api/`, or exact `/media-server`.
-The compatibility endpoint accepts only `GET`; query parameters preserve its
-exact pinned metadata body. `/media-server/`, unpromoted children, and prefix
-lookalikes receive the reviewed `404 not_api_route` response with
-`Cache-Control: no-store`, as do API lookalikes. They are never forwarded by
-an application gateway. Unknown or malformed paths inside the API boundary
-also fail closed. Every other non-API path misses both Worker Routes and
-continues to the Render CNAME.
+exact raw pathname `/api`, a pathname beginning `/api/`, exact
+`GET /media-server`, or these 16 source-pinned, method-bound child shapes:
+
+- `POST /media-server/audio/check`, `POST /media-server/audio/convert`, and
+  `POST /media-server/audio/extract`;
+- `GET /media-server/audio/status` and `GET /media-server/health`;
+- `POST /media-server/video/cleanup`, `POST /media-server/video/convert`,
+  `POST /media-server/video/edit`, `POST /media-server/video/force-cleanup`,
+  `POST /media-server/video/mux-segments`, `POST /media-server/video/probe`,
+  `POST /media-server/video/process`, and
+  `POST /media-server/video/thumbnail`;
+- `GET /media-server/video/status`;
+- `POST /media-server/video/process/:jobId/cancel` and
+  `GET /media-server/video/process/:jobId/status`.
+
+The matrix exercises the dynamic shapes as
+`POST /media-server/video/process/job-42/cancel` and
+`GET /media-server/video/process/job-42/status`. The exact root preserves its
+pinned metadata body with a query. All 16 children are Worker-owned but remain
+`fail_closed_unavailable` behind `hardware_execution` and
+`provider_execution`; an unauthenticated or unconfigured trace must close with
+`401`, `403`, or `503`, never success or redirect. This ownership update is not
+provider promotion.
+
+`/media-server/`, `/media-server/health/`, unknown children,
+`/media-server/video/process-extra`, an empty `:jobId`, and
+`/media-server/Health` receive the reviewed `404 not_api_route` response with
+`Cache-Control: no-store`, as do API lookalikes. Exact `/Media-server` remains
+case-sensitive, misses the Worker Route, and continues to Render. These paths
+are never forwarded by an application gateway. Unknown or malformed paths
+inside the API boundary also fail closed. Every other non-API path misses both
+Worker Routes and continues to the Render CNAME.
 
 The initial design has no edge gateway. The Worker dispatches the original
 `Request`, so its method, query, body stream, and safe headers are not rebuilt.
@@ -133,8 +157,11 @@ The protected route trace must cover `/api`, `/api?query`, `/api/`, versioned
 and unknown API paths, repeated slashes, literal and encoded dot segments,
 semicolons, encoded slashes/backslashes, `/apix`, `/apiary`, uppercase and
 encoded-prefix lookalikes, exact `/media-server` with and without a query,
-its trailing-slash/unpromoted-child/lookalike rejections, unexpected Host,
-HTTP, explicit ports, duplicate
+all 16 protected children with their source-pinned methods (including concrete
+`job-42` cancel/status paths), their `401`/`403`/`503` protected closure, and
+root/child trailing slashes, unknown children, empty dynamic IDs, prefix
+lookalikes, and uppercase rejection/fallthrough cases; it must also cover
+unexpected Host, HTTP, explicit ports, duplicate
 query keys, chunked and fixed-length bodies, GET/HEAD/POST/PUT/DELETE/OPTIONS,
 single and multiple ranges, a streamed playback body, a non-followed error and
 redirect probe, and an upgrade probe that does not return `101`.

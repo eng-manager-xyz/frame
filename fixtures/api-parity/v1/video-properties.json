@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "family": "video_properties.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "mobile_authentication": "host_session_or_authorization_second_space_token_exactly_36_characters",
+    "browser_authentication": "host_only_session_except_anonymous_verifyVideoPassword",
+    "action_path_prefix": "/api/v1/web/compatibility-actions/",
+    "action_request_schema": "frame.web-video-property-action-request.v1",
+    "action_same_origin": "required",
+    "action_csrf": "double_submit_one_use_grant_required_except_anonymous_verifyVideoPassword",
+    "idempotency": "optional_client_key_bound_when_supplied_server_generated_when_absent",
+    "max_body_bytes": 262144,
+    "content_type": "application/json",
+    "cache_control": "no-store, max-age=0"
+  },
+  "source_semantics": {
+    "mobile_title": "ECMAScript_trim_then_reject_blank_without_titleManuallyEdited",
+    "mobile_password": "nullable_ECMAScript_trim_null_empty_or_whitespace_clears",
+    "mobile_sharing": "owner_only_boolean_update",
+    "mobile_success": "full_MobileCapSummary_thumbnail_and_analytics_provider_failures_fall_back_to_null_and_zero",
+    "metadata_put": "missing_not_found_or_forbidden_are_exact_401_error_true_arbitrary_truthy_JSON_replaces_legacy_metadata_only",
+    "edit_date": "owner_only_JavaScript_Date_compatible_safe_ISO_subset_future_rejected_metadata_object_spread",
+    "edit_title": "empty_rejected_whitespace_preserved_metadata_object_spread_sets_titleManuallyEdited",
+    "set_password": "empty_rejected_without_trim_whitespace_password_is_hashed",
+    "remove_password": "owner_only_clears_video_hash",
+    "verify_password": "anonymous_video_hash_then_joined_space_hashes_in_insertion_order_wrong_password_generic_failure",
+    "settings": "replace_runtime_object_preserve_unknown_keys_normalize_playback_speed_to_nearest_allowed_value_ties_choose_earlier"
+  },
+  "password_contract": {
+    "algorithm": "PBKDF2-HMAC-SHA256",
+    "iterations": 100000,
+    "salt_bytes": 16,
+    "derived_bytes": 32,
+    "wire": "standard_base64_of_salt_then_hash_48_bytes_64_characters",
+    "cookie": "AES-256-GCM_encrypted_x-cap-password_httpOnly_secure_sameSite_lax",
+    "cookie_secret": "FRAME_LEGACY_PASSWORD_COOKIE_KEY_V1",
+    "cookie_max_hashes": 10
+  },
+  "atomicity": {
+    "core": "actor_or_anonymous_operation_scoped_idempotency_authority_reassertion_mutation_receipt_effect_audit_and_assertion_cleanup",
+    "same_key_same_fingerprint": "replay_original_projection",
+    "same_key_different_fingerprint": "conflict",
+    "stale_authority": "abort_without_partial_mutation_or_evidence",
+    "native_metadata_isolation": "legacy_metadata_json_never_overwrites_checksummed_native_metadata_json",
+    "immutable_evidence": true
+  },
+  "operations": [
+    {
+      "id": "cap-v1-2cfe7fc40a6f5a78",
+      "kind": "route",
+      "method": "PATCH",
+      "legacy_identity": "/api/mobile/caps/:id/password",
+      "source_count": 5,
+      "source_manifest_sha256": "24e4585815c8a22ce021d49c460f5c27cc1c038431a9345e4f2c3bcf08d5175a",
+      "validation": "nullable_ECMAScript_trim_clear_blank",
+      "authority": "owner_session_or_legacy_api_key",
+      "success": "full_mobile_cap_summary",
+      "protected_gates": [
+        "provider_execution"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-5fdf332d1448aedc",
+      "kind": "route",
+      "method": "PATCH",
+      "legacy_identity": "/api/mobile/caps/:id/sharing",
+      "source_count": 4,
+      "source_manifest_sha256": "07fd9bbfc4674bdd69b0d983dd5e13635ff229b8f6c15dff7a7d27e92a33c46a",
+      "validation": "boolean_public",
+      "authority": "owner_session_or_legacy_api_key",
+      "success": "full_mobile_cap_summary",
+      "protected_gates": [
+        "provider_execution"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-b2db0e7ec51f7898",
+      "kind": "route",
+      "method": "PATCH",
+      "legacy_identity": "/api/mobile/caps/:id/title",
+      "source_count": 4,
+      "source_manifest_sha256": "048f7393a88ed0317ab1ecd4f3c493848c23493b11ae25932802d2870cd1c292",
+      "validation": "ECMAScript_trim_then_nonempty_title",
+      "authority": "owner_session_or_legacy_api_key",
+      "success": "full_mobile_cap_summary",
+      "protected_gates": [
+        "provider_execution"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-5b36dac105856ede",
+      "kind": "route",
+      "method": "PUT",
+      "legacy_identity": "/api/video/metadata",
+      "source_count": 3,
+      "source_manifest_sha256": "01a4d4f059a7d9c28d4c0580f0dccb19e3752808a4bf29899a6edd14e78873a7",
+      "validation": "truthy_arbitrary_JSON_metadata",
+      "authority": "owner_session",
+      "success": "JSON_true",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-96c52e9330f9a131",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/edit-date.ts#editDate",
+      "source_count": 4,
+      "source_manifest_sha256": "13d31ba77997d6b33ef14c1dfac6c6cc31e192368ebba11c9f66e6b31f9d5ce1",
+      "validation": "safe_ISO_date_subset_not_future",
+      "authority": "owner_session",
+      "success": "success_true_object",
+      "protected_gates": [
+        "human_approval"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-6e9f3d370f1ce239",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/edit-title.ts#editTitle",
+      "source_count": 4,
+      "source_manifest_sha256": "537d4de6afbbd653fceedcc90864d1e46d4083a58db693c5b2d954d04cb879b1",
+      "validation": "nonempty_raw_title_preserve_whitespace",
+      "authority": "owner_session",
+      "success": "success_true_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-ab11637faa2de45e",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/password.ts#removeVideoPassword",
+      "source_count": 3,
+      "source_manifest_sha256": "334eecf86628602d944d8af6f4125f25379510a28259b396cc48c92febf7afdd",
+      "validation": "video_id_only",
+      "authority": "owner_session",
+      "success": "password_removed_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-455e6a1b82e647d9",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/password.ts#setVideoPassword",
+      "source_count": 4,
+      "source_manifest_sha256": "3a96a2b46b7c5f7516a88225b56a8b3513d03c90980d1154fad7c65bf8dcbe2d",
+      "validation": "raw_nonempty_password_without_trim",
+      "authority": "owner_session",
+      "success": "password_set_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-0a2c44d7a626a1fe",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/password.ts#verifyVideoPassword",
+      "source_count": 5,
+      "source_manifest_sha256": "f08afa095fb760b933f6299fdcf414327925b7b3e9957e2924e9827fd3e87945",
+      "validation": "raw_password_string",
+      "authority": "anonymous_video_and_joined_spaces",
+      "success": "success_true_and_encrypted_cookie",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-49dba3fbc7c4a74c",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/settings.ts#updateVideoSettings",
+      "source_count": 4,
+      "source_manifest_sha256": "95c1c1f551e17bceaec86e945b6f8b92a780d372de89974e57f00c6b3950fffa",
+      "validation": "runtime_object_replace_preserve_unknown_normalize_speed",
+      "authority": "owner_session",
+      "success": "success_true_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    }
+  ]
+}

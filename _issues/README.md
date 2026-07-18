@@ -10,8 +10,8 @@ This directory is a dependency-ordered set of implementation-ready issue specifi
 - Cloudflare R2 is the confirmed canonical object store. Issue 02 records the remaining S3-compatible, MinIO, BYO, self-hosting, and Google Drive compatibility decisions.
 - Cloudflare Media Transformations handles capability-matched private-R2 derivatives. GStreamer remains native for capture, editing/export, long/complex work, unsupported inputs, and fallback. The separate `[stream]` managed video-library binding is not enabled.
 - D1, R2, and Media bindings are Worker/Wasm capabilities. GStreamer is native. Issue 03 proves the contract and routing between those runtimes.
-- The ignored parity checkout is `.tmp/cap`; no Cap source is vendored by this backlog.
-- The EngManager portfolio was inspected at `matthewharwood/engmanager.xyz@1de52bc8f25793dea3697e67765d53785c05cdfa`; its ignored reference checkout is `.tmp/engmanager.xyz` and its architecture inventory is in [`docs/upstream-engmanager.md`](../docs/upstream-engmanager.md).
+- The Cap checkout was a disposable research input; committed parity inventories preserve its source pins and no Cap source or checkout is required by this backlog.
+- The EngManager portfolio was inspected at `matthewharwood/engmanager.xyz@1de52bc8f25793dea3697e67765d53785c05cdfa`; its committed architecture inventory is in [`docs/upstream-engmanager.md`](../docs/upstream-engmanager.md), and no portfolio checkout is required.
 - `https://frame.engmanager.xyz` is the accepted public origin. A query-safe broad Cloudflare Worker Route plus strict first-segment validation owns `/api` and `/api/*`; unmatched paths go to a dedicated Render `frame-web` service. Frame never runs inside the existing portfolio process.
 - The initial portfolio integration is top-level navigation with no shared cookie or request-time availability dependency. Recorder embedding is not part of the first release.
 

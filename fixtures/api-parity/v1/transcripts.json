@@ -1,0 +1,191 @@
+{
+  "schema_version": "frame.legacy-transcripts.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "carrier_schema": "frame.web-transcript-action-request.v1",
+  "operations": [
+    {
+      "id": "cap-v1-c8dffb9b102dd4f7",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/videos/:videoId/retry-transcription",
+      "auth": "session_owner",
+      "policy": "collaboration_notifications.v1",
+      "idempotency": "required_frame_header",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1",
+      "source_manifest_sha256": "57293fe5ddca7d4d661d2ae05ece50722976909d6af70426689f1b3102ebd5e9",
+      "sources": [
+        {"path":"apps/web/app/api/videos/[videoId]/retry-transcription/route.ts","symbol":"POST","sha256":"a443e83d8bbf243e1661cfaf9795c1d901e650c7f773493aad885e9c90ab54e3"},
+        {"path":"packages/database/auth/session.ts","symbol":"getCurrentUser","sha256":"d526dc9d7a6a1a7cb6a8695c24ab88b843ce09b4444f8e4ade24b7a06cbbc1ee"},
+        {"path":"packages/database/schema.ts","symbol":"videos+organizations+spaces+memberships","sha256":"7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"},
+        {"path":"packages/database/index.ts","symbol":"db","sha256":"161c1d1fd2a561fd2846aeceb148f24b58afc58bdaa95175240e48dbe61d9bbb"},
+        {"path":"packages/web-domain/src/Video.ts","symbol":"Video.VideoId+verifyPasswordCandidates","sha256":"adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7"},
+        {"path":"apps/web/proxy.ts","symbol":"API matcher exclusion","sha256":"7da98445a31f6b48d01b56877c47aaa79ba3af93dff8c015ad06a6e94fb42fcb"},
+        {"path":"apps/web/package.json","symbol":"next+effect+groq+storage dependencies","sha256":"c1358cd1880ac5dc9d659760c2788cedd5c4f61fec2cb0dd1b60cbc9bb8af920"},
+        {"path":"pnpm-lock.yaml","symbol":"dependency lock","sha256":"fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"}
+      ],
+      "wire_contract": {
+        "input": "path videoId plus Frame Idempotency-Key safety envelope; source ignores request body",
+        "success": {"status":200,"body":{"success":true,"message":"Transcription retry triggered"}},
+        "failure": "401 no session; 400 missing/invalid Frame idempotency key; 404 missing video; 403 non-owner; 500 D1"
+      }
+    },
+    {
+      "id": "cap-v1-3db394ae13895b46",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/edit-transcript.ts#editTranscriptEntry",
+      "auth": "session_owner",
+      "policy": "collaboration_notifications.v1",
+      "idempotency": "required_frame_carrier",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2",
+      "source_manifest_sha256": "d4c854287c834e13c237d86c0568140f580f1dd86de0b9262fa7505bf5455ce7",
+      "sources": [
+        {"path":"apps/web/actions/videos/edit-transcript.ts","symbol":"editTranscriptEntry","sha256":"f9e1ae7841e79c58c98fd5087f375f8d5d6c0c0978d6eff40e477ed4c6266da9"},
+        {"path":"packages/database/auth/session.ts","symbol":"getCurrentUser","sha256":"d526dc9d7a6a1a7cb6a8695c24ab88b843ce09b4444f8e4ade24b7a06cbbc1ee"},
+        {"path":"packages/database/schema.ts","symbol":"videos+organizations+spaces+memberships","sha256":"7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"},
+        {"path":"packages/database/index.ts","symbol":"db","sha256":"161c1d1fd2a561fd2846aeceb148f24b58afc58bdaa95175240e48dbe61d9bbb"},
+        {"path":"packages/web-domain/src/Video.ts","symbol":"Video.VideoId+verifyPasswordCandidates","sha256":"adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7"},
+        {"path":"apps/web/lib/transcript-vtt.ts","symbol":"normalizeTranscriptCueText+updateVttEntryText","sha256":"972027f6c6a72e9e9ccd820ba86c409f008d02a3f60349cd3a50ff7f4ed3be88"},
+        {"path":"packages/web-backend/src/Storage/index.ts","symbol":"Storage.getAccessForVideo+translation objects","sha256":"3ea22f76907104e26df8f48bdcac87a5dc2d3d60497dfc409110eb0fa8446b4c"},
+        {"path":"apps/web/lib/video-storage.ts","symbol":"decodeStorageVideo","sha256":"bc40152ad191ba397a1900016ca04f2b47c6fe07063c5abe82455a9d98d13714"},
+        {"path":"apps/web/proxy.ts","symbol":"API matcher exclusion","sha256":"7da98445a31f6b48d01b56877c47aaa79ba3af93dff8c015ad06a6e94fb42fcb"},
+        {"path":"apps/web/package.json","symbol":"next+effect+groq+storage dependencies","sha256":"c1358cd1880ac5dc9d659760c2788cedd5c4f61fec2cb0dd1b60cbc9bb8af920"},
+        {"path":"pnpm-lock.yaml","symbol":"dependency lock","sha256":"fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"}
+      ],
+      "wire_contract": {
+        "input": "{schema_version,video_id,entry_id,new_text,idempotency_key}",
+        "normalization": "ECMAScript whitespace collapse+trim; CRLF becomes LF; every numeric matching cue is replaced",
+        "success": {"success":true,"message":"Transcript entry updated successfully"},
+        "failure_messages": ["Missing required data for updating transcript entry","Video not found","Video information is missing","You don't have permission to edit this transcript","Transcript file not found","Transcript entry not found","Failed to update transcript entry"]
+      }
+    },
+    {
+      "id": "cap-v1-f2659b43d5ee9162",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/get-transcript.ts#getTranscript",
+      "auth": "optional_session_public_video_policy",
+      "policy": "collaboration_notifications.v1",
+      "idempotency": "forbidden",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2",
+      "source_manifest_sha256": "388836a7cccbd3d52e0a500afadeda9ba8d1d2eaaded1ddb63e750ad00ab0374",
+      "sources": [
+        {"path":"apps/web/actions/videos/get-transcript.ts","symbol":"getTranscript","sha256":"7edf7bbf932c1ca32053e8047a71ac988fc49cede88e2aa4793762d6b0302adb"},
+        {"path":"packages/database/auth/session.ts","symbol":"getCurrentUser","sha256":"d526dc9d7a6a1a7cb6a8695c24ab88b843ce09b4444f8e4ade24b7a06cbbc1ee"},
+        {"path":"packages/database/schema.ts","symbol":"videos+organizations+spaces+memberships","sha256":"7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"},
+        {"path":"packages/database/index.ts","symbol":"db","sha256":"161c1d1fd2a561fd2846aeceb148f24b58afc58bdaa95175240e48dbe61d9bbb"},
+        {"path":"packages/web-domain/src/Video.ts","symbol":"Video.VideoId+verifyPasswordCandidates","sha256":"adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7"},
+        {"path":"packages/web-backend/src/Auth.ts","symbol":"provideOptionalAuth","sha256":"aea054db2b84a8c4bd6684fefe8d0e971a094a9faa9653105b0c33ab52ab824d"},
+        {"path":"packages/web-backend/src/Videos/VideosPolicy.ts","symbol":"VideosPolicy.canView+buildCanView","sha256":"39e4b55f59e0758450d76401706cb2d258c8fe850fef91f395662df9146f7540"},
+        {"path":"packages/web-backend/src/Videos/EffectiveVideoRules.ts","symbol":"collectPasswordHashes","sha256":"e9b26784e4a1ed5782f9a5cfab52231de629b2f0a3d1b5f40d577b3c798cd015"},
+        {"path":"packages/utils/src/helpers.ts","symbol":"isEmailAllowedByRestriction","sha256":"58e55441727cd5ddf82bd0755e4b9923074d8fa68804d14875892d21cd077621"},
+        {"path":"packages/web-backend/src/Storage/index.ts","symbol":"Storage.getAccessForVideo+translation objects","sha256":"3ea22f76907104e26df8f48bdcac87a5dc2d3d60497dfc409110eb0fa8446b4c"},
+        {"path":"apps/web/lib/video-storage.ts","symbol":"decodeStorageVideo","sha256":"bc40152ad191ba397a1900016ca04f2b47c6fe07063c5abe82455a9d98d13714"},
+        {"path":"apps/web/proxy.ts","symbol":"API matcher exclusion","sha256":"7da98445a31f6b48d01b56877c47aaa79ba3af93dff8c015ad06a6e94fb42fcb"},
+        {"path":"apps/web/package.json","symbol":"next+effect+groq+storage dependencies","sha256":"c1358cd1880ac5dc9d659760c2788cedd5c4f61fec2cb0dd1b60cbc9bb8af920"},
+        {"path":"pnpm-lock.yaml","symbol":"dependency lock","sha256":"fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"}
+      ],
+      "wire_contract": {
+        "input": "{schema_version,video_id}; no idempotency key",
+        "authorization": "owner; explicit organization/space member after password verification; otherwise public plus email restriction and password verification",
+        "success": {"success":true,"content":"WebVTT string","message":"Transcript retrieved successfully"},
+        "failure_messages": ["Missing required data for fetching transcript","Video not found","Video information is missing","Transcript is not ready yet","Transcript file not found","Failed to fetch transcript"]
+      },
+      "catalog_corrections": {"auth":"session inference corrected to optional auth/public policy","idempotency":"required inference corrected to forbidden for a read"}
+    },
+    {
+      "id": "cap-v1-6f6ece85bd786289",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/translate-transcript.ts#translateTranscript",
+      "auth": "optional_session_public_video_policy",
+      "policy": "collaboration_notifications.v1",
+      "idempotency": "required_frame_carrier",
+      "protected_gates": ["provider_execution"],
+      "production_behavior": "fail_closed_unavailable",
+      "source_manifest_sha256": "8da125a543bd855db93d39326c57b5391bda2a4fb081699cd732a3a6bb2e875f",
+      "sources": [
+        {"path":"apps/web/actions/videos/translate-transcript.ts","symbol":"translateTranscript","sha256":"8a58b5af8366fb212b64bbb68233477938675248b9f19b4a359a5feabb1b73c1"},
+        {"path":"packages/database/schema.ts","symbol":"videos+organizations+spaces+memberships","sha256":"7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"},
+        {"path":"packages/database/index.ts","symbol":"db","sha256":"161c1d1fd2a561fd2846aeceb148f24b58afc58bdaa95175240e48dbe61d9bbb"},
+        {"path":"packages/web-domain/src/Video.ts","symbol":"Video.VideoId+verifyPasswordCandidates","sha256":"adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7"},
+        {"path":"packages/web-domain/src/Language.ts","symbol":"SUPPORTED_LANGUAGES+LanguageCode","sha256":"663875a0fade53bc441b9c6ee8eda1ecb706235b6ab16c71b4899c4724095dfb"},
+        {"path":"apps/web/actions/videos/translation-languages.ts","symbol":"SUPPORTED_LANGUAGES re-export","sha256":"7e01211fe74456afd82d196416ead4008e27024c57e0d1dbd12fc0a0334b3e2d"},
+        {"path":"packages/web-backend/src/Auth.ts","symbol":"provideOptionalAuth","sha256":"aea054db2b84a8c4bd6684fefe8d0e971a094a9faa9653105b0c33ab52ab824d"},
+        {"path":"packages/web-backend/src/Videos/VideosPolicy.ts","symbol":"VideosPolicy.canView+buildCanView","sha256":"39e4b55f59e0758450d76401706cb2d258c8fe850fef91f395662df9146f7540"},
+        {"path":"packages/web-backend/src/Videos/EffectiveVideoRules.ts","symbol":"collectPasswordHashes","sha256":"e9b26784e4a1ed5782f9a5cfab52231de629b2f0a3d1b5f40d577b3c798cd015"},
+        {"path":"packages/utils/src/helpers.ts","symbol":"isEmailAllowedByRestriction","sha256":"58e55441727cd5ddf82bd0755e4b9923074d8fa68804d14875892d21cd077621"},
+        {"path":"packages/web-backend/src/Storage/index.ts","symbol":"Storage.getAccessForVideo+translation objects","sha256":"3ea22f76907104e26df8f48bdcac87a5dc2d3d60497dfc409110eb0fa8446b4c"},
+        {"path":"packages/web-backend/src/Storage/index.ts","symbol":"Storage translation objects","sha256":"3ea22f76907104e26df8f48bdcac87a5dc2d3d60497dfc409110eb0fa8446b4c"},
+        {"path":"apps/web/lib/video-storage.ts","symbol":"decodeStorageVideo","sha256":"bc40152ad191ba397a1900016ca04f2b47c6fe07063c5abe82455a9d98d13714"},
+        {"path":"apps/web/lib/groq-client.ts","symbol":"getGroqClient+GROQ_MODEL","sha256":"0a7e75e482958d8392df564f5cb5d0029dc3b4361883d7b5206aa19fc5ba2702"},
+        {"path":"apps/web/lib/groq-client.ts","symbol":"getGroqClient","sha256":"0a7e75e482958d8392df564f5cb5d0029dc3b4361883d7b5206aa19fc5ba2702"},
+        {"path":"apps/web/lib/rate-limit.ts","symbol":"isRateLimited+RATE_LIMIT_IDS.TRANSLATE_TRANSCRIPT","sha256":"fc94007b1bcbfb1ebc09ca95aa0661e50816089c713b102f885c2448e42579e9"},
+        {"path":"apps/web/proxy.ts","symbol":"API matcher exclusion","sha256":"7da98445a31f6b48d01b56877c47aaa79ba3af93dff8c015ad06a6e94fb42fcb"},
+        {"path":"apps/web/package.json","symbol":"next+effect+groq+storage dependencies","sha256":"c1358cd1880ac5dc9d659760c2788cedd5c4f61fec2cb0dd1b60cbc9bb8af920"},
+        {"path":"pnpm-lock.yaml","symbol":"dependency lock","sha256":"fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"}
+      ],
+      "wire_contract": {
+        "input": "{schema_version,video_id,target_language,idempotency_key}; target is one of 26 pinned codes",
+        "order": "validate -> provider configured -> rate limit -> public policy -> cache -> original VTT -> provider -> best-effort cache",
+        "cache_key": "<owner/video prefix>/transcription.<language>.vtt",
+        "provider": "openai/gpt-oss-120b, temperature 0.3, max_tokens 8000, WEBVTT-preserving prompt",
+        "local_orchestration": "D1 operation plus translation outbox is durable and restart-safe; no provider result is fabricated",
+        "failure_messages": ["Missing required parameters","Unsupported language","Translation service not configured","Too many requests","Video not found","Original transcript not found","Translation failed"]
+      },
+      "catalog_corrections": {"auth":"session inference corrected to optional auth/public policy"}
+    },
+    {
+      "id": "cap-v1-6c82f3cbe383d92b",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/get-available-translations.ts#getAvailableTranslations",
+      "auth": "optional_session_public_video_policy",
+      "policy": "video_media.v1",
+      "idempotency": "forbidden",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2",
+      "source_manifest_sha256": "e035c20f41879ae831e66d2ed9ea3af1365d979a794ec8065d9862605fef8c35",
+      "sources": [
+        {"path":"apps/web/actions/videos/get-available-translations.ts","symbol":"getAvailableTranslations","sha256":"4aa195266716146cc5c87dbc39a4d30f27ed32747b1474e990e231bd9f81a921"},
+        {"path":"packages/database/auth/session.ts","symbol":"getCurrentUser","sha256":"d526dc9d7a6a1a7cb6a8695c24ab88b843ce09b4444f8e4ade24b7a06cbbc1ee"},
+        {"path":"packages/database/schema.ts","symbol":"videos+organizations+spaces+memberships","sha256":"7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"},
+        {"path":"packages/database/index.ts","symbol":"db","sha256":"161c1d1fd2a561fd2846aeceb148f24b58afc58bdaa95175240e48dbe61d9bbb"},
+        {"path":"packages/web-domain/src/Video.ts","symbol":"Video.VideoId+verifyPasswordCandidates","sha256":"adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7"},
+        {"path":"packages/web-domain/src/Language.ts","symbol":"SUPPORTED_LANGUAGES+LanguageCode","sha256":"663875a0fade53bc441b9c6ee8eda1ecb706235b6ab16c71b4899c4724095dfb"},
+        {"path":"apps/web/actions/videos/translation-languages.ts","symbol":"SUPPORTED_LANGUAGES re-export","sha256":"7e01211fe74456afd82d196416ead4008e27024c57e0d1dbd12fc0a0334b3e2d"},
+        {"path":"packages/web-backend/src/Auth.ts","symbol":"provideOptionalAuth","sha256":"aea054db2b84a8c4bd6684fefe8d0e971a094a9faa9653105b0c33ab52ab824d"},
+        {"path":"packages/web-backend/src/Videos/VideosPolicy.ts","symbol":"VideosPolicy.canView+buildCanView","sha256":"39e4b55f59e0758450d76401706cb2d258c8fe850fef91f395662df9146f7540"},
+        {"path":"packages/web-backend/src/Videos/EffectiveVideoRules.ts","symbol":"collectPasswordHashes","sha256":"e9b26784e4a1ed5782f9a5cfab52231de629b2f0a3d1b5f40d577b3c798cd015"},
+        {"path":"packages/utils/src/helpers.ts","symbol":"isEmailAllowedByRestriction","sha256":"58e55441727cd5ddf82bd0755e4b9923074d8fa68804d14875892d21cd077621"},
+        {"path":"packages/web-domain/src/Policy.ts","symbol":"Policy.withPublicPolicy","sha256":"0621949aa1f994836d0d168b39dc3aada3ad0478052b712de564b105c94ebe5c"},
+        {"path":"packages/web-backend/src/Storage/index.ts","symbol":"Storage.getAccessForVideo+translation objects","sha256":"3ea22f76907104e26df8f48bdcac87a5dc2d3d60497dfc409110eb0fa8446b4c"},
+        {"path":"apps/web/lib/video-storage.ts","symbol":"decodeStorageVideo","sha256":"bc40152ad191ba397a1900016ca04f2b47c6fe07063c5abe82455a9d98d13714"},
+        {"path":"apps/web/lib/server.ts","symbol":"runPromise+runPromiseExit","sha256":"f24b68bbb31c99ddfa7983a468aa80d293da56d1652e8a0a0a28506e5a9cd63e"},
+        {"path":"apps/web/proxy.ts","symbol":"API matcher exclusion","sha256":"7da98445a31f6b48d01b56877c47aaa79ba3af93dff8c015ad06a6e94fb42fcb"},
+        {"path":"apps/web/package.json","symbol":"next+effect+groq+storage dependencies","sha256":"c1358cd1880ac5dc9d659760c2788cedd5c4f61fec2cb0dd1b60cbc9bb8af920"},
+        {"path":"pnpm-lock.yaml","symbol":"dependency lock","sha256":"fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"}
+      ],
+      "wire_contract": {
+        "input": "{schema_version,video_id}; no idempotency key",
+        "authorization": "owner; explicit organization/space member after password verification; otherwise public plus email restriction and password verification",
+        "listing": "prefix <owner/video>/transcription with maxKeys 50; preserve provider order and duplicates",
+        "classification": "original iff /transcription.vtt suffix; translation iff transcription.<two lowercase letters>.vtt and code is in the 26-language catalog",
+        "success": {"success":true,"hasOriginal":"boolean","translations":[{"code":"LanguageCode","name":"display name"}]},
+        "failure_messages": ["Missing video ID","Video not found","Failed to list translations"]
+      },
+      "catalog_corrections": {"auth":"session inference corrected to optional auth/public policy","idempotency":"required inference corrected to forbidden for a read"}
+    }
+  ],
+  "local_evidence": [
+    "crates/application/src/legacy_transcripts.rs",
+    "apps/control-plane/src/legacy_transcripts_runtime.rs",
+    "apps/control-plane/src/legacy_transcripts_web_runtime.rs",
+    "apps/control-plane/migrations/0055_legacy_transcripts_expand.sql",
+    "apps/control-plane/queries/legacy_transcripts",
+    "scripts/ci/legacy-transcripts-sqlite-conformance.py"
+  ]
+}

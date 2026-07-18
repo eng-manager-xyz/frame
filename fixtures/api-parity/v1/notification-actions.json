@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-notification-action-request.v1",
+    "max_body_bytes": 262144,
+    "authentication": "host_only_session",
+    "same_origin": "required",
+    "csrf": "double_submit_one_use_grant_required",
+    "client_idempotency": "required_header_and_body_exact_match",
+    "rate_limit_bucket": "collaboration_notifications.v1",
+    "success_status": 204,
+    "success_body": "empty",
+    "cache_control": "no-store, max-age=0"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-74a775753d3863c7",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/notifications/mark-as-read.ts#markAsRead",
+      "input": "optional_notification_id_missing_means_active_tenant_bulk",
+      "authority": "live_actor_active_tenant_recipient_scope",
+      "success": "empty_204_void_and_dashboard_invalidation",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-1f6a43a05f2f297c",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/notifications/update-preferences.ts#updatePreferences",
+      "input": "four_required_booleans_and_optional_pauseAnonViews_property",
+      "authority": "live_actor_global_preferences_row",
+      "success": "empty_204_void_and_dashboard_invalidation",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    }
+  ],
+  "presence": {
+    "mark_notification_id": "missing_or_cap_nanoid; explicit_null_rejected",
+    "pauseAnonViews": "missing_or_boolean; explicit_null_rejected"
+  },
+  "atomicity": {
+    "one_transaction": [
+      "live_actor_and_action_specific_authority_reassertion",
+      "tenant_recipient_notification_selection_or_actor_preferences_selection",
+      "exact_mark_count_read_time_and_out_of_scope_postcondition",
+      "notifications_branch_merge_and_sibling_json_preservation_digest",
+      "tenant_actor_action_scoped_idempotency_receipt",
+      "business_audit",
+      "dashboard_invalidation_effect",
+      "one_use_browser_grant_consumption"
+    ],
+    "same_key_same_fingerprint": "replay_original_receipt",
+    "same_key_different_fingerprint": "conflict",
+    "race": "one_apply_one_replay",
+    "rollback": "no_partial_mutation_or_consumed_grant"
+  },
+  "source_closure": {
+    "cap-v1-74a775753d3863c7": 14,
+    "cap-v1-1f6a43a05f2f297c": 12
+  }
+}

@@ -68,9 +68,33 @@ def main() -> int:
     for marker in required_runtime_markers:
         assert marker in CONTROL_PLANE, f"missing production limiter wiring: {marker}"
     assert "rate_limit: RateLimitDecisionV1::Allowed" not in CONTROL_PLANE
-    assert CONTROL_PLANE.count(
+    retry_after_marker = (
         ".with_retry_after_seconds(compatibility_rate_limit::RETRY_AFTER_SECONDS)"
-    ) == 3
+    )
+    assert CONTROL_PLANE.count(retry_after_marker) == 5
+    for handler, next_handler, bucket in (
+        (
+            "async fn legacy_notifications_response(",
+            "fn legacy_notifications_exact_response(",
+            "CompatibilityRateLimitBucketV1::CollaborationNotifications",
+        ),
+        (
+            "async fn legacy_desktop_org_custom_domain_response(",
+            "fn legacy_desktop_org_custom_domain_exact_response(",
+            "CompatibilityRateLimitBucketV1::ClientCompatibility",
+        ),
+    ):
+        handler_start = CONTROL_PLANE.index(handler)
+        handler_end = CONTROL_PLANE.index(next_handler, handler_start)
+        handler_source = CONTROL_PLANE[handler_start:handler_end]
+        for marker in (
+            "compatibility_rate_limit::admit_principal(",
+            bucket,
+            retry_after_marker,
+        ):
+            assert marker in handler_source, (
+                f"missing compatibility limiter response wiring in {handler}: {marker}"
+            )
     action_start = BROWSER_RUNTIME.index("if action == WebAction::SetActiveOrganization")
     action_end = BROWSER_RUNTIME.index("execute_action(", action_start)
     action_ingress = BROWSER_RUNTIME[action_start:action_end]

@@ -1,4 +1,4 @@
-name: Desktop real hardware
+name: Desktop macOS display hardware
 
 on:
   workflow_dispatch:
@@ -12,35 +12,37 @@ permissions:
   contents: read
 
 concurrency:
-  group: desktop-real-hardware-${{ inputs.release_sha }}
+  group: desktop-macos-hardware
   cancel-in-progress: false
 
 jobs:
-  hardware:
-    name: ${{ matrix.platform }} protected hardware
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos
-            runner: frame-macos-hardware
-            binary: target/release/frame-desktop
-          - platform: windows
-            runner: frame-windows-hardware
-            binary: target/release/frame-desktop.exe
-    runs-on: ${{ matrix.runner }}
+  macos_display:
+    # This is deliberately narrower than the protected full desktop product
+    # matrix. Windows stays on the portable/unavailable shell until it has a
+    # reviewed native adapter; audio, camera, Studio, updater, and accessibility
+    # hardware gates remain pending separately.
+    name: macOS display recording protected evidence
+    runs-on: frame-macos-hardware
+    environment: desktop-macos-hardware
     timeout-minutes: 60
     steps:
       - name: Check out the exact release candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Reject a moving checkout
+      - name: Reject a moving or unapproved checkout
         shell: bash
         env:
           RELEASE_SHA: ${{ inputs.release_sha }}
-        run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+        run: |
+          if [[ ! $RELEASE_SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main
       - name: Install pinned Rust and Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
@@ -48,34 +50,62 @@ jobs:
       - name: Install the declared Rust toolchain
         shell: bash
         run: rustup toolchain install 1.96.1 --profile minimal
-      - name: Build the release desktop with the fake adapter disabled
+      - name: Install pinned desktop bundle tools
+        shell: bash
+        run: |
+          cargo install trunk --version 0.21.14 --locked
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build and certificate-sign the macOS display application
         shell: bash
         env:
           FRAME_DESKTOP_FAKE_PIPELINE: "0"
-        run: cargo build --locked --release -p frame-desktop-core --features tauri-app,custom-protocol --bin frame-desktop
-      - name: Run the protected OS device and assistive-technology driver
+          FRAME_CODESIGN_IDENTITY: ${{ secrets.FRAME_CODESIGN_IDENTITY }}
+        run: |
+          if [[ -z $FRAME_CODESIGN_IDENTITY || $FRAME_CODESIGN_IDENTITY == - ]]; then
+            echo "FRAME_CODESIGN_IDENTITY must select a certificate-backed identity" >&2
+            exit 1
+          fi
+          scripts/frame desktop-macos-bundle
+          scripts/ci/sign-macos-local-app.sh verify-trusted
+      - name: Run the protected macOS display driver
         shell: bash
         env:
           FRAME_REAL_HARDWARE: "1"
+          FRAME_HARDWARE_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          FRAME_RELEASE_SHA: ${{ inputs.release_sha }}
+          FRAME_EXPECTED_SIGNING_TEAM: ${{ vars.FRAME_EXPECTED_APPLE_TEAM_ID }}
         run: >-
           frame-hardware-driver
-          --schema desktop-hardware-v1
-          --platform ${{ matrix.platform }}
-          --binary ${{ matrix.binary }}
-          --output target/evidence/desktop-real-hardware-${{ matrix.platform }}.json
-      - name: Validate complete non-fake evidence
+          --schema desktop-macos-display-hardware-v1
+          --platform macos
+          --capability macos_display_webm_v1
+          --app-bundle target/release/bundle/macos/Frame.app
+          --bundle-identifier xyz.engmanager.frame
+          --expected-signing-team "$FRAME_EXPECTED_SIGNING_TEAM"
+          --source-sha "$FRAME_RELEASE_SHA"
+          --run-id "$FRAME_HARDWARE_RUN_ID"
+          --output target/evidence/desktop-macos-display-hardware.json
+      - name: Validate exact non-fake macOS display evidence
         shell: bash
         env:
           FRAME_REAL_HARDWARE: "1"
+          FRAME_HARDWARE_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          FRAME_RELEASE_SHA: ${{ inputs.release_sha }}
+          FRAME_EXPECTED_SIGNING_TEAM: ${{ vars.FRAME_EXPECTED_APPLE_TEAM_ID }}
         run: >-
           python scripts/ci/desktop-real-hardware.py
           --require-hardware
-          --evidence target/evidence/desktop-real-hardware-${{ matrix.platform }}.json
-      - name: Retain the exact hardware trace
+          --expected-capability macos_display_webm_v1
+          --app-bundle target/release/bundle/macos/Frame.app
+          --expected-source-sha "$FRAME_RELEASE_SHA"
+          --expected-run-id "$FRAME_HARDWARE_RUN_ID"
+          --expected-signing-team "$FRAME_EXPECTED_SIGNING_TEAM"
+          --evidence target/evidence/desktop-macos-display-hardware.json
+      - name: Retain the exact macOS display trace
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: desktop-real-hardware-${{ matrix.platform }}-${{ inputs.release_sha }}
-          path: target/evidence/desktop-real-hardware-${{ matrix.platform }}.json
+          name: desktop-macos-display-hardware-${{ inputs.release_sha }}
+          path: target/evidence/desktop-macos-display-hardware.json
           if-no-files-found: error
           retention-days: 30

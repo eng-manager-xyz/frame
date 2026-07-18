@@ -25,6 +25,66 @@ REQUIRED_BYPASS = {
     "upload_or_finalize",
     "websocket_or_sse",
 }
+PROTECTED_MEDIA_CHILD_ROUTES = (
+    ("cap-v1-105318e146fceb4c", "POST", "/media-server/audio/check", "/media-server/audio/check"),
+    ("cap-v1-77fe8c9a4b418f53", "POST", "/media-server/audio/convert", "/media-server/audio/convert"),
+    ("cap-v1-a2814dde3550e586", "POST", "/media-server/audio/extract", "/media-server/audio/extract"),
+    ("cap-v1-fbd3d44a0ca1786f", "GET", "/media-server/audio/status", "/media-server/audio/status"),
+    ("cap-v1-0bf20f7e9b1a474c", "GET", "/media-server/health", "/media-server/health"),
+    ("cap-v1-ee9797dd352c4e11", "POST", "/media-server/video/cleanup", "/media-server/video/cleanup"),
+    ("cap-v1-9ed2e7b3f858eaaa", "POST", "/media-server/video/convert", "/media-server/video/convert"),
+    ("cap-v1-2b48f7704d996758", "POST", "/media-server/video/edit", "/media-server/video/edit"),
+    (
+        "cap-v1-aa975a14fd384a5c",
+        "POST",
+        "/media-server/video/force-cleanup",
+        "/media-server/video/force-cleanup",
+    ),
+    (
+        "cap-v1-bf2eb9302de590a1",
+        "POST",
+        "/media-server/video/mux-segments",
+        "/media-server/video/mux-segments",
+    ),
+    ("cap-v1-ba986b8c5b07cfd6", "POST", "/media-server/video/probe", "/media-server/video/probe"),
+    (
+        "cap-v1-320876fa0aec77cb",
+        "POST",
+        "/media-server/video/process",
+        "/media-server/video/process",
+    ),
+    (
+        "cap-v1-fc2e2bd0d28ffbf3",
+        "POST",
+        "/media-server/video/process/:jobId/cancel",
+        "/media-server/video/process/job-42/cancel",
+    ),
+    (
+        "cap-v1-43bc9ae6aa4f44a8",
+        "GET",
+        "/media-server/video/process/:jobId/status",
+        "/media-server/video/process/job-42/status",
+    ),
+    ("cap-v1-986bf73a0b5cb676", "GET", "/media-server/video/status", "/media-server/video/status"),
+    (
+        "cap-v1-4165632f8266ae06",
+        "POST",
+        "/media-server/video/thumbnail",
+        "/media-server/video/thumbnail",
+    ),
+)
+
+
+def protected_media_child_route_values() -> list[dict[str, str]]:
+    return [
+        {
+            "operation_id": operation_id,
+            "method": method,
+            "path": path,
+            "example_path": example_path,
+        }
+        for operation_id, method, path, example_path in PROTECTED_MEDIA_CHILD_ROUTES
+    ]
 
 
 def main() -> int:
@@ -50,6 +110,14 @@ def main() -> int:
         assert route["compatibility_patterns"] == ["frame.engmanager.xyz/media-server*"]
         assert route["owned_pathnames"] == ["/api", "/api/", "/media-server"]
         assert route["lookalike_policy"] == "non_cacheable_404"
+        protected_media = route["protected_media_children"]
+        assert protected_media["edge_owner"] == "worker_compat"
+        assert protected_media["source_pinned"] is True
+        assert protected_media["exact_count"] == 16
+        assert protected_media["route_shapes"] == protected_media_child_route_values()
+        assert protected_media["release_state"] == "fail_closed_unavailable"
+        assert protected_media["protected_gates"] == ["hardware_execution", "provider_execution"]
+        assert protected_media["provider_promotion_claimed"] is False
         assert route["workers_dev"] is False
         assert cache["default"] == "bypass"
         assert REQUIRED_BYPASS <= set(cache["always_bypass"])

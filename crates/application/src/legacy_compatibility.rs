@@ -21,6 +21,12 @@ use crate::{ApiAdmissionV1, ApiGatewayV1, RequestSecurityContextV1};
 
 const MAX_LEGACY_IDENTITY_BYTES: usize = 768;
 
+pub const LEGACY_RETIREMENT_SCHEMA_V1: &str = "frame.legacy-retirement.v1";
+pub const LEGACY_RETIREMENT_CODE_V1: &str = "legacy_operation_retired";
+pub const LEGACY_RETIREMENT_MESSAGE_V1: &str = "This legacy operation has been retired.";
+pub const LEGACY_RETIREMENT_MIGRATION_V1: &str = "privacy-safe export";
+pub const LEGACY_RETIREMENT_CACHE_CONTROL_V1: &str = "no-store, max-age=0";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LegacyOperationKindV1 {
     HttpRoute,
@@ -248,6 +254,33 @@ pub struct LegacyFallbackV1 {
 pub struct LegacyRetirementV1 {
     pub operation_id: String,
     pub client_family: LegacyClientFamilyV1,
+    pub schema_version: &'static str,
+    pub http_status: u16,
+    pub code: &'static str,
+    pub message: &'static str,
+    pub migration_path: &'static str,
+    pub cache_control: &'static str,
+    pub retryable: bool,
+}
+
+impl LegacyRetirementV1 {
+    #[must_use]
+    pub fn deterministic(
+        operation_id: impl Into<String>,
+        client_family: LegacyClientFamilyV1,
+    ) -> Self {
+        Self {
+            operation_id: operation_id.into(),
+            client_family,
+            schema_version: LEGACY_RETIREMENT_SCHEMA_V1,
+            http_status: 410,
+            code: LEGACY_RETIREMENT_CODE_V1,
+            message: LEGACY_RETIREMENT_MESSAGE_V1,
+            migration_path: LEGACY_RETIREMENT_MIGRATION_V1,
+            cache_control: LEGACY_RETIREMENT_CACHE_CONTROL_V1,
+            retryable: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,12 +422,11 @@ impl LegacyCompatibilityRegistryV1 {
                     client_family: family,
                 }),
             ),
-            LegacyRouteDecisionV1::RetirementResponse => Ok(
-                LegacyCompatibilityOutcomeV1::RetirementResponse(LegacyRetirementV1 {
-                    operation_id: contract.id.clone(),
-                    client_family: family,
-                }),
-            ),
+            LegacyRouteDecisionV1::RetirementResponse => {
+                Ok(LegacyCompatibilityOutcomeV1::RetirementResponse(
+                    LegacyRetirementV1::deterministic(contract.id.clone(), family),
+                ))
+            }
             LegacyRouteDecisionV1::ServeFrameV1 => {
                 let admission = ApiGatewayV1::admit_mutation(
                     &contract.request_policy,
@@ -893,16 +925,25 @@ mod tests {
             _ => panic!("unknown operation kind"),
         };
         let auth = match row.auth.as_str() {
-            "public_or_flow_token" => ApiAuthClassV1::Public,
-            "optional_session_or_share_capability" => ApiAuthClassV1::OptionalSession,
+            "anonymous" | "anonymous_or_session_or_api_key" | "public" | "public_or_flow_token" => {
+                ApiAuthClassV1::Public
+            }
+            "optional_session_or_share_capability" | "public_or_session" => {
+                ApiAuthClassV1::OptionalSession
+            }
             "session" => ApiAuthClassV1::Session,
             "session_or_api_key" => ApiAuthClassV1::SessionOrApiKey,
             "developer_api_key" => ApiAuthClassV1::ApiKey,
-            "internal_service" => ApiAuthClassV1::Worker,
+            // Signed OAuth state resolves an authenticated, actor-bound
+            // capability before this compatibility gateway is entered.
+            "signed_state" => ApiAuthClassV1::Session,
             "signed_webhook" => ApiAuthClassV1::Webhook,
+            // A parent receipt is an internal durable-workflow credential. It
+            // must remain authenticated, but it is not a scheduler secret.
+            "internal_service" | "parent_receipt" => ApiAuthClassV1::Worker,
             "scheduler_secret" => ApiAuthClassV1::Scheduler,
             "admin_session" => ApiAuthClassV1::Admin,
-            _ => panic!("unknown auth class"),
+            unknown => panic!("unknown auth class: {unknown}"),
         };
         let idempotency = match row.security.idempotency.as_str() {
             "required" => IdempotencyRequirementV1::Required,
@@ -1043,6 +1084,50 @@ mod tests {
     }
 
     #[test]
+    fn regenerated_auth_classes_preserve_shared_admission_semantics() {
+        let report = report();
+        for (source, expected, requires_authentication) in [
+            (
+                "anonymous_or_session_or_api_key",
+                ApiAuthClassV1::Public,
+                false,
+            ),
+            ("public", ApiAuthClassV1::Public, false),
+            ("public_or_session", ApiAuthClassV1::OptionalSession, false),
+            ("signed_state", ApiAuthClassV1::Session, true),
+            ("parent_receipt", ApiAuthClassV1::Worker, true),
+        ] {
+            let row = report
+                .entries
+                .iter()
+                .find(|row| row.auth == source)
+                .unwrap_or_else(|| panic!("pinned report is missing auth class: {source}"));
+            let operation = contract(row, true, false);
+            assert_eq!(operation.request_policy.auth, expected);
+
+            let registry =
+                LegacyCompatibilityRegistryV1::new(vec![operation.clone()], compatibility())
+                    .expect("single operation registry");
+            let mut unauthenticated = request(&operation, primary_caller(&operation, 42));
+            unauthenticated.security.authenticated = false;
+            let outcome = registry.admit(&unauthenticated);
+            if requires_authentication {
+                assert_eq!(
+                    outcome
+                        .expect_err("capability credential must be authenticated")
+                        .code,
+                    ApiErrorCodeV1::Unauthenticated
+                );
+            } else {
+                assert!(matches!(
+                    outcome,
+                    Ok(LegacyCompatibilityOutcomeV1::ServeFrame(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn pinned_registry_is_exhaustive_and_keeps_every_unproven_operation_on_fallback() {
         let report = report();
         let contracts = report
@@ -1090,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_report_promotes_only_its_exact_contracts() {
+    fn pinned_report_identifies_only_its_exact_local_contracts() {
         const STATUS_OPERATION_ID: &str = "cap-v1-05b6ba3f76daac22";
         const MEDIA_SERVER_ROOT_OPERATION_ID: &str = "cap-v1-ff19008f47194c43";
         const CHANGELOG_STATUS_GET_OPERATION_ID: &str = "cap-v1-a1b180c5d123c870";
@@ -1100,17 +1185,20 @@ mod tests {
         const MOBILE_SESSION_CONFIG_OPERATION_ID: &str = "cap-v1-4f21920a947c4c84";
         const NOTIFICATION_PREFERENCES_OPERATION_ID: &str = "cap-v1-d130c840f654bd72";
         const ACTIVE_ORGANIZATION_OPERATION_ID: &str = "cap-v1-a3b4c805d409bc7c";
-        const PROMOTED_OPERATION_IDS: [&str; 9] = [
-            STATUS_OPERATION_ID,
-            MEDIA_SERVER_ROOT_OPERATION_ID,
-            CHANGELOG_STATUS_GET_OPERATION_ID,
-            CHANGELOG_STATUS_OPTIONS_OPERATION_ID,
-            CHANGELOG_FEED_GET_OPERATION_ID,
-            CHANGELOG_FEED_OPTIONS_OPERATION_ID,
-            MOBILE_SESSION_CONFIG_OPERATION_ID,
-            NOTIFICATION_PREFERENCES_OPERATION_ID,
-            ACTIVE_ORGANIZATION_OPERATION_ID,
-        ];
+        const THEME_OPERATION_ID: &str = "cap-v1-7773d3e70d1d5919";
+        const ADD_VIDEOS_TO_FOLDER_OPERATION_ID: &str = "cap-v1-f5daa7be337a2979";
+        const REMOVE_VIDEOS_FROM_FOLDER_OPERATION_ID: &str = "cap-v1-1af3645bf2ae7168";
+        const MOVE_VIDEO_TO_FOLDER_OPERATION_ID: &str = "cap-v1-eaf277e644aa4b92";
+        const ADD_VIDEOS_TO_ORGANIZATION_OPERATION_ID: &str = "cap-v1-d96a1931942eb83b";
+        const REMOVE_VIDEOS_FROM_ORGANIZATION_OPERATION_ID: &str = "cap-v1-0694e68a64976c9a";
+        const ADD_VIDEOS_TO_SPACE_OPERATION_ID: &str = "cap-v1-bb55b5eeeb5e31ab";
+        const REMOVE_VIDEOS_FROM_SPACE_OPERATION_ID: &str = "cap-v1-ccbe5f1381eaa1b4";
+        const MARK_NOTIFICATIONS_READ_OPERATION_ID: &str = "cap-v1-74a775753d3863c7";
+        const UPDATE_NOTIFICATION_PREFERENCES_OPERATION_ID: &str = "cap-v1-1f6a43a05f2f297c";
+        const MOBILE_CREATE_FOLDER_OPERATION_ID: &str = "cap-v1-7160c4389375c682";
+        const RPC_FOLDER_CREATE_OPERATION_ID: &str = "cap-v1-9e125712cee9ce5a";
+        const RPC_FOLDER_DELETE_OPERATION_ID: &str = "cap-v1-eea1796482b3af28";
+        const RPC_FOLDER_UPDATE_OPERATION_ID: &str = "cap-v1-a193e9e08b2c3f7d";
 
         let report = report();
         let contracts = report
@@ -1132,7 +1220,10 @@ mod tests {
             .iter()
             .filter(|row| row.contract_evidence.success == "local_contract")
             .collect::<Vec<_>>();
-        assert_eq!(promoted.len(), PROMOTED_OPERATION_IDS.len());
+        let expected_locally_proven_ids = promoted
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
         for (id, kind, method, path) in [
             (STATUS_OPERATION_ID, "route", "GET", "/api/status"),
             (
@@ -1183,6 +1274,90 @@ mod tests {
                 "ACTION",
                 "action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateActiveOrganization",
             ),
+            (
+                THEME_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/app/(org)/dashboard/_components/actions.ts#setTheme",
+            ),
+            (
+                ADD_VIDEOS_TO_FOLDER_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/folders/add-videos.ts#addVideosToFolder",
+            ),
+            (
+                REMOVE_VIDEOS_FROM_FOLDER_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/folders/remove-videos.ts#removeVideosFromFolder",
+            ),
+            (
+                MOVE_VIDEO_TO_FOLDER_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/folders/moveVideoToFolder.ts#moveVideoToFolder",
+            ),
+            (
+                ADD_VIDEOS_TO_ORGANIZATION_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/organizations/add-videos.ts#addVideosToOrganization",
+            ),
+            (
+                REMOVE_VIDEOS_FROM_ORGANIZATION_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/organizations/remove-videos.ts#removeVideosFromOrganization",
+            ),
+            (
+                ADD_VIDEOS_TO_SPACE_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/spaces/add-videos.ts#addVideosToSpace",
+            ),
+            (
+                REMOVE_VIDEOS_FROM_SPACE_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/spaces/remove-videos.ts#removeVideosFromSpace",
+            ),
+            (
+                MARK_NOTIFICATIONS_READ_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/notifications/mark-as-read.ts#markAsRead",
+            ),
+            (
+                UPDATE_NOTIFICATION_PREFERENCES_OPERATION_ID,
+                "server_action",
+                "ACTION",
+                "action://apps/web/actions/notifications/update-preferences.ts#updatePreferences",
+            ),
+            (
+                MOBILE_CREATE_FOLDER_OPERATION_ID,
+                "route",
+                "POST",
+                "/api/mobile/folders",
+            ),
+            (
+                RPC_FOLDER_CREATE_OPERATION_ID,
+                "rpc",
+                "RPC",
+                "/api/erpc#FolderCreate",
+            ),
+            (
+                RPC_FOLDER_DELETE_OPERATION_ID,
+                "rpc",
+                "RPC",
+                "/api/erpc#FolderDelete",
+            ),
+            (
+                RPC_FOLDER_UPDATE_OPERATION_ID,
+                "rpc",
+                "RPC",
+                "/api/erpc#FolderUpdate",
+            ),
         ] {
             let operation = promoted
                 .iter()
@@ -1203,9 +1378,13 @@ mod tests {
         }
 
         let mut released_associations = 0;
+        let mut registered_locally_proven_ids = std::collections::BTreeSet::new();
         for row in &report.entries {
             let operation = registry.contract(&row.id).expect("registered row");
-            let expected_frame = PROMOTED_OPERATION_IDS.contains(&row.id.as_str());
+            if operation.evidence().endpoint_contract_proven {
+                registered_locally_proven_ids.insert(operation.id());
+            }
+            let expected_frame = expected_locally_proven_ids.contains(row.id.as_str());
             assert_eq!(
                 operation.evidence().endpoint_contract_proven,
                 expected_frame
@@ -1240,6 +1419,8 @@ mod tests {
                 }
             }
         }
+        assert_eq!(registry.len(), report.entries.len());
+        assert_eq!(registered_locally_proven_ids, expected_locally_proven_ids);
         assert_eq!(released_associations, 267);
     }
 
@@ -1362,10 +1543,21 @@ mod tests {
             let registry =
                 LegacyCompatibilityRegistryV1::new(vec![approved.clone()], compatibility())
                     .expect("approved retirement contract");
-            assert!(matches!(
-                registry.admit(&request(&approved, caller)),
-                Ok(LegacyCompatibilityOutcomeV1::RetirementResponse(_))
-            ));
+            let outcome = registry
+                .admit(&request(&approved, caller))
+                .expect("approved retirement returns the pinned response");
+            let LegacyCompatibilityOutcomeV1::RetirementResponse(response) = outcome else {
+                panic!("approved retirement fabricated a non-retirement outcome");
+            };
+            assert_eq!(response.operation_id, row.id);
+            assert_eq!(response.client_family, approved.clients()[0]);
+            assert_eq!(response.schema_version, LEGACY_RETIREMENT_SCHEMA_V1);
+            assert_eq!(response.http_status, 410);
+            assert_eq!(response.code, LEGACY_RETIREMENT_CODE_V1);
+            assert_eq!(response.message, LEGACY_RETIREMENT_MESSAGE_V1);
+            assert_eq!(response.migration_path, LEGACY_RETIREMENT_MIGRATION_V1);
+            assert_eq!(response.cache_control, LEGACY_RETIREMENT_CACHE_CONTROL_V1);
+            assert!(!response.retryable);
         }
     }
 

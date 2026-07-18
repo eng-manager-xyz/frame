@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-membership-action-request.v1",
+    "max_body_bytes": 262144,
+    "authentication": "host_only_session",
+    "same_origin": "required",
+    "csrf": "double_submit_one_use_grant_required",
+    "client_idempotency": "required_header_and_body_exact_match",
+    "rate_limit_bucket": "organization_library.v1",
+    "success_status": 200,
+    "cache_control": "no-store, max-age=0"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-866dbe8fbbfd7887",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/organization/remove-invite.ts#removeOrganizationInvite",
+      "input": "inviteId_and_organizationId",
+      "authority": "live_actor_active_tenant_owner_or_admin_and_scoped_invite",
+      "success": "success_true_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-455046db3d6ef019",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#addSpaceMember",
+      "input": "spaceId_userId_and_admin_or_member_role",
+      "authority": "live_actor_active_tenant_space_manager_and_target_organization_member",
+      "success": "success_true_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-9fc80bdec80fb248",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#setSpaceMembers",
+      "input": "spaceId_userIds_optional_role_and_optional_members",
+      "authority": "live_actor_active_tenant_space_manager_and_all_targets_organization_members",
+      "success": "success_true_and_creator_inclusive_count_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-b177854e2386c877",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#addSpaceMembers",
+      "input": "spaceId_userIds_and_admin_or_member_role",
+      "authority": "live_actor_active_tenant_space_manager_and_all_targets_organization_members",
+      "success": "success_true_added_and_all_existing_members_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-38aff8e7221d0260",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#batchRemoveSpaceMembers",
+      "input": "memberIds_array",
+      "authority": "live_actor_active_tenant_single_space_manager_and_creator_protected",
+      "success": "success_true_and_submitted_removed_ids_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-135614e516c47bf4",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/spaces/[spaceId]/actions.ts#removeSpaceMember",
+      "input": "memberId",
+      "authority": "live_actor_active_tenant_space_manager_and_creator_protected",
+      "success": "success_true_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    }
+  ],
+  "presence": {
+    "add_many_userIds": "required_array; duplicate_new_ids_conflict_without_partial_insert",
+    "batch_remove_memberIds": "required_array; empty_or_no_match_returns_empty_removed",
+    "set_role": "missing_defaults_to_member; explicit_null_rejected",
+    "set_members": "missing_selects_userIds; present_array_wins_even_when_empty; explicit_null_rejected",
+    "set_userIds": "required_array_and_validated_even_when_members_is_present",
+    "member_role": "admin_or_Admin_or_member_normalized_to_admin_or_member"
+  },
+  "authorization": {
+    "remove_invite": "active_tenant_owner_or_admin_and_invite_scoped_to_active_tenant",
+    "space_actions": "active_tenant_owner_or_admin_or_space_admin",
+    "target_members": "organization_owner_or_current_organization_member",
+    "set_creator": "space_creator_forced_to_admin_and_cannot_be_removed",
+    "remove_creator": "space_creator_cannot_be_removed",
+    "batch_remove_scope": "all_discovered_rows_must_belong_to_one_space",
+    "cross_tenant_or_stale_authority": "not_found_without_mutation"
+  },
+  "atomicity": {
+    "one_transaction": [
+      "live_actor_active_tenant_and_membership_authority_reassertion",
+      "invite_or_space_target_graph_precondition",
+      "exact_single_or_bulk_insert_delete_or_creator_inclusive_replacement",
+      "authority_generation_bump_and_grant_revocation_for_changed_membership",
+      "tenant_actor_action_scoped_idempotency_receipt",
+      "business_audit",
+      "validated_dashboard_invalidation_effect",
+      "one_use_browser_grant_consumption"
+    ],
+    "same_key_same_fingerprint": "replay_original_receipt",
+    "same_key_different_fingerprint": "conflict",
+    "race": "one_apply_one_replay",
+    "rollback": "no_partial_membership_authority_or_consumed_grant"
+  },
+  "source_closure": {
+    "cap-v1-866dbe8fbbfd7887": 11,
+    "cap-v1-455046db3d6ef019": 12,
+    "cap-v1-9fc80bdec80fb248": 13,
+    "cap-v1-b177854e2386c877": 12,
+    "cap-v1-38aff8e7221d0260": 12,
+    "cap-v1-135614e516c47bf4": 12
+  }
+}

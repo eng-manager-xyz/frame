@@ -1,4 +1,5 @@
-SELECT id, organization_id, space_id, parent_id, created_by_user_id, name,
+SELECT id, organization_id, space_id, parent_id, created_by_user_id,
+       COALESCE(legacy_name, name) AS name,
        is_public, settings_json, depth, created_at_ms, updated_at_ms,
        deleted_at_ms, revision, tree_revision
 FROM folders

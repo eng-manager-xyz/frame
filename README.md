@@ -2,7 +2,7 @@
 
 Frame is a Rust migration scaffold for [Cap](https://github.com/CapSoftware/Cap): native media processing with GStreamer, an edge control plane backed by Cloudflare D1, R2, and Media Transformations, and Leptos user interfaces. Its public distribution target is `frame.engmanager.xyz`, with the Leptos web origin on Render and `/api/*` routed by Cloudflare to the Worker control plane.
 
-This repository starts with boundaries and executable seams, not copied upstream source. The Cap reference checkout lives in ignored `.tmp/cap` at commit `6ba69561ac86b8efdb17616d6727f9638015546b`; the EngManager portfolio reference lives in ignored `.tmp/engmanager.xyz` at commit `1de52bc8f25793dea3697e67765d53785c05cdfa`. See [the Cap inventory](docs/upstream-cap.md), [the portfolio integration inventory](docs/upstream-engmanager.md), and the dependency-ordered [_issues backlog](_issues/README.md).
+This repository starts with boundaries and executable seams, not copied upstream source. The migration research is pinned to Cap commit `6ba69561ac86b8efdb17616d6727f9638015546b` and EngManager portfolio commit `1de52bc8f25793dea3697e67765d53785c05cdfa`; their source identities and hashes are retained in committed inventories and fixtures. No upstream checkout is required to build, test, or operate Frame, and temporary research clones may be deleted. See [the Cap inventory](docs/upstream-cap.md), [the portfolio integration inventory](docs/upstream-engmanager.md), and the dependency-ordered [_issues backlog](_issues/README.md).
 
 ## Architecture
 

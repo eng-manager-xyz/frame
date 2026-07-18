@@ -444,7 +444,8 @@ def run() -> dict[str, object]:
             STATIC_SEMANTIC_ADAPTER_IDS + D1_READ_SEMANTIC_ADAPTER_IDS
         ),
         "durable_semantic_adapters_enabled": 0,
-        "inventory_endpoint_success_promoted": 9,
+        "inventory_endpoint_success_proven_locally": 37,
+        "production_endpoint_success_enabled": 13,
         "race_contenders": 2,
         "race_complete": 1,
         "race_replays": 1,

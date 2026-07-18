@@ -1,0 +1,82 @@
+{
+  "schema_version": "frame.legacy-library-detail-reads.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-library-detail-read-request.v1",
+    "max_body_bytes": 2048,
+    "authentication": "host_only_browser_session",
+    "same_origin": "required",
+    "csrf": "not_required_for_read_only_action",
+    "client_idempotency": "forbidden",
+    "rate_limit_bucket": "organization_library.v1",
+    "cache_control": "no-store, max-age=0"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-17a71c3e18600d06",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/spaces/get-user-videos.ts#getUserVideos",
+      "input": "{schema_version,space_id}",
+      "success": "HTTP 200 {success:true,data:Array<{id,ownerId,name,createdAt,metadata,isScreenshot,totalComments,totalReactions,ownerName,folderName,folderColor,hasActiveUpload}>}",
+      "failure": "HTTP 200 {success:false,error:'Failed to fetch videos'}",
+      "ordering": "effectiveCreatedAt DESC with source-unspecified tie order",
+      "scope_semantics": "requested organization or space selects only the placement/folder decoration branch; every live actor-owned video in the active tenant remains in the result",
+      "metadata_semantics": "lossless nullable JSON including customCreatedAt; effectiveCreatedAt is internal ordering state and is not emitted",
+      "count_semantics": "distinct text comments and distinct emoji reactions",
+      "upload_semantics": "a video-upload row exists and isScreenshot is false",
+      "source_count": 15,
+      "rust_source_manifest_sha256": "960be699e80eb782d5a04cc7880310b03bf762983372efee39e07efbec355bbf",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-39e8966f308c1528",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/_components/Navbar/search.ts#searchDashboardVideos",
+      "input": "{schema_version,query}",
+      "success": "HTTP 200 Array<{id,name,ownerName,createdAt,duration,isScreenshot}>",
+      "failure": "missing session, active tenant, or a two-code-unit query returns []; database/storage failures stay redacted and unavailable",
+      "normalization": "ECMAScript trim, whitespace collapse, UTF-16 slice(0,80), LIKE escape !/%/_, minimum two UTF-16 code units",
+      "ordering": "name prefix rank ASC, effectiveCreatedAt DESC, LIMIT 8 with source-unspecified tie order",
+      "visibility": "active organization owner/member plus actor-owned, organization-shared, or creator/public/member space video",
+      "duration_semantics": "nullable source floating-point seconds, never a lossy integer-millisecond round trip",
+      "source_count": 11,
+      "rust_source_manifest_sha256": "4a760c534a6b32ad0d75602d86c18ada4331c7ff5e8409c3792f6ccae0ece544",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    }
+  ],
+  "authorization_closure": {
+    "source_residual": "getUserVideos filters by owner and organization tombstone only, so a caller-selected scope can return the actor's videos from unrelated tenants; searchDashboardVideos already applies active-tenant and visibility predicates",
+    "frame_correction": "the host-only actor and live active organization are reasserted before each query, getUserVideos restricts every returned video to that tenant, and requested spaces require creator/public/member access",
+    "non_disclosure": "foreign, stale, missing, duplicate, or corrupt scope/alias authority returns no video projection"
+  },
+  "projection_closure": {
+    "video_shadows": [
+      "legacy_is_screenshot",
+      "legacy_duration_seconds",
+      "legacy_effective_created_at_us for source-exact microsecond ordering",
+      "legacy_effective_created_at_ms generated from legacy_metadata_json.customCreatedAt"
+    ],
+    "reused_authorities": [
+      "legacy_collaboration_video_aliases_v1",
+      "legacy_collaboration_user_aliases_v1",
+      "legacy_collaboration_comments_v1",
+      "legacy_library_space_aliases_v1",
+      "folders.legacy_name and folders.legacy_color"
+    ]
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_library_detail_reads.rs",
+    "apps/control-plane/src/legacy_library_detail_read_runtime.rs",
+    "apps/control-plane/src/legacy_library_detail_read_web_runtime.rs",
+    "apps/control-plane/migrations/0046_legacy_library_detail_reads_expand.sql",
+    "apps/control-plane/queries/legacy_library_detail_reads",
+    "scripts/ci/legacy-library-detail-reads-sqlite-conformance.py"
+  ]
+}

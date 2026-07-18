@@ -237,8 +237,15 @@ def scan_text(path: str, content: str) -> list[Finding]:
         # ``secret_generator.generate`` are expressions, not embedded values.
         # Keep scanning unquoted provider-style tokens, which contain a digit
         # or punctuation outside an identifier path.
-        if not match.group("quote") and re.fullmatch(r"[A-Za-z_][A-Za-z_.:]*", value):
-            continue
+        if not match.group("quote"):
+            if re.fullmatch(r"[A-Za-z_][A-Za-z_.:]*", value):
+                continue
+            # Rust paths such as `TypeV1::constructor` are expressions even
+            # when a generated type name contains a digit. Keep scanning bare
+            # alphanumeric provider tokens: only a syntactically explicit path
+            # separator earns this expression exemption.
+            if "::" in value and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:]*", value):
+                continue
         if is_safe_literal(value):
             continue
         findings.add(
@@ -261,6 +268,7 @@ def fixtures() -> tuple[Fixture, ...]:
     cloudflare_token = "".join(
         ("Z7u2k9_", "Qp4m8-Vc6", "x1Ns3b5W", "d0r2Tf9H", "y4j6La8E")
     )
+    bare_provider_value = "".join(("Frame9", "Credential8", "Value7", "Token6"))
 
     return (
         Fixture(
@@ -276,6 +284,11 @@ def fixtures() -> tuple[Fixture, ...]:
         Fixture(
             "deliberate-unprefixed-provider-token",
             f"CLOUDFLARE_API_TOKEN={cloudflare_token}",
+            frozenset({"literal-secret"}),
+        ),
+        Fixture(
+            "deliberate-bare-alphanumeric-provider-token",
+            f"API_KEY={bare_provider_value}",
             frozenset({"literal-secret"}),
         ),
         Fixture(
@@ -307,6 +320,7 @@ def fixtures() -> tuple[Fixture, ...]:
                     "password: PasswordGrant::Absent,",
                     "request.password = PasswordGrant::Verified;",
                     "let secret = secret_generator.generate();",
+                    "let secret = LegacyDeveloperStoredKeyV1::new();",
                 )
             ),
             frozenset(),

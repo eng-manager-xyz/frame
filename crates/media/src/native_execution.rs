@@ -887,32 +887,39 @@ pub fn render_studio_export(
         let _ = fs::remove_file(output);
         return result.map(|()| unreachable!());
     }
-    let metadata = fs::symlink_metadata(output).map_err(|_| NativeExecutionError::Filesystem)?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() || metadata.len() < 128
-    {
+    let validated = (|| {
+        let metadata =
+            fs::symlink_metadata(output).map_err(|_| NativeExecutionError::Filesystem)?;
+        if !metadata.file_type().is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() < 128
+        {
+            return Err(NativeExecutionError::InvalidOutput);
+        }
+        let mut prefix = vec![
+            0_u8;
+            usize::try_from(metadata.len().min(1024 * 1024))
+                .map_err(|_| NativeExecutionError::ResourceLimit)?
+        ];
+        File::open(output)
+            .and_then(|mut file| file.read_exact(&mut prefix))
+            .map_err(|_| NativeExecutionError::Filesystem)?;
+        let playable_container_marker = prefix.windows(marker.len()).any(|value| value == marker);
+        if !playable_container_marker {
+            return Err(NativeExecutionError::InvalidOutput);
+        }
+        Ok(NativeStudioExportArtifact {
+            profile,
+            path: output.to_path_buf(),
+            bytes: metadata.len(),
+            sha256: sha256_file_with_budget(output, cancellation, DEFAULT_NATIVE_DEADLINE)?,
+            playable_container_marker,
+        })
+    })();
+    if validated.is_err() {
         let _ = fs::remove_file(output);
-        return Err(NativeExecutionError::InvalidOutput);
     }
-    let mut prefix = vec![
-        0_u8;
-        usize::try_from(metadata.len().min(1024 * 1024))
-            .map_err(|_| NativeExecutionError::ResourceLimit)?
-    ];
-    File::open(output)
-        .and_then(|mut file| file.read_exact(&mut prefix))
-        .map_err(|_| NativeExecutionError::Filesystem)?;
-    let playable_container_marker = prefix.windows(marker.len()).any(|value| value == marker);
-    if !playable_container_marker {
-        let _ = fs::remove_file(output);
-        return Err(NativeExecutionError::InvalidOutput);
-    }
-    Ok(NativeStudioExportArtifact {
-        profile,
-        path: output.to_path_buf(),
-        bytes: metadata.len(),
-        sha256: sha256_file(output)?,
-        playable_container_marker,
-    })
+    validated
 }
 
 fn parse_pipeline(description: &str) -> Result<gst::Pipeline, NativeExecutionError> {
@@ -1027,6 +1034,37 @@ fn sha256_file(path: &Path) -> Result<String, NativeExecutionError> {
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| NativeExecutionError::Filesystem)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn sha256_file_with_budget(
+    path: &Path,
+    cancellation: &CancellationToken,
+    deadline: Duration,
+) -> Result<String, NativeExecutionError> {
+    let started = Instant::now();
+    let mut file = File::open(path).map_err(|_| NativeExecutionError::Filesystem)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(NativeExecutionError::Cancelled);
+        }
+        if started.elapsed() >= deadline {
+            return Err(NativeExecutionError::Timeout);
+        }
         let read = file
             .read(&mut buffer)
             .map_err(|_| NativeExecutionError::Filesystem)?;

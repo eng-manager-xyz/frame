@@ -815,6 +815,20 @@ impl ScreenTargetDescriptor {
         }
     }
 
+    /// Returns the exact display transform for a display target.
+    ///
+    /// Platform composition roots use this privacy-safe geometry to construct
+    /// coarse target summaries without exposing native display handles. Window
+    /// and region targets deliberately return `None` because their geometry has
+    /// different ownership and clipping semantics.
+    #[must_use]
+    pub const fn display_transform(&self) -> Option<DisplayGeometryTransform> {
+        match &self.geometry {
+            ScreenTargetGeometry::Display(transform) => Some(*transform),
+            ScreenTargetGeometry::Window(_) | ScreenTargetGeometry::Region { .. } => None,
+        }
+    }
+
     #[must_use]
     pub const fn containing_display_id(&self) -> Option<ScreenTargetId> {
         match &self.geometry {

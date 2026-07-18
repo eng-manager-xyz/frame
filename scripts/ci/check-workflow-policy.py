@@ -16,6 +16,7 @@ WORKFLOW_DIR = ROOT / ".github" / "workflows"
 REQUIRED_WORKFLOWS = {
     "ci.yml",
     "cross-repository-contract.yml",
+    "desktop-real-hardware.yml",
     "quality-gates.yml",
     "production-gate.yml",
     "production-smoke.yml",
@@ -95,6 +96,21 @@ def main() -> int:
                 require(reference == expected, f"{path}: {action} must use immutable SHA {expected}", errors)
 
     quality = texts.get("quality-gates.yml", "")
+    api_parity = texts.get("api-workflow-parity.yml", "")
+    parity_runner = "python3 -I scripts/ci/run-legacy-api-parity.py"
+    parity_runner_test = "python3 -I scripts/ci/test-legacy-api-parity-runner.py"
+    require(
+        (ROOT / "scripts/ci/run-legacy-api-parity.py").is_file()
+        and (ROOT / "scripts/ci/test-legacy-api-parity-runner.py").is_file(),
+        "legacy/API parity aggregate runner and its fail-fast tests must exist",
+        errors,
+    )
+    require(
+        api_parity.count(parity_runner) == 1
+        and api_parity.count(parity_runner_test) == 1,
+        "api-workflow-parity.yml: the aggregate legacy/API runner and its tests must run exactly once",
+        errors,
+    )
     require("pull_request:" in quality and "push:" in quality, "quality-gates.yml: must run for pull requests and main pushes", errors)
     require("${{ secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
     require("check-parity-evidence.py" in quality,
@@ -181,6 +197,8 @@ def main() -> int:
     require("check-cross-repo-contract.py" in quality
             and "test-cross-repo-contract.py" in quality,
             "quality-gates.yml: cross-repository ownership/policy mutations must be required", errors)
+    require("test-desktop-real-hardware.py" in quality,
+            "quality-gates.yml: signed desktop hardware evidence regressions must be tested", errors)
     authenticated_web = texts.get("leptos-authenticated-web.yml", "")
     for dependency in (
         "apps/control-plane/src/auth_repository.rs",
@@ -206,13 +224,32 @@ def main() -> int:
             and "desktop-shell-smoke.py" in quality
             and "check-desktop-bundle.py" in quality
             and "check-desktop-advisory-exception.py" in quality,
-            "quality-gates.yml: the native Tauri shell and pinned Leptos bundle must be required", errors)
+            "quality-gates.yml: the portable Tauri shell and pinned Leptos bundle must be required", errors)
     desktop_shell = quality.split("\n  desktop_shell:\n", maxsplit=1)[-1].split(
         "\n  quality-gate:\n", maxsplit=1
     )[0]
+    require(
+        "macos-native" not in desktop_shell
+        and "FRAME_GSTREAMER_COMPILE_ONLY" not in desktop_shell
+        and "SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG" not in desktop_shell
+        and "SYSTEM_DEPS_GSTREAMER_1_0_LIB" not in desktop_shell,
+        "quality-gates.yml: the portable desktop shell must not enable or mask native media dependencies",
+        errors,
+    )
+    dependency_step = workflow_step(
+        desktop_shell, "Prove the portable desktop dependency closure"
+    )
+    require(
+        bool(dependency_step)
+        and "cargo tree --locked -p frame-desktop-core" in dependency_step
+        and "--features tauri-app,custom-protocol --edges normal" in dependency_step
+        and "frame-media|frame-macos-screen-capture|gstreamer" in dependency_step,
+        "quality-gates.yml: the portable desktop dependency graph must reject native media crates",
+        errors,
+    )
     for step_name in (
-        "Lint and test the native Tauri command boundary",
-        "Build the native desktop executable",
+        "Lint and test the portable Tauri command boundary",
+        "Build the portable desktop executable",
     ):
         step = workflow_step(desktop_shell, step_name)
         require(bool(step), f"quality-gates.yml: missing {step_name}", errors)
@@ -221,13 +258,49 @@ def main() -> int:
             f"quality-gates.yml: {step_name} must not disable unrelated native linking with DOCS_RS",
             errors,
         )
-        require(
-            'FRAME_GSTREAMER_COMPILE_ONLY: "1"' in step
-            and 'SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG: "1"' in step
-            and "SYSTEM_DEPS_GSTREAMER_1_0_LIB: ${{ runner.os == 'Windows' && 'kernel32' || 'c' }}" in step,
-            f"quality-gates.yml: {step_name} must use the shell-only GStreamer compile contract",
-            errors,
-        )
+    portable_smoke = workflow_step(
+        desktop_shell, "Exercise the portable production-CSP WebView command boundary"
+    )
+    require(
+        bool(portable_smoke) and "--expected-adapter unavailable" in portable_smoke,
+        "quality-gates.yml: the portable shell smoke must require the unavailable recorder adapter",
+        errors,
+    )
+
+    hardware = texts.get("desktop-real-hardware.yml", "")
+    require(
+        "macos_display:" in hardware
+        and "runs-on: frame-macos-hardware" in hardware
+        and "environment: desktop-macos-hardware" in hardware
+        and re.search(
+            r"^concurrency:\n  group: desktop-macos-hardware\n"
+            r"  cancel-in-progress: false$",
+            hardware,
+            re.MULTILINE,
+        ) is not None
+        and "fetch-depth: 0" in hardware
+        and 'git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main' in hardware
+        and "secrets.FRAME_CODESIGN_IDENTITY" in hardware
+        and "scripts/frame desktop-macos-bundle" in hardware
+        and "sign-macos-local-app.sh verify-trusted" in hardware
+        and "--app-bundle target/release/bundle/macos/Frame.app" in hardware
+        and "vars.FRAME_EXPECTED_APPLE_TEAM_ID" in hardware
+        and "--expected-source-sha" in hardware
+        and "--expected-run-id" in hardware
+        and "--capability macos_display_webm_v1" in hardware
+        and "--expected-capability macos_display_webm_v1" in hardware
+        and "desktop-macos-display-hardware-v1" in hardware,
+        "desktop-real-hardware.yml: the protected signed-app macOS display gate is required",
+        errors,
+    )
+    require(
+        "frame-windows-hardware" not in hardware
+        and "frame-desktop.exe" not in hardware
+        and "--binary target/release/frame-desktop" not in hardware
+        and 'FRAME_CODESIGN_IDENTITY: "-"' not in hardware,
+        "desktop-real-hardware.yml: raw, ad-hoc, or unavailable capture builds must not be accepted as native evidence",
+        errors,
+    )
     exception_expiry = dt.date(2026, 10, 15)
     require(dt.datetime.now(dt.timezone.utc).date() < exception_expiry,
             "FRAME-DEP-2026-01 has expired; remove or re-review the advisory exception", errors)
@@ -324,17 +397,18 @@ def main() -> int:
     require("test-release-change-plan.py" in production_untrusted
             and "test-release-change-plan.py" in quality,
             "release-change-plan compile-time fixture behavior must be tested before release", errors)
+    require(
+        production_untrusted.count(parity_runner) == 1
+        and production_untrusted.count(parity_runner_test) == 1
+        and quality.count(parity_runner_test) == 1,
+        "aggregate legacy/API parity must block production and its runner tests must block PR and release lanes",
+        errors,
+    )
     require("media-job-inputs-sqlite-conformance.py" in production_untrusted
             and "r2-completion-reconciliation-sqlite-conformance.py" in production_untrusted
             and "r2-storage-conformance.py" in production_untrusted
             and "r2-storage-conformance-production-preflight.json" in production_untrusted,
             "production-gate.yml: media-input and compiled R2 contract proofs must block provider mutation", errors)
-    require("compatibility-rate-limit-sqlite-conformance.py" in production_untrusted
-            and "legacy-organization-selection-sqlite-conformance.py" in production_untrusted
-            and "legacy-org-custom-domain-sqlite-conformance.py" in production_untrusted
-            and "legacy-notification-preferences-sqlite-conformance.py" in production_untrusted
-            and "legacy-api-execution-sqlite-conformance.py" in production_untrusted,
-            "production-gate.yml: exact compatibility and legacy SQLite proofs must block provider mutation", errors)
     require("release-join-conformance.py --self-test" in production_untrusted,
             "production-gate.yml: release-join semantics must block provider mutation", errors)
     require("package-release.sh" in production and "verify-release-bundle.sh" in production,

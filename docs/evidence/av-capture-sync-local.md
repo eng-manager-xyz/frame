@@ -4,16 +4,33 @@ Status: provider-free local contract and native GStreamer-graph evidence. This
 record does not claim a physical-device source adapter, OS permission,
 Bluetooth, wall-clock soak, or performance completion.
 
-## Implemented contract surface
+## Closure ledger boundary
+
+Issue 25 checkboxes 1, 4, 5, 6, 7, and 8 are repository-local gaps.
+Checkboxes 2, 3, 9, and 10 remain locally satisfied by the executable graph,
+clock/timestamp logic, optional-device negotiation, and privacy-safe diagnostic
+model. No issue-25 checkbox is currently `protected_pending`; the hardware
+portions of checkboxes 1 and 6–8 become meaningful only after the local bridge
+and integration gaps close.
+
+`NativeAvBridge`, `AvLocalAppSrcAdapter`, and `AvSettingsStorage` have no
+production implementation in this repository. Their exercised implementations
+are test doubles. `NativeAvGstreamerGraph` constructs a real graph, but no
+production device source pumps owned buffers into it, and the UI event
+coalescer has no production desktop IPC caller. Consequently synthetic timing,
+mix, permission, hotplug, Bluetooth, sleep/wake, and continuity results are not
+valid evidence that a release capture path implements checkboxes 1 or 4–8.
+
+## Contract surface exercised locally
 
 - label-free opaque device identity, instance generation, exact formats,
   permission state, route class, and timestamp provenance;
-- safe bounded versioned settings codec/storage and migration with
+- safe bounded versioned settings codec/storage boundary and migration with
   pinned/default confirmation rules;
-- exact provider-neutral appsrc topology plus an executed GStreamer adapter
-  with one real `audiomixer`/`audioconvert`/`audioresample` path, per-source
-  gain and level elements, negotiated caps, and camera conversion with bounded
-  record/preview branches;
+- exact provider-neutral appsrc topology plus an executed GStreamer graph
+  builder with one real `audiomixer`/`audioconvert`/`audioresample` path,
+  per-source gain and level elements, negotiated caps, and camera conversion
+  with bounded record/preview branches;
 - one-shot session owner, session-bound native bridge, one-shot operation
   tickets, live catalog
   revalidation, source stamps, stale/replay/cross-session rejection, and
@@ -69,10 +86,11 @@ The external `av_capture_contract` suite covers:
   pause/resume/reset discontinuities. Every ordinary accepted offset remains
   within the 50 ms policy ceiling.
 
-The native execution unit test also constructs the negotiated microphone,
+The native execution unit test constructs the negotiated microphone,
 system-audio, and camera graph, verifies all typed appsrc/appsink handles, moves
 the real pipeline to `Ready`, and confirms teardown to `Null` under the pinned
-plugin policy.
+plugin policy. It does not push a production device buffer or connect a UI
+event consumer.
 
 The focused contract suite contains 54 tests. The native execution suite
 contains four tests shared with Instant and Studio. The sanitized full
@@ -99,10 +117,11 @@ git diff --check
 The final command results for this change are recorded in the commit/CI output;
 this document intentionally does not copy machine-specific paths or logs.
 
-## Protected evidence not collected
+## Hardware evidence not yet valid
 
-The following remains explicitly open and must not be inferred from local
-tests:
+The following will remain protected evidence after the repository-local gaps
+close. It must not currently be used to reclassify those gaps as protected or
+be inferred from local tests:
 
 - macOS, Windows, and Linux physical microphones and cameras across the declared
   built-in, wired, virtual, and wireless route matrix;
@@ -120,5 +139,7 @@ tests:
   continues; and
 - product, media, privacy, accessibility, and release-owner signoff.
 
-Until those records exist, this slice is suitable for native adapter
-development and local conformance, not production promotion.
+Until the production bridges, durable settings adapter, UI event connection,
+and recovery integration exist, this slice is suitable for native adapter
+development and local conformance only. Later hardware records cannot repair
+the absent release code and do not authorize production promotion.

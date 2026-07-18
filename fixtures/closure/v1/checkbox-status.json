@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 363,
-    "protected_pending": 190,
-    "local_gap": 1
+    "local_satisfied": 352,
+    "protected_pending": 171,
+    "local_gap": 31
   },
   "issues": {
     "01": {
@@ -126,7 +126,10 @@
       "count": 12,
       "digest": "a2564ade66bd6ce84837b2104c0a9d870bc6558615faa930957e1f8953c902f1",
       "evidence": ["docs/architecture/storage-contract-v1.md", "docs/evidence/storage-contract-local.md", "scripts/ci/r2-storage-conformance.py"],
-      "protected": [{"ordinals": [12], "classes": ["human_approval", "provider_execution"], "reason": "BYO/self-hosting parity and retained adapters require approved provider dispositions and live compatibility evidence."}],
+      "protected": [
+        {"ordinals": [3], "classes": ["provider_execution"], "reason": "The production adapter and credential-free local contract are present, but the same checkbox's hosted R2 bucket contract requires scoped Cloudflare credentials and provider execution."},
+        {"ordinals": [12], "classes": ["human_approval", "provider_execution"], "reason": "BYO/self-hosting parity and retained adapters require approved provider dispositions and live compatibility evidence."}
+      ],
       "local_gaps": []
     },
     "19": {
@@ -174,15 +177,15 @@
       "count": 10,
       "digest": "72b5f8f1d6d028c4d88b54c28f144aecad0995064ea78bbc0fe5c1cfb31cf5d7",
       "evidence": ["docs/evidence/screen-capture-local.md", "docs/architecture/screen-capture-contracts.md", "crates/media/tests/screen_capture_contract.rs"],
-      "protected": [{"ordinals": [1, 2, 3, 5, 6, 7, 8, 9, 10], "classes": ["hardware_execution"], "reason": "Native OS adapters, permission UI, capture geometry/cursor/exclusion, recovery, zero-copy, performance, and fixture parity require representative macOS, Windows, and Linux machines."}],
-      "local_gaps": []
+      "protected": [],
+      "local_gaps": [{"ordinals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "reason": "Only contracts and test doubles exist: no production OS capture source, appsrc pump, permission integration, lifecycle handling, or recorded parity path is wired into Frame."}]
     },
     "25": {
       "count": 10,
       "digest": "4a6b8211c0eaa63f99e798d8fad533b61b965bf7afc3a7ccd512bba2d3f49695",
       "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs"],
-      "protected": [{"ordinals": [1, 6, 7, 8], "classes": ["hardware_execution"], "reason": "Native source bridges and measured A/V/device/permission recovery require physical devices and each supported OS."}],
-      "local_gaps": []
+      "protected": [],
+      "local_gaps": [{"ordinals": [1, 4, 5, 6, 7, 8], "reason": "Native A/V bridges, durable settings, production UI event coalescing, and real device or permission recovery remain unwired repository-local implementation work."}]
     },
     "26": {
       "count": 11,
@@ -198,8 +201,8 @@
       "count": 11,
       "digest": "244a7013ad0379b0463415960789126a747c13b5d5567bbd666bbd8aefb91a73",
       "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "crates/media/tests/studio_mode_contract.rs"],
-      "protected": [{"ordinals": [7, 8, 9, 10, 11], "classes": ["hardware_execution", "human_approval"], "reason": "Real legacy projects, physical power loss, decoded goldens, long projects, codecs, and hardware fallback require reviewed corpus and platform execution."}],
-      "local_gaps": []
+      "protected": [{"ordinals": [7], "classes": ["human_approval"], "reason": "The legacy import implementation exists, but acceptance still needs a reviewed corpus of representative Cap projects."}],
+      "local_gaps": [{"ordinals": [2, 3, 4, 5, 8, 9, 10, 11], "reason": "Native Studio recording, edit-aware preview and export, distribution audio, production recovery, decoded goldens, effects, and fallback or cancellation are not connected to the desktop release."}]
     },
     "28": {
       "count": 15,
@@ -229,9 +232,7 @@
         {"ordinals": [11], "classes": ["provider_execution"], "reason": "Managed quota/outage, native fallback, and kill-switch public behavior need protected executor/provider evidence in addition to the local state model."},
         {"ordinals": [12], "classes": ["external_repository", "browser_accessibility_execution"], "reason": "Current and N-1 released desktop, mobile, extension, developer, and web artifacts plus their compatibility journeys require consumer-repository builds and real browser/client execution; the local registry is prerequisite evidence only."}
       ],
-      "local_gaps": [
-        {"ordinals": [7], "reason": "Nine exact source-pinned operations have local success contracts; the per-row completion audit keeps 157 local-only operations and 123 operations with both local work and exact protected gates explicitly unfinished."}
-      ]
+      "local_gaps": []
     },
     "31": {
       "count": 10,
@@ -258,8 +259,8 @@
       "count": 10,
       "digest": "4c558f86d18ebee2673d202175fb62bd261a4f358b014e38bf15e1c1e17e2a1c",
       "evidence": ["docs/evidence/desktop-editor-a11y-local.md", "docs/architecture/desktop-product-v1.md", "scripts/ci/check-desktop-product.py"],
-      "protected": [{"ordinals": [8, 9, 10], "classes": ["hardware_execution", "browser_accessibility_execution", "human_approval"], "reason": "Complete keyboard/AT journeys, OS lifecycle/hotkey/tray/overlay matrices, real adapters, updater, and parity-gate removal need supported platforms and approval."}],
-      "local_gaps": []
+      "protected": [],
+      "local_gaps": [{"ordinals": [3, 4, 5, 6, 8, 9, 10], "reason": "Recorder, editor, export, lifecycle, hardware-suite, accessibility, OS-integration, and legacy-selection behavior remains fake-gated or absent in the production desktop adapter."}]
     },
     "34": {
       "count": 12,

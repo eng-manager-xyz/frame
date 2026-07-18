@@ -1,0 +1,71 @@
+{
+  "schema_version": "frame.legacy-extension-instant-recordings.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "source_count": 25,
+  "source_manifest_sha256": "9a36f7c2832868b8ae4c1b8de1a7e825b15210323243becec599b39dabe208a7",
+  "protected_gates": [],
+  "transport": {
+    "authentication": "36-character API key takes precedence, otherwise host-only browser session",
+    "rate_limit_bucket": "video_media.v1",
+    "create_and_progress_max_body_bytes": 262144,
+    "accepted_content_types": ["application/json"],
+    "delete_max_body_bytes": 0,
+    "idempotency": "forbidden",
+    "cache_control": "no-store, max-age=0"
+  },
+  "routes": [
+    {
+      "id": "cap-v1-00422c50f4d39053",
+      "method": "POST",
+      "path": "/api/extension/instant-recordings",
+      "success": "HTTP 200 {id,shareUrl,upload:{type:\"put\",url,headers}} with a 15-character Cap alias and short-lived presigned R2 target",
+      "validation": "bounded exact camelCase JSON; finite optional media metadata; live optional folder; R2 integration; CAP_VIDEOS_DEFAULT_PUBLIC",
+      "authorization": "API-key-or-session actor must have the requested active organization and an active owner/member relationship",
+      "idempotency_retry": "source has no client key; every committed retry creates a new immutable alias/native UUID pair",
+      "failure": "HTTP 400 schema, 401 actor, 403 policy, 500 R2 signing or D1 persistence"
+    },
+    {
+      "id": "cap-v1-82dec55d0fbea3db",
+      "method": "POST",
+      "path": "/api/extension/instant-recordings/progress",
+      "success": "HTTP 200 {success:true}; uploaded is clamped to total",
+      "validation": "15-character Cap alias, nonnegative JavaScript-safe integers, and DateFromString timestamp",
+      "authorization": "resolved actor must own the durable alias, native video, tenant, and upload row",
+      "idempotency_retry": "timestamp-stale, uploaded-regressing, and total-regressing calls are durable no-ops; equal retries converge",
+      "failure": "HTTP 400 schema, 401 actor, 404 tenant-safe missing/non-owner video, 500 D1 persistence"
+    },
+    {
+      "id": "cap-v1-8fd4741d6e52465e",
+      "method": "DELETE",
+      "path": "/api/extension/instant-recordings/:videoId",
+      "success": "HTTP 200 {success:true} after native tombstone and complete R2 prefix deletion",
+      "validation": "exact path with a 15-character Cap alias and an empty request body",
+      "authorization": "resolved actor must own the alias and the actor-scoped R2 prefix",
+      "idempotency_retry": "pending storage cleanup resumes from a durable D1 operation; completed aliases remain tombstoned and return 404",
+      "failure": "HTTP 400 alias/body, 401 actor, 404 tenant-safe missing/non-owner video, 500 R2 or D1 persistence"
+    }
+  ],
+  "wire_and_storage": {
+    "wire_identity": "immutable 15-character Cap NanoID alias mapped to a native UUIDv7 video",
+    "object_key": "{actorId}/{legacyVideoId}/result.mp4",
+    "upload_target": "R2 S3-compatible PUT with UNSIGNED-PAYLOAD, signed content type and source metadata, If-None-Match: *, and 900-second expiry",
+    "share_url": "verified organization custom domain when present, otherwise Frame WEB_URL /s/{legacyVideoId}",
+    "provider_boundary": "Cloudflare R2 is the only storage provider; source Dub link creation is best effort and cannot gate the route"
+  },
+  "security_corrections": {
+    "native_identity": "a collision-safe UUID is authoritative while the released client keeps the exact NanoID wire shape",
+    "tenant_non_disclosure": "wrong-owner progress/delete is projected as 404",
+    "progress": "Frame retains Cap's timestamp fence and additionally enforces monotonic uploaded and total bytes",
+    "delete": "two-phase delete first records a D1 tombstone/pending cleanup, performs strongly consistent R2 prefix deletion, and then finalizes D1 without deleting the alias",
+    "upload": "the presigned PUT cannot escape the actor/alias prefix or overwrite an existing object"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_extension_instant_recordings.rs",
+    "apps/control-plane/src/legacy_extension_instant_recordings_runtime.rs",
+    "apps/control-plane/src/legacy_extension_instant_recordings_web_runtime.rs",
+    "apps/control-plane/src/r2_direct_upload.rs",
+    "apps/control-plane/migrations/0051_legacy_extension_instant_recordings_expand.sql",
+    "apps/control-plane/queries/legacy_extension_instant",
+    "scripts/ci/legacy-extension-instant-recordings-sqlite-conformance.py"
+  ]
+}

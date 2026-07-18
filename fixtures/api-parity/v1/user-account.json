@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "family": "user_account.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "name_route": {
+    "identity": "POST /api/settings/user/name",
+    "authentication": "host_session_cookie_only",
+    "parse_order": "json_body_before_explicit_unauthenticated_branch",
+    "request": "{firstName?:string|null,lastName?:string|null}",
+    "presence": "missing_no_patch_null_persisted_empty_string_preserved",
+    "success": "HTTP 200 JSON true",
+    "idempotency": "forbidden"
+  },
+  "effect_rpc": {
+    "identity": "POST /api/erpc",
+    "serialization": "@effect/rpc@0.71.2 RpcSerialization.layerJson",
+    "request_cardinality": "one_tagged_request_object_per_post_no_batching",
+    "authentication": "host_session_cookie_only",
+    "success": "single_element_Exit_array_with_requestId",
+    "typed_failure": "Exit.Failure.Cause.Fail",
+    "malformed_payload": "Exit.Failure.Cause.Die_or_top_level_Defect",
+    "idempotency_header": "forbidden"
+  },
+  "server_actions": {
+    "carrier": "POST /api/v1/web/compatibility-actions/{operation_id}",
+    "authentication": "host_session_cookie_origin_fetch_metadata_csrf_and_one_use_mutation_grant",
+    "request_schema": "frame.web-user-account-action-request.v1",
+    "idempotency": "required_matching_header_and_body",
+    "success": "HTTP 204 empty no-store",
+    "development_guard": "devtool_environment_check_precedes_authentication"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-fdc3d5d49bb5ad6d",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/settings/user/name",
+      "source_count": 4,
+      "source_manifest_sha256": "8bb2b5b6398a8d197418c621a5de8fdded75dc397fdb79e5d655df839861a197",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-c7827a1de563f856",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#UserCompleteOnboardingStep",
+      "source_count": 19,
+      "source_manifest_sha256": "1005767c78e0243c7a9909fb9ff75f03104f317d9c4176cda437fe51c87a8cdb",
+      "protected_gates": ["provider_execution"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-295a3eb4ba9ffe6f",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#UserUpdate",
+      "source_count": 15,
+      "source_manifest_sha256": "1600e83d8be61c1613fba8181414bcb6e3546edd0f4454da8aec39536cc20dfc",
+      "protected_gates": ["provider_execution"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-fdf4d6473b7f6608",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/settings/account/server.ts#patchAccountSettings",
+      "source_count": 4,
+      "source_manifest_sha256": "448bdcde83147aefc1c713367f96fe17d8566b3798d3d85e056e71e2a7159554",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-c067d69850110640",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/(org)/dashboard/settings/account/server.ts#signOutAllDevices",
+      "source_count": 4,
+      "source_manifest_sha256": "448bdcde83147aefc1c713367f96fe17d8566b3798d3d85e056e71e2a7159554",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-3d28eb7593bd4b1e",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/Layout/devtoolsServer.ts#demoteFromPro",
+      "source_count": 4,
+      "source_manifest_sha256": "0dd6130474181804819d88cca837f652e7bcd633f2530fe6161b71ec27b796af",
+      "protected_gates": ["human_approval"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-e0040a01322ea19e",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/Layout/devtoolsServer.ts#promoteToPro",
+      "source_count": 4,
+      "source_manifest_sha256": "0dd6130474181804819d88cca837f652e7bcd633f2530fe6161b71ec27b796af",
+      "protected_gates": ["human_approval"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-859bad07650343aa",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/app/Layout/devtoolsServer.ts#restartOnboarding",
+      "source_count": 4,
+      "source_manifest_sha256": "0dd6130474181804819d88cca837f652e7bcd633f2530fe6161b71ec27b796af",
+      "protected_gates": ["human_approval"],
+      "production_behavior": "fail_closed_unavailable"
+    }
+  ],
+  "semantic_invariants": {
+    "user_update_payload_id": "validated_then_ignored_actor_comes_from_session",
+    "image_update": "Absent_no_change_None_clear_Some_provider_effect",
+    "onboarding_welcome": "first_name_trimmed_last_name_default_empty",
+    "organization_setup": "core_D1_commit_with_best_effort_icon_provider_effect",
+    "account_patch": "owner_or_any_membership_for_default_organization",
+    "sign_out_all": "sessions_and_all_auth_api_key_families_revoked_atomically"
+  },
+  "atomicity": {
+    "one_transaction": [
+      "live_actor_and_revision_reassertion",
+      "organization_projection_and_membership_authority",
+      "account_or_onboarding_mutation",
+      "session_and_api_key_revocation_when_requested",
+      "tenant_actor_operation_scoped_replay_receipt",
+      "business_audit_and_provider_effect",
+      "one_use_browser_mutation_grant_consumption_for_actions"
+    ],
+    "rollback": "no_partial_mutation_receipt_effect_audit_or_browser_grant_consumption",
+    "plaintext": "durable_idempotency_and_evidence_rows_store_only_digests"
+  }
+}

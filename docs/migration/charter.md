@@ -10,8 +10,9 @@ its contract, privacy behavior, failure behavior, and rollback must also pass.
 - Behavior reference: `CapSoftware/Cap@6ba69561ac86b8efdb17616d6727f9638015546b`.
 - Portfolio reference:
   `matthewharwood/engmanager.xyz@1de52bc8f25793dea3697e67765d53785c05cdfa`.
-- Reference checkouts live under ignored `.tmp/` directories. They are inputs
-  to inventories and compatibility tests, never vendored dependencies.
+- Temporary reference checkouts were discovery inputs only. Committed
+  inventories and source-pin fixtures preserve their results; build, test, CI,
+  deployment, and runtime paths never require ignored `.tmp/` clones.
 - New Frame code is independently implemented unless a file records the exact
   upstream path, commit, license, and adaptation obligations.
 - Only synthetic or explicitly redistributable fixtures may enter the

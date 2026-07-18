@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-library-placement-request.v1",
+    "max_body_bytes": 262144,
+    "authentication": "host_only_session",
+    "same_origin": "required",
+    "csrf": "double_submit_one_use_grant_required",
+    "client_idempotency": "required_header_and_body_exact_match",
+    "rate_limit_bucket": "organization_library.v1",
+    "cache_control": "no-store, max-age=0"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-d96a1931942eb83b",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/organizations/add-videos.ts#addVideosToOrganization",
+      "request_scope_field": "organization_id",
+      "success": "object_success_message_organization_root",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-0694e68a64976c9a",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/organizations/remove-videos.ts#removeVideosFromOrganization",
+      "request_scope_field": "organization_id",
+      "success": "object_success_removed_or_no_matching_message",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-bb55b5eeeb5e31ab",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/spaces/add-videos.ts#addVideosToSpace",
+      "request_scope_field": "scope_id",
+      "success": "object_success_message_scope_label",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-ccbe5f1381eaa1b4",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/spaces/remove-videos.ts#removeVideosFromSpace",
+      "request_scope_field": "scope_id",
+      "success": "object_success_message_deletedCount",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    }
+  ],
+  "authorization": {
+    "all_actions": "live_session_actor_active_tenant_manager",
+    "add_organization_add_space_remove_space": "every_target_video_actor_owned",
+    "remove_organization": "delete_only_matching_tenant_shares",
+    "cross_tenant_or_stale_authority": "not_found_without_mutation"
+  },
+  "atomicity": {
+    "one_transaction": [
+      "live_actor_active_tenant_and_membership_reassertion",
+      "organization_or_space_scope_preconditions",
+      "operation_specific_video_ownership_or_share_preconditions",
+      "normalized_share_space_and_folder_mutation",
+      "typed_storage_postcondition",
+      "tenant_actor_action_scoped_idempotency_receipt",
+      "business_audit",
+      "validated_cache_effects",
+      "one_use_browser_grant_consumption"
+    ],
+    "same_key_same_fingerprint": "replay_original_receipt",
+    "same_key_different_fingerprint": "conflict",
+    "race": "one_apply_one_replay",
+    "rollback": "no_partial_mutation_or_consumed_grant"
+  },
+  "source_closure": {
+    "cap-v1-d96a1931942eb83b": 7,
+    "cap-v1-0694e68a64976c9a": 6,
+    "cap-v1-bb55b5eeeb5e31ab": 12,
+    "cap-v1-ccbe5f1381eaa1b4": 11
+  }
+}

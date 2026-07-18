@@ -13,15 +13,74 @@ pub mod cutover_authority;
 pub mod cutover_authority_runtime;
 mod instant_finalize_contract;
 mod instant_finalize_runtime;
+pub mod legacy_analytics_runtime;
+mod legacy_analytics_web_runtime;
+mod legacy_collaboration_runtime;
+mod legacy_collaboration_web_runtime;
 pub mod legacy_compatibility_runtime;
+mod legacy_core_storage_runtime;
+mod legacy_core_storage_web_runtime;
+mod legacy_desktop_compatibility_runtime;
+mod legacy_desktop_compatibility_web_runtime;
+mod legacy_desktop_session_runtime;
+mod legacy_desktop_session_web_runtime;
+mod legacy_developer_actions_runtime;
+mod legacy_developer_api_runtime;
+mod legacy_developer_api_web_runtime;
+mod legacy_developer_web_runtime;
+mod legacy_extension_auth_runtime;
+mod legacy_extension_auth_web_runtime;
+mod legacy_extension_instant_recordings_runtime;
+mod legacy_extension_instant_recordings_web_runtime;
+mod legacy_folder_assignment_runtime;
+mod legacy_folder_crud_runtime;
+mod legacy_folder_crud_web_runtime;
+mod legacy_folder_web_runtime;
+mod legacy_invite_lifecycle_runtime;
+mod legacy_invite_lifecycle_web_runtime;
+mod legacy_library_detail_read_runtime;
+mod legacy_library_detail_read_web_runtime;
+mod legacy_library_id_read_runtime;
+mod legacy_library_id_read_web_runtime;
+mod legacy_library_placement_runtime;
+mod legacy_library_web_runtime;
+mod legacy_membership_actions_runtime;
+mod legacy_membership_web_runtime;
+mod legacy_mobile_bootstrap_caps_runtime;
+mod legacy_mobile_bootstrap_caps_web_runtime;
+mod legacy_mobile_session_runtime;
+mod legacy_mobile_session_web_runtime;
+mod legacy_mobile_uploads_runtime;
+mod legacy_mobile_uploads_web_runtime;
+mod legacy_notification_actions_runtime;
 mod legacy_notification_preferences_runtime;
-// This compatibility projection is intentionally test-only until a pinned,
-// complete Cap backfill proves every active organization has a lossless row.
-// Keeping it in the normal test target prevents the blocked adapter from
-// drifting while ensuring it cannot be routed in production by accident.
-#[cfg(test)]
-#[allow(dead_code)]
+mod legacy_notification_read_runtime;
+mod legacy_notification_web_runtime;
 mod legacy_org_custom_domain_runtime;
+mod legacy_org_custom_domain_web_runtime;
+mod legacy_organization_library_runtime;
+mod legacy_organization_library_web_runtime;
+pub mod legacy_protected_billing_auth_runtime;
+pub mod legacy_protected_billing_auth_web_runtime;
+pub mod legacy_protected_integrations_runtime;
+pub mod legacy_protected_integrations_web_runtime;
+pub mod legacy_protected_media_runtime;
+pub mod legacy_protected_media_web_runtime;
+mod legacy_space_authorization_runtime;
+mod legacy_space_authorization_web_runtime;
+mod legacy_transcripts_runtime;
+mod legacy_transcripts_web_runtime;
+mod legacy_upload_storage_runtime;
+mod legacy_upload_storage_web_runtime;
+mod legacy_user_account_runtime;
+mod legacy_user_account_web_runtime;
+mod legacy_video_domain_info_runtime;
+mod legacy_video_domain_info_web_runtime;
+mod legacy_video_lifecycle_runtime;
+mod legacy_video_lifecycle_web_runtime;
+mod legacy_video_properties_runtime;
+mod legacy_video_properties_web_runtime;
+mod legacy_web_action_runtime;
 mod media_service_runtime;
 pub mod organization_repository;
 mod organization_repository_conformance;
@@ -117,6 +176,155 @@ const MULTIPART_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const NATIVE_STANDARD_MAX_SOURCE_BYTES: u64 = 2_000_000_000;
 const NATIVE_HEAVY_MAX_SOURCE_BYTES: u64 = 20_000_000_000;
 const METADATA_CUTOVER_DOMAIN: &str = "metadata";
+
+/// Shared, kind-checked ingress for legacy RPC/action protected-media callables.
+///
+/// Effect-RPC and browser-action decoders use this function after their own
+/// authentication boundary. Workflows use the parent-receipt-only ingress
+/// below, so this older actor-bearing boundary rejects them.
+pub async fn dispatch_legacy_protected_media_callable_v1(
+    operation_id: &str,
+    database: &D1Database,
+    actor_id: &str,
+    tenant_id: Option<&str>,
+    idempotency_key: &str,
+    payload: serde_json::Value,
+    now_ms: i64,
+) -> std::result::Result<
+    legacy_protected_media_runtime::LegacyProtectedMediaStageOutcomeV1,
+    legacy_protected_media_runtime::LegacyProtectedMediaFailureV1,
+> {
+    let profile = frame_application::legacy_protected_media_profile(operation_id)
+        .ok_or(legacy_protected_media_runtime::LegacyProtectedMediaFailureV1::Invalid)?;
+    match profile.kind {
+        frame_application::LegacyProtectedMediaKindV1::Rpc => {
+            legacy_protected_media_web_runtime::rpc_response(
+                operation_id,
+                database,
+                actor_id,
+                tenant_id,
+                idempotency_key,
+                payload,
+                now_ms,
+            )
+            .await
+        }
+        frame_application::LegacyProtectedMediaKindV1::ServerAction => {
+            legacy_protected_media_web_runtime::server_action_response(
+                operation_id,
+                database,
+                actor_id,
+                tenant_id,
+                idempotency_key,
+                payload,
+                now_ms,
+            )
+            .await
+        }
+        frame_application::LegacyProtectedMediaKindV1::Workflow => {
+            Err(legacy_protected_media_runtime::LegacyProtectedMediaFailureV1::Invalid)
+        }
+        frame_application::LegacyProtectedMediaKindV1::Route => {
+            Err(legacy_protected_media_runtime::LegacyProtectedMediaFailureV1::Invalid)
+        }
+    }
+}
+
+/// Exact internal ingress for the ten protected-media workflow schedulers.
+///
+/// The scheduler cannot supply an actor, credential, tenant, or replay key.
+/// It names the immutable parent receipt/request pair and Frame reloads the
+/// allowlisted edge plus exact authority from the neutral parent registry.
+#[allow(clippy::too_many_arguments)]
+pub async fn dispatch_legacy_protected_media_workflow_v1(
+    operation_id: &str,
+    database: &D1Database,
+    parent_family: &str,
+    parent_receipt_id: &str,
+    parent_request_digest: &str,
+    payload: serde_json::Value,
+    now_ms: i64,
+) -> std::result::Result<
+    legacy_protected_media_runtime::LegacyProtectedMediaStageOutcomeV1,
+    legacy_protected_media_runtime::LegacyProtectedMediaFailureV1,
+> {
+    legacy_protected_media_web_runtime::workflow_response(
+        operation_id,
+        database,
+        parent_family,
+        parent_receipt_id,
+        parent_request_digest,
+        payload,
+        now_ms,
+    )
+    .await
+}
+
+/// Exact internal ingress for the two protected Loom workflow schedulers.
+///
+/// RPC, action, and route operation IDs are rejected even though they belong
+/// to the same contract family. A durable provider outbox receipt is returned
+/// only as an evidence requirement and is never projected as workflow success.
+#[allow(clippy::too_many_arguments)]
+pub async fn dispatch_legacy_protected_integration_workflow_v1(
+    operation_id: &str,
+    database: &D1Database,
+    parent_family: &str,
+    parent_receipt_id: &str,
+    parent_request_digest: &str,
+    payload: serde_json::Value,
+    now_ms: i64,
+) -> std::result::Result<
+    legacy_protected_integrations_runtime::LegacyProtectedIntegrationStageOutcomeV1,
+    legacy_protected_integrations_runtime::LegacyProtectedIntegrationFailureV1,
+> {
+    if !matches!(
+        operation_id,
+        "cap-v1-b9fcb0fbd25b2234" | "cap-v1-bd1b9d67380624f7"
+    ) {
+        return Err(
+            legacy_protected_integrations_runtime::LegacyProtectedIntegrationFailureV1::Invalid,
+        );
+    }
+    legacy_protected_integrations_web_runtime::workflow_response(
+        operation_id,
+        database,
+        parent_family,
+        parent_receipt_id,
+        parent_request_digest,
+        payload,
+        now_ms,
+    )
+    .await
+}
+
+/// Exact internal ingress for Cap's administrator video-reprocessing
+/// workflow. The scheduler supplies only the immutable parent action receipt
+/// and its request digest; Frame reloads the actor and video target from that
+/// receipt and derives the workflow replay key itself.
+pub async fn dispatch_legacy_protected_billing_auth_workflow_v1(
+    database: &D1Database,
+    parent_receipt_id: &str,
+    parent_request_digest: &str,
+    now_ms: i64,
+) -> std::result::Result<
+    legacy_protected_billing_auth_runtime::LegacyProtectedBillingAuthStageOutcomeV1,
+    legacy_protected_billing_auth_runtime::LegacyProtectedBillingAuthFailureV1,
+> {
+    legacy_protected_billing_auth_web_runtime::workflow_response(
+        "cap-v1-5a990f470c701cec",
+        database,
+        parent_receipt_id,
+        parent_request_digest,
+        now_ms,
+    )
+    .await
+}
+
+#[cfg(test)]
+fn is_legacy_protected_billing_auth_workflow(operation_id: &str) -> bool {
+    operation_id == "cap-v1-5a990f470c701cec"
+}
 
 fn direct_upload_finalize_expired(now_ms: i64, expires_at_ms: i64) -> bool {
     now_ms >= expires_at_ms.saturating_add(DIRECT_STAGING_CLEANUP_GRACE_MS)
@@ -694,6 +902,9 @@ struct FakePreview<'a> {
 struct RuntimeConfig {
     host_policy: HostPolicy,
     media_mode: MediaMode,
+    chrome_extension_id: Option<String>,
+    cap_hosted: bool,
+    videos_default_public: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -743,9 +954,41 @@ impl RuntimeConfig {
             (Deployment::Local, "native") => MediaMode::Native,
             _ => return None,
         };
+        let chrome_extension_id = env
+            .var("CAP_CHROME_EXTENSION_ID")
+            .map(|value| value.to_string())
+            .or_else(|_| {
+                env.secret("CAP_CHROME_EXTENSION_ID")
+                    .map(|value| value.to_string())
+            })
+            .ok()
+            .filter(|value| !value.is_empty() && value.len() <= 255 && value.is_ascii());
+        let cap_hosted = match env
+            .var("NEXT_PUBLIC_IS_CAP")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "true".into())
+            .as_str()
+        {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => return None,
+        };
+        let videos_default_public = match env
+            .var("CAP_VIDEOS_DEFAULT_PUBLIC")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "true".into())
+            .as_str()
+        {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => return None,
+        };
         Some(Self {
             host_policy: HostPolicy::new(deployment, public_host)?,
             media_mode,
+            chrome_extension_id,
+            cap_hosted,
+            videos_default_public,
         })
     }
 
@@ -754,7 +997,7 @@ impl RuntimeConfig {
     }
 }
 
-fn direct_upload_signer(env: &Env) -> Option<R2DirectPutSigner> {
+pub(crate) fn direct_upload_signer(env: &Env) -> Option<R2DirectPutSigner> {
     let account_id = env
         .var("FRAME_R2_ACCOUNT_ID")
         .map(|value| value.to_string())
@@ -1711,6 +1954,557 @@ async fn dispatch(
                 .await?
             }
         }
+        Route::LegacyMobileEmailSessionRequest => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_session_web_runtime::email_request_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileEmailSessionVerify => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_session_web_runtime::email_verify_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileSessionRequest => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_session_web_runtime::session_request_response(
+                    &request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileSessionRevoke => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_session_web_runtime::session_revoke_response(
+                    &request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileUploadCreate => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_uploads_web_runtime::response(
+                    &mut request,
+                    env,
+                    legacy_mobile_uploads_web_runtime::LegacyMobileUploadsRouteV1::Create,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileUploadComplete { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_uploads_web_runtime::response(
+                    &mut request,
+                    env,
+                    legacy_mobile_uploads_web_runtime::LegacyMobileUploadsRouteV1::Complete {
+                        video_id: &video_id,
+                    },
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileUploadProgress { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_uploads_web_runtime::response(
+                    &mut request,
+                    env,
+                    legacy_mobile_uploads_web_runtime::LegacyMobileUploadsRouteV1::Progress {
+                        video_id: &video_id,
+                    },
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileBootstrap => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_bootstrap_caps_web_runtime::response(
+                    &mut request,
+                    env,
+                    legacy_mobile_bootstrap_caps_web_runtime::LegacyMobileBootstrapCapsRouteV1::Bootstrap,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCaps => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_bootstrap_caps_web_runtime::response(
+                    &mut request,
+                    env,
+                    legacy_mobile_bootstrap_caps_web_runtime::LegacyMobileBootstrapCapsRouteV1::List,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCap { video_id } => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Delete], "GET, DELETE")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                let route = if request.method() == Method::Delete {
+                    legacy_mobile_bootstrap_caps_web_runtime::LegacyMobileBootstrapCapsRouteV1::Delete {
+                        video_id: &video_id,
+                    }
+                } else {
+                    legacy_mobile_bootstrap_caps_web_runtime::LegacyMobileBootstrapCapsRouteV1::Get {
+                        video_id: &video_id,
+                    }
+                };
+                legacy_mobile_bootstrap_caps_web_runtime::response(
+                    &mut request,
+                    env,
+                    route,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCapDownload { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_bootstrap_caps_web_runtime::response(
+                    &mut request,
+                    env,
+                    legacy_mobile_bootstrap_caps_web_runtime::LegacyMobileBootstrapCapsRouteV1::Download {
+                        video_id: &video_id,
+                    },
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCapPlayback { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_mobile_bootstrap_caps_web_runtime::response(
+                    &mut request,
+                    env,
+                    legacy_mobile_bootstrap_caps_web_runtime::LegacyMobileBootstrapCapsRouteV1::Playback {
+                        video_id: &video_id,
+                    },
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileFolders => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_folder_crud_web_runtime::mobile_create_response(
+                    &mut request,
+                    env,
+                    request_id,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCapPassword { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Patch], "PATCH")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_video_properties_web_runtime::mobile_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    video_id,
+                    legacy_video_properties_web_runtime::MobileVideoPropertyActionV1::Password,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCapSharing { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Patch], "PATCH")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_video_properties_web_runtime::mobile_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    video_id,
+                    legacy_video_properties_web_runtime::MobileVideoPropertyActionV1::Sharing,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCapTitle { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Patch], "PATCH")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_video_properties_web_runtime::mobile_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    video_id,
+                    legacy_video_properties_web_runtime::MobileVideoPropertyActionV1::Title,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCapComments { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_collaboration_web_runtime::mobile_create_comment_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    video_id,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileCapReactions { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_collaboration_web_runtime::mobile_create_reaction_response(
+                    &mut request,
+                    env,
+                    request_id,
+                    video_id,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMobileComment { comment_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Delete], "DELETE")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_collaboration_web_runtime::mobile_delete_comment_response(
+                    &request, env, request_id, comment_id,
+                )
+                .await?
+            }
+        }
+        Route::LegacyWebCommentDelete => {
+            if let Some(failure) = method_guard(&request, &[Method::Delete], "DELETE")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_collaboration_web_runtime::web_delete_comment_response(
+                    &request, env, request_id,
+                )
+                .await?
+            }
+        }
+        Route::LegacyAnalytics => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_analytics_web_runtime::http_response(
+                    legacy_analytics_web_runtime::LegacyAnalyticsHttpRouteV1::VideoCount,
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyAnalyticsTrack => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_analytics_web_runtime::http_response(
+                    legacy_analytics_web_runtime::LegacyAnalyticsHttpRouteV1::Track,
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyDashboardAnalytics => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_analytics_web_runtime::http_response(
+                    legacy_analytics_web_runtime::LegacyAnalyticsHttpRouteV1::Dashboard,
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyVideoMetadata => {
+            if let Some(failure) = method_guard(&request, &[Method::Put], "PUT")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_video_properties_web_runtime::metadata_response(
+                    &mut request,
+                    env,
+                    request_id,
+                )
+                .await?
+            }
+        }
+        Route::LegacyVideoAnalytics => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_analytics_web_runtime::http_response(
+                    legacy_analytics_web_runtime::LegacyAnalyticsHttpRouteV1::VideoHttp,
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyVideoDomainInfo => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_video_domain_info_web_runtime::response(&request, env).await?
+            }
+        }
+        Route::LegacyVideoDelete => {
+            if let Some(failure) = method_guard(&request, &[Method::Delete], "DELETE")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_video_lifecycle_web_runtime::delete_route_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyVideoOg => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_video_lifecycle_web_runtime::og_response(
+                    &request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyRetryTranscription { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_transcripts_web_runtime::retry_response(
+                    &request,
+                    env,
+                    &video_id,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyProtectedMedia => {
+            legacy_protected_media_route_dispatch(
+                &mut request,
+                env,
+                &target.path,
+                request_id,
+                config.production(),
+            )
+            .await?
+        }
+        Route::LegacyProtectedIntegration { operation_id } => {
+            legacy_protected_integrations_web_runtime::route_response(
+                operation_id,
+                &mut request,
+                env,
+                current_time_ms()?,
+            )
+            .await?
+        }
+        Route::LegacyProtectedBillingAuth => {
+            legacy_protected_billing_auth_route_dispatch(
+                &mut request,
+                env,
+                &target.path,
+                request_id,
+                config.production(),
+            )
+            .await?
+        }
+        Route::LegacyEffectRpc => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Post], "GET, POST")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else if request.method() == Method::Get {
+                legacy_video_lifecycle_web_runtime::effect_rpc_get_response()?
+            } else {
+                legacy_folder_crud_web_runtime::effect_rpc_response(&mut request, env, request_id)
+                    .await?
+            }
+        }
+        Route::LegacyUserName => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_user_account_web_runtime::name_route_response(&mut request, env, request_id)
+                    .await?
+            }
+        }
+        Route::LegacyInviteAccept => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_invite_lifecycle_web_runtime::response(
+                    &mut request,
+                    env,
+                    request_id,
+                    frame_application::LegacyInviteActionV1::Accept,
+                )
+                .await?
+            }
+        }
+        Route::LegacyInviteDecline => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_invite_lifecycle_web_runtime::response(
+                    &mut request,
+                    env,
+                    request_id,
+                    frame_application::LegacyInviteActionV1::Decline,
+                )
+                .await?
+            }
+        }
+        Route::LegacyExtensionAuthStart => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_extension_auth_web_runtime::start_response(
+                    &request,
+                    env,
+                    config,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyExtensionAuthApprove => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_extension_auth_web_runtime::approve_response(
+                    &mut request,
+                    env,
+                    config,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyExtensionAuthRevoke => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_extension_auth_web_runtime::revoke_response(
+                    &request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyExtensionBootstrap => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_extension_auth_web_runtime::bootstrap_response(
+                    &request,
+                    env,
+                    config,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyExtensionInstantCreate => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_extension_instant_recordings_web_runtime::create_response(
+                    &mut request,
+                    env,
+                    config,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyExtensionInstantProgress => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_extension_instant_recordings_web_runtime::progress_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyExtensionInstantDelete { video_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Delete], "DELETE")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_extension_instant_recordings_web_runtime::delete_response(
+                    &mut request,
+                    env,
+                    &video_id,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyNotifications => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_notifications_response(&request, env, request_id, config.production())
+                    .await?
+            }
+        }
         Route::LegacyNotificationPreferences => {
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
                 failure_response(failure, request_id, config.production())?
@@ -1722,6 +2516,138 @@ async fn dispatch(
                     config.production(),
                 )
                 .await?
+            }
+        }
+        Route::LegacyDesktopOrgCustomDomain => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Options], "GET, OPTIONS")?
+            {
+                let response = failure_response(failure, request_id, config.production())?;
+                let request_origin = request.headers().get("origin")?;
+                legacy_org_custom_domain_web_runtime::cors_response(
+                    response,
+                    request_origin.as_deref(),
+                    &canonical_origin,
+                )?
+            } else {
+                legacy_desktop_org_custom_domain_response(
+                    &request,
+                    env,
+                    request_id,
+                    config.production(),
+                    &canonical_origin,
+                )
+                .await?
+            }
+        }
+        Route::LegacyDesktopOrganizations => {
+            legacy_desktop_compatibility_route_response(
+                &mut request,
+                env,
+                request_id,
+                config.production(),
+                &canonical_origin,
+                Method::Get,
+                "GET, OPTIONS",
+                legacy_desktop_compatibility_web_runtime::LegacyDesktopCompatibilityRouteV1::Organizations,
+            )
+            .await?
+        }
+        Route::LegacyDesktopOrganizationBranding { organization_id } => {
+            legacy_desktop_compatibility_route_response(
+                &mut request,
+                env,
+                request_id,
+                config.production(),
+                &canonical_origin,
+                Method::Patch,
+                "PATCH, OPTIONS",
+                legacy_desktop_compatibility_web_runtime::LegacyDesktopCompatibilityRouteV1::OrganizationBranding {
+                    organization_id: &organization_id,
+                },
+            )
+            .await?
+        }
+        Route::LegacyDesktopStorageSetActive => {
+            legacy_desktop_compatibility_route_response(
+                &mut request,
+                env,
+                request_id,
+                config.production(),
+                &canonical_origin,
+                Method::Post,
+                "POST, OPTIONS",
+                legacy_desktop_compatibility_web_runtime::LegacyDesktopCompatibilityRouteV1::StorageSetActive,
+            )
+            .await?
+        }
+        Route::LegacyDesktopUserProfile => {
+            legacy_desktop_compatibility_route_response(
+                &mut request,
+                env,
+                request_id,
+                config.production(),
+                &canonical_origin,
+                Method::Get,
+                "GET, OPTIONS",
+                legacy_desktop_compatibility_web_runtime::LegacyDesktopCompatibilityRouteV1::UserProfile,
+            )
+            .await?
+        }
+        Route::LegacyDesktopVideoDelete => {
+            legacy_desktop_compatibility_route_response(
+                &mut request,
+                env,
+                request_id,
+                config.production(),
+                &canonical_origin,
+                Method::Delete,
+                "DELETE, OPTIONS",
+                legacy_desktop_compatibility_web_runtime::LegacyDesktopCompatibilityRouteV1::VideoDelete,
+            )
+            .await?
+        }
+        Route::LegacyDesktopVideoProgress => {
+            legacy_desktop_compatibility_route_response(
+                &mut request,
+                env,
+                request_id,
+                config.production(),
+                &canonical_origin,
+                Method::Post,
+                "POST, OPTIONS",
+                legacy_desktop_compatibility_web_runtime::LegacyDesktopCompatibilityRouteV1::VideoProgress,
+            )
+            .await?
+        }
+        Route::LegacyDesktopSessionRequest => {
+            let request_origin = request.headers().get("origin")?;
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Options], "GET, OPTIONS")?
+            {
+                legacy_org_custom_domain_web_runtime::cors_response(
+                    failure_response(failure, request_id, config.production())?,
+                    request_origin.as_deref(),
+                    &canonical_origin,
+                )?
+            } else if request.method() == Method::Options {
+                legacy_org_custom_domain_web_runtime::preflight_response(
+                    &request,
+                    &canonical_origin,
+                )?
+            } else {
+                let response = legacy_desktop_session_web_runtime::response(
+                    &request,
+                    env,
+                    config,
+                    current_time_ms()?,
+                )
+                .await?;
+                legacy_org_custom_domain_web_runtime::cors_response(
+                    response,
+                    request_origin.as_deref(),
+                    &canonical_origin,
+                )?
             }
         }
         Route::LegacyChangelog => {
@@ -1747,8 +2673,246 @@ async fn dispatch(
                 failure_response(failure, request_id, config.production())?
             } else {
                 legacy_changelog_status_response(&mut request, env, request_id, config.production())
-                    .await?
+                .await?
             }
+        }
+        Route::LegacyDownload => {
+            if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::download_response(&request)?
+            }
+        }
+        Route::LegacyPlaylist => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Head], "GET, HEAD")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                let head_only = request.method() == Method::Head;
+                legacy_core_storage_web_runtime::playlist_response(
+                    &request,
+                    env,
+                    current_time_ms()?,
+                    head_only,
+                )
+                .await?
+            }
+        }
+        Route::LegacyStorageObject => {
+            if let Some(failure) =
+                method_guard(&request, &[Method::Get, Method::Head], "GET, HEAD")?
+            {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                let head_only = request.method() == Method::Head;
+                legacy_core_storage_web_runtime::storage_object_response(
+                    &request,
+                    env,
+                    current_time_ms()?,
+                    head_only,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMultipartAbort => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::multipart_abort_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMultipartComplete => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::multipart_complete_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMultipartInitiate => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::multipart_initiate_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyMultipartPresignPart => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::multipart_presign_part_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyRecordingComplete => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::recording_complete_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacySignedUpload => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::signed_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacySignedUploadBatch => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else {
+                legacy_core_storage_web_runtime::signed_batch_response(
+                    &mut request,
+                    env,
+                    current_time_ms()?,
+                )
+                .await?
+            }
+        }
+        Route::LegacyDeveloperStorageCron => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::StorageCron,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperMultipartAbort => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::MultipartAbort,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperMultipartComplete => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::MultipartComplete,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperMultipartInitiate => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::MultipartInitiate,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperMultipartPresign => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::MultipartPresign,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperVideoCreate => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::VideoCreate,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperUsage => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::Usage,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperVideos => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::VideosList,
+                    video_id: None,
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperVideo { video_id } => {
+            let surface = if request.method() == Method::Delete {
+                frame_application::LegacyDeveloperApiSurfaceV1::VideoDelete
+            } else {
+                frame_application::LegacyDeveloperApiSurfaceV1::VideoGet
+            };
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface,
+                    video_id: Some(video_id),
+                },
+                &mut request,
+                env,
+            )
+            .await?
+        }
+        Route::LegacyDeveloperVideoStatus { video_id } => {
+            legacy_developer_api_web_runtime::response(
+                legacy_developer_api_web_runtime::LegacyDeveloperApiRouteV1 {
+                    surface: frame_application::LegacyDeveloperApiSurfaceV1::VideoStatus,
+                    video_id: Some(video_id),
+                },
+                &mut request,
+                env,
+            )
+            .await?
         }
         Route::ApiHealth => {
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {
@@ -2086,6 +3250,578 @@ async fn dispatch(
                     }
                     Err(failure) => failure_response(
                         browser_web_failure(failure, "invalid_body"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            }
+        }
+        Route::AuthenticatedWebCompatibilityAction { operation_id } => {
+            if let Some(failure) = method_guard(&request, &[Method::Post], "POST")? {
+                failure_response(failure, request_id, config.production())?
+            } else if legacy_space_authorization_web_runtime::is_action(&operation_id) {
+                let body = match legacy_space_authorization_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_space_authorization_web_runtime::read(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(result) => legacy_space_authorization_response(result)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_library_detail_read_web_runtime::is_action(&operation_id) {
+                let body = match legacy_library_detail_read_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_library_detail_read_web_runtime::read(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(result) => legacy_library_detail_read_response(result)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_library_id_read_web_runtime::is_action(&operation_id) {
+                let body = match legacy_library_id_read_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_library_id_read_web_runtime::read(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(result) => legacy_library_id_read_response(result)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_folder_web_runtime::is_action(&operation_id) {
+                let body = match legacy_folder_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_folder_web_runtime::mutate(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_folder_assignment_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_library_web_runtime::is_action(&operation_id) {
+                let body = match legacy_library_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_library_web_runtime::mutate(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_library_placement_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_notification_web_runtime::is_action(&operation_id) {
+                let body = match legacy_notification_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_notification_web_runtime::mutate(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_notification_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_developer_web_runtime::is_action(&operation_id) {
+                let body = match legacy_developer_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_developer_web_runtime::mutate(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_developer_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_membership_web_runtime::is_action(&operation_id) {
+                let body = match legacy_membership_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_membership_web_runtime::mutate(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_membership_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_collaboration_web_runtime::is_action(&operation_id) {
+                let body = match legacy_collaboration_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_collaboration_web_runtime::mutate_action(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_collaboration_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_video_properties_web_runtime::is_action(&operation_id) {
+                let body = match legacy_video_properties_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                    current_time_ms()?,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                legacy_video_properties_web_runtime::action_response(
+                    &request, env, &body, request_id,
+                )
+                .await?
+            } else if legacy_organization_library_web_runtime::is_action(&operation_id) {
+                let body = match legacy_organization_library_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                legacy_organization_library_web_runtime::action_response(&request, env, &body)
+                    .await?
+            } else if legacy_protected_media_web_runtime::is_server_action(&operation_id) {
+                let body = match legacy_protected_media_web_runtime::decode_server_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_protected_media_web_runtime::server_action_http_response(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                )
+                .await?
+                {
+                    Ok(response) => response,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_protected_integrations_web_runtime::is_server_action(&operation_id) {
+                let body = match legacy_protected_integrations_web_runtime::decode_server_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_protected_integrations_web_runtime::server_action_http_response(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                )
+                .await?
+                {
+                    Ok(response) => response,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_protected_billing_auth_web_runtime::is_server_action(&operation_id) {
+                let body = match legacy_protected_billing_auth_web_runtime::decode_server_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_protected_billing_auth_web_runtime::server_action_http_response(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                )
+                .await?
+                {
+                    Ok(response) => response,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_upload_storage_web_runtime::is_action(&operation_id) {
+                let body = match legacy_upload_storage_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_upload_storage_web_runtime::action(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                )
+                .await?
+                {
+                    Ok(result) => Response::from_json(&result)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_analytics_web_runtime::is_action(&operation_id) {
+                let body = match legacy_analytics_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                legacy_analytics_web_runtime::action_response(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                )
+                .await?
+            } else if legacy_transcripts_web_runtime::is_action(&operation_id) {
+                let body = match legacy_transcripts_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_transcripts_web_runtime::action(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                )
+                .await?
+                {
+                    Ok(result) => Response::from_json(&result)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else if legacy_user_account_web_runtime::is_action(&operation_id) {
+                let body = match legacy_user_account_web_runtime::decode_action_request(
+                    &mut request,
+                    &operation_id,
+                )
+                .await?
+                {
+                    Ok(body) => body,
+                    Err(failure) => {
+                        return failure_response(
+                            browser_web_failure(failure, "invalid_compatibility_action"),
+                            request_id,
+                            config.production(),
+                        );
+                    }
+                };
+                match legacy_user_account_web_runtime::mutate_action(
+                    &request,
+                    env,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                    config.production(),
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_user_account_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
+                        request_id,
+                        config.production(),
+                    )?,
+                }
+            } else {
+                let body =
+                    match legacy_web_action_runtime::decode_action_request(&mut request).await? {
+                        Ok(body) => body,
+                        Err(failure) => {
+                            return failure_response(
+                                browser_web_failure(failure, "invalid_compatibility_action"),
+                                request_id,
+                                config.production(),
+                            );
+                        }
+                    };
+                match legacy_web_action_runtime::mutate(
+                    &request,
+                    env,
+                    &operation_id,
+                    &body,
+                    current_time_ms()?,
+                    request_id,
+                )
+                .await?
+                {
+                    Ok(effect) => legacy_web_compatibility_action_response(effect)?,
+                    Err(failure) => failure_response(
+                        browser_web_failure(failure, "invalid_compatibility_action"),
                         request_id,
                         config.production(),
                     )?,
@@ -3291,6 +5027,669 @@ fn method_guard(
     }))
 }
 
+async fn legacy_protected_media_route_dispatch(
+    request: &mut Request,
+    env: &Env,
+    path: &str,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    let method = request.method().to_string();
+    if let Some(profile) = frame_application::legacy_protected_media_route_profile(&method, path) {
+        return legacy_protected_media_web_runtime::route_response(
+            profile.operation_id,
+            request,
+            env,
+            current_time_ms()?,
+        )
+        .await;
+    }
+
+    let get = frame_application::legacy_protected_media_route_profile("GET", path).is_some();
+    let head = frame_application::legacy_protected_media_route_profile("HEAD", path).is_some();
+    let post = frame_application::legacy_protected_media_route_profile("POST", path).is_some();
+    let failure = match (get, head, post) {
+        (true, true, false) => method_guard(request, &[Method::Get, Method::Head], "GET, HEAD")?,
+        (true, false, false) => method_guard(request, &[Method::Get], "GET")?,
+        (false, false, true) => method_guard(request, &[Method::Post], "POST")?,
+        _ => None,
+    }
+    .ok_or_else(|| Error::RustError("protected media route registry is invalid".into()))?;
+    failure_response(failure, request_id, production)
+}
+
+async fn legacy_protected_billing_auth_route_dispatch(
+    request: &mut Request,
+    env: &Env,
+    path: &str,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    let method = request.method().to_string();
+    if let Some(operation_id) = legacy_protected_billing_auth_route_operation(&method, path) {
+        return legacy_protected_billing_auth_web_runtime::route_response(
+            operation_id,
+            request,
+            env,
+            current_time_ms()?,
+        )
+        .await;
+    }
+
+    let (accepted, allow) =
+        legacy_protected_billing_auth_allowed_methods(path).ok_or_else(|| {
+            Error::RustError("protected billing/auth route registry is invalid".into())
+        })?;
+    let failure = method_guard(request, accepted, allow)?.ok_or_else(|| {
+        Error::RustError("protected billing/auth route registry is invalid".into())
+    })?;
+    let mut response = failure_response(failure, request_id, production)?;
+    if path == "/api/developer/credits/checkout" {
+        legacy_protected_billing_auth_web_runtime::add_developer_checkout_cors(
+            &mut response,
+            request,
+            env,
+        )?;
+    }
+    Ok(response)
+}
+
+fn legacy_protected_billing_auth_allowed_methods(
+    path: &str,
+) -> Option<(&'static [Method], &'static str)> {
+    const NEXTAUTH: &[Method] = &[Method::Get, Method::Post];
+    const DEVELOPER_CHECKOUT: &[Method] = &[Method::Post, Method::Options];
+    const GET_ONLY: &[Method] = &[Method::Get];
+    const POST_ONLY: &[Method] = &[Method::Post];
+
+    if path.starts_with("/api/auth/") {
+        Some((NEXTAUTH, "GET, POST"))
+    } else if path == "/api/developer/credits/checkout" {
+        Some((DEVELOPER_CHECKOUT, "POST, OPTIONS"))
+    } else if path == "/api/settings/billing/usage" {
+        Some((GET_ONLY, "GET"))
+    } else if matches!(
+        path,
+        "/api/desktop/subscribe"
+            | "/api/settings/billing/guest-checkout"
+            | "/api/settings/billing/manage"
+            | "/api/settings/billing/subscribe"
+            | "/api/webhooks/stripe"
+            | "/api/commercial/checkout"
+    ) {
+        Some((POST_ONLY, "POST"))
+    } else {
+        None
+    }
+}
+
+fn legacy_protected_billing_auth_route_operation(method: &str, path: &str) -> Option<&'static str> {
+    if path.starts_with("/api/auth/") {
+        match method {
+            "GET" => return Some("cap-v1-46bda1c18ffba076"),
+            "POST" => return Some("cap-v1-82a39c991fae1050"),
+            _ => return None,
+        }
+    }
+    match (method, path) {
+        ("POST", "/api/desktop/subscribe") => Some("cap-v1-78537fb518df75ec"),
+        ("OPTIONS", "/api/developer/credits/checkout") => Some("cap-v1-572763e7b4977abd"),
+        ("POST", "/api/developer/credits/checkout") => Some("cap-v1-60b06cc5ab45f187"),
+        ("POST", "/api/settings/billing/guest-checkout") => Some("cap-v1-af61fa5c8fc453cf"),
+        ("POST", "/api/settings/billing/manage") => Some("cap-v1-e596f65c43ee2a82"),
+        ("POST", "/api/settings/billing/subscribe") => Some("cap-v1-96230bf1f2da3d00"),
+        ("GET", "/api/settings/billing/usage") => Some("cap-v1-856dfea22b9d979c"),
+        ("POST", "/api/webhooks/stripe") => Some("cap-v1-1e5f228815a2a8b7"),
+        ("POST", "/api/commercial/checkout") => Some("cap-v1-b2d19e91b05834cf"),
+        _ => None,
+    }
+}
+
+fn legacy_web_compatibility_action_response(
+    effect: legacy_web_action_runtime::WebCompatibilityActionEffectV1,
+) -> Result<Response> {
+    let metadata = legacy_web_compatibility_action_response_metadata(effect);
+    let mut response = Response::empty()?.with_status(metadata.status);
+    response
+        .headers_mut()
+        .set("cache-control", metadata.cache_control)?;
+    if let Some(set_cookie) = metadata.set_cookie {
+        response.headers_mut().set("set-cookie", &set_cookie)?;
+    }
+    Ok(response)
+}
+
+fn legacy_folder_assignment_action_response(
+    effect: legacy_folder_web_runtime::WebFolderAssignmentActionEffectV1,
+) -> Result<Response> {
+    let mut response = match effect {
+        legacy_folder_web_runtime::WebFolderAssignmentActionEffectV1::Added {
+            added_count,
+            message,
+        } => Response::from_json(&LegacyFolderAddedResponseV1 {
+            success: true,
+            message,
+            added_count,
+        })?,
+        legacy_folder_web_runtime::WebFolderAssignmentActionEffectV1::Removed {
+            removed_count,
+            message,
+        } => Response::from_json(&LegacyFolderRemovedResponseV1 {
+            success: true,
+            message,
+            removed_count,
+        })?,
+        legacy_folder_web_runtime::WebFolderAssignmentActionEffectV1::MoveVoid => {
+            Response::empty()?.with_status(204)
+        }
+    };
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_library_placement_action_response(
+    effect: legacy_library_web_runtime::WebLibraryPlacementActionEffectV1,
+) -> Result<Response> {
+    let mut response = match effect {
+        legacy_library_web_runtime::WebLibraryPlacementActionEffectV1::OrganizationAdded {
+            message,
+        }
+        | legacy_library_web_runtime::WebLibraryPlacementActionEffectV1::OrganizationRemoved {
+            message,
+        }
+        | legacy_library_web_runtime::WebLibraryPlacementActionEffectV1::ScopeAdded { message } => {
+            Response::from_json(&LegacyLibraryPlacementMessageResponseV1 {
+                success: true,
+                message,
+            })?
+        }
+        legacy_library_web_runtime::WebLibraryPlacementActionEffectV1::ScopeRemoved {
+            message,
+            deleted_count,
+        } => Response::from_json(&LegacyLibraryPlacementRemovedResponseV1 {
+            success: true,
+            message,
+            deleted_count,
+        })?,
+    };
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_notification_action_response(
+    _effect: legacy_notification_web_runtime::WebNotificationActionVoidV1,
+) -> Result<Response> {
+    let mut response = Response::empty()?.with_status(204);
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_user_account_action_response(
+    _effect: legacy_user_account_web_runtime::WebUserAccountActionVoidV1,
+) -> Result<Response> {
+    let mut response = Response::empty()?.with_status(204);
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_developer_action_response(
+    effect: legacy_developer_web_runtime::WebDeveloperActionEffectV1,
+) -> Result<Response> {
+    let mut response = if let Some((app_id, public_key, secret_key)) = effect.app_created() {
+        Response::from_json(&LegacyDeveloperAppCreatedResponseV1 {
+            app_id,
+            public_key,
+            secret_key,
+        })?
+    } else if let Some((public_key, secret_key)) = effect.regenerated_keys() {
+        Response::from_json(&LegacyDeveloperKeysResponseV1 {
+            public_key,
+            secret_key,
+        })?
+    } else if effect.is_success_object() {
+        Response::from_json(&LegacyDeveloperSuccessResponseV1 { success: true })?
+    } else {
+        return Err(Error::RustError(
+            "legacy developer response projection is invalid".into(),
+        ));
+    };
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_membership_action_response(
+    effect: legacy_membership_web_runtime::WebMembershipActionEffectV1,
+) -> Result<Response> {
+    let mut response = match effect {
+        legacy_membership_web_runtime::WebMembershipActionEffectV1::SuccessObject => {
+            Response::from_json(&LegacyMembershipSuccessResponseV1 { success: true })?
+        }
+        legacy_membership_web_runtime::WebMembershipActionEffectV1::SpaceMembersSet { count } => {
+            Response::from_json(&LegacyMembershipSetResponseV1 {
+                success: true,
+                count,
+            })?
+        }
+        legacy_membership_web_runtime::WebMembershipActionEffectV1::SpaceMembersAdded {
+            added,
+            already_members,
+        } => Response::from_json(&LegacyMembershipAddedResponseV1 {
+            success: true,
+            added,
+            already_members,
+        })?,
+        legacy_membership_web_runtime::WebMembershipActionEffectV1::SpaceMembersRemoved {
+            removed_member_ids,
+        } => Response::from_json(&LegacyMembershipRemovedResponseV1 {
+            success: true,
+            removed: removed_member_ids,
+        })?,
+    };
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_collaboration_action_response(
+    effect: legacy_collaboration_web_runtime::WebCollaborationActionEffectV1,
+) -> Result<Response> {
+    let value = match effect {
+        legacy_collaboration_web_runtime::WebCollaborationActionEffectV1::SuccessObject => {
+            serde_json::json!({"success": true})
+        }
+        legacy_collaboration_web_runtime::WebCollaborationActionEffectV1::Comment(comment) => {
+            let legacy_collaboration_web_runtime::WebCollaborationCommentEffectV1 {
+                id,
+                author_id,
+                kind,
+                content,
+                video_id,
+                timestamp,
+                parent_comment_id,
+                created_at,
+                updated_at,
+                author_name,
+                author_image,
+                sending,
+            } = *comment;
+            serde_json::json!({
+            "id": id,
+            "authorId": author_id,
+            "type": kind,
+            "content": content,
+            "videoId": video_id,
+            "timestamp": timestamp,
+            "parentCommentId": parent_comment_id,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+            "authorName": author_name,
+            "authorImage": author_image,
+            "sending": sending,
+            })
+        }
+    };
+    let mut response = Response::from_json(&value)?;
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_library_id_read_response(
+    result: frame_application::LegacyLibraryIdReadResultV1,
+) -> Result<Response> {
+    let mut response = match result {
+        frame_application::LegacyLibraryIdReadResultV1::Success { data } => {
+            Response::from_json(&LegacyLibraryIdReadSuccessResponseV1 {
+                success: true,
+                data,
+            })?
+        }
+        frame_application::LegacyLibraryIdReadResultV1::Failure { error } => {
+            Response::from_json(&LegacyLibraryIdReadFailureResponseV1 {
+                success: false,
+                error,
+            })?
+        }
+    };
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_space_authorization_response(
+    result: frame_application::LegacySpaceAuthorizationResultV1,
+) -> Result<Response> {
+    use frame_application::LegacySpaceAuthorizationResultV1;
+
+    let (mut response, status) = match result {
+        LegacySpaceAuthorizationResultV1::GetSpaceAccess { access } => (
+            Response::from_json(&access.map(legacy_space_access_wire))?,
+            200,
+        ),
+        LegacySpaceAuthorizationResultV1::RequireSpaceManager { access } => {
+            (Response::from_json(&legacy_space_access_wire(access))?, 200)
+        }
+        LegacySpaceAuthorizationResultV1::Thrown { message } => {
+            let status = if message == frame_application::LEGACY_SPACE_NOT_FOUND_MESSAGE {
+                404
+            } else {
+                403
+            };
+            (
+                Response::from_json(&LegacySpaceAuthorizationErrorWireV1 { error: message })?,
+                status,
+            )
+        }
+    };
+    response = response.with_status(status);
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn legacy_space_access_wire(
+    access: frame_application::LegacySpaceAccessV1,
+) -> LegacySpaceAccessWireV1 {
+    LegacySpaceAccessWireV1 {
+        space_id: access.space_id,
+        organization_id: access.organization_id,
+        organization_owner_id: access.organization_owner_id,
+        created_by_id: access.created_by_id,
+        organization_role: access
+            .organization_role
+            .map(frame_application::LegacyOrganizationRoleV1::stable_code),
+        space_role: access
+            .space_role
+            .map(frame_application::LegacySpaceRoleV1::stable_code),
+        can_manage: access.can_manage,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySpaceAccessWireV1 {
+    space_id: String,
+    organization_id: String,
+    organization_owner_id: String,
+    created_by_id: String,
+    organization_role: Option<&'static str>,
+    space_role: Option<&'static str>,
+    can_manage: bool,
+}
+
+#[derive(Serialize)]
+struct LegacySpaceAuthorizationErrorWireV1 {
+    error: &'static str,
+}
+
+fn legacy_library_detail_read_response(
+    result: frame_application::LegacyLibraryDetailResultV1,
+) -> Result<Response> {
+    use frame_application::LegacyLibraryDetailResultV1;
+
+    let mut response = match result {
+        LegacyLibraryDetailResultV1::GetUserVideosSuccess { data } => {
+            let data = data
+                .into_iter()
+                .map(|video| {
+                    Ok(LegacyUserVideoWireV1 {
+                        id: video.id,
+                        owner_id: video.owner_id,
+                        name: video.name,
+                        created_at: legacy_library_detail_iso(video.created_at_ms)?,
+                        metadata: video.metadata,
+                        is_screenshot: video.is_screenshot,
+                        total_comments: video.total_comments,
+                        total_reactions: video.total_reactions,
+                        owner_name: video.owner_name,
+                        folder_name: video.folder_name,
+                        folder_color: video.folder_color,
+                        has_active_upload: video.has_active_upload,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Response::from_json(&LegacyUserVideosSuccessWireV1 {
+                success: true,
+                data,
+            })?
+        }
+        LegacyLibraryDetailResultV1::GetUserVideosFailure => {
+            Response::from_json(&LegacyUserVideosFailureWireV1 {
+                success: false,
+                error: "Failed to fetch videos",
+            })?
+        }
+        LegacyLibraryDetailResultV1::SearchDashboardVideos { data } => {
+            let data = data
+                .into_iter()
+                .map(|video| {
+                    Ok(LegacyDashboardSearchVideoWireV1 {
+                        id: video.id,
+                        name: video.name,
+                        owner_name: video.owner_name,
+                        created_at: legacy_library_detail_iso(video.created_at_ms)?,
+                        duration: video.duration_seconds,
+                        is_screenshot: video.is_screenshot,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Response::from_json(&data)?
+        }
+    };
+    response
+        .headers_mut()
+        .set("cache-control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+#[derive(Serialize)]
+struct LegacyUserVideosSuccessWireV1 {
+    success: bool,
+    data: Vec<LegacyUserVideoWireV1>,
+}
+
+#[derive(Serialize)]
+struct LegacyUserVideosFailureWireV1 {
+    success: bool,
+    error: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyUserVideoWireV1 {
+    id: String,
+    owner_id: String,
+    name: String,
+    created_at: String,
+    metadata: Option<serde_json::Value>,
+    is_screenshot: bool,
+    total_comments: u64,
+    total_reactions: u64,
+    owner_name: String,
+    folder_name: Option<String>,
+    folder_color: Option<String>,
+    has_active_upload: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyDashboardSearchVideoWireV1 {
+    id: String,
+    name: String,
+    owner_name: Option<String>,
+    created_at: String,
+    duration: Option<f64>,
+    is_screenshot: bool,
+}
+
+fn legacy_library_detail_iso(value: i64) -> Result<String> {
+    if !(0..=253_402_300_799_999).contains(&value) {
+        return Err(worker::Error::RustError(
+            "legacy library detail timestamp is invalid".into(),
+        ));
+    }
+    let seconds = value / 1_000;
+    let millis = value % 1_000;
+    let days = seconds / 86_400;
+    let seconds_of_day = seconds % 86_400;
+    let (year, month, day) = legacy_library_detail_civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    Ok(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
+    ))
+}
+
+fn legacy_library_detail_civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
+    let shifted = days_since_epoch + 719_468;
+    let era = shifted / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (year, month, day)
+}
+
+#[derive(Serialize)]
+struct LegacyLibraryIdReadSuccessResponseV1 {
+    success: bool,
+    data: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct LegacyLibraryIdReadFailureResponseV1 {
+    success: bool,
+    error: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyFolderAddedResponseV1 {
+    success: bool,
+    message: String,
+    added_count: u16,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyFolderRemovedResponseV1 {
+    success: bool,
+    message: String,
+    removed_count: u16,
+}
+
+#[derive(Serialize)]
+struct LegacyLibraryPlacementMessageResponseV1 {
+    success: bool,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyLibraryPlacementRemovedResponseV1 {
+    success: bool,
+    message: String,
+    deleted_count: u16,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyDeveloperAppCreatedResponseV1<'a> {
+    app_id: &'a str,
+    public_key: &'a str,
+    secret_key: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyDeveloperKeysResponseV1<'a> {
+    public_key: &'a str,
+    secret_key: &'a str,
+}
+
+#[derive(Serialize)]
+struct LegacyDeveloperSuccessResponseV1 {
+    success: bool,
+}
+
+#[derive(Serialize)]
+struct LegacyMembershipSuccessResponseV1 {
+    success: bool,
+}
+
+#[derive(Serialize)]
+struct LegacyMembershipSetResponseV1 {
+    success: bool,
+    count: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMembershipAddedResponseV1 {
+    success: bool,
+    added: Vec<String>,
+    already_members: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct LegacyMembershipRemovedResponseV1 {
+    success: bool,
+    removed: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LegacyWebCompatibilityActionResponseMetadataV1 {
+    status: u16,
+    cache_control: &'static str,
+    set_cookie: Option<String>,
+}
+
+fn legacy_web_compatibility_action_response_metadata(
+    effect: legacy_web_action_runtime::WebCompatibilityActionEffectV1,
+) -> LegacyWebCompatibilityActionResponseMetadataV1 {
+    let set_cookie = match effect {
+        legacy_web_action_runtime::WebCompatibilityActionEffectV1::ActiveOrganizationChanged => {
+            None
+        }
+        legacy_web_action_runtime::WebCompatibilityActionEffectV1::ThemeCookie {
+            name,
+            value,
+            path,
+        } => {
+            // These values are closed enums/constants produced by the typed
+            // action adapter, never request strings. Preserve Next's pinned
+            // default response-cookie serialization without adding attributes
+            // absent from the source action.
+            Some(format!("{name}={value}; Path={path}"))
+        }
+    };
+    LegacyWebCompatibilityActionResponseMetadataV1 {
+        status: 204,
+        cache_control: "no-store, max-age=0",
+        set_cookie,
+    }
+}
+
 async fn legacy_api_status_response(
     request: &mut Request,
     env: &Env,
@@ -3369,6 +5768,267 @@ async fn legacy_mobile_session_config_response(
         "invalid_mobile_session_config_request",
     )
     .await
+}
+
+async fn legacy_notifications_response(
+    request: &Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+) -> Result<Response> {
+    let actor_id = match browser_web_runtime::authenticate_host_only_browser_session(
+        request,
+        env,
+        current_time_ms()?,
+    )
+    .await?
+    {
+        Ok(actor_id) => actor_id,
+        Err(browser_web_runtime::BrowserWebFailure::Unavailable) => {
+            return failure_response(
+                ApiFailure::new(
+                    503,
+                    "service_unavailable",
+                    "The service is temporarily unavailable.",
+                    true,
+                ),
+                request_id,
+                production,
+            );
+        }
+        Err(_) => {
+            return legacy_notifications_exact_response(
+                401,
+                legacy_notification_read_runtime::LEGACY_NOTIFICATION_READ_UNAUTHORIZED_BODY
+                    .as_bytes()
+                    .to_vec(),
+                legacy_notification_read_runtime::LEGACY_NOTIFICATION_READ_UNAUTHORIZED_CONTENT_TYPE,
+            );
+        }
+    };
+    let database = env.d1("DB")?;
+    match compatibility_rate_limit::admit_principal(
+        env,
+        &database,
+        CompatibilityRateLimitBucketV1::CollaborationNotifications,
+        &actor_id,
+        current_time_ms()?,
+    )
+    .await?
+    {
+        frame_application::RateLimitDecisionV1::Allowed => {}
+        frame_application::RateLimitDecisionV1::Rejected { .. } => {
+            return failure_response(
+                ApiFailure::new(
+                    429,
+                    "rate_limited",
+                    "The request rate limit was exceeded.",
+                    true,
+                )
+                .with_retry_after_seconds(compatibility_rate_limit::RETRY_AFTER_SECONDS),
+                request_id,
+                production,
+            );
+        }
+    }
+    match legacy_notification_read_runtime::read_exact_json(&database, &actor_id).await {
+        Ok(body) => legacy_notifications_exact_response(
+            200,
+            body,
+            legacy_notification_read_runtime::LEGACY_NOTIFICATION_READ_SUCCESS_CONTENT_TYPE,
+        ),
+        Err(
+            legacy_notification_read_runtime::LegacyNotificationReadErrorV1::InvalidActor
+            | legacy_notification_read_runtime::LegacyNotificationReadErrorV1::Unavailable
+            | legacy_notification_read_runtime::LegacyNotificationReadErrorV1::Corrupt,
+        ) => legacy_notifications_exact_response(
+            500,
+            legacy_notification_read_runtime::LEGACY_NOTIFICATION_READ_FAILURE_BODY
+                .as_bytes()
+                .to_vec(),
+            legacy_notification_read_runtime::LEGACY_NOTIFICATION_READ_SUCCESS_CONTENT_TYPE,
+        ),
+    }
+}
+
+fn legacy_notifications_exact_response(
+    status: u16,
+    body: Vec<u8>,
+    content_type: &str,
+) -> Result<Response> {
+    let mut response = Response::from_bytes(body)?.with_status(status);
+    response.headers_mut().set("content-type", content_type)?;
+    Ok(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn legacy_desktop_compatibility_route_response(
+    request: &mut Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+    canonical_origin: &str,
+    expected_method: Method,
+    allowed_methods: &'static str,
+    route: legacy_desktop_compatibility_web_runtime::LegacyDesktopCompatibilityRouteV1<'_>,
+) -> Result<Response> {
+    let origin = request.headers().get("origin")?;
+    if let Some(failure) = method_guard(
+        request,
+        &[expected_method, Method::Options],
+        allowed_methods,
+    )? {
+        return legacy_org_custom_domain_web_runtime::cors_response(
+            failure_response(failure, request_id, production)?,
+            origin.as_deref(),
+            canonical_origin,
+        );
+    }
+    if request.method() == Method::Options {
+        return legacy_org_custom_domain_web_runtime::preflight_response(request, canonical_origin);
+    }
+    legacy_desktop_compatibility_web_runtime::response(
+        request,
+        env,
+        route,
+        current_time_ms()?,
+        canonical_origin,
+    )
+    .await
+}
+
+async fn legacy_desktop_org_custom_domain_response(
+    request: &Request,
+    env: &Env,
+    request_id: &str,
+    production: bool,
+    canonical_origin: &str,
+) -> Result<Response> {
+    if request.method() == Method::Options {
+        return legacy_org_custom_domain_web_runtime::preflight_response(request, canonical_origin);
+    }
+    let request_origin = request.headers().get("origin")?;
+    let actor_id = match legacy_org_custom_domain_web_runtime::authenticate(
+        request,
+        env,
+        current_time_ms()?,
+    )
+    .await?
+    {
+        Ok(actor_id) => actor_id,
+        Err(
+            legacy_org_custom_domain_web_runtime::LegacyDesktopOrgCustomDomainAuthFailureV1::Unauthenticated,
+        ) => {
+            let response = legacy_desktop_org_custom_domain_exact_response(
+                401,
+                legacy_org_custom_domain_runtime::LEGACY_ORG_CUSTOM_DOMAIN_UNAUTHENTICATED_BODY
+                    .as_bytes()
+                    .to_vec(),
+                legacy_org_custom_domain_runtime::LEGACY_ORG_CUSTOM_DOMAIN_UNAUTHENTICATED_CONTENT_TYPE,
+            )?;
+            return legacy_org_custom_domain_web_runtime::cors_response(
+                response,
+                request_origin.as_deref(),
+                canonical_origin,
+            );
+        }
+        Err(
+            legacy_org_custom_domain_web_runtime::LegacyDesktopOrgCustomDomainAuthFailureV1::Unavailable,
+        ) => {
+            let response = failure_response(
+                ApiFailure::new(
+                    503,
+                    "service_unavailable",
+                    "The service is temporarily unavailable.",
+                    true,
+                ),
+                request_id,
+                production,
+            )?;
+            return legacy_org_custom_domain_web_runtime::cors_response(
+                response,
+                request_origin.as_deref(),
+                canonical_origin,
+            );
+        }
+    };
+    let database = env.d1("DB")?;
+    if matches!(
+        compatibility_rate_limit::admit_principal(
+            env,
+            &database,
+            CompatibilityRateLimitBucketV1::ClientCompatibility,
+            &actor_id,
+            current_time_ms()?,
+        )
+        .await?,
+        frame_application::RateLimitDecisionV1::Rejected { .. }
+    ) {
+        let response = failure_response(
+            ApiFailure::new(
+                429,
+                "rate_limited",
+                "The request rate limit was exceeded.",
+                true,
+            )
+            .with_retry_after_seconds(compatibility_rate_limit::RETRY_AFTER_SECONDS),
+            request_id,
+            production,
+        )?;
+        return legacy_org_custom_domain_web_runtime::cors_response(
+            response,
+            request_origin.as_deref(),
+            canonical_origin,
+        );
+    }
+    let authority =
+        legacy_org_custom_domain_runtime::D1LegacyOrganizationCustomDomainAuthorityV1::new(
+            &database,
+        );
+    let (status, body, content_type) = match legacy_org_custom_domain_runtime::LegacyOrganizationCustomDomainAuthorityV1::read_for_actor(
+        &authority,
+        &actor_id,
+    )
+    .await
+    {
+        Ok(value) => match value.exact_json_body() {
+            Ok(body) => (
+                200,
+                body,
+                legacy_org_custom_domain_runtime::LEGACY_ORG_CUSTOM_DOMAIN_SUCCESS_CONTENT_TYPE,
+            ),
+            Err(_) => (
+                500,
+                legacy_org_custom_domain_runtime::LEGACY_ORG_CUSTOM_DOMAIN_FAILURE_BODY
+                    .as_bytes()
+                    .to_vec(),
+                legacy_org_custom_domain_runtime::LEGACY_ORG_CUSTOM_DOMAIN_FAILURE_CONTENT_TYPE,
+            ),
+        },
+        Err(_) => (
+            500,
+            legacy_org_custom_domain_runtime::LEGACY_ORG_CUSTOM_DOMAIN_FAILURE_BODY
+                .as_bytes()
+                .to_vec(),
+            legacy_org_custom_domain_runtime::LEGACY_ORG_CUSTOM_DOMAIN_FAILURE_CONTENT_TYPE,
+        ),
+    };
+    let response = legacy_desktop_org_custom_domain_exact_response(status, body, content_type)?;
+    legacy_org_custom_domain_web_runtime::cors_response(
+        response,
+        request_origin.as_deref(),
+        canonical_origin,
+    )
+}
+
+fn legacy_desktop_org_custom_domain_exact_response(
+    status: u16,
+    body: Vec<u8>,
+    content_type: &str,
+) -> Result<Response> {
+    let mut response = Response::from_bytes(body)?.with_status(status);
+    response.headers_mut().set("content-type", content_type)?;
+    Ok(response)
 }
 
 async fn legacy_notification_preferences_response(
@@ -3797,7 +6457,7 @@ async fn legacy_static_response(
     Ok(response)
 }
 
-async fn read_bounded_legacy_body(
+pub(crate) async fn read_bounded_legacy_body(
     request: &mut Request,
     max_bytes: usize,
 ) -> std::result::Result<Vec<u8>, ()> {
@@ -14299,6 +16959,226 @@ mod tests {
     use crate::contracts::ValidationCode;
 
     #[test]
+    fn protected_billing_auth_method_paths_resolve_exact_operation_ids() {
+        let routes = [
+            ("GET", "/api/auth/session", "cap-v1-46bda1c18ffba076"),
+            (
+                "POST",
+                "/api/auth/callback/google",
+                "cap-v1-82a39c991fae1050",
+            ),
+            ("POST", "/api/desktop/subscribe", "cap-v1-78537fb518df75ec"),
+            (
+                "OPTIONS",
+                "/api/developer/credits/checkout",
+                "cap-v1-572763e7b4977abd",
+            ),
+            (
+                "POST",
+                "/api/developer/credits/checkout",
+                "cap-v1-60b06cc5ab45f187",
+            ),
+            (
+                "POST",
+                "/api/settings/billing/guest-checkout",
+                "cap-v1-af61fa5c8fc453cf",
+            ),
+            (
+                "POST",
+                "/api/settings/billing/manage",
+                "cap-v1-e596f65c43ee2a82",
+            ),
+            (
+                "POST",
+                "/api/settings/billing/subscribe",
+                "cap-v1-96230bf1f2da3d00",
+            ),
+            (
+                "GET",
+                "/api/settings/billing/usage",
+                "cap-v1-856dfea22b9d979c",
+            ),
+            ("POST", "/api/webhooks/stripe", "cap-v1-1e5f228815a2a8b7"),
+            (
+                "POST",
+                "/api/commercial/checkout",
+                "cap-v1-b2d19e91b05834cf",
+            ),
+        ];
+        for (method, path, operation_id) in routes {
+            assert_eq!(
+                legacy_protected_billing_auth_route_operation(method, path),
+                Some(operation_id),
+                "{method} {path}"
+            );
+        }
+        for (method, path) in [
+            ("DELETE", "/api/auth/session"),
+            ("GET", "/api/desktop/subscribe"),
+            ("GET", "/api/developer/credits/checkout"),
+            ("POST", "/api/settings/billing/usage"),
+            ("GET", "/api/webhooks/stripe"),
+        ] {
+            assert_eq!(
+                legacy_protected_billing_auth_route_operation(method, path),
+                None,
+                "{method} {path}"
+            );
+        }
+        for (path, allow) in [
+            ("/api/auth/session", "GET, POST"),
+            ("/api/developer/credits/checkout", "POST, OPTIONS"),
+            ("/api/settings/billing/usage", "GET"),
+            ("/api/settings/billing/manage", "POST"),
+            ("/api/commercial/checkout", "POST"),
+        ] {
+            assert_eq!(
+                legacy_protected_billing_auth_allowed_methods(path).map(|(_, actual)| actual),
+                Some(allow),
+                "{path}"
+            );
+        }
+        assert!(legacy_protected_billing_auth_allowed_methods("/api/auth").is_none());
+        assert!(is_legacy_protected_billing_auth_workflow(
+            "cap-v1-5a990f470c701cec"
+        ));
+        for operation_id in [
+            "cap-v1-14ea978608dcf07e",
+            "cap-v1-90a6eb69c3fd7b4b",
+            "cap-v1-b9fcb0fbd25b2234",
+        ] {
+            assert!(
+                !is_legacy_protected_billing_auth_workflow(operation_id),
+                "{operation_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_action_void_responses_are_no_store_and_cookie_exact() {
+        let theme = legacy_web_compatibility_action_response_metadata(
+            legacy_web_action_runtime::WebCompatibilityActionEffectV1::ThemeCookie {
+                name: "theme",
+                value: "dark",
+                path: "/",
+            },
+        );
+        assert_eq!(theme.status, 204);
+        assert_eq!(theme.cache_control, "no-store, max-age=0");
+        assert_eq!(theme.set_cookie, Some("theme=dark; Path=/".into()));
+
+        let organization = legacy_web_compatibility_action_response_metadata(
+            legacy_web_action_runtime::WebCompatibilityActionEffectV1::ActiveOrganizationChanged,
+        );
+        assert_eq!(organization.status, 204);
+        assert_eq!(organization.cache_control, "no-store, max-age=0");
+        assert_eq!(organization.set_cookie, None);
+    }
+
+    #[test]
+    fn folder_assignment_response_objects_preserve_the_source_field_order() {
+        assert_eq!(
+            serde_json::to_string(&LegacyFolderAddedResponseV1 {
+                success: true,
+                message: "2 videos added to folder".into(),
+                added_count: 2,
+            })
+            .expect("add response"),
+            r#"{"success":true,"message":"2 videos added to folder","addedCount":2}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LegacyFolderRemovedResponseV1 {
+                success: true,
+                message: "1 video removed from folder".into(),
+                removed_count: 1,
+            })
+            .expect("remove response"),
+            r#"{"success":true,"message":"1 video removed from folder","removedCount":1}"#
+        );
+    }
+
+    #[test]
+    fn membership_response_objects_preserve_exact_source_shapes_and_cap_ids() {
+        assert_eq!(
+            serde_json::to_string(&LegacyMembershipSuccessResponseV1 { success: true })
+                .expect("single-remove response"),
+            r#"{"success":true}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LegacyMembershipAddedResponseV1 {
+                success: true,
+                added: vec!["3123456789abcde".into()],
+                already_members: vec!["4123456789abcde".into()],
+            })
+            .expect("add-members response"),
+            r#"{"success":true,"added":["3123456789abcde"],"alreadyMembers":["4123456789abcde"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LegacyMembershipRemovedResponseV1 {
+                success: true,
+                removed: vec!["5123456789abcde".into(), "5123456789abcde".into()],
+            })
+            .expect("batch-remove response"),
+            r#"{"success":true,"removed":["5123456789abcde","5123456789abcde"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LegacyMembershipRemovedResponseV1 {
+                success: true,
+                removed: Vec::new(),
+            })
+            .expect("batch no-match response"),
+            r#"{"success":true,"removed":[]}"#
+        );
+    }
+
+    #[test]
+    fn library_placement_response_objects_preserve_source_shapes_and_field_order() {
+        assert_eq!(
+            serde_json::to_string(&LegacyLibraryPlacementMessageResponseV1 {
+                success: true,
+                message: "2 videos are now in organization root".into(),
+            })
+            .expect("message response"),
+            r#"{"success":true,"message":"2 videos are now in organization root"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LegacyLibraryPlacementRemovedResponseV1 {
+                success: true,
+                message: "Removed 2 video(s) from space and folders".into(),
+                deleted_count: 2,
+            })
+            .expect("remove response"),
+            r#"{"success":true,"message":"Removed 2 video(s) from space and folders","deletedCount":2}"#
+        );
+    }
+
+    #[test]
+    fn developer_response_objects_preserve_source_shapes_and_field_order() {
+        assert_eq!(
+            serde_json::to_string(&LegacyDeveloperAppCreatedResponseV1 {
+                app_id: "0123456789abcde",
+                public_key: "cpk_0123456789abcdefghjkmnpqrstvw",
+                secret_key: "csk_0123456789abcdefghjkmnpqrstvw",
+            })
+            .expect("create response"),
+            r#"{"appId":"0123456789abcde","publicKey":"cpk_0123456789abcdefghjkmnpqrstvw","secretKey":"csk_0123456789abcdefghjkmnpqrstvw"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LegacyDeveloperKeysResponseV1 {
+                public_key: "cpk_0123456789abcdefghjkmnpqrstvw",
+                secret_key: "csk_0123456789abcdefghjkmnpqrstvw",
+            })
+            .expect("key response"),
+            r#"{"publicKey":"cpk_0123456789abcdefghjkmnpqrstvw","secretKey":"csk_0123456789abcdefghjkmnpqrstvw"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LegacyDeveloperSuccessResponseV1 { success: true })
+                .expect("success response"),
+            r#"{"success":true}"#
+        );
+    }
+
+    #[test]
     fn scheduled_work_is_partitioned_into_distinct_invocations() {
         assert_eq!(
             scheduled_lane(AUTH_DELIVERY_CRON),
@@ -14812,5 +17692,11 @@ mod tests {
         );
         assert_eq!(cookie_failure.status, 401);
         assert!(!cookie_failure.authenticate);
+        let target_denial = browser_web_failure(
+            browser_web_runtime::BrowserWebFailure::NotFound,
+            "invalid_compatibility_action",
+        );
+        assert_eq!(target_denial.status, 404);
+        assert_eq!(target_denial.code, "not_found");
     }
 }

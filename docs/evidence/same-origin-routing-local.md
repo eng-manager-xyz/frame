@@ -10,16 +10,25 @@ Status: repository contract complete; protected provider evidence pending.
   narrow `frame.engmanager.xyz/media-server*` compatibility fence for
   `engmanager.xyz`; production
   `workers.dev` is disabled and the Worker validates the exact HTTPS Host.
-- The raw control-plane classifier owns only `/api`, `/api/…`, and exact
-  `/media-server`. It preserves the pinned metadata response with a query and rejects
-  trailing-slash, child-path, and prefix lookalikes while it rejects
+- The raw control-plane classifier owns only `/api`, `/api/…`, exact
+  `/media-server`, and 16 source-pinned protected media child shapes under the
+  existing compatibility route. It preserves the pinned root metadata response
+  with a query and classifies concrete dynamic examples
+  `/media-server/video/process/job-42/cancel` and
+  `/media-server/video/process/job-42/status` as protected carriers. The child
+  carriers remain `fail_closed_unavailable` behind `hardware_execution` and
+  `provider_execution`; local edge ownership does not claim provider promotion.
+  It rejects root and child trailing slashes, unknown children, empty dynamic
+  IDs, prefix lookalikes, and lower-prefix uppercase children while exact
+  `/Media-server` remains a case-sensitive Render fallthrough. It also rejects
   percent encodings, semicolons, backslashes, repeated slashes, and dot
-  segments inside that boundary, and maps broad-route lookalikes to a
+  segments inside the API boundary and maps broad-route lookalikes to a
   non-cacheable 404.
-- The checked-in matrix covers 32 route-owner cases, 8 host cases, and 8
+- The checked-in matrix covers 52 route-owner cases, 8 host cases, and 8
   transport classes. It includes query strings, trailing/repeated slashes,
   literal/encoded dot segments, semicolons, encoded separators, `/apix`,
-  `/apiary`, uppercase, an encoded prefix, and the exact/query/suffix cases for
+  `/apiary`, uppercase, an encoded prefix, all 16 protected child
+  method/operation mappings, and exact/query/negative cases for
   `/media-server`.
 - Production response policy supplies one normalized request ID, stable JSON
   errors, no-store headers, safe method handling, fixed-length request streams,
@@ -32,10 +41,11 @@ Status: repository contract complete; protected provider evidence pending.
 - The DNS-only, CAA/TLS, Full (strict), default-hostname, cache, monitoring,
   Worker Route rollback, CNAME rollback, and unrelated-host non-regression
   procedures are executable and independently reversible.
-- The read-only live runner passed its loopback fake-edge self-test across 23
+- The read-only live runner passed its loopback fake-edge self-test across 43
   Worker/edge route cases, six methods, chunked body handling, metadata spoof
-  rejection, exact media-server metadata/query/method behavior, upgrade
-  rejection, and `206`/`416` range behavior. This validates
+  rejection, exact media-server metadata/query/method behavior, all 16
+  protected children returning a synthetic gated `503`, upgrade rejection,
+  and `206`/`416` range behavior. This validates
   the runner, not Cloudflare or Render.
 
 Local commands:

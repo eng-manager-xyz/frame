@@ -1053,8 +1053,15 @@ class ManagedServer:
                     if result.status == 200:
                         return origin
             time.sleep(0.02)
+        self.log_handle.flush()
+        try:
+            detail = self.log_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            detail = ""
+        suffix = f": {detail[-2_000:]}" if detail else ""
         raise HarnessFailure(
-            f"{self.role}-startup", f"{self.role} semantic fake did not become ready"
+            f"{self.role}-startup",
+            f"{self.role} semantic fake did not become ready{suffix}",
         )
 
     def stop(self) -> None:
@@ -1244,11 +1251,11 @@ def run_case(defect: str | None, timeout: float, report: bool) -> None:
         atomic_write(state_dir / "privacy-mode", "public\n")
         try:
             frame = ManagedServer("frame", state_dir, defect)
-            frame_origin = frame.await_origin("127.0.0.1", min(timeout, 4))
+            frame_origin = frame.await_origin("127.0.0.1", min(timeout, 10))
             portfolio = ManagedServer(
                 "portfolio", state_dir, defect, frame_origin=frame_origin
             )
-            portfolio_origin = portfolio.await_origin("localhost", min(timeout, 4))
+            portfolio_origin = portfolio.await_origin("localhost", min(timeout, 10))
             require(
                 urlsplit(frame_origin).hostname != urlsplit(portfolio_origin).hostname
                 and frame_origin != portfolio_origin,

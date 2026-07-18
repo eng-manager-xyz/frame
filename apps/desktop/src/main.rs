@@ -1,6 +1,8 @@
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::sync::Mutex;
 
+#[cfg(all(target_os = "macos", feature = "macos-native"))]
+use frame_desktop_core::MacOsNativeDesktopBackend;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use frame_desktop_core::{
     DesktopAdapterKind, DesktopBootstrap, DesktopDispatch, DesktopRoots, DesktopRuntime,
@@ -16,6 +18,8 @@ const MAX_INSTANT_FINALIZE_COMMAND_BYTES: usize = 512;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct NativeDesktopState {
     runtime: Mutex<DesktopRuntime>,
+    #[cfg(all(target_os = "macos", feature = "macos-native"))]
+    native_backend: Option<Mutex<MacOsNativeDesktopBackend>>,
     instant_finalize: InstantFinalizeService,
 }
 
@@ -42,15 +46,31 @@ fn bootstrap_main(
     state: tauri::State<'_, NativeDesktopState>,
 ) -> Result<ShellCapabilities, &'static str> {
     main_window(window.label())?;
-    let capabilities = shell_capabilities(state.instant_finalize.capability());
+    let adapter = state
+        .runtime
+        .lock()
+        .map_err(|_| "desktop_runtime_unavailable")?
+        .snapshot()
+        .adapter;
+    let capabilities = shell_capabilities(adapter, state.instant_finalize.capability());
     if std::env::var("FRAME_DESKTOP_SMOKE").as_deref() == Ok("1") {
         use std::io::Write;
 
         let mut stdout = std::io::stdout().lock();
         writeln!(
             stdout,
-            "FRAME_DESKTOP_SMOKE_V1 protocol={} backend_truth={}",
-            capabilities.protocol_version, capabilities.backend_truth
+            "FRAME_DESKTOP_SMOKE_V1 protocol={} backend_truth={} recorder_adapter={}",
+            capabilities.protocol_version,
+            capabilities.backend_truth,
+            match capabilities.recorder_adapter {
+                frame_desktop_core::RecorderAdapterState::Unavailable => "unavailable",
+                frame_desktop_core::RecorderAdapterState::DeterministicFake => {
+                    "deterministic_fake"
+                }
+                frame_desktop_core::RecorderAdapterState::NativeMacOsDisplay => {
+                    "native_macos_display"
+                }
+            }
         )
         .expect("desktop smoke marker write failed");
         stdout.flush().expect("desktop smoke marker flush failed");
@@ -89,21 +109,37 @@ fn dispatch_main(
     main_window(window.label()).map_err(|_| DesktopBoundaryError {
         code: PublicErrorCode::Forbidden,
     })?;
-    let dispatch = state
-        .runtime
-        .lock()
-        .map_err(|_| DesktopBoundaryError {
-            code: PublicErrorCode::Internal,
-        })?
+    let mut runtime = state.runtime.lock().map_err(|_| DesktopBoundaryError {
+        code: PublicErrorCode::Internal,
+    })?;
+    #[cfg(all(target_os = "macos", feature = "macos-native"))]
+    let dispatch = if runtime.snapshot().adapter == DesktopAdapterKind::NativeMacOs {
+        let backend = state.native_backend.as_ref().ok_or(DesktopBoundaryError {
+            code: PublicErrorCode::Unavailable,
+        })?;
+        runtime.dispatch_native_json(
+            &request_json,
+            &mut *backend.lock().map_err(|_| DesktopBoundaryError {
+                code: PublicErrorCode::Internal,
+            })?,
+        )
+    } else {
+        runtime.dispatch_json(&request_json)
+    }
+    .map_err(|error| DesktopBoundaryError {
+        code: error.public_code(),
+    })?;
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", not(feature = "macos-native"))
+    ))]
+    let dispatch = runtime
         .dispatch_json(&request_json)
         .map_err(|error| DesktopBoundaryError {
             code: error.public_code(),
         })?;
     for event in &dispatch.events {
-        app.emit("frame-desktop://event-v1", event)
-            .map_err(|_| DesktopBoundaryError {
-                code: PublicErrorCode::Internal,
-            })?;
+        let _ = app.emit("frame-desktop://event-v1", event);
     }
     Ok(dispatch)
 }
@@ -212,7 +248,7 @@ async fn finalize_instant(
                     code: runtime_error.public_code(),
                 })?;
             let _ = state.instant_finalize.forget_terminal_context(&handle);
-            emit_instant_update(&app, &update)?;
+            emit_instant_update(&app, &update);
             debug_assert!(matches!(
                 error,
                 InstantFinalizeServiceError::ProviderRejected
@@ -240,29 +276,33 @@ async fn finalize_instant(
     ) {
         let _ = state.instant_finalize.forget_terminal_context(&handle);
     }
-    emit_instant_update(&app, &update)?;
+    emit_instant_update(&app, &update);
     Ok(update)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn emit_instant_update(
-    app: &tauri::AppHandle,
-    update: &InstantFinalizeUiUpdate,
-) -> Result<(), DesktopBoundaryError> {
+fn emit_instant_update(app: &tauri::AppHandle, update: &InstantFinalizeUiUpdate) {
     for event in &update.events {
-        app.emit("frame-desktop://event-v1", event)
-            .map_err(|_| DesktopBoundaryError {
-                code: PublicErrorCode::Internal,
-            })?;
+        let _ = app.emit("frame-desktop://event-v1", event);
     }
-    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn shell_capabilities(
+    adapter: DesktopAdapterKind,
     instant_finalize: frame_desktop_core::InstantFinalizeCapabilityState,
 ) -> ShellCapabilities {
+    let recorder_adapter = match adapter {
+        DesktopAdapterKind::Unavailable => frame_desktop_core::RecorderAdapterState::Unavailable,
+        DesktopAdapterKind::DeterministicFake => {
+            frame_desktop_core::RecorderAdapterState::DeterministicFake
+        }
+        DesktopAdapterKind::NativeMacOs => {
+            frame_desktop_core::RecorderAdapterState::NativeMacOsDisplay
+        }
+    };
     ShellCapabilities {
+        recorder_adapter,
         instant_finalize,
         ..ShellCapabilities::current()
     }
@@ -283,6 +323,8 @@ fn configured_adapter() -> DesktopAdapterKind {
     if cfg!(debug_assertions) && std::env::var("FRAME_DESKTOP_FAKE_PIPELINE").as_deref() == Ok("1")
     {
         DesktopAdapterKind::DeterministicFake
+    } else if cfg!(all(target_os = "macos", feature = "macos-native")) {
+        DesktopAdapterKind::NativeMacOs
     } else {
         DesktopAdapterKind::Unavailable
     }
@@ -290,22 +332,51 @@ fn configured_adapter() -> DesktopAdapterKind {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn main() {
+    #[cfg(all(target_os = "macos", feature = "macos-native"))]
+    if configured_adapter() == DesktopAdapterKind::NativeMacOs
+        && let Err(error) = frame_desktop_core::bootstrap_desktop_gstreamer()
+    {
+        eprintln!("Frame desktop GStreamer bootstrap failed: {error}");
+        std::process::exit(78);
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             let data = app.path().app_data_dir()?;
-            let exports = app
-                .path()
-                .download_dir()
-                .unwrap_or_else(|_| data.join("exports"));
+            // Do not touch a TCC-protected user folder while Tauri is still
+            // launching. The current automatic export is an app-owned
+            // artifact; a future Save dialog can grant a user-selected path.
+            let exports = data.join("exports");
             let roots = DesktopRoots::new(
                 data.join("projects").to_string_lossy(),
                 data.join("media").to_string_lossy(),
                 exports.to_string_lossy(),
             );
-            let runtime = DesktopRuntime::new(configured_adapter(), roots, &session_nonce())
+            let requested_adapter = configured_adapter();
+            #[cfg(all(target_os = "macos", feature = "macos-native"))]
+            let (adapter, native_backend) = if requested_adapter == DesktopAdapterKind::NativeMacOs
+            {
+                match MacOsNativeDesktopBackend::new(data.join("media"), exports) {
+                    Ok(backend) => (DesktopAdapterKind::NativeMacOs, Some(Mutex::new(backend))),
+                    Err(error) => {
+                        eprintln!("Frame native capture adapter is unavailable: {error}");
+                        (DesktopAdapterKind::Unavailable, None)
+                    }
+                }
+            } else {
+                (requested_adapter, None)
+            };
+            #[cfg(any(
+                target_os = "windows",
+                all(target_os = "macos", not(feature = "macos-native"))
+            ))]
+            let adapter = requested_adapter;
+            let runtime = DesktopRuntime::new(adapter, roots, &session_nonce())
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             app.manage(NativeDesktopState {
                 runtime: Mutex::new(runtime),
+                #[cfg(all(target_os = "macos", feature = "macos-native"))]
+                native_backend,
                 instant_finalize: InstantFinalizeService::not_configured(),
             });
             Ok(())
@@ -356,21 +427,29 @@ mod tests {
     }
 
     #[test]
-    fn release_adapter_selection_is_fail_closed() {
+    fn release_adapter_selection_is_platform_truthful() {
         if !cfg!(debug_assertions) {
+            #[cfg(all(target_os = "macos", feature = "macos-native"))]
+            assert_eq!(configured_adapter(), DesktopAdapterKind::NativeMacOs);
+            #[cfg(any(
+                target_os = "windows",
+                all(target_os = "macos", not(feature = "macos-native"))
+            ))]
             assert_eq!(configured_adapter(), DesktopAdapterKind::Unavailable);
         }
     }
 
     #[test]
-    fn shell_never_claims_an_unselected_capture_adapter() {
-        let capabilities =
-            shell_capabilities(frame_desktop_core::InstantFinalizeCapabilityState::NotConfigured);
+    fn shell_reports_the_runtime_capture_adapter() {
+        let capabilities = shell_capabilities(
+            DesktopAdapterKind::Unavailable,
+            frame_desktop_core::InstantFinalizeCapabilityState::NotConfigured,
+        );
         assert_eq!(capabilities.protocol_version, 1);
         assert!(capabilities.is_current_backend_truth());
         assert_eq!(
             capabilities.recorder_adapter,
-            frame_desktop_core::RecorderAdapterState::NotSelected
+            frame_desktop_core::RecorderAdapterState::Unavailable
         );
         assert_eq!(
             capabilities.editor_adapter,
@@ -379,6 +458,23 @@ mod tests {
         assert_eq!(
             capabilities.instant_finalize,
             frame_desktop_core::InstantFinalizeCapabilityState::NotConfigured
+        );
+
+        assert_eq!(
+            shell_capabilities(
+                DesktopAdapterKind::DeterministicFake,
+                frame_desktop_core::InstantFinalizeCapabilityState::NotConfigured,
+            )
+            .recorder_adapter,
+            frame_desktop_core::RecorderAdapterState::DeterministicFake
+        );
+        assert_eq!(
+            shell_capabilities(
+                DesktopAdapterKind::NativeMacOs,
+                frame_desktop_core::InstantFinalizeCapabilityState::NotConfigured,
+            )
+            .recorder_adapter,
+            frame_desktop_core::RecorderAdapterState::NativeMacOsDisplay
         );
     }
 

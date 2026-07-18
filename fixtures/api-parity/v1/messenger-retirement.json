@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "family": "messenger_support.v1",
+  "operations": [
+    {
+      "id": "cap-v1-112d9985edf52908",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#adminSendMessengerMessage"
+    },
+    {
+      "id": "cap-v1-280ec8c395aafaab",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#adminSetMessengerMode"
+    },
+    {
+      "id": "cap-v1-ae7b61be76feb518",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#adminSyncMessengerKnowledge"
+    },
+    {
+      "id": "cap-v1-178e6b9650de9bb0",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#createMessengerConversation"
+    },
+    {
+      "id": "cap-v1-34da1e92c2f12e0a",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#fetchAdminConversation"
+    },
+    {
+      "id": "cap-v1-8168c530994107e5",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#fetchAdminConversations"
+    },
+    {
+      "id": "cap-v1-6b8f779317d1c7ca",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#fetchMessengerConversation"
+    },
+    {
+      "id": "cap-v1-fa3d76343c35a814",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#fetchMessengerConversations"
+    },
+    {
+      "id": "cap-v1-5ce92672252fbc0f",
+      "legacy_identity": "action://apps/web/actions/messenger.ts#sendMessengerUserMessage"
+    },
+    {
+      "id": "cap-v1-2bdad000348e66b4",
+      "legacy_identity": "action://apps/web/app/messenger/page.tsx#startConversation"
+    }
+  ],
+  "response": {
+    "schema_version": "frame.legacy-retirement.v1",
+    "http_status": 410,
+    "code": "legacy_operation_retired",
+    "message": "This legacy operation has been retired.",
+    "migration_path": "privacy-safe export",
+    "cache_control": "no-store, max-age=0",
+    "retryable": false,
+    "tenant_data": "none"
+  },
+  "completion": {
+    "local_work": "complete",
+    "protected_gates": [
+      "human_approval"
+    ],
+    "retirement_decision": "repository_owner_pending",
+    "production_behavior": "fail_closed_unavailable"
+  },
+  "authority": {
+    "application": "crates/application/src/legacy_compatibility.rs",
+    "quarantine": "docs/architecture/business-data-v1.md",
+    "product_read_write": "forbidden",
+    "export": "privacy-safe and separately authorized"
+  }
+}

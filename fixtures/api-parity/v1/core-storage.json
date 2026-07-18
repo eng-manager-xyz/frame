@@ -1,0 +1,187 @@
+{
+  "schema_version": "frame.legacy-core-storage.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "source_count": 27,
+  "source_manifest_sha256": "c673b6b50de8c2cb1ac7d94bb5dda52f13fcafb1ba7e0ab3a683e33f6d0e49f3",
+  "operations": [
+    {
+      "id": "cap-v1-d9d8d275d476c8be",
+      "method": "GET",
+      "path": "/api/download",
+      "local_status": "rust_exact_download_platform_redirect_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_redirect"
+    },
+    {
+      "id": "cap-v1-ebb74af6ba0b5848",
+      "method": "GET",
+      "path": "/api/playlist",
+      "local_status": "rust_exact_playlist_get_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_r2"
+    },
+    {
+      "id": "cap-v1-428610929ae5bb26",
+      "method": "HEAD",
+      "path": "/api/playlist",
+      "local_status": "rust_exact_playlist_head_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_r2"
+    },
+    {
+      "id": "cap-v1-b5388e4ddf2d7f17",
+      "method": "GET",
+      "path": "/api/storage/object",
+      "local_status": "rust_exact_storage_object_get_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_r2"
+    },
+    {
+      "id": "cap-v1-09e9e5a5c86b98c1",
+      "method": "HEAD",
+      "path": "/api/storage/object",
+      "local_status": "rust_exact_storage_object_head_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_r2"
+    },
+    {
+      "id": "cap-v1-f191ed86271608e3",
+      "method": "POST",
+      "path": "/api/upload/multipart/abort",
+      "local_status": "rust_exact_multipart_abort_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-efc19423a62b7976",
+      "method": "POST",
+      "path": "/api/upload/multipart/complete",
+      "local_status": "rust_exact_multipart_complete_d1_orchestration_provider_pending",
+      "protected_gates": ["provider_execution"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-f47512c6177fa691",
+      "method": "POST",
+      "path": "/api/upload/multipart/initiate",
+      "local_status": "rust_exact_multipart_initiate_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-7b584d9338e8bf31",
+      "method": "POST",
+      "path": "/api/upload/multipart/presign-part",
+      "local_status": "rust_exact_multipart_presign_part_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-f9deb8104204a30d",
+      "method": "POST",
+      "path": "/api/upload/recording-complete",
+      "local_status": "rust_exact_recording_complete_d1_orchestration_provider_pending",
+      "protected_gates": ["provider_execution"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-7f87205cb7d39ee6",
+      "method": "POST",
+      "path": "/api/upload/signed",
+      "local_status": "rust_exact_signed_upload_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-c64cec46e4b828da",
+      "method": "POST",
+      "path": "/api/upload/signed/batch",
+      "local_status": "rust_exact_signed_upload_batch_d1_r2_local_contract",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    }
+  ],
+  "transport_contract": {
+    "authentication": "download is public; playlist and storage object use optional host-only session plus exact signed object token; all upload routes use Cap API-key precedence then browser session",
+    "body": "GET and HEAD are bodyless; POST accepts exact camelCase application/json up to 8388608 bytes with identity content encoding",
+    "cache": "playlist and storage-object responses retain Cache-Control no-store/no-cache/must-revalidate/proxy-revalidate plus Pragma no-cache and Expires 0",
+    "tenant_non_disclosure": "foreign, inactive, deleted, wrong-prefix, or unbound video/object/session targets are all projected as 404",
+    "idempotency": "a supplied 8..128-byte Idempotency-Key is stored only as a domain-separated SHA-256 digest and replays a request-bound result; pinned desktop, recorder-core, CLI, and web clients omit the header, so Frame generates a one-execution key while retaining the immutable operation journal"
+  },
+  "download_contract": {
+    "default": "apple-silicon",
+    "platforms": ["apple-silicon", "apple-intel", "windows", "linux-deb"],
+    "precedence": "Windows first, macOS with Intel user-agent refinement second, non-Android Linux third, default Apple Silicon",
+    "response": "307 same-origin /download/:platform with query and fragment removed"
+  },
+  "playlist_contract": {
+    "video_types": [
+      "video",
+      "audio",
+      "master",
+      "mp4",
+      "raw-preview",
+      "segments-master",
+      "segments-video",
+      "segments-audio"
+    ],
+    "source_mapping": {
+      "MediaConvert": "output/video_recording_000.m3u8",
+      "local": "combined-source/stream.m3u8 with exact .ts URL replacement",
+      "desktopMP4": "result.mp4",
+      "webMP4": "result.mp4",
+      "desktopSegments": "validated segments/manifest.json and generated HLS"
+    },
+    "segments": "versioned manifest, at most 10000 video and 10000 audio entries, finite positive durations, requireComplete fence, exact init and zero-padded segment keys, VOD markers only after completion",
+    "auxiliary": "raw preview first uses the persisted rawFileKey; webMP4 without that evidence probes nonempty raw-upload.mp4 then raw-upload.webm; transcription.vtt is returned as text/vtt; enhanced-audio.mp3 is redirected",
+    "head": "HEAD executes the same authority and object selection as GET and returns identical status and headers without a body"
+  },
+  "storage_object_contract": {
+    "token": "Cap base64url payload and HMAC-SHA256 signature using FRAME_LEGACY_CORE_STORAGE_NEXTAUTH_SECRET; videoId, key, and expiresAt are exact-bound with a 24-hour future ceiling",
+    "key": "must remain under the persisted historical {legacyOwnerId}/{legacyVideoId}/ prefix; the current Frame UUID never replaces that backfilled prefix",
+    "range": "one RFC bytes range only: start-end, start-, or -suffix; unsatisfiable and multi-range requests return 416; GET and HEAD return the same 200/206 Content-Length and Content-Range",
+    "headers": ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"],
+    "content_disposition": "not synthesized, matching the pinned proxy's copied-header allowlist"
+  },
+  "upload_contract": {
+    "target": "videoId/subpath or deprecated fileKey; fileKey actor text is discarded and authenticated ownership is reasserted before the persisted historical prefix is joined",
+    "single": "one exact R2 S3-compatible PUT signed with content type, approved metadata, expiry, and If-None-Match: *; source method=post is safely projected to the released clients' PUT response shape because R2 POST cannot enforce the required no-overwrite precondition",
+    "batch": "1..50 unique normalized subpaths, each receiving an exact immutable PUT; response includes uploads and urls aliases",
+    "multipart": "R2 provider upload IDs remain D1-only; clients receive UUIDv7 external IDs; part capabilities bind exact key, provider handle, part number, optional MD5, and expiry",
+    "free_plan_completion": "the active organization owner's Pro-seat authority is reasserted; free-plan raw recorder uploads require duration, and any reported duration above 330 seconds is rejected before a completion intent is admitted, with journaled best-effort multipart abort cleanup",
+    "metadata": "finite string-or-number duration, width, height, and fps update only the owner-scoped native video",
+    "governance": "each capability operation creates one immutable object intent with tenant, native/legacy video identity, integration, content type, role, requested method, and operation receipt; repeated operations may reissue the same exact no-overwrite key and do not claim that bytes exist"
+  },
+  "provider_gate_contract": {
+    "multipart_complete": "ordered immutable part evidence, total bytes, parts digest, exact session binding, and effect_pending operation are committed atomically; no R2 complete call occurs until provider_execution evidence is admitted",
+    "recording_complete": "desktopMP4 returns the exact success/already-complete response; desktopSegments creates one immutable provider_pending finalization intent and returns 503 provider_execution; retries resume that video-bound intent, and unsupported sources return 400",
+    "cloudflare_media": "the retained source queues remux/transcode workflows; Frame records the exact provider intent but does not claim Cloudflare Media execution, callback, output verification, or billing reconciliation"
+  },
+  "durability_contract": {
+    "operations": "immutable source/actor/idempotency/request binding with claimed -> effect_pending|complete and effect_pending -> complete transitions",
+    "multipart": "open -> completion_pending -> complete or open -> abort_pending -> aborted; tenant, prefix, key, provider handle, and evidence cannot change",
+    "parts": "part number, ETag, byte count, completion operation, and timestamp are append-only",
+    "no_overwrite": "one object intent per operation/key plus If-None-Match: * on every direct PUT capability; reissued capabilities remain unable to replace existing bytes",
+    "assertions": "D1 changes() assertions abort transactions when authority, binding, pending-effect, or terminal postconditions do not hold"
+  },
+  "environment_contract": {
+    "r2_binding": "RECORDINGS",
+    "d1_binding": "DB",
+    "signing": [
+      "FRAME_R2_ACCOUNT_ID",
+      "FRAME_R2_BUCKET_NAME",
+      "FRAME_R2_ACCESS_KEY_ID",
+      "FRAME_R2_SECRET_ACCESS_KEY"
+    ],
+    "legacy_storage_token_secret": "FRAME_LEGACY_CORE_STORAGE_NEXTAUTH_SECRET"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_core_storage.rs",
+    "apps/control-plane/src/legacy_core_storage_runtime.rs",
+    "apps/control-plane/src/legacy_core_storage_web_runtime.rs",
+    "apps/control-plane/src/r2_direct_upload.rs",
+    "apps/control-plane/migrations/0053_legacy_core_storage_expand.sql",
+    "apps/control-plane/queries/legacy_core_storage",
+    "scripts/ci/legacy-core-storage-sqlite-conformance.py"
+  ]
+}

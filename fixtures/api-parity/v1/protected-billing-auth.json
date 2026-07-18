@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "contract_version": "frame.api.v1",
+  "reference": {
+    "repository": "https://github.com/CapSoftware/Cap.git",
+    "commit": "6ba69561ac86b8efdb17616d6727f9638015546b"
+  },
+  "summary": {
+    "operation_count": 17,
+    "human_and_provider": 14,
+    "provider_only": 2,
+    "local_exact": 1,
+    "local_terminal_behavior": "sixteen_fail_closed_plus_credentialed_cors_preflight"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-46bda1c18ffba076",
+      "kind": "route",
+      "path": "/api/auth/:nextauth*",
+      "method": "GET",
+      "auth": "public_or_flow_token",
+      "rate_limit_bucket": "auth_session.v1",
+      "authority": "public_flow",
+      "idempotency": "forbidden",
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "provider": "nextauth_google_workos_resend",
+      "protected_gates": ["provider_execution"],
+      "required_paths": ["/nextauthPath"],
+      "target_pointer": null,
+      "source_manifest": [
+        {"path":"apps/web/app/api/auth/[...nextauth]/route.ts","symbol":"GET","sha256":"50811be29eebab82de18c45f77f41f68c123931252baddb9a9d8c4f13620e5ff"},
+        {"path":"packages/database/auth/auth-options.ts","symbol":"NextAuth OAuth providers","sha256":"22b8923e1cab6b5b1b318609abe664e171fb740ae39817c2c962908ca0dc8595"},
+        {"path":"packages/database/emails/config.ts","symbol":"NextAuth email via Resend","sha256":"d7f399dcefaeb0dd9c0a048f1a7212b24af11249b85e7c31cb569b6cb0108ead"}
+      ]
+    },
+    {
+      "id": "cap-v1-82a39c991fae1050",
+      "kind": "route",
+      "path": "/api/auth/:nextauth*",
+      "method": "POST",
+      "auth": "public_or_flow_token",
+      "rate_limit_bucket": "auth_session.v1",
+      "authority": "public_flow",
+      "idempotency": "optional",
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json", "application/x-www-form-urlencoded"],
+      "provider": "nextauth_google_workos_resend",
+      "protected_gates": ["provider_execution"],
+      "required_paths": ["/nextauthPath"],
+      "target_pointer": null,
+      "source_manifest": [
+        {"path":"apps/web/app/api/auth/[...nextauth]/route.ts","symbol":"POST","sha256":"50811be29eebab82de18c45f77f41f68c123931252baddb9a9d8c4f13620e5ff"},
+        {"path":"packages/database/auth/auth-options.ts","symbol":"NextAuth OAuth providers","sha256":"22b8923e1cab6b5b1b318609abe664e171fb740ae39817c2c962908ca0dc8595"},
+        {"path":"packages/database/emails/config.ts","symbol":"NextAuth email via Resend","sha256":"d7f399dcefaeb0dd9c0a048f1a7212b24af11249b85e7c31cb569b6cb0108ead"}
+      ]
+    },
+    {
+      "id":"cap-v1-78537fb518df75ec","kind":"route","path":"/api/desktop/subscribe","method":"POST","auth":"session_or_api_key","rate_limit_bucket":"billing_admin.v1","authority":"active_session","idempotency":"optional","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_checkout","protected_gates":["human_approval","provider_execution"],"required_paths":["/priceId"],"target_pointer":null,
+      "source_manifest":[
+        {"path":"apps/web/app/api/desktop/[...route]/root.ts","symbol":"POST /subscribe","sha256":"c6f9ca2108849b75a00762b79af45b0523dd246bc118a2805cb57948f6ea2e7a"},
+        {"path":"packages/web-api-contract-effect/src/index.ts","symbol":"getProSubscribeURL","sha256":"9c2185ebf12be4c9d231d42938c975ea6ad596a0031ed8a0aca2bb1cbec3c7a0"},
+        {"path":"packages/web-api-contract/src/desktop.ts","symbol":"POST /desktop/subscribe","sha256":"e55824d1b9ba74501841905c0bc4e70179247f6cd00e6249849970898af7adb9"}
+      ]
+    },
+    {
+      "id":"cap-v1-572763e7b4977abd","kind":"route","path":"/api/developer/credits/checkout","method":"OPTIONS","auth":"anonymous","rate_limit_bucket":"auth_session.v1","authority":"public_flow","idempotency":"forbidden","max_body_bytes":0,"accepted_content_types":[],"provider":"local_credentialed_cors_preflight","protected_gates":[],"required_paths":[],"target_pointer":null,
+      "source_manifest":[
+        {"path":"apps/web/app/api/developer/credits/checkout/route.ts","symbol":"OPTIONS","sha256":"30e9958e3634583d0d6a581ce9a79a9edb73b2434516ddbe40dbff32c9b80fe2"},
+        {"path":"apps/web/app/api/utils.ts","symbol":"corsMiddleware","sha256":"241e5259f690ece17b0c50f78a9dc30c3e783082287040fef0f47e56a937bb30"}
+      ]
+    },
+    {
+      "id":"cap-v1-60b06cc5ab45f187","kind":"route","path":"/api/developer/credits/checkout","method":"POST","auth":"session_or_api_key","rate_limit_bucket":"billing_admin.v1","authority":"developer_app_owner","idempotency":"optional","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_developer_checkout","protected_gates":["human_approval","provider_execution"],"required_paths":["/appId","/amountCents"],"target_pointer":"/appId",
+      "source_manifest":[
+        {"path":"apps/web/app/api/developer/credits/checkout/route.ts","symbol":"POST","sha256":"30e9958e3634583d0d6a581ce9a79a9edb73b2434516ddbe40dbff32c9b80fe2"},
+        {"path":"apps/web/app/api/developer/credits/checkout/route.ts","symbol":"POST /","sha256":"30e9958e3634583d0d6a581ce9a79a9edb73b2434516ddbe40dbff32c9b80fe2"}
+      ]
+    },
+    {
+      "id":"cap-v1-af61fa5c8fc453cf","kind":"route","path":"/api/settings/billing/guest-checkout","method":"POST","auth":"anonymous","rate_limit_bucket":"billing_admin.v1","authority":"public_flow","idempotency":"optional","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_guest_checkout","protected_gates":["human_approval","provider_execution"],"required_paths":["/priceId"],"target_pointer":null,
+      "source_manifest":[{"path":"apps/web/app/api/settings/billing/guest-checkout/route.ts","symbol":"POST","sha256":"d2c11cb5d791ba2aadbfe873211d1a303fa0992200eaa3a221b5cfe144fd1edd"}]
+    },
+    {
+      "id":"cap-v1-e596f65c43ee2a82","kind":"route","path":"/api/settings/billing/manage","method":"POST","auth":"session","rate_limit_bucket":"billing_admin.v1","authority":"active_session","idempotency":"optional","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_billing_portal","protected_gates":["human_approval","provider_execution"],"required_paths":[],"target_pointer":null,
+      "source_manifest":[{"path":"apps/web/app/api/settings/billing/manage/route.ts","symbol":"POST","sha256":"5a5928a025ee875ceb9a896b15102497124187959db95b805e78406205aef313"}]
+    },
+    {
+      "id":"cap-v1-96230bf1f2da3d00","kind":"route","path":"/api/settings/billing/subscribe","method":"POST","auth":"session","rate_limit_bucket":"billing_admin.v1","authority":"active_session","idempotency":"optional","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_checkout","protected_gates":["human_approval","provider_execution"],"required_paths":["/priceId"],"target_pointer":null,
+      "source_manifest":[{"path":"apps/web/app/api/settings/billing/subscribe/route.ts","symbol":"POST","sha256":"517871dbf4c2e05371824a911a2c8585f32f0730b63d2ad4e328f6adee639398"}]
+    },
+    {
+      "id":"cap-v1-856dfea22b9d979c","kind":"route","path":"/api/settings/billing/usage","method":"GET","auth":"session","rate_limit_bucket":"billing_admin.v1","authority":"active_session","idempotency":"forbidden","max_body_bytes":0,"accepted_content_types":[],"provider":"stripe_entitlement_and_d1_usage","protected_gates":["human_approval","provider_execution"],"required_paths":[],"target_pointer":null,
+      "source_manifest":[{"path":"apps/web/app/api/settings/billing/usage/route.ts","symbol":"GET","sha256":"58b57296880e2ab21b2768a87402d1883f1bdad8791c7d3597062d69711212ac"}]
+    },
+    {
+      "id":"cap-v1-1e5f228815a2a8b7","kind":"route","path":"/api/webhooks/stripe","method":"POST","auth":"signed_webhook","rate_limit_bucket":"stripe_webhook_ingress.v1","authority":"signed_stripe_webhook","idempotency":"optional","max_body_bytes":1048576,"accepted_content_types":["application/json"],"provider":"stripe_webhook_reconciliation","protected_gates":["human_approval","provider_execution"],"required_paths":["/id","/type","/data/object"],"target_pointer":"/id",
+      "source_manifest":[{"path":"apps/web/app/api/webhooks/stripe/route.ts","symbol":"POST","sha256":"b50f0859c0b0679ff8c5a11a0660dceadfe9ec0f4a67eab95972431d83f4acd0"}]
+    },
+    {
+      "id":"cap-v1-b2d19e91b05834cf","kind":"route","path":"/api/commercial/checkout","method":"POST","auth":"anonymous","rate_limit_bucket":"billing_admin.v1","authority":"public_flow","idempotency":"optional","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_commercial_checkout","protected_gates":["human_approval","provider_execution"],"required_paths":["/type"],"target_pointer":null,
+      "source_manifest":[
+        {"path":"packages/web-api-contract-effect/src/index.ts","symbol":"createCommercialCheckoutUrl","sha256":"9c2185ebf12be4c9d231d42938c975ea6ad596a0031ed8a0aca2bb1cbec3c7a0"},
+        {"path":"packages/web-api-contract/src/index.ts","symbol":"POST /commercial/checkout","sha256":"98bb2529e27eba0ed1569d286a1f5d4069cbbf23cf9e1dde62fdc1f6a9737e3e"},
+        {"path":"apps/web/app/api/[[...route]]/route.ts","symbol":"HttpLive /api mount","sha256":"710d4e58383e3562e4627e4e312e188dc2042a1469b72f683a9a79ee6083eb2a"},
+        {"path":"apps/web/components/pages/HomePage/Pricing/CommercialCard.tsx","symbol":"POST /api/commercial/checkout caller","sha256":"9f424a4dfd1df93aae495c8592dfca26f24a51f9217d3b4e507ac87f80e069fe"},
+        {"path":"apps/web/next.config.mjs","symbol":"/api/commercial/:path* rewrite","sha256":"c3251d5a5925ee835dbc7cd1eb77eb42335813008a163e27e7823c15b9577b1e"}
+      ]
+    },
+    {
+      "id":"cap-v1-90a6eb69c3fd7b4b","kind":"server_action","path":"action://apps/web/actions/admin/replace-video.ts#getVideoReplaceUploadUrl","method":"ACTION","auth":"admin_session","rate_limit_bucket":"billing_admin.v1","authority":"messenger_admin_video","idempotency":"required","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"object_storage_presigned_upload","protected_gates":["human_approval","provider_execution"],"required_paths":["/videoId"],"target_pointer":"/videoId",
+      "source_manifest":[{"path":"apps/web/actions/admin/replace-video.ts","symbol":"getVideoReplaceUploadUrl","sha256":"aa351bcd00264527e5e65cf5bd0ba50b4fcbffdd0d2f6827de6d11e9e7f35f5e"}]
+    },
+    {
+      "id":"cap-v1-e488991f97723847","kind":"server_action","path":"action://apps/web/actions/admin/replace-video.ts#invalidateVideoCache","method":"ACTION","auth":"admin_session","rate_limit_bucket":"billing_admin.v1","authority":"messenger_admin_video","idempotency":"required","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"cloudfront_invalidation","protected_gates":["human_approval","provider_execution"],"required_paths":["/videoId"],"target_pointer":"/videoId",
+      "source_manifest":[{"path":"apps/web/actions/admin/replace-video.ts","symbol":"invalidateVideoCache","sha256":"aa351bcd00264527e5e65cf5bd0ba50b4fcbffdd0d2f6827de6d11e9e7f35f5e"}]
+    },
+    {
+      "id":"cap-v1-14ea978608dcf07e","kind":"server_action","path":"action://apps/web/actions/admin/reprocess-video.ts#adminReprocessVideo","method":"ACTION","auth":"admin_session","rate_limit_bucket":"billing_admin.v1","authority":"messenger_admin_video","idempotency":"required","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"media_reprocess_workflow_dispatch","protected_gates":["human_approval","provider_execution"],"required_paths":["/videoId"],"target_pointer":"/videoId",
+      "source_manifest":[{"path":"apps/web/actions/admin/reprocess-video.ts","symbol":"adminReprocessVideo","sha256":"dfa8e90419ef945063db92f4831f3964ba810bfd90cffbb68cd91ed16da22cc8"}]
+    },
+    {
+      "id":"cap-v1-dfd7a4c3d234ccd7","kind":"server_action","path":"action://apps/web/actions/billing/track-meta-purchase.ts#getPurchaseForMeta","method":"ACTION","auth":"session","rate_limit_bucket":"billing_admin.v1","authority":"active_session","idempotency":"required","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_purchase_attribution","protected_gates":["human_approval","provider_execution"],"required_paths":[],"target_pointer":null,
+      "source_manifest":[{"path":"apps/web/actions/billing/track-meta-purchase.ts","symbol":"getPurchaseForMeta","sha256":"cfa841bcadd9ef2aff9f73082b0b22f187536a405dfe88e8946548e8523bcb9d"}]
+    },
+    {
+      "id":"cap-v1-0553f2fcdacfe2a9","kind":"server_action","path":"action://apps/web/actions/organization/manage-billing.ts#manageBilling","method":"ACTION","auth":"session","rate_limit_bucket":"billing_admin.v1","authority":"active_session","idempotency":"required","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"stripe_billing_portal","protected_gates":["human_approval","provider_execution"],"required_paths":[],"target_pointer":null,
+      "source_manifest":[{"path":"apps/web/actions/organization/manage-billing.ts","symbol":"manageBilling","sha256":"c97be6211b98f941639ea88d67d6ddc1590be22310739c55f72ec3f64ba71d28"}]
+    },
+    {
+      "id":"cap-v1-5a990f470c701cec","kind":"workflow","path":"workflow://apps/web/workflows/admin-reprocess-video.ts#adminReprocessVideoWorkflow","method":"WORKFLOW","auth":"admin_session","rate_limit_bucket":"billing_admin.v1","authority":"messenger_admin_video","idempotency":"required","max_body_bytes":262144,"accepted_content_types":["application/json"],"provider":"storage_media_server_and_cloudfront","protected_gates":["human_approval","provider_execution"],"required_paths":["/videoId"],"target_pointer":"/videoId",
+      "source_manifest":[{"path":"apps/web/workflows/admin-reprocess-video.ts","symbol":"adminReprocessVideoWorkflow","sha256":"f56c4d126db996b0fb8a7837326d08d1409c242fa7aa4ee1e5efae40d0c36743"}]
+    }
+  ],
+  "local_contract": {
+    "local_exact_operations": ["cap-v1-572763e7b4977abd"],
+    "credentialed_cors_preflight": "allowlisted_origin_204_before_authentication",
+    "atomic_stage": ["receipt", "provider_outbox", "human_approval_request_when_required"],
+    "immutable_replay": true,
+    "signature_validation": "stripe_hmac_sha256_raw_body_with_timestamp_tolerance",
+    "stripe_retry_identity": "stable_verified_endpoint_plus_event_id_and_body_with_per_delivery_signature_audit",
+    "legacy_route_replay": "optional_caller_key_or_deterministic_five_minute_request_window",
+    "nextauth_post_transport": "json_or_form_urlencoded_with_csrf_callback_cookie_flow_binding",
+    "credential_evidence": "strict_kind_plus_exact_session_id_key_version_digest_or_api_key_id_digest",
+    "secret_storage": "structural_fail_closed_redaction_plus_sealed_request_and_terminal_http_refs",
+    "release_rule": "independent_human_approval_when_required_plus_execution_time_live_authority_and_independent_provider_execution",
+    "never_implies": ["checkout_success", "subscription_success", "payment_success", "cache_invalidation", "upload_capability", "video_reprocessing"]
+  }
+}

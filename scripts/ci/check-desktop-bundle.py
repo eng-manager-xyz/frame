@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import plistlib
 import re
 import struct
 from pathlib import Path
@@ -17,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DIST = ROOT / "apps" / "desktop" / "ui" / "dist"
 ICON_PNG = ROOT / "apps" / "desktop" / "icons" / "icon.png"
 ICON_ICO = ROOT / "apps" / "desktop" / "icons" / "icon.ico"
+MACOS_INFO_PLIST = ROOT / "apps" / "desktop" / "Info.plist"
+MACOS_SIGNER = ROOT / "scripts" / "ci" / "sign-macos-local-app.sh"
+DESKTOP_MAIN = ROOT / "apps" / "desktop" / "src" / "main.rs"
 # Generated with ImageMagick 7.1.1-47 from the checked-in PNG:
 # magick icon.png -background none -alpha on -filter Lanczos \
 #   -define icon:auto-resize=256,128,64,48,32,24,16 icon.ico
@@ -122,6 +126,59 @@ def validate_icon_contract(tauri: dict[str, object]) -> None:
         fail("Windows ICO has trailing or overlapping payload data")
 
 
+def validate_macos_capture_contract(tauri: dict[str, object]) -> None:
+    bundle = tauri.get("bundle")
+    if not isinstance(bundle, dict):
+        fail("Tauri bundle configuration is absent")
+    macos = bundle.get("macOS")
+    if not isinstance(macos, dict):
+        fail("macOS bundle configuration is absent")
+    if macos.get("minimumSystemVersion") != "12.3":
+        fail("ScreenCaptureKit builds must require macOS 12.3 or newer")
+    if macos.get("infoPlist") != "Info.plist":
+        fail("macOS bundle does not merge the checked-in privacy plist")
+    try:
+        with MACOS_INFO_PLIST.open("rb") as source:
+            info = plistlib.load(source)
+    except (OSError, plistlib.InvalidFileException) as error:
+        fail(f"macOS privacy plist is unavailable: {error}")
+    purpose = info.get("NSScreenCaptureUsageDescription")
+    if not isinstance(purpose, str) or len(purpose.strip()) < 24:
+        fail("macOS screen-capture purpose text is absent or too vague")
+    expected_identity = {
+        "CFBundleIdentifier": tauri.get("identifier"),
+        "CFBundleName": tauri.get("productName"),
+        "CFBundleShortVersionString": tauri.get("version"),
+        "CFBundleVersion": tauri.get("version"),
+        "LSMinimumSystemVersion": macos.get("minimumSystemVersion"),
+    }
+    for key, expected in expected_identity.items():
+        if info.get(key) != expected:
+            fail(f"macOS privacy plist {key} drifted from Tauri configuration")
+    downloads_purpose = info.get("NSDownloadsFolderUsageDescription")
+    if not isinstance(downloads_purpose, str) or len(downloads_purpose.strip()) < 24:
+        fail("macOS Downloads export purpose text is absent or too vague")
+
+    try:
+        signer = MACOS_SIGNER.read_text(encoding="utf-8")
+        desktop_main = DESKTOP_MAIN.read_text(encoding="utf-8")
+    except OSError as error:
+        fail(f"macOS local signing contract is unavailable: {error}")
+    required_signer_fragments = (
+        "FRAME_CODESIGN_IDENTITY",
+        "EXPECTED_IDENTIFIER=xyz.engmanager.frame",
+        "codesign --verify --deep --strict",
+        "--requirements '=designated => identifier \"xyz.engmanager.frame\"'",
+        "verify-trusted",
+        'TeamIdentifier=',
+        '-R="$test_requirement"',
+    )
+    if any(fragment not in signer for fragment in required_signer_fragments):
+        fail("macOS local signer no longer seals and verifies the stable bundle identity")
+    if 'let exports = data.join("exports");' not in desktop_main:
+        fail("desktop setup no longer keeps automatic exports outside protected user folders")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dist", type=Path, default=DEFAULT_DIST)
@@ -133,6 +190,7 @@ def main() -> int:
         (ROOT / "apps" / "desktop" / "tauri.conf.json").read_text(encoding="utf-8")
     )
     validate_icon_contract(tauri)
+    validate_macos_capture_contract(tauri)
     if args.icons_only:
         print(f"desktop icon contract is deterministic ({len(ICON_SIZES)} Windows sizes)")
         return 0
@@ -244,6 +302,7 @@ def main() -> int:
         ),
         "icon_png_sha256": sha256(ICON_PNG),
         "icon_ico_sha256": sha256(ICON_ICO),
+        "macos_info_plist_sha256": sha256(MACOS_INFO_PLIST),
         "icon_sizes": list(ICON_SIZES),
     }
     if args.evidence:

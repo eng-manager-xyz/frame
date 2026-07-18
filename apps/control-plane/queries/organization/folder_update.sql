@@ -1,5 +1,6 @@
 UPDATE folders
 SET name = ?5,
+    legacy_name = CASE WHEN legacy_name IS NULL THEN NULL ELSE ?5 END,
     is_public = ?6,
     settings_json = ?7,
     updated_at_ms = ?8,

@@ -22,14 +22,40 @@ That authoritative state owns:
 - one broad `frame.engmanager.xyz/api*` Worker Route and one query-safe
   `frame.engmanager.xyz/media-server*` compatibility fence, with Wrangler remaining
   the Worker-script deploy authority only if the route ownership is explicitly
-  delegated there; the Worker owns only exact `/media-server` under the second
-  prefix and returns a non-cacheable 404 for suffix lookalikes;
+  delegated there; under the second prefix the Worker owns exact
+  `/media-server` plus the 16 source-pinned child route shapes below and returns
+  a non-cacheable 404 for every other child or suffix lookalike;
 - bypass-first cache rules for API/auth/account/upload/finalize/health,
   cookies, authorization, mutations, private shares, WebSocket, and SSE;
 - immutable caching only for fingerprinted assets and narrowly reviewed public
   share metadata, plus exact-tag/URL purge paths;
 - Frame-host-scoped WAF and rate rules introduced in observe mode before
   enforcement.
+
+The protected child handoff is method-bound and exact:
+
+- `POST /media-server/audio/check`, `POST /media-server/audio/convert`, and
+  `POST /media-server/audio/extract`;
+- `GET /media-server/audio/status` and `GET /media-server/health`;
+- `POST /media-server/video/cleanup`, `POST /media-server/video/convert`,
+  `POST /media-server/video/edit`, `POST /media-server/video/force-cleanup`,
+  `POST /media-server/video/mux-segments`, `POST /media-server/video/probe`,
+  `POST /media-server/video/process`, and
+  `POST /media-server/video/thumbnail`;
+- `GET /media-server/video/status`;
+- `POST /media-server/video/process/:jobId/cancel` and
+  `GET /media-server/video/process/:jobId/status`, represented in conformance by
+  `/media-server/video/process/job-42/cancel` and
+  `/media-server/video/process/job-42/status`.
+
+The contract carries the exact operation IDs, methods, templates, and
+examples. All 16 carriers are
+`fail_closed_unavailable` behind both `hardware_execution` and
+`provider_execution`; adding them to edge ownership does not claim provider
+promotion. `/media-server/`, child trailing slashes, empty dynamic IDs, unknown
+children, and lower-prefix uppercase/lookalike children enter the Worker and
+receive a non-cacheable rejection. `/Media-server` misses the case-sensitive
+route and continues to Render.
 
 Before the first mutation, generate/import every existing ruleset entrypoint
 and prove a semantic no-op plan. Retire any whole-phase bootstrap script that

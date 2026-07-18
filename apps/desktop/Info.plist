@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Keep these values aligned with tauri.conf.json. macOS TCC binds privacy
+       grants to the signed bundle identity, not merely to the app's path. -->
+  <key>CFBundleIdentifier</key>
+  <string>xyz.engmanager.frame</string>
+  <key>CFBundleName</key>
+  <string>Frame</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.1.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.3</string>
+
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Frame records the display you select so you can create and export a video.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Frame saves exported screen recordings in your Downloads folder.</string>
+</dict>
+</plist>

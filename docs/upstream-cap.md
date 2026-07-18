@@ -1,13 +1,17 @@
 # Upstream Cap reference
 
-Frame uses a shallow, ignored checkout of `https://github.com/CapSoftware/Cap.git` in `.tmp/cap` as a parity oracle. The scaffold was researched against commit `6ba69561ac86b8efdb17616d6727f9638015546b` from 2026-07-15.
+Frame's migration research used a shallow checkout of `https://github.com/CapSoftware/Cap.git` at commit `6ba69561ac86b8efdb17616d6727f9638015546b` from 2026-07-15. The resulting identities, source paths, and hashes are committed in Frame's parity reports and fixtures. The checkout is not a build, test, CI, or runtime dependency and may be deleted.
 
-Recreate the checkout with:
+An independent audit may recreate the historical research checkout with:
 
 ```sh
 mkdir -p .tmp
 git clone --depth 1 https://github.com/CapSoftware/Cap.git .tmp/cap
 ```
+
+Normal Frame commands do not read this directory. The dedicated parity
+generator accepts it only when deliberately regenerating or rechecking the
+pinned upstream inventory.
 
 At the pinned snapshot, Cap is already a mixed Rust and TypeScript monorepo rather than a JavaScript-only application. It contains a Tauri 2 desktop app and extensive native Rust media/capture crates, plus a Next/React web app, a TypeScript web backend, MySQL/Drizzle persistence, S3-compatible and Google Drive storage, and non-Rust media-service orchestration.
 

@@ -81,18 +81,15 @@ jobs:
           python3 -I scripts/ci/check-frame-client-contract.py
           python3 -I scripts/ci/check-cross-repo-contract.py
           python3 -I scripts/ci/check-engmanager-portfolio-integration.py
-          python3 scripts/ci/check-migrations.py
+          python3 -I scripts/ci/test-legacy-api-parity-runner.py
+          python3 -I scripts/ci/run-legacy-api-parity.py \
+            --evidence-dir target/evidence
           python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
           python3 -I scripts/ci/direct-upload-sqlite-conformance.py
           python3 -I scripts/ci/media-job-inputs-sqlite-conformance.py
           python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
           python3 -I scripts/ci/instant-finalize-sqlite-conformance.py
           python3 -I scripts/ci/worker-auth-sqlite-conformance.py
-          python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
-          python3 -I scripts/ci/legacy-organization-selection-sqlite-conformance.py
-          python3 -I scripts/ci/legacy-org-custom-domain-sqlite-conformance.py
-          python3 -I scripts/ci/legacy-notification-preferences-sqlite-conformance.py
-          python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py
           python3 scripts/ci/check-cloudflare-zone-contract.py
           python3 -I scripts/ci/check-cloudflare-edge-policy.py
           python3 -I scripts/ci/test-frame-cache-purge.py

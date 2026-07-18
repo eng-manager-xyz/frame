@@ -1,0 +1,182 @@
+{
+  "schema_version": "frame.legacy-protected-integrations.v1",
+  "reference": {
+    "repository": "https://github.com/CapSoftware/Cap.git",
+    "commit": "6ba69561ac86b8efdb17616d6727f9638015546b"
+  },
+  "contract_version": "frame.api.v1",
+  "operation_count": 45,
+  "protected_gates": ["provider_execution"],
+  "release_rule": "A durable D1 intent or dequeued outbox is never provider success. A legacy success may be projected only by resolving an opaque sealed terminal bound to immutable independent_provider_executor evidence for the same request digest.",
+  "security": {
+    "authorization": "D1 resolves legacy organization, space, and video identifiers to native resources and re-authorizes exact credential kind/subject/key-version/digest/expiry, policy proofs, entitlement revision/expiry, conditional bindings, the owning organization owner's exact user revision, and the separately digested cross-family parent authority at insert, replay, and evidence admission.",
+    "tenant_non_disclosure": "Cross-tenant and absent protected resources collapse to the same forbidden/not-found family selected by the carrier.",
+    "secret_storage": "Plaintext credentials, OAuth codes/tokens, signed URLs, email addresses, feedback, logs, provider JSON, response bodies, and cookies never enter D1. A server-owned narrow vault returns randomized frame-pi-request-v1 opaque references plus deterministic plaintext digests; verified output is stored only as a frame-pi-terminal-v1 opaque reference plus digest.",
+    "replay": "Released Cap callers never require an invented Idempotency-Key. Ordinary routes, RPCs, and actions use atomic principal-bound request-digest claims with pending reachability and bounded terminal retention; signed webhook deliveries and Loom workflows use server-derived natural identities.",
+    "provider_failure": "Pending, dead-lettered, corrupt, unavailable, and executor-lease-mismatched provider states fail closed and never return a legacy success shape.",
+    "webhooks": "The carrier verifies the configured media-server secret in constant time, binds natural replay to the exact transport-body digest, and persists no raw credential or body.",
+    "source_compatibility": "Desktop withAuth carriers accept exact session or 36-character API-key branches; logs also permits anonymous access; Google OAuth exchange requires verified expiring signed state; public Loom/release/email carriers do not mint sessions; the Loom domain workflow resolves loom.orgId through the canonical organization domain; getVideoStatus represents optional session and independent password policy proofs.",
+    "conditional_authority": {
+      "space_create_actor_pro": ["passwordEnabled", "disableSummary", "disableChapters", "disableTranscript"],
+      "space_publish_owner_pro": "The owning organization's exact owner user and user-authority revision must remain Pro; an authorized organization or space manager need not be that owner.",
+      "space_update_non_pro_settings": "A non-Pro manager preserves existing Pro viewer settings, so submitted viewer flags do not create an update-time Pro gate.",
+      "seat_capacity": "proSeatsUsed counts each active hasProSeat member once and also counts the active Pro owner's membership once when hasProSeat is false."
+    },
+    "workflow_authority": {
+      "loom_domain_identity": "LoomImportVideo binds cap.userId to the inherited native actor through legacy_collaboration_user_aliases_v1 and binds both cap.orgId and loom.orgId to the inherited native tenant through legacy_user_account_organization_ids_v1.",
+      "loom_media_identity": "importLoomVideoWorkflow binds payload userId to the target video's native owner through the legacy user alias. Direct imports require that owner to be the parent actor; CSV imports allow the selected active organization member to own the video.",
+      "raw_file_key": {
+        "initial": "Direct and CSV launches require {legacy_user_id}/{legacy_video_id}/raw-upload.mp4.",
+        "retry": "A retry-processing parent requires the exact live legacy_mobile_cap_uploads_v1.raw_file_key for the same target video."
+      },
+      "empty_retry_url": "loomDownloadUrl is a required string shape but may be empty because the pinned retry launcher sends an empty string and the workflow does not read it.",
+      "parent_scoped_replay": "importLoomVideoWorkflow natural replay includes the exact parent family, receipt, and request digest, so one parent is idempotent while a newly admitted retry parent can launch a new run."
+    },
+    "natural_replay": {
+      "scope": "Natural identities are globally unique per source operation and replay digest, independent of principal or credential rotation; generated replay remains principal-bound.",
+      "signed_webhook": "The exact transport-body digest remains unique across signed-endpoint key rotation.",
+      "loom_domain_workflow": "The source payload idempotency key remains unique across session or API-key rotation."
+    },
+    "loom_download_egress": {
+      "payload_pointer": "/loom/video/downloadUrl",
+      "scheme": "https",
+      "host_policy": "loom.com or a subdomain of loom.com; IP literals, localhost aliases, user-info, fragments, and explicit ports are rejected.",
+      "redirect_policy": "The executor must reject redirects unless every hop is revalidated by the same policy.",
+      "dns_policy": "The executor must reject loopback, link-local, private, multicast, unspecified, and otherwise non-public resolved addresses for every connection."
+    },
+    "source_branch_contracts": {
+      "create_space": {
+        "operation_ids": ["cap-v1-0c233c1115838206", "cap-v1-5e7e4265d65c8365"],
+        "tenant_selector": "No organizationId or orgId is accepted from the client; the trusted authenticated active organization is used.",
+        "authority": "organization_member"
+      },
+      "loom_http_parent": {
+        "operation_id": "cap-v1-f0a00e93ab606a52",
+        "required_paths": [
+          "/cap/orgId",
+          "/loom/userId",
+          "/loom/orgId",
+          "/loom/video/id",
+          "/loom/video/name",
+          "/loom/video/downloadUrl"
+        ]
+      },
+      "desktop_video_create": {
+        "operation_id": "cap-v1-60f863b2cb19353f",
+        "existing_video": "An existing owned video ignores orgId, resolves the effective tenant from video.organization_id, and uses exactly one video_existing_owner binding.",
+        "new_video": "An absent or unknown well-formed videoId selects new-video creation, preserves no effective target, and uses exactly one video_new_organization_member binding.",
+        "tenant_fallback": "For new video creation, explicit accessible orgId wins; otherwise a valid default organization wins; otherwise the oldest active owned or active-member organization wins. active_organization_id is not a fallback.",
+        "duration_gate": "Every finite duration strictly greater than 300 seconds, including fractional values, requires exactly one video_duration_pro binding.",
+        "header_inputs": ["X-Cap-Desktop-Features: googleDriveUpload", "X-Cap-Desktop-Version >= 0.3.68"],
+        "header_binding": "The two header-derived booleans are canonicalized into the sealed request and request digest because they select storage compatibility and upload-progress behavior."
+      }
+    },
+    "maximum_persisted_request_bytes": 8388608
+  },
+  "local_entitlements": {
+    "cap_internal": ["cap-v1-f0a00e93ab606a52"],
+    "pro": [
+      "cap-v1-679e4241ef5e7383",
+      "cap-v1-cb3fade2af06d6bd",
+      "cap-v1-d062d262b013a0cd",
+      "cap-v1-4054bc310aa16e98",
+      "cap-v1-83721706f7b0e2e6",
+      "cap-v1-9d5f521a096649ec",
+      "cap-v1-3badb07a1a6fe5f9",
+      "cap-v1-50d0ffd9f5f7bcb6",
+      "cap-v1-1186b0fb0aaa2f4d",
+      "cap-v1-0823c0b806bd38a5"
+    ],
+    "subscription_read": ["cap-v1-3f2885312f79698e"],
+    "subscription_manage": ["cap-v1-aa00fc906599e89c", "cap-v1-17470f7df902263e"]
+  },
+  "operations": [
+    {"id":"cap-v1-30b7af7323aa2c37","carrier":"route","method":"POST","path":"/api/desktop/feedback","auth":"session_or_api_key","authority":"session","idempotency":"required","provider":"resend_email","source_count":4},
+    {"id":"cap-v1-dfbbc4c0b56179d1","carrier":"route","method":"POST","path":"/api/desktop/logs","auth":"anonymous_or_session_or_api_key","authority":"public","idempotency":"required","provider":"discord_webhook","source_count":2},
+    {"id":"cap-v1-10180c4650ffde88","carrier":"route","method":"GET","path":"/api/desktop/plan","auth":"session_or_api_key","authority":"session","idempotency":"forbidden","provider":"stripe_subscription_query","source_count":4},
+    {"id":"cap-v1-9d91d42d52472a83","carrier":"route","method":"POST","path":"/api/desktop/s3/config","auth":"session_or_api_key","authority":"session","idempotency":"required","provider":"sealed_s3_configuration","source_count":3},
+    {"id":"cap-v1-58ec99a456d61373","carrier":"route","method":"DELETE","path":"/api/desktop/s3/config/delete","auth":"session_or_api_key","authority":"session","idempotency":"required","provider":"sealed_s3_configuration","source_count":3},
+    {"id":"cap-v1-c6214b213eaa2360","carrier":"route","method":"GET","path":"/api/desktop/s3/config/get","auth":"session_or_api_key","authority":"session_or_organization_member","idempotency":"forbidden","provider":"sealed_s3_configuration","source_count":3},
+    {"id":"cap-v1-2d1396c2f68299f9","carrier":"route","method":"POST","path":"/api/desktop/s3/config/test","auth":"session_or_api_key","authority":"session","idempotency":"required","provider":"s3_head_bucket","source_count":3},
+    {"id":"cap-v1-49531a09fd9433e7","carrier":"route","method":"GET","path":"/api/desktop/storage/google-drive/callback","auth":"signed_state","authority":"signed_state_or_organization_owner","idempotency":"forbidden","provider":"google_drive_oauth_exchange","source_count":1},
+    {"id":"cap-v1-679e4241ef5e7383","carrier":"route","method":"POST","path":"/api/desktop/storage/google-drive/connect","auth":"session_or_api_key","authority":"session_or_organization_owner","idempotency":"required","provider":"google_drive_oauth_authorize","source_count":2},
+    {"id":"cap-v1-5ef3570390b8c80c","carrier":"route","method":"DELETE","path":"/api/desktop/storage/google-drive/disconnect","auth":"session_or_api_key","authority":"session","idempotency":"required","provider":"google_drive_disconnect","source_count":2},
+    {"id":"cap-v1-8d5930c717418665","carrier":"route","method":"POST","path":"/api/desktop/storage/google-drive/test","auth":"session_or_api_key","authority":"session","idempotency":"required","provider":"google_drive_identity_query","source_count":2},
+    {"id":"cap-v1-0b36c9acda9bd6a2","carrier":"route","method":"GET","path":"/api/desktop/storage/integrations","auth":"session_or_api_key","authority":"session_or_organization_member","idempotency":"forbidden","provider":"google_drive_quota_query","source_count":4},
+    {"id":"cap-v1-2e4ee222efc29606","carrier":"route","method":"GET","path":"/api/desktop/user/profile/image","auth":"session_or_api_key","authority":"session","idempotency":"forbidden","provider":"profile_image_fetch","source_count":2},
+    {"id":"cap-v1-60f863b2cb19353f","carrier":"route","method":"GET","path":"/api/desktop/video/create","auth":"session_or_api_key","authority":"organization_member","idempotency":"forbidden","provider":"storage_signing_email_and_short_link","source_count":4},
+    {"id":"cap-v1-f0a00e93ab606a52","carrier":"route","method":"POST","path":"/api/loom/video","auth":"session_or_api_key","authority":"organization_member","idempotency":"required","provider":"loom_import","source_count":1},
+    {"id":"cap-v1-05776c542380771e","carrier":"route","method":"PATCH","path":"/api/mobile/user/active-organization","auth":"session_or_api_key","authority":"organization_member","idempotency":"optional","provider":"image_signing_and_bootstrap","source_count":9},
+    {"id":"cap-v1-8a1e6c87b4426f93","carrier":"route","method":"GET","path":"/api/releases/tauri/:version/:target/:arch","auth":"public","authority":"public","idempotency":"forbidden","provider":"github_releases","source_count":2},
+    {"id":"cap-v1-221a713f60d7528f","carrier":"route","method":"GET","path":"/api/tools/loom-download","auth":"public","authority":"public","idempotency":"forbidden","provider":"loom_download","source_count":1},
+    {"id":"cap-v1-5af545d5d20508bd","carrier":"route","method":"POST","path":"/api/webhooks/media-server/multipart/:action","auth":"signed_webhook","authority":"signed_webhook","idempotency":"required","provider":"media_server_webhook","source_count":1},
+    {"id":"cap-v1-17d69edf5d3b06bb","carrier":"route","method":"POST","path":"/api/webhooks/media-server/progress","auth":"signed_webhook","authority":"signed_webhook","idempotency":"required","provider":"media_server_webhook","source_count":1},
+    {"id":"cap-v1-5cd4cac9da73f975","carrier":"rpc","method":"RPC","path":"/api/erpc#OrganisationSoftDelete","auth":"session","authority":"organization_owner","idempotency":"required","provider":"object_storage_and_tinybird_delete","source_count":8},
+    {"id":"cap-v1-422afbf05f09bf4f","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/loom.ts#downloadLoomVideo","auth":"public","authority":"public","idempotency":"required","provider":"loom_download","source_count":1},
+    {"id":"cap-v1-cb3fade2af06d6bd","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/loom.ts#importFromLoom","auth":"session","authority":"organization_member","idempotency":"required","provider":"loom_import","source_count":1},
+    {"id":"cap-v1-d062d262b013a0cd","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/loom.ts#importFromLoomCsv","auth":"session","authority":"organization_manager","idempotency":"required","provider":"loom_csv_import","source_count":1},
+    {"id":"cap-v1-6446dc02a25cef2f","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/check-domain.ts#checkOrganizationDomain","auth":"session","authority":"organization_manager","idempotency":"required","provider":"vercel_domain_query","source_count":2},
+    {"id":"cap-v1-0c233c1115838206","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/create-space.ts#createSpace","auth":"session","authority":"organization_member","idempotency":"optional","provider":"space_icon_storage","source_count":13},
+    {"id":"cap-v1-3f2885312f79698e","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/get-subscription-details.ts#getSubscriptionDetails","auth":"session","authority":"organization_owner","idempotency":"required","provider":"stripe_subscription_query","source_count":2},
+    {"id":"cap-v1-55b98b0f419abf86","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/remove-domain.ts#removeOrganizationDomain","auth":"session","authority":"organization_manager","idempotency":"required","provider":"vercel_domain_delete","source_count":2},
+    {"id":"cap-v1-f0ba260c29c295f3","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/send-invites.ts#sendOrganizationInvites","auth":"session","authority":"organization_manager","idempotency":"required","provider":"resend_invite_email","source_count":2},
+    {"id":"cap-v1-4054bc310aa16e98","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/storage.ts#getOrganizationGoogleDrivePickerToken","auth":"session","authority":"organization_manager","idempotency":"required","provider":"google_drive_access_token","source_count":2},
+    {"id":"cap-v1-83721706f7b0e2e6","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/storage.ts#listOrganizationGoogleDriveFolders","auth":"session","authority":"organization_manager","idempotency":"required","provider":"google_drive_folder_list","source_count":2},
+    {"id":"cap-v1-9d5f521a096649ec","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/storage.ts#removeOrganizationS3Config","auth":"session","authority":"organization_manager","idempotency":"required","provider":"sealed_s3_configuration","source_count":1},
+    {"id":"cap-v1-3badb07a1a6fe5f9","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/storage.ts#saveOrganizationS3Config","auth":"session","authority":"organization_manager","idempotency":"required","provider":"sealed_s3_configuration","source_count":1},
+    {"id":"cap-v1-50d0ffd9f5f7bcb6","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/storage.ts#setOrganizationGoogleDriveLocation","auth":"session","authority":"organization_manager","idempotency":"required","provider":"google_drive_location","source_count":2},
+    {"id":"cap-v1-1186b0fb0aaa2f4d","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/storage.ts#testOrganizationS3Config","auth":"session","authority":"organization_manager","idempotency":"required","provider":"s3_head_bucket","source_count":1},
+    {"id":"cap-v1-0823c0b806bd38a5","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/update-domain.ts#updateDomain","auth":"session","authority":"organization_manager","idempotency":"required","provider":"vercel_domain_mutation","source_count":2},
+    {"id":"cap-v1-aa00fc906599e89c","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/update-seat-quantity.ts#previewSeatChange","auth":"session","authority":"organization_owner","idempotency":"required","provider":"stripe_invoice_preview","source_count":3},
+    {"id":"cap-v1-17470f7df902263e","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/update-seat-quantity.ts#updateSeatQuantity","auth":"session","authority":"organization_owner","idempotency":"required","provider":"stripe_subscription_update","source_count":3},
+    {"id":"cap-v1-3a394a2798233b0b","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/organization/update-space.ts#updateSpace","auth":"session","authority":"space_manager","idempotency":"optional","provider":"space_icon_storage","source_count":13},
+    {"id":"cap-v1-8160d7c3ce8507d9","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/send-download-link.ts#sendDownloadLink","auth":"public","authority":"public","idempotency":"required","provider":"resend_download_email","source_count":2},
+    {"id":"cap-v1-d9b654b30f6c362a","carrier":"server_action","method":"ACTION","path":"action://apps/web/actions/videos/get-status.ts#getVideoStatus","auth":"public_or_session","authority":"video_viewer","idempotency":"required","provider":"transcription_and_ai_dispatch","source_count":3},
+    {"id":"cap-v1-5e7e4265d65c8365","carrier":"server_action","method":"ACTION","path":"action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#createSpace","auth":"session","authority":"organization_member","idempotency":"optional","provider":"space_icon_storage","source_count":14},
+    {"id":"cap-v1-d05af581fbeb145e","carrier":"server_action","method":"ACTION","path":"action://apps/web/app/(org)/dashboard/_components/Navbar/server.ts#updateSpace","auth":"session","authority":"space_manager","idempotency":"optional","provider":"space_icon_storage","source_count":14},
+    {"id":"cap-v1-b9fcb0fbd25b2234","carrier":"workflow","method":"WORKFLOW","path":"workflow://apps/web/workflows/import-loom-video.ts#importLoomVideoWorkflow","auth":"parent_receipt","authority":"parent_receipt","idempotency":"required","provider":"loom_storage_and_media_dispatch","source_count":1},
+    {"id":"cap-v1-bd1b9d67380624f7","carrier":"workflow","method":"WORKFLOW","path":"workflow://packages/web-domain/src/Loom.ts#LoomImportVideo","auth":"parent_receipt","authority":"parent_receipt","idempotency":"required","provider":"loom_import","source_count":1}
+  ],
+  "persistence": {
+    "migration": "0062_legacy_protected_integrations_expand.sql",
+    "queries": [
+      "authority_read.sql",
+      "generated_claim_upsert.sql",
+      "generated_receipt_replay.sql",
+      "outbox_insert.sql",
+      "receipt_insert.sql",
+      "receipt_replay.sql",
+      "workflow_parent_read.sql"
+    ],
+    "tables": [
+      "legacy_protected_integration_receipts_v1",
+      "legacy_protected_integration_generated_replay_claims_v1",
+      "legacy_protected_integration_outbox_v1",
+      "legacy_protected_integration_evidence_v1",
+      "legacy_protected_effect_parent_registry_v1",
+      "legacy_protected_effect_parent_edges_v1"
+    ]
+  },
+  "implementation": {
+    "application_module": "legacy_protected_integrations",
+    "control_plane_module": "legacy_protected_integrations_runtime",
+    "control_plane_web_module": "legacy_protected_integrations_web_runtime",
+    "control_plane_port": "D1LegacyProtectedIntegrationRuntimeV1",
+    "sqlite_conformance": "scripts/ci/legacy-protected-integrations-sqlite-conformance.py",
+    "local_adapter_sources": [
+      "crates/application/src/legacy_protected_integrations.rs",
+      "apps/control-plane/src/legacy_protected_integrations_runtime.rs",
+      "apps/control-plane/src/legacy_protected_integrations_web_runtime.rs",
+      "apps/control-plane/migrations/0062_legacy_protected_integrations_expand.sql",
+      "apps/control-plane/queries/legacy_protected_integrations/authority_read.sql",
+      "apps/control-plane/queries/legacy_protected_integrations/generated_claim_upsert.sql",
+      "apps/control-plane/queries/legacy_protected_integrations/generated_receipt_replay.sql",
+      "apps/control-plane/queries/legacy_protected_integrations/receipt_replay.sql",
+      "apps/control-plane/queries/legacy_protected_integrations/receipt_insert.sql",
+      "apps/control-plane/queries/legacy_protected_integrations/outbox_insert.sql",
+      "apps/control-plane/queries/legacy_protected_integrations/workflow_parent_read.sql",
+      "fixtures/api-parity/v1/protected-integrations.json",
+      "scripts/ci/legacy-protected-integrations-sqlite-conformance.py"
+    ]
+  }
+}

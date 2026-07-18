@@ -1,0 +1,72 @@
+{
+  "schema_version": "frame.legacy-mobile-bootstrap-caps.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "operations": [
+    {"id":"cap-v1-32a24fe16a4c4a4f","method":"GET","path":"/api/mobile/bootstrap"},
+    {"id":"cap-v1-951ad1523ae9dff4","method":"GET","path":"/api/mobile/caps"},
+    {"id":"cap-v1-6b8a689bf00a9187","method":"DELETE","path":"/api/mobile/caps/:id"},
+    {"id":"cap-v1-7f0ed5caf3eaf97c","method":"GET","path":"/api/mobile/caps/:id"},
+    {"id":"cap-v1-95fe41c72ce5ca9f","method":"GET","path":"/api/mobile/caps/:id/download"},
+    {"id":"cap-v1-bde34617e42a8834","method":"GET","path":"/api/mobile/caps/:id/playback"}
+  ],
+  "transport_contract": {
+    "authentication": "JavaScript split-space second segment of exactly 36 bytes selects API-key lookup regardless of scheme; otherwise host-only browser session",
+    "authorization": "bootstrap/list use the actor and active organization; detail/download/playback/delete require owner and disclose every foreign or absent target as 404",
+    "body": "all six routes are bodyless; Content-Type, transfer encoding, non-identity content encoding, nonzero Content-Length, and Idempotency-Key are rejected",
+    "response": "JSON with Cache-Control: no-store, max-age=0",
+    "rate_limit": "client_compatibility.v1"
+  },
+  "bootstrap_contract": {
+    "organizations": "active non-tombstoned owned or active-member organizations; owner role wins, then admin, then member",
+    "active_selection": "current active organization when accessible, otherwise the first accessible organization, otherwise null",
+    "root_folders": "actor-created, null-parent, null-space folders in the selected organization with owner-scoped video counts",
+    "images": "Google lh3 URLs pass through; path-style R2 URLs drop the bucket segment and raw keys become private one-hour GET capabilities; nonextractable URLs pass through; any user/org image failure fails bootstrap"
+  },
+  "list_contract": {
+    "page": "Number(value), finite and >=1, Math.trunc, default 1, max 10000",
+    "limit": "Number(value), finite and >=1, Math.trunc, default 20, max 50",
+    "folder": "truthy folderId selects exactly that folder; absent/empty selects null folder and includes rootFolders",
+    "ordering": "effectiveCreatedAt descending",
+    "best_effort": "analytics failures produce zero and thumbnail failures produce null"
+  },
+  "detail_contract": {
+    "metadata": "only object metadata; nonempty string summary and ordered chapters whose title is string and start is number",
+    "comments": "all text/emoji rows ordered by createdAt with per-author image failures mapped to null",
+    "transcription_statuses": ["PROCESSING","COMPLETE","ERROR","SKIPPED","NO_AUDIO"]
+  },
+  "storage_contract": {
+    "ttl_seconds": 3600,
+    "signed_headers": ["host"],
+    "range": "Range is intentionally not signed, so the mobile player may request arbitrary byte ranges on the exact signed object",
+    "playback": {
+      "MediaConvert":"output/video_recording_000.m3u8",
+      "local":"combined-source/stream.m3u8",
+      "desktopMP4":"result.mp4",
+      "webMP4":"result.mp4",
+      "desktopSegments":"/api/playlist?videoId=:id&videoType=segments-master"
+    },
+    "download": "screenshots use newest matching screenshot suffix; webMP4 prefers nonempty result.mp4 then raw fallback; other MP4 uses result.mp4; non-MP4 is 404",
+    "transcript": "prefix/transcription.vtt is signed only when HEAD succeeds; every HEAD/sign failure yields null"
+  },
+  "delete_contract": {
+    "ordering": "owner-scoped D1 deletion/tombstone commits before one R2 prefix listing/deletion",
+    "provider_failure": "returns 500 after D1 deletion; an ordinary retry returns 404",
+    "evidence": "immutable operation/audit rows plus guarded authority, tombstone, and cleanup assertions"
+  },
+  "source_counts": {
+    "cap-v1-32a24fe16a4c4a4f": 9,
+    "cap-v1-951ad1523ae9dff4": 10,
+    "cap-v1-6b8a689bf00a9187": 11,
+    "cap-v1-7f0ed5caf3eaf97c": 12,
+    "cap-v1-95fe41c72ce5ca9f": 11,
+    "cap-v1-bde34617e42a8834": 11
+  },
+  "source_manifest_sha256": {
+    "cap-v1-32a24fe16a4c4a4f": "7cd6cb37f1e7fc7f903e5b3dc1454512d3ed7981395e6dcd6ad1d6abd83f1304",
+    "cap-v1-951ad1523ae9dff4": "cec1ea58faee8e794a05497980a205d171b3cd27ebf6bd2179046fa99a4d9385",
+    "cap-v1-6b8a689bf00a9187": "9424a3a90d6bffcdb63224dcc16a8c64dee9e24592f6fd21f16fd40ee404b8b0",
+    "cap-v1-7f0ed5caf3eaf97c": "3a73b50674e15aad9cdb6e56132b49d20496c3dde788c417b5a6c0273e33b3ff",
+    "cap-v1-95fe41c72ce5ca9f": "7ba403bb34ea76809133854c15517897d517936197587bcf2944df44c11606a5",
+    "cap-v1-bde34617e42a8834": "ec1b3f4874f4306a6a7cb824038d4a6815f5bd813af70ee190fbe7f5ea871d8d"
+  }
+}

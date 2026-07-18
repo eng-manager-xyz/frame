@@ -10,6 +10,104 @@ use serde::Deserialize;
 const MATRIX: &str =
     include_str!("../../../fixtures/same-origin-routing/v1/route-owner-matrix.json");
 const CONTROL_PLANE: &str = include_str!("../src/lib.rs");
+const PROTECTED_MEDIA_CHILD_ROUTES: [(&str, &str, &str, &str); 16] = [
+    (
+        "cap-v1-105318e146fceb4c",
+        "POST",
+        "/media-server/audio/check",
+        "/media-server/audio/check",
+    ),
+    (
+        "cap-v1-77fe8c9a4b418f53",
+        "POST",
+        "/media-server/audio/convert",
+        "/media-server/audio/convert",
+    ),
+    (
+        "cap-v1-a2814dde3550e586",
+        "POST",
+        "/media-server/audio/extract",
+        "/media-server/audio/extract",
+    ),
+    (
+        "cap-v1-fbd3d44a0ca1786f",
+        "GET",
+        "/media-server/audio/status",
+        "/media-server/audio/status",
+    ),
+    (
+        "cap-v1-0bf20f7e9b1a474c",
+        "GET",
+        "/media-server/health",
+        "/media-server/health",
+    ),
+    (
+        "cap-v1-ee9797dd352c4e11",
+        "POST",
+        "/media-server/video/cleanup",
+        "/media-server/video/cleanup",
+    ),
+    (
+        "cap-v1-9ed2e7b3f858eaaa",
+        "POST",
+        "/media-server/video/convert",
+        "/media-server/video/convert",
+    ),
+    (
+        "cap-v1-2b48f7704d996758",
+        "POST",
+        "/media-server/video/edit",
+        "/media-server/video/edit",
+    ),
+    (
+        "cap-v1-aa975a14fd384a5c",
+        "POST",
+        "/media-server/video/force-cleanup",
+        "/media-server/video/force-cleanup",
+    ),
+    (
+        "cap-v1-bf2eb9302de590a1",
+        "POST",
+        "/media-server/video/mux-segments",
+        "/media-server/video/mux-segments",
+    ),
+    (
+        "cap-v1-ba986b8c5b07cfd6",
+        "POST",
+        "/media-server/video/probe",
+        "/media-server/video/probe",
+    ),
+    (
+        "cap-v1-320876fa0aec77cb",
+        "POST",
+        "/media-server/video/process",
+        "/media-server/video/process",
+    ),
+    (
+        "cap-v1-fc2e2bd0d28ffbf3",
+        "POST",
+        "/media-server/video/process/:jobId/cancel",
+        "/media-server/video/process/job-42/cancel",
+    ),
+    (
+        "cap-v1-43bc9ae6aa4f44a8",
+        "GET",
+        "/media-server/video/process/:jobId/status",
+        "/media-server/video/process/job-42/status",
+    ),
+    (
+        "cap-v1-986bf73a0b5cb676",
+        "GET",
+        "/media-server/video/status",
+        "/media-server/video/status",
+    ),
+    (
+        "cap-v1-4165632f8266ae06",
+        "POST",
+        "/media-server/video/thumbnail",
+        "/media-server/video/thumbnail",
+    ),
+];
 
 #[derive(Debug, Deserialize)]
 struct Matrix {
@@ -18,6 +116,7 @@ struct Matrix {
     worker_route_pattern: String,
     compatibility_worker_route_pattern: String,
     lookalike_policy: String,
+    protected_media_child_routes: Vec<ProtectedMediaChildRoute>,
     cases: Vec<RouteCase>,
     host_cases: Vec<HostCase>,
     transport_cases: Vec<TransportCase>,
@@ -28,8 +127,18 @@ struct RouteCase {
     id: String,
     url: String,
     raw_path: String,
+    method: Option<String>,
+    source_operation_id: Option<String>,
     edge_owner: String,
     worker_class: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtectedMediaChildRoute {
+    operation_id: String,
+    method: String,
+    path: String,
+    example_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +164,7 @@ fn route_class(route: &Route) -> &'static str {
         Route::LegacyRoot => "legacy_root",
         Route::LegacyHealth => "legacy_health",
         Route::LegacyMediaServerRoot => "legacy_media_server_root",
+        Route::LegacyProtectedMedia => "legacy_protected_media",
         Route::Discovery => "discovery",
         Route::Capabilities => "capabilities",
         Route::ApiHealth => "api_health",
@@ -90,7 +200,58 @@ fn exhaustive_owner_matrix_matches_the_literal_edge_pattern_and_raw_router() {
         "frame.engmanager.xyz/media-server*"
     );
     assert_eq!(matrix.lookalike_policy, "non_cacheable_404");
-    assert!(matrix.cases.len() >= 25);
+    assert!(matrix.cases.len() >= 52);
+
+    let declared_protected_routes = matrix
+        .protected_media_child_routes
+        .iter()
+        .map(|route| {
+            (
+                route.operation_id.as_str(),
+                route.method.as_str(),
+                route.path.as_str(),
+                route.example_path.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(declared_protected_routes, PROTECTED_MEDIA_CHILD_ROUTES);
+
+    assert_eq!(
+        matrix
+            .cases
+            .iter()
+            .filter(|case| case.source_operation_id.is_some())
+            .count(),
+        PROTECTED_MEDIA_CHILD_ROUTES.len()
+    );
+    let protected_case_contracts = matrix
+        .cases
+        .iter()
+        .filter_map(|case| {
+            case.source_operation_id.as_deref().map(|operation_id| {
+                (
+                    operation_id,
+                    case.method.as_deref(),
+                    case.raw_path.as_str(),
+                    case.edge_owner.as_str(),
+                    case.worker_class.as_str(),
+                )
+            })
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_case_contracts = PROTECTED_MEDIA_CHILD_ROUTES
+        .iter()
+        .map(|(operation_id, method, _path, example_path)| {
+            (
+                *operation_id,
+                Some(*method),
+                *example_path,
+                "worker_compat",
+                "legacy_protected_media",
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(protected_case_contracts, expected_case_contracts);
 
     for case in matrix.cases {
         let target = parse_raw_request_target(&case.url)

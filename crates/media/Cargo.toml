@@ -9,7 +9,9 @@ build = "build.rs"
 
 [dependencies]
 gstreamer.workspace = true
+gstreamer-app.workspace = true
 ring.workspace = true
+same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -19,6 +21,9 @@ zeroize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 frame-windows-secure-spool = { path = "../windows-secure-spool" }

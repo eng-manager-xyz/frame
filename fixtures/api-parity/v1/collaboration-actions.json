@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "family": "collaboration_comments.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "mobile_authentication": "host_session_or_authorization_second_space_token_exactly_36_characters",
+    "web_route_authentication": "host_only_session_missing_session_is_source_400_missing_required_data",
+    "action_path_prefix": "/api/v1/web/compatibility-actions/",
+    "action_request_schema": "frame.web-collaboration-action-request.v1",
+    "action_same_origin": "required",
+    "action_csrf": "double_submit_one_use_grant_required",
+    "client_idempotency": "required_Idempotency-Key_and_action_body_exact_match",
+    "max_body_bytes": 262144,
+    "rate_limit_bucket": "collaboration_notifications.v1",
+    "cache_control": "no-store, max-age=0"
+  },
+  "source_semantics": {
+    "mobile_create": "Effect_schema_strips_excess_fields_requires_nullable_timestamp_and_JS_trim_rejects_empty",
+    "mobile_authority": "video_owner_or_active_organization_shared_video_member_else_not_found",
+    "mobile_response": "ISO_date_comment_projection_with_nullable_author_image_resolution",
+    "mobile_delete": "exact_authored_target_only_without_video_child_or_notification_scope",
+    "web_delete_query": "commentId_presence_required_but_empty_value_reaches_lookup",
+    "web_delete_mutation": "authored_target_plus_same_actor_direct_replies_only_preserve_other_authors_and_grandchildren",
+    "web_delete_errors": "missing_or_anonymous_400_target_absent_404_database_500",
+    "action_delete": "caller_parent_branch_selects_notification_cleanup_and_caller_video_selects_revalidation",
+    "action_new": "preserve_whitespace_allow_empty_root_and_orphan_or_cross_video_parent_without_video_authority",
+    "notification_create": "after_insert_best_effort_failure_swallowed",
+    "notification_delete": "action_delete_same_transaction_failure_rolls_back_comment"
+  },
+  "atomicity": {
+    "core": "tenant_actor_operation_scoped_idempotency_authority_reassertion_receipt_effect_and_audit",
+    "same_key_same_fingerprint": "replay_original_projection",
+    "same_key_different_fingerprint": "conflict",
+    "delete_bound": 100000,
+    "row_100001": "abort_without_partial_delete",
+    "immutable_evidence": true
+  },
+  "operations": [
+    {
+      "id": "cap-v1-661d23fdcca80bd2",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/mobile/caps/:id/comments",
+      "source_count": 2,
+      "source_manifest_sha256": "9ff2a74a8cedde6c7164ca890a85733a38623ef5de0dedffae49b7d6947b2b60",
+      "validation": "JS_trim_then_nonempty_text",
+      "authority": "owner_or_shared_active_organization_member",
+      "success": "mobile_comment_projection",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-bd59425c2e7074ae",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/mobile/caps/:id/reactions",
+      "source_count": 2,
+      "source_manifest_sha256": "8cf2f03083338bc9a28948ed7399533d66fcbcced7d02138801337b8710720d8",
+      "validation": "JS_trim_then_nonempty_emoji",
+      "authority": "owner_or_shared_active_organization_member",
+      "success": "mobile_comment_projection",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-b6ec2f719de27105",
+      "kind": "route",
+      "method": "DELETE",
+      "legacy_identity": "/api/mobile/comments/:id",
+      "source_count": 2,
+      "source_manifest_sha256": "43c02de6f1b9b5b7b028f878f019ba2d4b593ea2b177949d1dc7824e49e151e7",
+      "validation": "path_only",
+      "authority": "authored_comment_only",
+      "success": "success_true_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-f3f5e53c019f944a",
+      "kind": "route",
+      "method": "DELETE",
+      "legacy_identity": "/api/video/comment/delete",
+      "source_count": 1,
+      "source_manifest_sha256": "b61bb2da1d688d3b291755938dd79def4c67c74443674339f2c7873180999907",
+      "validation": "query_present_empty_allowed",
+      "authority": "authored_comment_and_authored_direct_replies",
+      "success": "success_true_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-f74174457880eadc",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/delete-comment.ts#deleteComment",
+      "source_count": 1,
+      "source_manifest_sha256": "8bb9e6475b36c3950f0715d4bf0ab7ed2349dc921680235ddef4e96e19165f91",
+      "validation": "truthy_comment_and_video_caller_parent_nullable",
+      "authority": "authored_comment_caller_selected_notification_branch",
+      "success": "success_true_object",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-dbe600b35683c827",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/videos/new-comment.ts#newComment",
+      "source_count": 1,
+      "source_manifest_sha256": "9918435d3881d495be8733f7593f8d4438bf176e9a64cfbdcb4723ed8beed033",
+      "validation": "truthy_raw_content_and_video_preserve_parent_string",
+      "authority": "session_only_without_video_or_parent_authority",
+      "success": "web_comment_projection_sending_false",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    }
+  ]
+}
