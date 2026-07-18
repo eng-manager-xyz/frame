@@ -5,6 +5,21 @@ state machinery in `frame-media`. It contains no physical screen recording,
 native adapter, OS permission prompt, customer media, device label, window
 title, process identity, or platform certification.
 
+## Closure ledger boundary
+
+Issue 24 checkboxes 1–10 are repository-local gaps. None is currently
+`protected_pending`: representative hardware will eventually be required, but
+hardware evidence cannot precede the missing production implementation.
+
+The tests below validate contracts for a future adapter. They do not provide a
+production `ScreenCaptureSource`, a release-wired GStreamer appsrc pump fed by
+an OS source, OS permission integration, target/lifecycle notifications,
+Frame-window exclusion, or an issue-04 parity recording. A standalone owned
+appsrc recording component does not change that boundary. The only source
+implementation exercised here is the test `DummySource`; therefore its frames,
+permission events, geometry, cursor, recovery, copy-budget, and exclusion
+results are invalid as evidence for issue-24 completion.
+
 On 2026-07-16, 54 dedicated out-of-module contract tests and the complete
 113-test `frame-media` suite passed on the local native toolchain. The focused
 suite compiles a dummy `ScreenCaptureSource` using only the exported API; no
@@ -105,6 +120,8 @@ format contracts.
 | Cap-baseline and issue-04 fixture parity | pending | pending | pending |
 
 No row in this table may be inferred from a unit test or an enum-to-source
-mapping. Issue 24 remains open until the approved OS/architecture/device matrix,
-recorded synthetic fixtures, probes, measurements, operational documentation,
-and rollout evidence are attached.
+mapping. Before the OS/architecture/device matrix can produce valid acceptance
+evidence, Frame must implement and wire the production source, appsrc,
+permission, lifecycle, exclusion, and parity paths represented by checkboxes
+1–10. Recorded samples, probes, measurements, operational documentation, and
+rollout evidence remain subsequent gates rather than substitutes for that code.

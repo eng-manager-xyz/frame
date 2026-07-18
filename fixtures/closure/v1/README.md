@@ -17,8 +17,10 @@ Ordinals are one-based in checkbox order within each issue. Every issue pins a
 digest of its checkbox text, so editing or reordering a requirement forces a
 fresh classification. Evidence paths must be real, non-symlink repository
 files. All ordinals not explicitly protected or open are locally satisfied.
-The current exact partition is 363 locally satisfied, 191 protected pending,
-and zero repository-local gaps.
+The current exact partition is 352 locally satisfied, 171 protected pending,
+and 31 repository-local gaps. The focused native-product audit pins those gaps
+to issue 24 checkboxes 1–10, issue 25 checkboxes 1/4/5/6/7/8, issue 27
+checkboxes 2/3/4/5/8/9/10/11, and issue 33 checkboxes 3/4/5/6/8/9/10.
 
 Run:
 
@@ -30,4 +32,7 @@ The checker requires an exact 554-item partition and prints every true local
 gap with its issue, ordinal, and source text. Protected classes are deliberately
 allowed to overlap because one checkbox can require, for example, both a real
 provider and a supported browser. The inventory does not check boxes, authorize
-promotion, or convert `not_collected` protected records into evidence.
+promotion, or convert `not_collected` protected records into evidence. Its
+focused ordinal assertion prevents accidental reclassification of the four
+audited issue sets; it is a regression guard for the ledger, not semantic proof
+that implementation exists or remains absent.

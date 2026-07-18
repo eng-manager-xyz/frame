@@ -3,7 +3,27 @@
 Issue: `_issues/27-p4-studio-mode.md`
 
 This record separates executable provider-neutral evidence from protected
-native, historical, hardware, UX, and release evidence.
+native, historical, hardware, UX, and release evidence. It does not classify
+the complete Studio product path as locally implemented.
+
+## Closure ledger boundary
+
+Issue 27 checkboxes 2, 3, 4, 5, 8, 9, 10, and 11 are repository-local gaps.
+Checkboxes 1 and 6 are locally satisfied by the versioned project format and
+the production filesystem legacy importer. Checkbox 7 alone remains
+`protected_pending`, because the non-mutating importer/reporting path exists
+but still needs a reviewed representative legacy-project corpus.
+
+The remaining tests exercise contracts, synthetic GStreamer sources,
+filesystem components, and a reference renderer, not a production Studio
+service. No release path pumps screen/audio/camera adapters into the multitrack
+appsrc graph or connects recording to the journal and recovery stores. The
+playable preview and export helpers each consume a single source path and do
+not execute the canonical edit plan; the MP4 helper has no audio branch. The
+reference renderer writes a checksum-bound bundle rather than the requested
+playable edit-aware export. Therefore those artifacts cannot satisfy native
+recording, recovery, edit-aware preview/export, Cloudflare distribution-master,
+decoded-golden, long-project, or hardware-fallback/cancellation checkboxes.
 
 ## Executed locally
 
@@ -20,10 +40,11 @@ The external contract suite exercises:
   rejection of flattened/duplicate tracks, plus a filesystem recording-session
   adapter that seals four independent pre-encoded temporary originals and
   reopens a crash state containing both partial and already-sealed tracks;
-- a real GStreamer execution adapter that records four independently playable
-  synthetic screen/camera/microphone/system-audio originals on one pipeline
-  clock, validates nontrivial immutable outputs, decodes a bounded RGB preview
-  frame at a requested position, and tears down every graph to `Null`;
+- a native-execution test helper that uses GStreamer to record four
+  independently playable synthetic screen/camera/microphone/system-audio
+  originals on one pipeline clock, validates nontrivial immutable outputs,
+  decodes a bounded RGB preview frame at a requested position, and tears down
+  every graph to `Null`;
 - journal CAS, ownership fencing, lost acknowledgement reconciliation,
   idempotent replay, stale writers, exact pending asset/render continuity,
   asset/edit/render carry-forward and exact resolution from recoverable failure,
@@ -68,7 +89,9 @@ The external contract suite exercises:
 The native execution test also decodes and re-encodes a playable WebM export,
 decodes that output again, and, behind the explicit codec-decision gate, emits
 an MP4 distribution master that a second GStreamer demux/parser graph consumes
-to EOS. These are executable media artifacts rather than checksum-only bundles.
+to EOS. These executable synthetic media artifacts prove factory availability
+and basic single-source encode/decode behavior, not the Studio recording or
+edit-aware renderer paths.
 
 Focused command:
 
@@ -114,25 +137,29 @@ Production modules contain no intentional panic/todo boundary and use no
 unsafe media bridge. The repository-wide format, lint, and test commands are
 rerun at the aggregate gate after concurrent issue lanes merge.
 
-## Synthetic fixtures only
+## Synthetic and component evidence only
 
 `fixtures/studio/cap-schema-supported/` is a locally authored directory-schema
 fixture. Its JSON and descriptor payloads prove the production parser, copy
 plan, normalized path, segment, fingerprint, and read-only behavior, but it is
 not a historical Cap project and its media-named files are not encoded samples.
 The contract suite uses deterministic fake native ports alongside production
-filesystem durability adapters. Its reference renderer still writes a
-canonical checksum-bound bundle, while the separate native execution adapter
-now supplies real track, preview, WebM, and gated MP4 evidence. Timeline
-goldens remain mathematical and are not claimed as perceptual-diff evidence.
+filesystem durability components. Its reference renderer writes a canonical
+checksum-bound bundle, while the separate native execution helpers supply
+synthetic tracks and single-source preview, WebM, and gated video-only MP4
+evidence. Those helpers are not connected to the Studio coordinator or desktop
+release. Timeline goldens remain mathematical and are not claimed as decoded
+or perceptual-diff evidence.
 The JSON keys and non-fragmented `.mp4`/`.ogg` paths were checked against
 `crates/project/src/meta.rs`, `crates/project/src/configuration.rs`, and
 `crates/recording/src/studio_recording.rs` at the pinned revision.
 
-## Protected evidence not collected
+## Protected and subsequently required evidence
 
-The following remains required before issue closure and must not be inferred
-from local contract tests:
+Only the first item below currently supports a `protected_pending`
+classification (checkbox 7). The remaining items are subsequent hardware,
+quality, UX, and approval gates; they remain invalid for closure until the
+corresponding repository-local production paths exist:
 
 - a privacy-reviewed, provenance-pinned real legacy Cap project corpus at the
   referenced Cap revision, including supported and unsupported effects;
@@ -152,5 +179,7 @@ from local contract tests:
 - migration owner, rollback-window owner, product/security/release signoff, and
   release-candidate evidence links.
 
-Absence of any protected record blocks promotion. No provider, hardware, user,
-or release claim is made by this local evidence file.
+Absence of a required protected record blocks promotion, but attaching one
+cannot close checkboxes 2–5 or 8–11 while their local integrations remain
+absent. No provider, hardware, user, or release claim is made by this local
+evidence file.

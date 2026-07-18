@@ -31,6 +31,17 @@ ALLOWED_CLASSES = {
     "provider_execution",
 }
 
+# This is a narrow regression guard for the semantic audit recorded in
+# fixtures/closure/v1/checkbox-status.json. It deliberately does not inspect
+# implementation or infer closure; changing one of these sets requires a fresh
+# human audit rather than compensating with an unrelated total adjustment.
+AUDITED_LOCAL_GAPS = {
+    "24": frozenset(range(1, 11)),
+    "25": frozenset({1, 4, 5, 6, 7, 8}),
+    "27": frozenset({2, 3, 4, 5, 8, 9, 10, 11}),
+    "33": frozenset({3, 4, 5, 6, 8, 9, 10}),
+}
+
 
 class ClosureFailure(RuntimeError):
     """Stable validation failure without repository contents or secrets."""
@@ -158,6 +169,10 @@ def main() -> int:
 
         protected = ordinal_set(record.get("protected"), issue, "protected", count)
         local_gaps = ordinal_set(record.get("local_gaps"), issue, "local_gaps", count)
+        if issue in AUDITED_LOCAL_GAPS and local_gaps != AUDITED_LOCAL_GAPS[issue]:
+            raise ClosureFailure(
+                f"issue {issue} audited local-gap ordinals drifted; rerun the semantic audit"
+            )
         overlap = protected & local_gaps
         if overlap:
             raise ClosureFailure(f"issue {issue} classifies ordinals twice")
