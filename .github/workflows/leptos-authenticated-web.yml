@@ -8,16 +8,55 @@ on:
       - "apps/control-plane/src/authenticated_web_runtime.rs"
       - "apps/control-plane/src/auth_repository.rs"
       - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/legacy_compatibility_runtime.rs"
+      - "apps/control-plane/src/legacy_folder_assignment_runtime.rs"
+      - "apps/control-plane/src/legacy_folder_web_runtime.rs"
+      - "apps/control-plane/src/legacy_library_placement_runtime.rs"
+      - "apps/control-plane/src/legacy_library_web_runtime.rs"
+      - "apps/control-plane/src/legacy_notification_actions_runtime.rs"
+      - "apps/control-plane/src/legacy_notification_web_runtime.rs"
+      - "apps/control-plane/src/legacy_developer_actions_runtime.rs"
+      - "apps/control-plane/src/legacy_developer_web_runtime.rs"
+      - "apps/control-plane/src/legacy_membership_actions_runtime.rs"
+      - "apps/control-plane/src/legacy_membership_web_runtime.rs"
+      - "apps/control-plane/src/legacy_user_account_runtime.rs"
+      - "apps/control-plane/src/legacy_user_account_web_runtime.rs"
+      - "apps/control-plane/src/legacy_video_properties_runtime.rs"
+      - "apps/control-plane/src/legacy_video_properties_web_runtime.rs"
+      - "apps/control-plane/src/legacy_web_action_runtime.rs"
       - "apps/control-plane/src/compatibility_rate_limit.rs"
       - "apps/control-plane/src/worker_auth_runtime.rs"
       - "apps/control-plane/src/lib.rs"
       - "apps/control-plane/src/routing.rs"
       - "apps/control-plane/queries/auth/**"
+      - "apps/control-plane/queries/legacy_folder_assignment/**"
+      - "apps/control-plane/queries/legacy_library_placement/**"
+      - "apps/control-plane/queries/legacy_notification_actions/**"
+      - "apps/control-plane/queries/legacy_developer_actions/**"
+      - "apps/control-plane/queries/legacy_membership_actions/**"
+      - "apps/control-plane/queries/legacy_user_account/**"
+      - "apps/control-plane/queries/legacy_video_properties/**"
       - "apps/control-plane/queries/api_workflow/compatibility_rate_limit_*.sql"
       - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
       - "apps/control-plane/migrations/0029_worker_auth_delivery_handoff.sql"
       - "apps/control-plane/migrations/0034_compatibility_rate_limits.sql"
+      - "apps/control-plane/migrations/0036_legacy_folder_assignment_expand.sql"
+      - "apps/control-plane/migrations/0037_legacy_library_placement_expand.sql"
+      - "apps/control-plane/migrations/0038_legacy_notification_actions_expand.sql"
+      - "apps/control-plane/migrations/0039_legacy_developer_actions_expand.sql"
+      - "apps/control-plane/migrations/0040_legacy_membership_actions_expand.sql"
+      - "apps/control-plane/migrations/0042_legacy_user_account_expand.sql"
+      - "apps/control-plane/migrations/0044_legacy_video_properties_expand.sql"
       - "crates/application/src/identity.rs"
+      - "crates/application/src/legacy_organization_selection.rs"
+      - "crates/application/src/legacy_theme.rs"
+      - "crates/application/src/legacy_folder_assignment.rs"
+      - "crates/application/src/legacy_library_placement.rs"
+      - "crates/application/src/legacy_notification_actions.rs"
+      - "crates/application/src/legacy_developer_actions.rs"
+      - "crates/application/src/legacy_membership_actions.rs"
+      - "crates/application/src/legacy_user_account.rs"
+      - "crates/application/src/legacy_video_properties.rs"
       - "crates/domain/src/identity.rs"
       - "crates/frame-client/**"
       - "crates/ports/src/identity.rs"
@@ -25,6 +64,13 @@ on:
       - "scripts/ci/check-web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
       - "scripts/ci/worker-auth-sqlite-conformance.py"
+      - "scripts/ci/legacy-folder-assignment-sqlite-conformance.py"
+      - "scripts/ci/legacy-library-placement-sqlite-conformance.py"
+      - "scripts/ci/legacy-notification-actions-sqlite-conformance.py"
+      - "scripts/ci/legacy-developer-actions-sqlite-conformance.py"
+      - "scripts/ci/legacy-membership-actions-sqlite-conformance.py"
+      - "scripts/ci/legacy-user-account-sqlite-conformance.py"
+      - "scripts/ci/legacy-video-properties-sqlite-conformance.py"
       - "scripts/ci/web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-browser.py"
       - "scripts/ci/build-web-hydration.py"
@@ -40,16 +86,55 @@ on:
       - "apps/control-plane/src/authenticated_web_runtime.rs"
       - "apps/control-plane/src/auth_repository.rs"
       - "apps/control-plane/src/browser_web_runtime.rs"
+      - "apps/control-plane/src/legacy_compatibility_runtime.rs"
+      - "apps/control-plane/src/legacy_folder_assignment_runtime.rs"
+      - "apps/control-plane/src/legacy_folder_web_runtime.rs"
+      - "apps/control-plane/src/legacy_library_placement_runtime.rs"
+      - "apps/control-plane/src/legacy_library_web_runtime.rs"
+      - "apps/control-plane/src/legacy_notification_actions_runtime.rs"
+      - "apps/control-plane/src/legacy_notification_web_runtime.rs"
+      - "apps/control-plane/src/legacy_developer_actions_runtime.rs"
+      - "apps/control-plane/src/legacy_developer_web_runtime.rs"
+      - "apps/control-plane/src/legacy_membership_actions_runtime.rs"
+      - "apps/control-plane/src/legacy_membership_web_runtime.rs"
+      - "apps/control-plane/src/legacy_user_account_runtime.rs"
+      - "apps/control-plane/src/legacy_user_account_web_runtime.rs"
+      - "apps/control-plane/src/legacy_video_properties_runtime.rs"
+      - "apps/control-plane/src/legacy_video_properties_web_runtime.rs"
+      - "apps/control-plane/src/legacy_web_action_runtime.rs"
       - "apps/control-plane/src/compatibility_rate_limit.rs"
       - "apps/control-plane/src/worker_auth_runtime.rs"
       - "apps/control-plane/src/lib.rs"
       - "apps/control-plane/src/routing.rs"
       - "apps/control-plane/queries/auth/**"
+      - "apps/control-plane/queries/legacy_folder_assignment/**"
+      - "apps/control-plane/queries/legacy_library_placement/**"
+      - "apps/control-plane/queries/legacy_notification_actions/**"
+      - "apps/control-plane/queries/legacy_developer_actions/**"
+      - "apps/control-plane/queries/legacy_membership_actions/**"
+      - "apps/control-plane/queries/legacy_user_account/**"
+      - "apps/control-plane/queries/legacy_video_properties/**"
       - "apps/control-plane/queries/api_workflow/compatibility_rate_limit_*.sql"
       - "apps/control-plane/migrations/0025_authenticated_web_actions.sql"
       - "apps/control-plane/migrations/0029_worker_auth_delivery_handoff.sql"
       - "apps/control-plane/migrations/0034_compatibility_rate_limits.sql"
+      - "apps/control-plane/migrations/0036_legacy_folder_assignment_expand.sql"
+      - "apps/control-plane/migrations/0037_legacy_library_placement_expand.sql"
+      - "apps/control-plane/migrations/0038_legacy_notification_actions_expand.sql"
+      - "apps/control-plane/migrations/0039_legacy_developer_actions_expand.sql"
+      - "apps/control-plane/migrations/0040_legacy_membership_actions_expand.sql"
+      - "apps/control-plane/migrations/0042_legacy_user_account_expand.sql"
+      - "apps/control-plane/migrations/0044_legacy_video_properties_expand.sql"
       - "crates/application/src/identity.rs"
+      - "crates/application/src/legacy_organization_selection.rs"
+      - "crates/application/src/legacy_theme.rs"
+      - "crates/application/src/legacy_folder_assignment.rs"
+      - "crates/application/src/legacy_library_placement.rs"
+      - "crates/application/src/legacy_notification_actions.rs"
+      - "crates/application/src/legacy_developer_actions.rs"
+      - "crates/application/src/legacy_membership_actions.rs"
+      - "crates/application/src/legacy_user_account.rs"
+      - "crates/application/src/legacy_video_properties.rs"
       - "crates/domain/src/identity.rs"
       - "crates/frame-client/**"
       - "crates/ports/src/identity.rs"
@@ -57,6 +142,13 @@ on:
       - "scripts/ci/check-web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-action-sqlite-conformance.py"
       - "scripts/ci/worker-auth-sqlite-conformance.py"
+      - "scripts/ci/legacy-folder-assignment-sqlite-conformance.py"
+      - "scripts/ci/legacy-library-placement-sqlite-conformance.py"
+      - "scripts/ci/legacy-notification-actions-sqlite-conformance.py"
+      - "scripts/ci/legacy-developer-actions-sqlite-conformance.py"
+      - "scripts/ci/legacy-membership-actions-sqlite-conformance.py"
+      - "scripts/ci/legacy-user-account-sqlite-conformance.py"
+      - "scripts/ci/legacy-video-properties-sqlite-conformance.py"
       - "scripts/ci/web-authenticated-parity.py"
       - "scripts/ci/web-authenticated-browser.py"
       - "scripts/ci/build-web-hydration.py"
@@ -92,6 +184,20 @@ jobs:
             --evidence target/evidence/web-authenticated-action-sqlite-linux.json
           python3 -I scripts/ci/worker-auth-sqlite-conformance.py \
             --evidence target/evidence/worker-auth-sqlite-linux.json
+          python3 -I scripts/ci/legacy-folder-assignment-sqlite-conformance.py \
+            --evidence target/evidence/legacy-folder-assignment-sqlite-linux.json
+          python3 -I scripts/ci/legacy-library-placement-sqlite-conformance.py \
+            --evidence target/evidence/legacy-library-placement-sqlite-linux.json
+          python3 -I scripts/ci/legacy-notification-actions-sqlite-conformance.py \
+            --evidence target/evidence/legacy-notification-actions-sqlite-linux.json
+          python3 -I scripts/ci/legacy-developer-actions-sqlite-conformance.py \
+            --evidence target/evidence/legacy-developer-actions-sqlite-linux.json
+          python3 -I scripts/ci/legacy-membership-actions-sqlite-conformance.py \
+            --evidence target/evidence/legacy-membership-actions-sqlite-linux.json
+          python3 -I scripts/ci/legacy-user-account-sqlite-conformance.py \
+            --evidence target/evidence/legacy-user-account-sqlite-linux.json
+          python3 -I scripts/ci/legacy-video-properties-sqlite-conformance.py \
+            --evidence target/evidence/legacy-video-properties-sqlite-linux.json
       - name: Run focused strict Rust gates
         run: |
           cargo fmt --all -- --check
@@ -100,6 +206,21 @@ jobs:
             --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
           cargo test --locked -p frame-web
           cargo test --locked -p frame-control-plane browser_web_runtime
+          cargo test --locked -p frame-control-plane legacy_web_action_runtime
+          cargo test --locked -p frame-application --lib legacy_folder_assignment
+          cargo test --locked -p frame-application --lib legacy_library_placement
+          cargo test --locked -p frame-application --lib legacy_notification_actions
+          cargo test --locked -p frame-application --lib legacy_developer_actions
+          cargo test --locked -p frame-application --lib legacy_membership_actions
+          cargo test --locked -p frame-application --lib legacy_user_account
+          cargo test --locked -p frame-application --lib legacy_video_properties
+          cargo test --locked -p frame-control-plane --lib legacy_folder
+          cargo test --locked -p frame-control-plane --lib legacy_library
+          cargo test --locked -p frame-control-plane --lib legacy_notification
+          cargo test --locked -p frame-control-plane --lib legacy_developer
+          cargo test --locked -p frame-control-plane --lib legacy_membership
+          cargo test --locked -p frame-control-plane --lib legacy_user_account
+          cargo test --locked -p frame-control-plane --lib legacy_video_properties
           cargo test --locked -p frame-control-plane worker_auth_runtime
       - name: Build exact hydration closure and web binary
         run: |
@@ -147,6 +268,7 @@ jobs:
           path: |
             target/evidence/web-authenticated-*.json
             target/evidence/worker-auth-*.json
+            target/evidence/legacy-*-sqlite-linux.json
             target/evidence/web-authenticated-screenshots
             target/evidence/web-hydration-*-authenticated-*.json
             target/frame-web-authenticated.log

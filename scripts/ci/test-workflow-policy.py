@@ -59,6 +59,14 @@ def main() -> int:
             ROOT / "scripts/ci/verify-release-bundle.sh",
             fixture / "scripts/ci/verify-release-bundle.sh",
         )
+        shutil.copy2(
+            ROOT / "scripts/ci/run-legacy-api-parity.py",
+            fixture / "scripts/ci/run-legacy-api-parity.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/ci/test-legacy-api-parity-runner.py",
+            fixture / "scripts/ci/test-legacy-api-parity-runner.py",
+        )
 
         baseline = run(fixture)
         if baseline.returncode != 0:
@@ -69,6 +77,7 @@ def main() -> int:
         smoke = fixture / ".github/workflows/production-smoke.yml"
         share = fixture / ".github/workflows/share-player.yml"
         authenticated_web = fixture / ".github/workflows/leptos-authenticated-web.yml"
+        api_parity = fixture / ".github/workflows/api-workflow-parity.yml"
         quality = fixture / ".github/workflows/quality-gates.yml"
         change_plan = fixture / "scripts/ci/release-change-plan.sh"
         contract = fixture / ".github/workflows/contract-migrations.yml"
@@ -268,16 +277,16 @@ def main() -> int:
                 "bootstrap provider etag not bound to the approved rollback version",
             ),
             (
-                production,
-                "compatibility-rate-limit-sqlite-conformance.py",
-                "compatibility-rate-limit-sqlite-advisory.py",
-                "missing production compatibility rate-limit conformance",
+                api_parity,
+                "python3 -I scripts/ci/run-legacy-api-parity.py",
+                "python3 -I scripts/ci/run-legacy-api-parity-advisory.py",
+                "missing PR aggregate legacy/API parity",
             ),
             (
                 production,
-                "legacy-api-execution-sqlite-conformance.py",
-                "legacy-api-execution-sqlite-advisory.py",
-                "missing production legacy API execution conformance",
+                "python3 -I scripts/ci/run-legacy-api-parity.py",
+                "python3 -I scripts/ci/run-legacy-api-parity-advisory.py",
+                "missing production aggregate legacy/API parity",
             ),
             (
                 production,

@@ -1,0 +1,86 @@
+{
+  "schema_version": "frame.legacy-notification-read.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "operation": {
+    "id": "cap-v1-14dcca6d36eee6b3",
+    "kind": "route",
+    "method": "GET",
+    "path": "/api/notifications",
+    "auth": "host_only_browser_session",
+    "policy": "collaboration_notifications.v1",
+    "idempotency": "forbidden",
+    "protected_gates": [],
+    "production_behavior": "serve_exact_route"
+  },
+  "sources": [
+    {
+      "path": "apps/web/app/api/notifications/route.ts",
+      "symbol": "GET",
+      "sha256": "1c0571a385328c53ec106967a717201ed2aa04cbcfd108c419f03f8b51b3ae17"
+    },
+    {
+      "path": "packages/web-api-contract/src/index.ts",
+      "symbol": "Notification+GET /notifications",
+      "sha256": "98bb2529e27eba0ed1569d286a1f5d4069cbbf23cf9e1dde62fdc1f6a9737e3e"
+    },
+    {
+      "path": "packages/database/schema.ts",
+      "symbol": "notifications+users",
+      "sha256": "7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"
+    },
+    {
+      "path": "packages/database/auth/session.ts",
+      "symbol": "getCurrentUser",
+      "sha256": "d526dc9d7a6a1a7cb6a8695c24ab88b843ce09b4444f8e4ade24b7a06cbbc1ee"
+    },
+    {
+      "path": "packages/web-backend/src/ImageUploads/index.ts",
+      "symbol": "ImageUploads.resolveImageUrl",
+      "sha256": "1dc0952ae84d76844128d0fc5cdf2eb63519c26183f932c035638ff0d6463d1c"
+    }
+  ],
+  "wire_contract": {
+    "success": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "notifications": "source-shaped notification array",
+        "count": {
+          "view": "number; includes view + anon_view",
+          "comment": "number",
+          "reply": "number",
+          "reaction": "number"
+        }
+      }
+    },
+    "unauthenticated": {
+      "status": 401,
+      "content_type": "text/plain;charset=UTF-8",
+      "body": "{\"error\":\"Unauthorized\"}"
+    },
+    "database_failure": {
+      "status": 500,
+      "content_type": "application/json",
+      "body": "{\"error\":\"Failed to fetch notifications\"}"
+    }
+  },
+  "semantic_contract": {
+    "scope": "recipient actor plus actor active organization",
+    "ordering": "unread first, then createdAt descending",
+    "authored_rows": "join authorId unless type is anon_view; missing authors are omitted",
+    "invalid_rows": "each invalid API notification is omitted without failing siblings",
+    "anonymous_defaults": {
+      "anonName": "Anonymous Viewer for null or missing",
+      "location": null
+    },
+    "avatar_resolution": "resolve when possible; provider failures return avatar null",
+    "dates": "JavaScript Date JSON ISO-8601 with millisecond precision"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_notification_read.rs",
+    "apps/control-plane/src/legacy_notification_read_runtime.rs",
+    "apps/control-plane/queries/legacy_notification_read/read_rows.sql",
+    "apps/control-plane/queries/legacy_notification_read/read_counts.sql",
+    "scripts/ci/legacy-notification-read-sqlite-conformance.py"
+  ]
+}

@@ -1,0 +1,3 @@
+SELECT EXISTS(
+  SELECT 1 FROM users WHERE email = ?1 COLLATE NOCASE
+) AS user_exists

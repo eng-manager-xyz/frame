@@ -30,6 +30,7 @@ jobs:
           python3 scripts/ci/check-workflow-policy.py
           python3 -I scripts/ci/test-workflow-policy.py
           python3 -I scripts/ci/test-release-change-plan.py
+          python3 -I scripts/ci/test-legacy-api-parity-runner.py
       - name: Validate YAML and Render authority
         run: |
           ruby scripts/ci/check-yaml-syntax.rb

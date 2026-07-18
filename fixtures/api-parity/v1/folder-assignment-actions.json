@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-folder-assignment-request.v1",
+    "max_body_bytes": 262144,
+    "accepted_content_types": [
+      "application/json",
+      "application/json; charset=utf-8"
+    ],
+    "authentication": "host_only_session",
+    "active_tenant": "trusted_server_selection_reasserted_atomically",
+    "same_origin": "required",
+    "csrf": "double_submit_one_use_grant_required",
+    "rate_limit_bucket": "organization_library.v1",
+    "client_idempotency": "required_header_and_body_exact_match",
+    "cache_control": "no-store, max-age=0"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-f5daa7be337a2979",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/folders/add-videos.ts#addVideosToFolder",
+      "input": "folder_id_plus_1_to_500_video_ids_plus_required_scope_id",
+      "authorization": "active_tenant_folder_scope_and_every_actor_owned_video",
+      "storage_postcondition": "create_or_set_only_selected_scoped_membership",
+      "success": "object_success_message_addedCount",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-1af3645bf2ae7168",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/folders/remove-videos.ts#removeVideosFromFolder",
+      "input": "folder_id_plus_1_to_500_video_ids_plus_required_scope_id",
+      "authorization": "active_tenant_folder_scope_and_every_actor_owned_video",
+      "storage_postcondition": "clear_matching_scoped_folder_and_exact_direct_match_only",
+      "success": "object_success_message_removedCount",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-eaf277e644aa4b92",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/folders/moveVideoToFolder.ts#moveVideoToFolder",
+      "input": "video_id_plus_required_nullable_folder_id_plus_optional_scope_id",
+      "authorization": "active_tenant_video_and_manager_selected_context",
+      "storage_postcondition": "update_only_direct_organization_or_exact_space_context",
+      "success": "empty_204_void",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    }
+  ],
+  "atomicity": {
+    "one_transaction": [
+      "live_actor_active_tenant_and_membership_reassertion",
+      "folder_space_video_and_role_preconditions",
+      "normalized_storage_mutation",
+      "typed_storage_postcondition",
+      "tenant_actor_action_scoped_idempotency_receipt",
+      "business_audit",
+      "validated_cache_effects",
+      "one_use_browser_grant_consumption"
+    ],
+    "same_key_same_fingerprint": "replay_original_receipt",
+    "same_key_different_fingerprint": "conflict",
+    "race": "one_apply_one_replay",
+    "cross_tenant_or_stale_authority": "not_found_without_mutation"
+  },
+  "source_closure": {
+    "cap-v1-f5daa7be337a2979": 8,
+    "cap-v1-1af3645bf2ae7168": 7,
+    "cap-v1-eaf277e644aa4b92": 7
+  }
+}

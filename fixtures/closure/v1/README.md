@@ -17,8 +17,8 @@ Ordinals are one-based in checkbox order within each issue. Every issue pins a
 digest of its checkbox text, so editing or reordering a requirement forces a
 fresh classification. Evidence paths must be real, non-symlink repository
 files. All ordinals not explicitly protected or open are locally satisfied.
-The current exact partition is 363 locally satisfied, 190 protected pending,
-and one repository-local gap.
+The current exact partition is 363 locally satisfied, 191 protected pending,
+and zero repository-local gaps.
 
 Run:
 

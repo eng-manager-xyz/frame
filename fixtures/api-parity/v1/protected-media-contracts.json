@@ -1,0 +1,2582 @@
+{
+  "durable_contract": {
+    "authority_model": "exact credential plus ordered live policy proofs and optional AI entitlement",
+    "caller_idempotency_header": false,
+    "execution_evidence": "independent executor lease plus provider evidence when required",
+    "request_storage": "redacted v2 descriptor plus optional opaque sealed request reference",
+    "terminal_storage": "typed opaque sealed terminal reference with 15-minute retention",
+    "workflow_parent_model": "shared protected effect registry, exact parent authority digest, allowlisted target rule"
+  },
+  "operations": [
+    {
+      "accepted_content_types": [],
+      "auth": "scheduler_secret",
+      "clients": [
+        "desktop",
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-44259057076456cf",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/api/cron/finalize-stale-desktop-segments",
+      "local_auth": "scheduler_secret",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "GET"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/cron/finalize-stale-desktop-segments/route.ts",
+          "sha256": "c8678611b6bf043d3002c278bd7c152cfc8330884ea04722e7380ba6cdb8d6c5",
+          "symbol": "GET"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "optional_session_or_share_capability",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-b3a632bd76471ad5",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/api/thumbnail",
+      "local_auth": "optional_session_or_share_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "GET"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/thumbnail/route.ts",
+          "sha256": "a7d63da8cd96e95fe8bf42c30573f569e6b4f380eedd949f6ed04c4aea0eaf5c",
+          "symbol": "GET"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-c1ae43fcf8ad7018",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/api/video/ai",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "GET"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/video/ai/route.ts",
+          "sha256": "da2c0454a0f654b03ecc5b46b80bce3c46c7c0c46a7f26d39e6b0471d46350d2",
+          "symbol": "GET"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "optional_session_or_share_capability",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-16bb19025813dbd2",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/api/video/preview",
+      "local_auth": "optional_session_or_share_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "GET"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/video/preview/route.ts",
+          "sha256": "ddd21307c4413d010eca45b0c88f0b7493f0d0daf52bae27b85e4ea491e6691e",
+          "symbol": "GET"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "optional_session_or_share_capability",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-2df159f71ce3ccdd",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/api/video/preview",
+      "local_auth": "optional_session_or_share_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "HEAD",
+      "operations": [
+        "HEAD"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/video/preview/route.ts",
+          "sha256": "ddd21307c4413d010eca45b0c88f0b7493f0d0daf52bae27b85e4ea491e6691e",
+          "symbol": "HEAD"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "public_or_flow_token",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-c471cd8f8f990fcc",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/api/video/transcribe/status",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "GET",
+        "getTranscribeStatus",
+        "ts-rest:GET:/video/transcribe/status"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/video/transcribe/status/route.ts",
+          "sha256": "6860ac27aace6b1fea8a8b821d30d820b4fa0a04d87a05a9956d12df819261da",
+          "symbol": "GET"
+        },
+        {
+          "path": "packages/web-api-contract-effect/src/index.ts",
+          "sha256": "9c2185ebf12be4c9d231d42938c975ea6ad596a0031ed8a0aca2bb1cbec3c7a0",
+          "symbol": "getTranscribeStatus"
+        },
+        {
+          "path": "packages/web-api-contract/src/index.ts",
+          "sha256": "98bb2529e27eba0ed1569d286a1f5d4069cbbf23cf9e1dde62fdc1f6a9737e3e",
+          "symbol": "GET /video/transcribe/status"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-39909646286251af",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/api/videos/:videoId/retry-ai",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "POST"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/videos/[videoId]/retry-ai/route.ts",
+          "sha256": "a9b9cf87185693edb891ac85e4650e3b5ef21c7783c56446d8dc68117dfbb8d4",
+          "symbol": "POST"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-105318e146fceb4c",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/audio/check",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/check"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoUrl"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/audio.ts",
+          "sha256": "1ea2a16ef8cf9e93373909a7766c148fe451617a2ff1c333f649623f1e8d1b43",
+          "symbol": "POST /check"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-77fe8c9a4b418f53",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/audio/convert",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/convert"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "audioUrl"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/audio.ts",
+          "sha256": "1ea2a16ef8cf9e93373909a7766c148fe451617a2ff1c333f649623f1e8d1b43",
+          "symbol": "POST /convert"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-a2814dde3550e586",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/audio/extract",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/extract"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoUrl"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/audio.ts",
+          "sha256": "1ea2a16ef8cf9e93373909a7766c148fe451617a2ff1c333f649623f1e8d1b43",
+          "symbol": "POST /extract"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-fbd3d44a0ca1786f",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/media-server/audio/status",
+      "local_auth": "public_edge_or_job_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "get:/status"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/audio.ts",
+          "sha256": "1ea2a16ef8cf9e93373909a7766c148fe451617a2ff1c333f649623f1e8d1b43",
+          "symbol": "GET /status"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-0bf20f7e9b1a474c",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/media-server/health",
+      "local_auth": "public_edge_or_job_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "get:/"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/health.ts",
+          "sha256": "7bfe0acde3975a12112a2c465cc9088a29d73f0bdf9f52d9fb01e233e636fb00",
+          "symbol": "GET /"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-ee9797dd352c4e11",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/cleanup",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/cleanup"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /cleanup"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-9ed2e7b3f858eaaa",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/convert",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/convert"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoUrl"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /convert"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-2b48f7704d996758",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/edit",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/edit"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId",
+        "sourceUrl",
+        "outputPresignedUrl",
+        "keepRanges"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /edit"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-aa975a14fd384a5c",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/force-cleanup",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/force-cleanup"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /force-cleanup"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-bf2eb9302de590a1",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/mux-segments",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/mux-segments"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId",
+        "videoInitUrl",
+        "videoSegmentUrls"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /mux-segments"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-ba986b8c5b07cfd6",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/probe",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/probe"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoUrl"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /probe"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-320876fa0aec77cb",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/process",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/process"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId",
+        "videoUrl",
+        "outputPresignedUrl"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /process"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-fc2e2bd0d28ffbf3",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/process/:jobId/cancel",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/process/:jobId/cancel"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "jobId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /process/:jobId/cancel"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-43bc9ae6aa4f44a8",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/media-server/video/process/:jobId/status",
+      "local_auth": "public_edge_or_job_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "get:/process/:jobId/status"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "jobId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "GET /process/:jobId/status"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-986bf73a0b5cb676",
+      "idempotency": "forbidden",
+      "kind": "route",
+      "legacy_path": "/media-server/video/status",
+      "local_auth": "public_edge_or_job_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 0,
+      "method": "GET",
+      "operations": [
+        "get:/status"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "GET /status"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "internal_service",
+      "clients": [
+        "internal_worker"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "not required"
+      },
+      "id": "cap-v1-4165632f8266ae06",
+      "idempotency": "required",
+      "kind": "route",
+      "legacy_path": "/media-server/video/thumbnail",
+      "local_auth": "internal_service",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::route_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "POST",
+      "operations": [
+        "post:/thumbnail"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoUrl"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/media-server/src/routes/video.ts",
+          "sha256": "93dec5d0e2ead00b9755d08bda9e1393a27e846d27b88293f566941ccce0aa8c",
+          "symbol": "POST /thumbnail"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-aa2bd4c3be69ed42",
+      "idempotency": "required",
+      "kind": "rpc",
+      "legacy_path": "/api/erpc#VideosGetThumbnails",
+      "local_auth": "optional_session_or_share_capability",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::rpc_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "RPC",
+      "operations": [
+        "VideosGetThumbnails"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/web/app/api/erpc/route.ts",
+          "sha256": "01a2dee0518e44fe6137513f117100e6a626b904e4ee4608fc0be6d69e210783",
+          "symbol": "Effect RPC HTTP transport"
+        },
+        {
+          "path": "packages/web-backend/src/Rpcs.ts",
+          "sha256": "cfb2cbee41a0abef4496fa2eb42c43688310cc13590e77c1425dc7f919304f19",
+          "symbol": "RpcsLive+RpcAuthMiddlewareLive"
+        },
+        {
+          "path": "packages/web-backend/src/Videos/VideosRpcs.ts",
+          "sha256": "6edf9add90a28c542fb53c9a7bfa858bc89290e2a0fbeec827210bd5af189623",
+          "symbol": "VideosGetThumbnails"
+        },
+        {
+          "path": "packages/web-backend/src/Videos/index.ts",
+          "sha256": "43b523a47ed667f70f7f10dde8677740d663811c61f1af278441929184963849",
+          "symbol": "Videos.getThumbnailURL"
+        },
+        {
+          "path": "packages/web-domain/src/Video.ts",
+          "sha256": "adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7",
+          "symbol": "VideosGetThumbnails"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-24ef9eb18c4b0555",
+      "idempotency": "required",
+      "kind": "server_action",
+      "legacy_path": "action://apps/web/actions/video/create-for-processing.ts#createVideoForServerProcessing",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::server_action_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "ACTION",
+      "operations": [
+        "createVideoForServerProcessing"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "orgId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/actions/video/create-for-processing.ts",
+          "sha256": "d66d5c5e4d9b02eafa5d741dfd0131e923eec288648d526b62b03d23e8f60661",
+          "symbol": "createVideoForServerProcessing"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "desktop",
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-243668046d7d1c3a",
+      "idempotency": "required",
+      "kind": "server_action",
+      "legacy_path": "action://apps/web/actions/video/finalize-desktop-segments.ts#finalizeDesktopSegmentsRecording",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::server_action_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "ACTION",
+      "operations": [
+        "finalizeDesktopSegmentsRecording"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/actions/video/finalize-desktop-segments.ts",
+          "sha256": "1717bc84e1443eeaa9f2a62d2e4af038039f9acb50c5c5188dfc50e16b5bfc04",
+          "symbol": "finalizeDesktopSegmentsRecording"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-94a9944ce37fa085",
+      "idempotency": "required",
+      "kind": "server_action",
+      "legacy_path": "action://apps/web/actions/video/retry-processing.ts#retryVideoProcessing",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::server_action_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "ACTION",
+      "operations": [
+        "retryVideoProcessing"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/actions/video/retry-processing.ts",
+          "sha256": "a70bfeb6b1f092bb50933d7411841f3c07f65e58c391382e141b46e21f2d7cd6",
+          "symbol": "retryVideoProcessing"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-187fbaf66d21b311",
+      "idempotency": "required",
+      "kind": "server_action",
+      "legacy_path": "action://apps/web/actions/video/trigger-instant-recording-processing.ts#triggerInstantRecordingProcessing",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::server_action_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "ACTION",
+      "operations": [
+        "triggerInstantRecordingProcessing"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/actions/video/trigger-instant-recording-processing.ts",
+          "sha256": "f570fef686a3b99d332cfe941f17054b7e6b4ac306b96f8be3ce98b418a13fb8",
+          "symbol": "triggerInstantRecordingProcessing"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-4b12db3b619dce8f",
+      "idempotency": "required",
+      "kind": "server_action",
+      "legacy_path": "action://apps/web/actions/video/trigger-processing.ts#triggerVideoProcessing",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::server_action_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "ACTION",
+      "operations": [
+        "triggerVideoProcessing"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "rawFileKey",
+        "bucketId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/actions/video/trigger-processing.ts",
+          "sha256": "dd5a6c2a8df1ef1a20c7c17b4d20664a6cd0f1c9e2044f6b35cf32539517a1c2",
+          "symbol": "triggerVideoProcessing"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-8e495fce95e6282b",
+      "idempotency": "required",
+      "kind": "server_action",
+      "legacy_path": "action://apps/web/actions/videos/save-edits.ts#restoreVideoToOriginal",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::server_action_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "ACTION",
+      "operations": [
+        "restoreVideoToOriginal"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/actions/videos/save-edits.ts",
+          "sha256": "4360a298c34fd1618bb3470f496c66fdb7038343ed7fe8c04e4004591b8e8a64",
+          "symbol": "restoreVideoToOriginal"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "web"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-a8dc17023685b8c0",
+      "idempotency": "required",
+      "kind": "server_action",
+      "legacy_path": "action://apps/web/actions/videos/save-edits.ts#saveVideoEdits",
+      "local_auth": "session",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::server_action_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "ACTION",
+      "operations": [
+        "saveVideoEdits"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "editSpec"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/actions/videos/save-edits.ts",
+          "sha256": "4360a298c34fd1618bb3470f496c66fdb7038343ed7fe8c04e4004591b8e8a64",
+          "symbol": "saveVideoEdits"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "desktop",
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-39c33826cf514552",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/lib/desktop-segments-finalization.ts#queueDesktopSegmentsFinalization",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "queueDesktopSegmentsFinalization"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/lib/desktop-segments-finalization.ts",
+          "sha256": "298c57c6c73cd368abc725acff12c472e953e6856075258552cb066174dd60dd",
+          "symbol": "queueDesktopSegmentsFinalization"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "desktop",
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-4cff2b6f3cd102f5",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/lib/desktop-segments-recovery.ts#completeDesktopSegmentsManifestAndQueue",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "completeDesktopSegmentsManifestAndQueue"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/lib/desktop-segments-recovery.ts",
+          "sha256": "7678e20860c7fea9fed89689fdd452b9b437b5c1ce4eb8a607c7081d5b5d9187",
+          "symbol": "completeDesktopSegmentsManifestAndQueue"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "desktop",
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-b3fac7b3df933825",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/lib/desktop-segments-recovery.ts#recoverStaleDesktopSegments",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "recoverStaleDesktopSegments"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [],
+      "source_manifest": [
+        {
+          "path": "apps/web/lib/desktop-segments-recovery.ts",
+          "sha256": "7678e20860c7fea9fed89689fdd452b9b437b5c1ce4eb8a607c7081d5b5d9187",
+          "symbol": "recoverStaleDesktopSegments"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-3e0dec6125f270bf",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/lib/generate-ai.ts#startAiGeneration",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "startAiGeneration"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/lib/generate-ai.ts",
+          "sha256": "bcb303c00e73bd035181f9298b32afac24114b28059a39679b0476983fba0751",
+          "symbol": "startAiGeneration"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-6d73e4dfdca61f06",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/lib/video-processing.ts#startVideoProcessingWorkflow",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "startVideoProcessingWorkflow"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId",
+        "rawFileKey",
+        "bucketId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/lib/video-processing.ts",
+          "sha256": "56d755ad564725c2912a48bce70e2410b991e2bb94889aba021ad4f1ecad32a0",
+          "symbol": "startVideoProcessingWorkflow"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-59ce5faf2189c1a1",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/workflows/edit-video.ts#editVideoWorkflow",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "editVideoWorkflow"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId",
+        "sourceKey",
+        "previousSpec",
+        "editSpec",
+        "keepRanges",
+        "aiGenerationEnabled"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/workflows/edit-video.ts",
+          "sha256": "7a2cb77bc0ac74d409eca183f41ee2db139cd1dd264d73c73259098c5db0b134",
+          "symbol": "editVideoWorkflow"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "desktop",
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-7868ad041c2754df",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/workflows/finalize-desktop-recording.ts#finalizeDesktopRecordingWorkflow",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "finalizeDesktopRecordingWorkflow"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/workflows/finalize-desktop-recording.ts",
+          "sha256": "8363e6455411dc9660d2bc72964d37fb2bf9f4616c418570b0322b6a45573cb6",
+          "symbol": "finalizeDesktopRecordingWorkflow"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-c79bf3eeab46cbf0",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/workflows/generate-ai.ts#generateAiWorkflow",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "generateAiWorkflow"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/workflows/generate-ai.ts",
+          "sha256": "8f383e00617a32824082231d9b423f24713e805b8373df22b7803792369e9a78",
+          "symbol": "generateAiWorkflow"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-0d39ec834208980f",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/workflows/process-video.ts#processVideoWorkflow",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "processVideoWorkflow"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId",
+        "rawFileKey",
+        "bucketId"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/workflows/process-video.ts",
+          "sha256": "972696993e47609932fedb6973f75b2c26dafdca0363b07e061d57c777d4095d",
+          "symbol": "processVideoWorkflow"
+        }
+      ],
+      "tenant_non_disclosure": true
+    },
+    {
+      "accepted_content_types": [
+        "application/json"
+      ],
+      "auth": "session",
+      "clients": [
+        "scheduler"
+      ],
+      "contract_version": "frame.api.v1",
+      "disposition": "replace",
+      "evidence_obligation": {
+        "hardware_execution": "independently verified digest required",
+        "provider_execution": "independently verified digest required"
+      },
+      "id": "cap-v1-43c049b69abb6704",
+      "idempotency": "required",
+      "kind": "workflow",
+      "legacy_path": "workflow://apps/web/workflows/transcribe.ts#transcribeVideoWorkflow",
+      "local_auth": "parent_derived",
+      "local_contract": {
+        "application_profile": "frame_application::LEGACY_PROTECTED_MEDIA_PROFILES",
+        "atomic_stage": true,
+        "carrier": "legacy_protected_media_web_runtime::workflow_response",
+        "evidence_table": "legacy_protected_media_execution_evidence_v1",
+        "immutable_replay": true,
+        "migration": "0061_legacy_protected_media_expand.sql",
+        "outbox_table": "legacy_protected_media_execution_outbox_v1",
+        "receipt_table": "legacy_protected_media_receipts_v1",
+        "runtime": "D1LegacyProtectedMediaRuntimeV1::stage",
+        "terminal_behavior": "fail_closed_execution_evidence_required"
+      },
+      "max_body_bytes": 262144,
+      "method": "WORKFLOW",
+      "operations": [
+        "transcribeVideoWorkflow"
+      ],
+      "owners": [
+        "07",
+        "15",
+        "28",
+        "29",
+        "30"
+      ],
+      "policy": "video_media.v1",
+      "production_behavior": "fail_closed_unavailable",
+      "protected_gates": [
+        "hardware_execution",
+        "provider_execution"
+      ],
+      "rate_limit_bucket": "video_media.v1",
+      "required_fields": [
+        "videoId",
+        "userId",
+        "aiGenerationEnabled"
+      ],
+      "source_manifest": [
+        {
+          "path": "apps/web/workflows/transcribe.ts",
+          "sha256": "cd422235773217226ebb76d04f54a0ee17b903f943ebce1959e6564877f6587d",
+          "symbol": "transcribeVideoWorkflow"
+        }
+      ],
+      "tenant_non_disclosure": true
+    }
+  ],
+  "reference": {
+    "commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+    "repository": "https://github.com/CapSoftware/Cap"
+  },
+  "schema_version": "frame.api-parity.legacy-protected-media.v1",
+  "summary": {
+    "hardware_and_provider": 25,
+    "hardware_only": 16,
+    "local_terminal_behavior": "fail_closed_unavailable",
+    "operation_count": 41
+  }
+}

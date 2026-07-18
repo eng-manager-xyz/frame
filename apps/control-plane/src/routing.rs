@@ -123,8 +123,80 @@ pub enum Route {
     LegacyApiStatus,
     LegacyChangelog,
     LegacyChangelogStatus,
+    LegacyDownload,
+    LegacyPlaylist,
+    LegacyStorageObject,
+    LegacyMultipartAbort,
+    LegacyMultipartComplete,
+    LegacyMultipartInitiate,
+    LegacyMultipartPresignPart,
+    LegacyRecordingComplete,
+    LegacySignedUpload,
+    LegacySignedUploadBatch,
     LegacyMobileSessionConfig,
+    LegacyMobileEmailSessionRequest,
+    LegacyMobileEmailSessionVerify,
+    LegacyMobileSessionRequest,
+    LegacyMobileSessionRevoke,
+    LegacyMobileUploadCreate,
+    LegacyMobileUploadComplete { video_id: String },
+    LegacyMobileUploadProgress { video_id: String },
+    LegacyMobileBootstrap,
+    LegacyMobileCaps,
+    LegacyMobileCap { video_id: String },
+    LegacyMobileCapDownload { video_id: String },
+    LegacyMobileCapPlayback { video_id: String },
+    LegacyMobileFolders,
+    LegacyMobileCapPassword { video_id: String },
+    LegacyMobileCapSharing { video_id: String },
+    LegacyMobileCapTitle { video_id: String },
+    LegacyMobileCapComments { video_id: String },
+    LegacyMobileCapReactions { video_id: String },
+    LegacyMobileComment { comment_id: String },
+    LegacyWebCommentDelete,
+    LegacyAnalytics,
+    LegacyAnalyticsTrack,
+    LegacyDashboardAnalytics,
+    LegacyVideoMetadata,
+    LegacyVideoAnalytics,
+    LegacyVideoDomainInfo,
+    LegacyVideoDelete,
+    LegacyVideoOg,
+    LegacyRetryTranscription { video_id: String },
+    LegacyProtectedMedia,
+    LegacyProtectedIntegration { operation_id: &'static str },
+    LegacyProtectedBillingAuth,
+    LegacyEffectRpc,
+    LegacyUserName,
+    LegacyInviteAccept,
+    LegacyInviteDecline,
+    LegacyExtensionAuthStart,
+    LegacyExtensionAuthApprove,
+    LegacyExtensionAuthRevoke,
+    LegacyExtensionBootstrap,
+    LegacyExtensionInstantCreate,
+    LegacyExtensionInstantProgress,
+    LegacyExtensionInstantDelete { video_id: String },
+    LegacyNotifications,
     LegacyNotificationPreferences,
+    LegacyDesktopSessionRequest,
+    LegacyDesktopOrgCustomDomain,
+    LegacyDesktopOrganizations,
+    LegacyDesktopOrganizationBranding { organization_id: String },
+    LegacyDesktopStorageSetActive,
+    LegacyDesktopUserProfile,
+    LegacyDesktopVideoDelete,
+    LegacyDesktopVideoProgress,
+    LegacyDeveloperStorageCron,
+    LegacyDeveloperMultipartAbort,
+    LegacyDeveloperMultipartComplete,
+    LegacyDeveloperMultipartInitiate,
+    LegacyDeveloperMultipartPresign,
+    LegacyDeveloperVideoCreate,
+    LegacyDeveloperUsage,
+    LegacyDeveloperVideos,
+    LegacyDeveloperVideo { video_id: String },
+    LegacyDeveloperVideoStatus { video_id: String },
     Discovery,
     Capabilities,
     ApiHealth,
@@ -142,6 +214,7 @@ pub enum Route {
     BrowserAuthLogout,
     AuthenticatedWebWorkspace { surface: String },
     AuthenticatedWebAction { action: String },
+    AuthenticatedWebCompatibilityAction { operation_id: String },
     StorageGrantCreate,
     StorageGrantRevoke { grant_id: String },
     StorageGrantRead { tenant_id: String, grant_id: String },
@@ -206,6 +279,16 @@ pub fn classify_raw_path(path: &str) -> Route {
     if path == "/media-server" {
         return Route::LegacyMediaServerRoot;
     }
+    if path.starts_with("/media-server/") {
+        return if !invalid_api_path(path) && protected_media_route_shape(path) {
+            Route::LegacyProtectedMedia
+        } else {
+            Route::NotApi
+        };
+    }
+    if !invalid_api_path(path) && protected_billing_auth_route_shape(path) {
+        return Route::LegacyProtectedBillingAuth;
+    }
     if path.starts_with("/api\\") {
         return Route::InvalidApiPath;
     }
@@ -215,13 +298,78 @@ pub fn classify_raw_path(path: &str) -> Route {
     if invalid_api_path(path) {
         return Route::InvalidApiPath;
     }
+    if let Some(operation_id) = protected_integration_route_operation(path) {
+        return Route::LegacyProtectedIntegration { operation_id };
+    }
+    if protected_media_route_shape(path) {
+        return Route::LegacyProtectedMedia;
+    }
     match path {
         "/api" | "/api/" => Route::Discovery,
         "/api/status" => Route::LegacyApiStatus,
         "/api/changelog" => Route::LegacyChangelog,
         "/api/changelog/status" => Route::LegacyChangelogStatus,
+        "/api/download" => Route::LegacyDownload,
+        "/api/playlist" => Route::LegacyPlaylist,
+        "/api/storage/object" => Route::LegacyStorageObject,
+        "/api/upload/multipart/abort" => Route::LegacyMultipartAbort,
+        "/api/upload/multipart/complete" => Route::LegacyMultipartComplete,
+        "/api/upload/multipart/initiate" => Route::LegacyMultipartInitiate,
+        "/api/upload/multipart/presign-part" => Route::LegacyMultipartPresignPart,
+        "/api/upload/recording-complete" => Route::LegacyRecordingComplete,
+        "/api/upload/signed" => Route::LegacySignedUpload,
+        "/api/upload/signed/batch" => Route::LegacySignedUploadBatch,
         "/api/mobile/session/config" => Route::LegacyMobileSessionConfig,
+        "/api/mobile/session/email/request" => Route::LegacyMobileEmailSessionRequest,
+        "/api/mobile/session/email/verify" => Route::LegacyMobileEmailSessionVerify,
+        "/api/mobile/session/request" => Route::LegacyMobileSessionRequest,
+        "/api/mobile/session/revoke" => Route::LegacyMobileSessionRevoke,
+        "/api/mobile/uploads" => Route::LegacyMobileUploadCreate,
+        "/api/mobile/bootstrap" => Route::LegacyMobileBootstrap,
+        "/api/mobile/caps" => Route::LegacyMobileCaps,
+        "/api/mobile/folders" => Route::LegacyMobileFolders,
+        "/api/analytics" => Route::LegacyAnalytics,
+        "/api/analytics/track" => Route::LegacyAnalyticsTrack,
+        "/api/dashboard/analytics" => Route::LegacyDashboardAnalytics,
+        "/api/video/comment/delete" => Route::LegacyWebCommentDelete,
+        "/api/video/metadata" => Route::LegacyVideoMetadata,
+        "/api/video/analytics" => Route::LegacyVideoAnalytics,
+        "/api/video/domain-info" => Route::LegacyVideoDomainInfo,
+        "/api/video/delete" => Route::LegacyVideoDelete,
+        "/api/video/og" => Route::LegacyVideoOg,
+        "/api/erpc" => Route::LegacyEffectRpc,
+        "/api/settings/user/name" => Route::LegacyUserName,
+        "/api/invite/accept" => Route::LegacyInviteAccept,
+        "/api/invite/decline" => Route::LegacyInviteDecline,
+        "/api/extension/auth/start" => Route::LegacyExtensionAuthStart,
+        "/api/extension/auth/approve" => Route::LegacyExtensionAuthApprove,
+        "/api/extension/auth/revoke" => Route::LegacyExtensionAuthRevoke,
+        "/api/extension/bootstrap" => Route::LegacyExtensionBootstrap,
+        "/api/extension/instant-recordings" => Route::LegacyExtensionInstantCreate,
+        "/api/extension/instant-recordings/progress" => Route::LegacyExtensionInstantProgress,
+        "/api/notifications" => Route::LegacyNotifications,
         "/api/notifications/preferences" => Route::LegacyNotificationPreferences,
+        "/api/desktop/session/request" => Route::LegacyDesktopSessionRequest,
+        "/api/desktop/org-custom-domain" => Route::LegacyDesktopOrgCustomDomain,
+        "/api/desktop/organizations" => Route::LegacyDesktopOrganizations,
+        "/api/desktop/storage/set-active" => Route::LegacyDesktopStorageSetActive,
+        "/api/desktop/user/profile" => Route::LegacyDesktopUserProfile,
+        "/api/desktop/video/delete" => Route::LegacyDesktopVideoDelete,
+        "/api/desktop/video/progress" => Route::LegacyDesktopVideoProgress,
+        "/api/cron/developer-storage" => Route::LegacyDeveloperStorageCron,
+        "/api/developer/sdk/v1/upload/multipart/abort" => Route::LegacyDeveloperMultipartAbort,
+        "/api/developer/sdk/v1/upload/multipart/complete" => {
+            Route::LegacyDeveloperMultipartComplete
+        }
+        "/api/developer/sdk/v1/upload/multipart/initiate" => {
+            Route::LegacyDeveloperMultipartInitiate
+        }
+        "/api/developer/sdk/v1/upload/multipart/presign-part" => {
+            Route::LegacyDeveloperMultipartPresign
+        }
+        "/api/developer/sdk/v1/videos/create" => Route::LegacyDeveloperVideoCreate,
+        "/api/developer/v1/usage" => Route::LegacyDeveloperUsage,
+        "/api/developer/v1/videos" => Route::LegacyDeveloperVideos,
         "/api/v1" | "/api/v1/" => Route::Capabilities,
         "/api/v1/health" => Route::ApiHealth,
         "/api/v1/videos" => Route::VideoCreate,
@@ -239,6 +387,124 @@ pub fn classify_raw_path(path: &str) -> Route {
     }
 }
 
+/// Resolve only the 20 source-pinned provider-backed integration routes.
+///
+/// The two parameterized Cap routes are matched segment-by-segment. Keeping
+/// them here avoids admitting suffixes or lookalike prefixes into a protected
+/// carrier before its method and authentication checks run.
+fn protected_integration_route_operation(path: &str) -> Option<&'static str> {
+    let operation_id = match path {
+        "/api/desktop/feedback" => "cap-v1-30b7af7323aa2c37",
+        "/api/desktop/logs" => "cap-v1-dfbbc4c0b56179d1",
+        "/api/desktop/plan" => "cap-v1-10180c4650ffde88",
+        "/api/desktop/s3/config" => "cap-v1-9d91d42d52472a83",
+        "/api/desktop/s3/config/delete" => "cap-v1-58ec99a456d61373",
+        "/api/desktop/s3/config/get" => "cap-v1-c6214b213eaa2360",
+        "/api/desktop/s3/config/test" => "cap-v1-2d1396c2f68299f9",
+        "/api/desktop/storage/google-drive/callback" => "cap-v1-49531a09fd9433e7",
+        "/api/desktop/storage/google-drive/connect" => "cap-v1-679e4241ef5e7383",
+        "/api/desktop/storage/google-drive/disconnect" => "cap-v1-5ef3570390b8c80c",
+        "/api/desktop/storage/google-drive/test" => "cap-v1-8d5930c717418665",
+        "/api/desktop/storage/integrations" => "cap-v1-0b36c9acda9bd6a2",
+        "/api/desktop/user/profile/image" => "cap-v1-2e4ee222efc29606",
+        "/api/desktop/video/create" => "cap-v1-60f863b2cb19353f",
+        "/api/loom/video" => "cap-v1-f0a00e93ab606a52",
+        "/api/mobile/user/active-organization" => "cap-v1-05776c542380771e",
+        "/api/tools/loom-download" => "cap-v1-221a713f60d7528f",
+        "/api/webhooks/media-server/progress" => "cap-v1-17d69edf5d3b06bb",
+        _ => {
+            return match path.split('/').collect::<Vec<_>>().as_slice() {
+                ["", "api", "releases", "tauri", version, target, arch]
+                    if [version, target, arch]
+                        .iter()
+                        .all(|segment| !segment.is_empty()) =>
+                {
+                    Some("cap-v1-8a1e6c87b4426f93")
+                }
+                ["", "api", "webhooks", "media-server", "multipart", action]
+                    if !action.is_empty() =>
+                {
+                    Some("cap-v1-5af545d5d20508bd")
+                }
+                _ => None,
+            };
+        }
+    };
+    Some(operation_id)
+}
+
+fn protected_media_route_shape(path: &str) -> bool {
+    if matches!(
+        path,
+        "/api/cron/finalize-stale-desktop-segments"
+            | "/api/thumbnail"
+            | "/api/video/ai"
+            | "/api/video/preview"
+            | "/api/video/transcribe/status"
+            | "/media-server/audio/check"
+            | "/media-server/audio/convert"
+            | "/media-server/audio/extract"
+            | "/media-server/audio/status"
+            | "/media-server/health"
+            | "/media-server/video/cleanup"
+            | "/media-server/video/convert"
+            | "/media-server/video/edit"
+            | "/media-server/video/force-cleanup"
+            | "/media-server/video/mux-segments"
+            | "/media-server/video/probe"
+            | "/media-server/video/process"
+            | "/media-server/video/status"
+            | "/media-server/video/thumbnail"
+    ) {
+        return true;
+    }
+    matches!(
+        path.split('/').collect::<Vec<_>>().as_slice(),
+        ["", "api", "videos", id, "retry-ai"]
+            | ["", "media-server", "video", "process", id, "cancel"]
+            | ["", "media-server", "video", "process", id, "status"]
+            if !id.is_empty()
+    )
+}
+
+/// Resolve the nine exact authentication/billing route shapes. NextAuth owns
+/// a bounded wildcard below `/api/auth/`, but only for the source-pinned
+/// NextAuth entrypoint names; lookalike API prefixes remain closed.
+fn protected_billing_auth_route_shape(path: &str) -> bool {
+    if matches!(
+        path,
+        "/api/desktop/subscribe"
+            | "/api/developer/credits/checkout"
+            | "/api/settings/billing/guest-checkout"
+            | "/api/settings/billing/manage"
+            | "/api/settings/billing/subscribe"
+            | "/api/settings/billing/usage"
+            | "/api/webhooks/stripe"
+            | "/api/commercial/checkout"
+    ) {
+        return true;
+    }
+    path.strip_prefix("/api/auth/").is_some_and(|suffix| {
+        !suffix.is_empty()
+            && suffix.len() <= 256
+            && !suffix.contains("..")
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_'))
+            && matches!(
+                suffix.split('/').next().unwrap_or_default(),
+                "callback"
+                    | "csrf"
+                    | "error"
+                    | "providers"
+                    | "session"
+                    | "signin"
+                    | "signout"
+                    | "verify-request"
+            )
+    })
+}
+
 pub fn valid_repository_conformance_target(target: &RawRequestTarget) -> bool {
     target.scheme == "http"
         && target
@@ -251,6 +517,89 @@ pub fn valid_repository_conformance_target(target: &RawRequestTarget) -> bool {
 fn dynamic_route(path: &str) -> Route {
     let segments = path.split('/').collect::<Vec<_>>();
     match segments.as_slice() {
+        ["", "api", "developer", "v1", "videos", video_id, "status"] if !video_id.is_empty() => {
+            Route::LegacyDeveloperVideoStatus {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "developer", "v1", "videos", video_id] if !video_id.is_empty() => {
+            Route::LegacyDeveloperVideo {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "videos", video_id, "retry-transcription"] if !video_id.is_empty() => {
+            Route::LegacyRetryTranscription {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        [
+            "",
+            "api",
+            "desktop",
+            "organizations",
+            organization_id,
+            "branding",
+        ] if !organization_id.is_empty() => Route::LegacyDesktopOrganizationBranding {
+            organization_id: (*organization_id).to_owned(),
+        },
+        ["", "api", "extension", "instant-recordings", video_id] if !video_id.is_empty() => {
+            Route::LegacyExtensionInstantDelete {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "uploads", video_id, "complete"] if !video_id.is_empty() => {
+            Route::LegacyMobileUploadComplete {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "uploads", video_id, "progress"] if !video_id.is_empty() => {
+            Route::LegacyMobileUploadProgress {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id, "download"] if !video_id.is_empty() => {
+            Route::LegacyMobileCapDownload {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id, "playback"] if !video_id.is_empty() => {
+            Route::LegacyMobileCapPlayback {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id, "password"] if !video_id.is_empty() => {
+            Route::LegacyMobileCapPassword {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id, "sharing"] if !video_id.is_empty() => {
+            Route::LegacyMobileCapSharing {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id, "title"] if !video_id.is_empty() => {
+            Route::LegacyMobileCapTitle {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id, "comments"] if !video_id.is_empty() => {
+            Route::LegacyMobileCapComments {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id, "reactions"] if !video_id.is_empty() => {
+            Route::LegacyMobileCapReactions {
+                video_id: (*video_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "comments", comment_id] if !comment_id.is_empty() => {
+            Route::LegacyMobileComment {
+                comment_id: (*comment_id).to_owned(),
+            }
+        }
+        ["", "api", "mobile", "caps", video_id] if !video_id.is_empty() => Route::LegacyMobileCap {
+            video_id: (*video_id).to_owned(),
+        },
         ["", "api", "v1", "public", "shares", share_id] => Route::PublicShare {
             share_id: (*share_id).to_owned(),
         },
@@ -303,6 +652,16 @@ fn dynamic_route(path: &str) -> Route {
         },
         ["", "api", "v1", "web", "actions", action] => Route::AuthenticatedWebAction {
             action: (*action).to_owned(),
+        },
+        [
+            "",
+            "api",
+            "v1",
+            "web",
+            "compatibility-actions",
+            operation_id,
+        ] if !operation_id.is_empty() => Route::AuthenticatedWebCompatibilityAction {
+            operation_id: (*operation_id).to_owned(),
         },
         ["", "api", "v1", "storage", "grants", grant_id] => Route::StorageGrantRevoke {
             grant_id: (*grant_id).to_owned(),
@@ -723,15 +1082,215 @@ mod tests {
         assert_eq!(classify_raw_path("/api/status"), Route::LegacyApiStatus);
         assert_eq!(classify_raw_path("/api/changelog"), Route::LegacyChangelog);
         assert_eq!(classify_raw_path("/api/changelog/"), Route::UnknownApi);
+        for (path, expected) in [
+            ("/api/download", Route::LegacyDownload),
+            ("/api/playlist", Route::LegacyPlaylist),
+            ("/api/storage/object", Route::LegacyStorageObject),
+            ("/api/upload/multipart/abort", Route::LegacyMultipartAbort),
+            (
+                "/api/upload/multipart/complete",
+                Route::LegacyMultipartComplete,
+            ),
+            (
+                "/api/upload/multipart/initiate",
+                Route::LegacyMultipartInitiate,
+            ),
+            (
+                "/api/upload/multipart/presign-part",
+                Route::LegacyMultipartPresignPart,
+            ),
+            (
+                "/api/upload/recording-complete",
+                Route::LegacyRecordingComplete,
+            ),
+            ("/api/upload/signed", Route::LegacySignedUpload),
+            ("/api/upload/signed/batch", Route::LegacySignedUploadBatch),
+        ] {
+            assert_eq!(classify_raw_path(path), expected, "{path}");
+        }
+        for path in [
+            "/api/download/",
+            "/api/playlist/",
+            "/api/storage/object/",
+            "/api/upload/multipart//abort",
+            "/api/upload/multipart/complete/",
+            "/api/upload/signed/%62atch",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "core-storage lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/notifications"),
+            Route::LegacyNotifications
+        );
         assert_eq!(
             classify_raw_path("/api/notifications/preferences"),
             Route::LegacyNotificationPreferences
         );
+        assert_eq!(
+            classify_raw_path("/api/video/domain-info"),
+            Route::LegacyVideoDomainInfo
+        );
+        assert_eq!(
+            classify_raw_path("/api/video/delete"),
+            Route::LegacyVideoDelete
+        );
+        assert_eq!(classify_raw_path("/api/video/og"), Route::LegacyVideoOg);
         for path in [
+            "/api/video/delete/",
+            "/api/video//delete",
+            "/api/video/%64elete",
+            "/api/video/og/",
+            "/api/video//og",
+            "/api/video/%6fg",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "video lifecycle lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/videos/0123456789abcde/retry-transcription"),
+            Route::LegacyRetryTranscription {
+                video_id: "0123456789abcde".into(),
+            }
+        );
+        for path in [
+            "/api/videos//retry-transcription",
+            "/api/videos/0123456789abcde/retry-transcription/",
+            "/api/videos/%30/retry-transcription",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "transcript retry lookalike must fail closed: {path}"
+            );
+        }
+        for (path, expected) in [
+            ("/api/extension/auth/start", Route::LegacyExtensionAuthStart),
+            (
+                "/api/extension/auth/approve",
+                Route::LegacyExtensionAuthApprove,
+            ),
+            (
+                "/api/extension/auth/revoke",
+                Route::LegacyExtensionAuthRevoke,
+            ),
+            ("/api/extension/bootstrap", Route::LegacyExtensionBootstrap),
+            (
+                "/api/extension/instant-recordings",
+                Route::LegacyExtensionInstantCreate,
+            ),
+            (
+                "/api/extension/instant-recordings/progress",
+                Route::LegacyExtensionInstantProgress,
+            ),
+        ] {
+            assert_eq!(classify_raw_path(path), expected, "{path}");
+        }
+        assert_eq!(
+            classify_raw_path("/api/extension/instant-recordings/0123456789abcde"),
+            Route::LegacyExtensionInstantDelete {
+                video_id: "0123456789abcde".into(),
+            }
+        );
+        for path in [
+            "/api/extension/auth/start/",
+            "/api/extension/auth//start",
+            "/api/extension/auth/%73tart",
+            "/api/extension/auth/approve/",
+            "/api/extension/auth/revoke;admin",
+            "/api/extension/bootstrap/",
+            "/api/extension/instant-recordings/",
+            "/api/extension/instant-recordings//",
+            "/api/extension/instant-recordings/progress/",
+            "/api/extension/instant-recordings/0123456789abcde/extra",
+            "/api/extension/instant-recordings/%30",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "extension auth lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/desktop/org-custom-domain"),
+            Route::LegacyDesktopOrgCustomDomain
+        );
+        assert_eq!(
+            classify_raw_path("/api/desktop/session/request"),
+            Route::LegacyDesktopSessionRequest
+        );
+        for (path, expected) in [
+            (
+                "/api/desktop/organizations",
+                Route::LegacyDesktopOrganizations,
+            ),
+            (
+                "/api/desktop/storage/set-active",
+                Route::LegacyDesktopStorageSetActive,
+            ),
+            ("/api/desktop/user/profile", Route::LegacyDesktopUserProfile),
+            ("/api/desktop/video/delete", Route::LegacyDesktopVideoDelete),
+            (
+                "/api/desktop/video/progress",
+                Route::LegacyDesktopVideoProgress,
+            ),
+        ] {
+            assert_eq!(classify_raw_path(path), expected, "{path}");
+        }
+        assert_eq!(
+            classify_raw_path("/api/desktop/organizations/0123456789abcde/branding"),
+            Route::LegacyDesktopOrganizationBranding {
+                organization_id: "0123456789abcde".into(),
+            }
+        );
+        for path in [
+            "/api/desktop/organizations/",
+            "/api/desktop/organizations//branding",
+            "/api/desktop/organizations/0123456789abcde/branding/",
+            "/api/desktop/storage/set-active/",
+            "/api/desktop/user/profile/",
+            "/api/desktop/video/delete/",
+            "/api/desktop/video/progress/",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "desktop compatibility lookalike must fail closed: {path}"
+            );
+        }
+        for path in [
+            "/api/notifications/",
+            "/api//notifications",
+            "/api/%6eotifications",
+            "/api/notifications;admin",
             "/api/notifications/preferences/",
             "/api/notifications//preferences",
             "/api/notifications/%70references",
             "/api/notifications/preferences;admin",
+            "/api/desktop/org-custom-domain/",
+            "/api/desktop//org-custom-domain",
+            "/api/desktop/%6frg-custom-domain",
+            "/api/desktop/org-custom-domain;admin",
+            "/api/desktop/session/request/",
+            "/api/desktop//session/request",
+            "/api/desktop/session/%72equest",
+            "/api/desktop/session/request;admin",
         ] {
             assert!(
                 matches!(
@@ -765,6 +1324,195 @@ mod tests {
                     Route::UnknownApi | Route::InvalidApiPath
                 ),
                 "mobile config lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/mobile/bootstrap"),
+            Route::LegacyMobileBootstrap
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/uploads"),
+            Route::LegacyMobileUploadCreate
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/uploads/0123456789abcde/complete"),
+            Route::LegacyMobileUploadComplete {
+                video_id: "0123456789abcde".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/uploads/0123456789abcde/progress"),
+            Route::LegacyMobileUploadProgress {
+                video_id: "0123456789abcde".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/caps"),
+            Route::LegacyMobileCaps
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/caps/0123456789abcde"),
+            Route::LegacyMobileCap {
+                video_id: "0123456789abcde".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/caps/0123456789abcde/download"),
+            Route::LegacyMobileCapDownload {
+                video_id: "0123456789abcde".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/caps/0123456789abcde/playback"),
+            Route::LegacyMobileCapPlayback {
+                video_id: "0123456789abcde".into(),
+            }
+        );
+        for path in [
+            "/api/mobile/bootstrap/",
+            "/api/mobile//bootstrap",
+            "/api/mobile/%62ootstrap",
+            "/api/mobile/uploads/",
+            "/api/mobile//uploads",
+            "/api/mobile/%75ploads",
+            "/api/mobile/uploads//complete",
+            "/api/mobile/uploads/0123456789abcde/complete/",
+            "/api/mobile/uploads/0123456789abcde/progress/",
+            "/api/mobile/uploads/0123456789abcde/complete/extra",
+            "/api/mobile/uploads/%30/complete",
+            "/api/mobile/caps/",
+            "/api/mobile/caps//download",
+            "/api/mobile/caps/0123456789abcde/download/",
+            "/api/mobile/caps/0123456789abcde/playback/",
+            "/api/mobile/caps/%30/playback",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "mobile bootstrap/caps lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/mobile/folders"),
+            Route::LegacyMobileFolders
+        );
+        for path in [
+            "/api/mobile/folders/",
+            "/api/mobile//folders",
+            "/api/mobile/%66olders",
+            "/api/mobile/folders;admin",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "mobile folder lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/mobile/caps/video-1/comments"),
+            Route::LegacyMobileCapComments {
+                video_id: "video-1".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/caps/video-1/reactions"),
+            Route::LegacyMobileCapReactions {
+                video_id: "video-1".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/mobile/comments/comment-1"),
+            Route::LegacyMobileComment {
+                comment_id: "comment-1".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/video/comment/delete"),
+            Route::LegacyWebCommentDelete
+        );
+        assert_eq!(classify_raw_path("/api/analytics"), Route::LegacyAnalytics);
+        assert_eq!(
+            classify_raw_path("/api/analytics/track"),
+            Route::LegacyAnalyticsTrack
+        );
+        assert_eq!(
+            classify_raw_path("/api/dashboard/analytics"),
+            Route::LegacyDashboardAnalytics
+        );
+        assert_eq!(
+            classify_raw_path("/api/video/analytics"),
+            Route::LegacyVideoAnalytics
+        );
+        for path in [
+            "/api/analytics/",
+            "/api/analytics//track",
+            "/api/dashboard/analytics/",
+            "/api/video/analytics/",
+            "/api/%61nalytics",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "analytics lookalike must fail closed: {path}"
+            );
+        }
+        for path in [
+            "/api/mobile/caps//comments",
+            "/api/mobile/caps/video-1/comments/",
+            "/api/mobile/caps/video-1/comments/extra",
+            "/api/mobile/caps/%76ideo-1/comments",
+            "/api/mobile/caps//reactions",
+            "/api/mobile/caps/video-1/reactions/",
+            "/api/mobile/comments/",
+            "/api/mobile/comments/comment-1/extra",
+            "/api/video/comment/delete/",
+            "/api/video//comment/delete",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "collaboration lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(classify_raw_path("/api/erpc"), Route::LegacyEffectRpc);
+        for path in [
+            "/api/erpc/",
+            "/api//erpc",
+            "/api/%65rpc",
+            "/api/erpc;FolderCreate",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "Effect RPC lookalike must fail closed: {path}"
+            );
+        }
+        assert_eq!(
+            classify_raw_path("/api/settings/user/name"),
+            Route::LegacyUserName
+        );
+        for path in [
+            "/api/settings/user/name/",
+            "/api/settings//user/name",
+            "/api/settings/user/Name",
+            "/api/settings/%75ser/name",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "user name lookalike must fail closed: {path}"
             );
         }
         assert_eq!(
@@ -810,6 +1558,19 @@ mod tests {
                 action: "organization.spaces.create.v1".into(),
             }
         );
+        assert_eq!(
+            classify_raw_path("/api/v1/web/compatibility-actions/cap-v1-7773d3e70d1d5919"),
+            Route::AuthenticatedWebCompatibilityAction {
+                operation_id: "cap-v1-7773d3e70d1d5919".into(),
+            }
+        );
+        for path in [
+            "/api/v1/web/compatibility-actions",
+            "/api/v1/web/compatibility-actions/",
+            "/api/v1/web/compatibility-actions/cap-v1-7773d3e70d1d5919/extra",
+        ] {
+            assert_eq!(classify_raw_path(path), Route::UnknownApi, "{path}");
+        }
         assert_eq!(
             classify_raw_path("/api/v1/storage/grants"),
             Route::StorageGrantCreate
@@ -1000,5 +1761,182 @@ mod tests {
                 job_id: "claim".into()
             }
         );
+    }
+
+    #[test]
+    fn protected_media_paths_are_exact_and_lookalikes_stay_closed() {
+        for path in [
+            "/api/cron/finalize-stale-desktop-segments",
+            "/api/thumbnail",
+            "/api/video/ai",
+            "/api/video/preview",
+            "/api/video/transcribe/status",
+            "/api/videos/video-1/retry-ai",
+            "/media-server/audio/check",
+            "/media-server/audio/convert",
+            "/media-server/audio/extract",
+            "/media-server/audio/status",
+            "/media-server/health",
+            "/media-server/video/cleanup",
+            "/media-server/video/convert",
+            "/media-server/video/edit",
+            "/media-server/video/force-cleanup",
+            "/media-server/video/mux-segments",
+            "/media-server/video/probe",
+            "/media-server/video/process",
+            "/media-server/video/process/job-1/cancel",
+            "/media-server/video/process/job-1/status",
+            "/media-server/video/status",
+            "/media-server/video/thumbnail",
+        ] {
+            assert_eq!(
+                classify_raw_path(path),
+                Route::LegacyProtectedMedia,
+                "{path}"
+            );
+        }
+        for path in [
+            "/api/thumbnail/",
+            "/api/videos//retry-ai",
+            "/api/videos/video-1/retry-ai/extra",
+            "/media-server/audio/check/",
+            "/media-server/video/process//status",
+            "/media-server/video/process/job-1/status/extra",
+            "/media-server/video/%70robe",
+        ] {
+            assert_ne!(
+                classify_raw_path(path),
+                Route::LegacyProtectedMedia,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_integration_paths_resolve_exact_operation_ids() {
+        let routes = [
+            ("/api/desktop/feedback", "cap-v1-30b7af7323aa2c37"),
+            ("/api/desktop/logs", "cap-v1-dfbbc4c0b56179d1"),
+            ("/api/desktop/plan", "cap-v1-10180c4650ffde88"),
+            ("/api/desktop/s3/config", "cap-v1-9d91d42d52472a83"),
+            ("/api/desktop/s3/config/delete", "cap-v1-58ec99a456d61373"),
+            ("/api/desktop/s3/config/get", "cap-v1-c6214b213eaa2360"),
+            ("/api/desktop/s3/config/test", "cap-v1-2d1396c2f68299f9"),
+            (
+                "/api/desktop/storage/google-drive/callback",
+                "cap-v1-49531a09fd9433e7",
+            ),
+            (
+                "/api/desktop/storage/google-drive/connect",
+                "cap-v1-679e4241ef5e7383",
+            ),
+            (
+                "/api/desktop/storage/google-drive/disconnect",
+                "cap-v1-5ef3570390b8c80c",
+            ),
+            (
+                "/api/desktop/storage/google-drive/test",
+                "cap-v1-8d5930c717418665",
+            ),
+            (
+                "/api/desktop/storage/integrations",
+                "cap-v1-0b36c9acda9bd6a2",
+            ),
+            ("/api/desktop/user/profile/image", "cap-v1-2e4ee222efc29606"),
+            ("/api/desktop/video/create", "cap-v1-60f863b2cb19353f"),
+            ("/api/loom/video", "cap-v1-f0a00e93ab606a52"),
+            (
+                "/api/mobile/user/active-organization",
+                "cap-v1-05776c542380771e",
+            ),
+            (
+                "/api/releases/tauri/1.2.3/universal-apple-darwin/aarch64",
+                "cap-v1-8a1e6c87b4426f93",
+            ),
+            ("/api/tools/loom-download", "cap-v1-221a713f60d7528f"),
+            (
+                "/api/webhooks/media-server/multipart/complete",
+                "cap-v1-5af545d5d20508bd",
+            ),
+            (
+                "/api/webhooks/media-server/progress",
+                "cap-v1-17d69edf5d3b06bb",
+            ),
+        ];
+        for (path, operation_id) in routes {
+            assert_eq!(
+                classify_raw_path(path),
+                Route::LegacyProtectedIntegration { operation_id },
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_integration_parameter_routes_reject_lookalikes() {
+        for path in [
+            "/api/releases/tauri/1.2.3/universal-apple-darwin",
+            "/api/releases/tauri/1.2.3/universal-apple-darwin/aarch64/extra",
+            "/api/releases/tauri//universal-apple-darwin/aarch64",
+            "/api/webhooks/media-server/multipart",
+            "/api/webhooks/media-server/multipart/complete/extra",
+            "/api/webhooks/media-server/multipart/",
+            "/api/webhooks/media-server/progress/extra",
+        ] {
+            assert!(
+                !matches!(
+                    classify_raw_path(path),
+                    Route::LegacyProtectedIntegration { .. }
+                ),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_billing_auth_paths_are_exact() {
+        for path in [
+            "/api/auth/session",
+            "/api/auth/callback/google",
+            "/api/auth/verify-request",
+            "/api/desktop/subscribe",
+            "/api/developer/credits/checkout",
+            "/api/settings/billing/guest-checkout",
+            "/api/settings/billing/manage",
+            "/api/settings/billing/subscribe",
+            "/api/settings/billing/usage",
+            "/api/webhooks/stripe",
+            "/api/commercial/checkout",
+        ] {
+            assert_eq!(
+                classify_raw_path(path),
+                Route::LegacyProtectedBillingAuth,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_billing_auth_lookalikes_stay_closed() {
+        for path in [
+            "/api/auth",
+            "/api/auth/",
+            "/api/auth/unknown",
+            "/api/auth//session",
+            "/api/auth/callback/foo..bar",
+            "/api/auth/callback/foo.bar",
+            "/api/auth/callback/$provider",
+            "/api/desktop/subscribe/",
+            "/api/developer/credits/checkout/extra",
+            "/api/settings/billing/usage/extra",
+            "/api/webhooks/stripe/extra",
+            "/api/commercial/checkout/extra",
+        ] {
+            assert_ne!(
+                classify_raw_path(path),
+                Route::LegacyProtectedBillingAuth,
+                "{path}"
+            );
+        }
     }
 }

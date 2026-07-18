@@ -1,0 +1,109 @@
+{
+  "schema_version": "frame.legacy-video-domain-info.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "operation": {
+    "id": "cap-v1-10e17d0e86b49830",
+    "kind": "route",
+    "method": "GET",
+    "path": "/api/video/domain-info",
+    "auth": "anonymous",
+    "policy": "video_media.v1",
+    "idempotency": "forbidden",
+    "protected_gates": [],
+    "production_behavior": "serve_exact_d1"
+  },
+  "sources": [
+    {
+      "path": "apps/web/app/api/video/domain-info/route.ts",
+      "symbol": "GET",
+      "sha256": "07e0373bace84adabaf409bc1f3360221d01ed7143e1ab49514730d893b66bc5"
+    },
+    {
+      "path": "packages/database/schema.ts",
+      "symbol": "videos+sharedVideos+organizations",
+      "sha256": "7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"
+    },
+    {
+      "path": "packages/web-domain/src/Video.ts",
+      "symbol": "Video.VideoId",
+      "sha256": "adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7"
+    },
+    {
+      "path": "packages/database/index.ts",
+      "symbol": "db",
+      "sha256": "161c1d1fd2a561fd2846aeceb148f24b58afc58bdaa95175240e48dbe61d9bbb"
+    },
+    {
+      "path": "apps/web/proxy.ts",
+      "symbol": "API matcher exclusion",
+      "sha256": "7da98445a31f6b48d01b56877c47aaa79ba3af93dff8c015ad06a6e94fb42fcb"
+    },
+    {
+      "path": "apps/web/package.json",
+      "symbol": "next+drizzle dependencies",
+      "sha256": "c1358cd1880ac5dc9d659760c2788cedd5c4f61fec2cb0dd1b60cbc9bb8af920"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "symbol": "dependency lock",
+      "sha256": "fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"
+    }
+  ],
+  "wire_contract": {
+    "query": "URLSearchParams.get('videoId'): first value, required and non-empty",
+    "authentication": "none; the concrete route never reads a session or authorization header",
+    "success": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "customDomain": "string|null",
+        "domainVerified": "Drizzle Date JSON ISO-8601 string when present, otherwise false"
+      }
+    },
+    "failure": {
+      "missing_video_id": {
+        "status": 400,
+        "body": {
+          "error": "Video ID is required"
+        }
+      },
+      "video_not_found": {
+        "status": 404,
+        "body": {
+          "error": "Video not found"
+        }
+      },
+      "invalid_owner": {
+        "status": 500,
+        "body": {
+          "error": "Invalid video data"
+        }
+      },
+      "database": {
+        "status": 500,
+        "body": {
+          "error": "Internal server error"
+        }
+      }
+    }
+  },
+  "authority": {
+    "video": "D1 videos row selected by caller videoId; no auth narrowing exists in the source",
+    "precedence": "first active shared_videos organization; when it has no custom domain, first owner organization",
+    "ordering": "source uses LIMIT 1 without ORDER BY in both branches and Frame preserves that observable database choice",
+    "projection": "lossless legacy_org_custom_domain_projection_v1 retains customDomain and verified ISO independently",
+    "provider_calls": "none"
+  },
+  "catalog_corrections": {
+    "auth": "session inference corrected to anonymous from executable handler",
+    "tenant_non_disclosure": "false: concrete anonymous handler distinguishes missing video with 404",
+    "domain_verified": "timestamp-or-false union, not boolean-only"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_video_domain_info.rs",
+    "apps/control-plane/src/legacy_video_domain_info_runtime.rs",
+    "apps/control-plane/src/legacy_video_domain_info_web_runtime.rs",
+    "apps/control-plane/queries/legacy_video_domain_info",
+    "scripts/ci/legacy-video-domain-info-sqlite-conformance.py"
+  ]
+}

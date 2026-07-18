@@ -1,0 +1,5 @@
+INSERT INTO legacy_membership_action_receipts_v1(
+  operation_id, result_kind, space_id, creator_id, actor_authority,
+  matching_before, deleted_rows, inserted_rows, matching_after, created_at_ms
+)
+VALUES (?1, 'space_member_added', ?2, ?3, ?4, 0, 0, 1, 1, ?5)

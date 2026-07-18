@@ -45,6 +45,13 @@ MAX_PAGE_SIZE = 100
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 PLACEHOLDER = re.compile(r"\?([1-9][0-9]*)")
 MIGRATION_NAME = re.compile(r"([0-9]{4})_[a-z0-9_]+\.sql")
+REPOSITORY_FAILURE_RETRYABILITY = {
+    "repository_invalid_request": False,
+    "repository_conflict": True,
+    "repository_timeout": True,
+    "repository_unavailable": True,
+    "repository_corrupt_result": False,
+}
 
 USER_A = "018f47a6-7b1c-7f55-8f39-8f8a86900101"
 ORG_A = "018f47a6-7b1c-7f55-8f39-8f8a86900102"
@@ -691,13 +698,96 @@ def expect_scenario(
             "compiled repository scenario returned an unexpected outcome: "
             f"{scenario}:{actual_status}:{actual_outcome}:tail={server.safe_telemetry_tail()}"
         )
+    return scenario_details(
+        payload,
+        scenario,
+        failure_retryable=REPOSITORY_FAILURE_RETRYABILITY.get(outcome),
+    )
+
+
+def scenario_details(
+    payload: dict[str, Any],
+    scenario: str,
+    *,
+    failure_retryable: bool | None,
+) -> dict[str, Any]:
+    """Validate one of the two fixed Rust conformance detail envelopes."""
     details = payload.get("details")
-    if not isinstance(details, dict) or details.get("scenario") != scenario:
+    if (
+        not isinstance(details, dict)
+        or details.get("schema_version") != 1
+        or details.get("scenario") != scenario
+    ):
+        raise ConformanceFailure("compiled repository scenario response was incomplete")
+    if set(details) == {"schema_version", "scenario", "retryable"}:
+        if (
+            failure_retryable is None
+            or details.get("retryable") is not failure_retryable
+        ):
+            raise ConformanceFailure(
+                "compiled repository scenario retryability changed"
+            )
+        return {}
+    if set(details) != {"schema_version", "scenario", "values"}:
         raise ConformanceFailure("compiled repository scenario response was incomplete")
     values = details.get("values")
     if not isinstance(values, dict):
         raise ConformanceFailure("compiled repository scenario values were incomplete")
     return values
+
+
+def verify_response_envelope_validation() -> None:
+    valid = (
+        (
+            "values_case",
+            None,
+            {"schema_version": 1, "scenario": "values_case", "values": {}},
+        ),
+        (
+            "failure_case",
+            True,
+            {"schema_version": 1, "scenario": "failure_case", "retryable": True},
+        ),
+    )
+    for scenario, failure_retryable, details in valid:
+        scenario_details(
+            {"details": details}, scenario, failure_retryable=failure_retryable
+        )
+    mutations = (
+        (
+            "values_case",
+            None,
+            {"schema_version": 2, "scenario": "values_case", "values": {}},
+        ),
+        ("values_case", None, {"schema_version": 1, "scenario": "wrong", "values": {}}),
+        ("values_case", None, {"schema_version": 1, "scenario": "values_case"}),
+        (
+            "values_case",
+            None,
+            {"schema_version": 1, "scenario": "values_case", "retryable": True},
+        ),
+        (
+            "failure_case",
+            True,
+            {"schema_version": 1, "scenario": "failure_case", "retryable": False},
+        ),
+        (
+            "failure_case",
+            True,
+            {
+                "schema_version": 1,
+                "scenario": "failure_case",
+                "retryable": True,
+                "values": {},
+            },
+        ),
+    )
+    for scenario, failure_retryable, details in mutations:
+        try:
+            scenario_details({"details": details}, scenario, failure_retryable=failure_retryable)
+        except ConformanceFailure:
+            continue
+        raise ConformanceFailure("repository response validation accepted a mutation")
 
 
 def exercise_worker(server: WorkerServer) -> None:
@@ -1040,6 +1130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     reference: sqlite3.Connection | None = None
     try:
         refuse_external_authority()
+        verify_response_envelope_validation()
         verify_rust_contract()
         wrangler = detect_wrangler(arguments.wrangler_bin)
         reference = apply_reference()

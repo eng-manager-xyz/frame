@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "family": "folder_crud.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "mobile": {
+    "identity": "POST /api/mobile/folders",
+    "request": {
+      "content_type": "application/json",
+      "shape": "{name:string,color?:normal|blue|red|yellow}",
+      "excess_fields": "stripped",
+      "null_optional_fields": "invalid"
+    },
+    "authentication": "host_session_or_36_character_legacy_api_key",
+    "success": "{id,name,color,parentId:null,videoCount:0}",
+    "idempotency": "optional_Idempotency-Key_bound_when_supplied_server_generated_when_absent"
+  },
+  "effect_rpc": {
+    "identity": "POST /api/erpc",
+    "serialization": "@effect/rpc@0.71.2 RpcSerialization.layerJson",
+    "request_cardinality": "one_tagged_request_object_per_post_no_batching",
+    "request_envelope": "{_tag:'Request',id:decimal_bigint_string,tag,payload,headers,traceId?,spanId?,sampled?}",
+    "logical_headers": "separate_from_physical_http_headers",
+    "authentication": "host_session_cookie_only",
+    "success": "[{_tag:'Exit',requestId,exit:{_tag:'Success'}}]",
+    "typed_failure": "[{_tag:'Exit',requestId,exit:{_tag:'Failure',cause:{_tag:'Fail',error}}}]",
+    "malformed_payload": "Exit.Failure.Cause.Die",
+    "unknown_tag": "top_level_Defect",
+    "idempotency_header": "absent"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-7160c4389375c682",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/mobile/folders",
+      "source_count": 9,
+      "source_manifest_sha256": "fd34af459bb9b5bac46118ad808e9065887fa4201dd2db67dde80bc295d17897",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-9e125712cee9ce5a",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#FolderCreate",
+      "payload": "{name,color,public?,spaceId?:raw_string,parentId?:raw_string}",
+      "source_count": 18,
+      "source_manifest_sha256": "4bd7c5ed8e4c94c34649ea2b23b6366d3c40a79f77d8e67021ad36e37f914407",
+      "protected_gates": ["human_approval"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-eea1796482b3af28",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#FolderDelete",
+      "payload": "raw_folder_id_string",
+      "source_count": 7,
+      "source_manifest_sha256": "798c68c4b062c78e6cdb845338adc4c45e5bd20bda9d9f942957795695be12a4",
+      "protected_gates": ["human_approval"],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-a193e9e08b2c3f7d",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#FolderUpdate",
+      "payload": "{id,name?,color?,public?,publicPage?,parentId?:Option}",
+      "parent_states": {
+        "absent": "no_patch",
+        "None": "root_null",
+        "Some": "parent_id"
+      },
+      "source_count": 18,
+      "source_manifest_sha256": "2881b2ca39ba24c104349eebcc87bdc5d9427b0d3b2e2dc71c41837371d61102",
+      "protected_gates": ["human_approval"],
+      "production_behavior": "fail_closed_unavailable"
+    }
+  ],
+  "scope_invariant": {
+    "frame": "parent_and_child_must_share_tenant_and_namespace",
+    "cap_residual": "same_organization_cross_namespace_parent_edges_are_source_permitted",
+    "classification": "rpc_local_contract_human_approval_required_not_production_exact"
+  },
+  "atomicity": {
+    "one_transaction": [
+      "live_actor_active_organization_and_membership_reassertion",
+      "scope_target_parent_and_cycle_preconditions",
+      "folder_create_update_or_recursive_delete",
+      "tenant_actor_operation_scoped_internal_replay_receipt",
+      "business_audit",
+      "validated_invalidation_effect"
+    ],
+    "wire_idempotency": "none_for_effect_rpc",
+    "rollback": "no_partial_folder_receipt_effect_or_audit"
+  }
+}

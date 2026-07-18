@@ -1,0 +1,77 @@
+{
+  "schema_version": "frame.legacy-invite-lifecycle.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "method": "POST",
+    "paths": ["/api/invite/accept", "/api/invite/decline"],
+    "max_body_bytes": 262144,
+    "accepted_content_types": ["application/json"],
+    "authentication": "host_only_session_before_json_parse",
+    "idempotency": "forbidden_source_has_no_client_key",
+    "rate_limit_bucket": "auth_session.v1",
+    "cache_control": "no-store, max-age=0"
+  },
+  "wire_contract": {
+    "request": "{inviteId:string_nonempty}; extra fields ignored",
+    "success": "HTTP 200 application/json {success:true}",
+    "failures": {
+      "400": ["Invalid request body", "Invalid invite ID"],
+      "401": ["Unauthorized"],
+      "403": ["Email mismatch"],
+      "404": ["Invite not found"],
+      "500": ["Internal server error"]
+    }
+  },
+  "operations": [
+    {
+      "id": "cap-v1-447e3212d20351f6",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/invite/accept",
+      "source_count": 11,
+      "source_manifest_sha256": "319060081ae9a039e5068c4ddd7626a320590928ae456f3c08fc9dada1525409",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-cddad884de1190b1",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/invite/decline",
+      "source_count": 9,
+      "source_manifest_sha256": "d50a659fa4d5155c15ddd3804165be3124cdb429f351ad90ed3985b7b1f4decb",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    }
+  ],
+  "semantic_invariants": {
+    "email": "Unicode case-insensitive equality implemented with JavaScript toLowerCase, with both exact captured values reasserted inside the D1 batch",
+    "accept_role": "case-insensitive admin remains admin; owner, member variants, and invalid roles normalize to member",
+    "accept_existing_member": "preserve existing membership and do not allocate a second member NanoID or paid seat",
+    "accept_paid_seat": "when owner has a direct subscription, allocate only while hosted Cap quota remains; self-hosted mode is unlimited",
+    "accept_user": "merge organizationSetup/customDomain/inviteTeam=true, select active organization, set default only when absent, and inherit owner subscription only with a paid seat",
+    "decline_cleanup": "remove organization space memberships before membership, retain member NanoID history, select a deterministic remaining organization, and clear inherited subscription only when no other paid seat exists",
+    "invite": "both successful decisions delete the source invite and atomically resolve its lossless alias"
+  },
+  "atomicity": {
+    "one_transaction": [
+      "live actor, organization, invite alias, plaintext invite email, and source role reassertion",
+      "organization and space membership mutation",
+      "paid-seat and inherited-subscription mutation",
+      "onboarding and active/default organization mutation",
+      "invite deletion and immutable alias resolution",
+      "typed receipt and audit event",
+      "exact postcondition assertion"
+    ],
+    "rollback": "no partial membership, seat, onboarding, pointer, invite, alias, receipt, or audit mutation",
+    "source_retry": "no idempotency key; after a committed decision the deleted invite makes a retry return 404"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_invite_lifecycle.rs",
+    "apps/control-plane/src/legacy_invite_lifecycle_runtime.rs",
+    "apps/control-plane/src/legacy_invite_lifecycle_web_runtime.rs",
+    "apps/control-plane/migrations/0047_legacy_invite_lifecycle_expand.sql",
+    "apps/control-plane/queries/legacy_invite_lifecycle",
+    "scripts/ci/legacy-invite-lifecycle-sqlite-conformance.py"
+  ]
+}

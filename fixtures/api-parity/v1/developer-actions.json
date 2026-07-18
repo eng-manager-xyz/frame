@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-developer-action-request.v1",
+    "max_body_bytes": 262144,
+    "authentication": "host_only_session",
+    "same_origin": "required",
+    "csrf": "double_submit_one_use_grant_required",
+    "client_idempotency": "required_header_and_body_exact_match",
+    "rate_limit_bucket": "developer_api.v1",
+    "success_status": 200,
+    "cache_control": "no-store, max-age=0"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-f303e703a4237888",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/create-app.ts#createDeveloperApp",
+      "input": "name_and_development_or_production_environment",
+      "authority": "live_actor_owns_new_app",
+      "success": "appId_publicKey_secretKey_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-87fd6af55b891cb9",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/update-app.ts#updateDeveloperApp",
+      "input": "appId_and_optional_name_environment_logoUrl_patch",
+      "authority": "live_actor_owns_app",
+      "success": "success_true_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-9833b16bb80a3299",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/delete-app.ts#deleteDeveloperApp",
+      "input": "appId",
+      "authority": "live_actor_owns_app",
+      "success": "success_true_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-aa86dd3d5351ec06",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/add-domain.ts#addDeveloperDomain",
+      "input": "appId_and_full_origin_domain",
+      "authority": "live_actor_owns_app",
+      "success": "success_true_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-f7d8036af53d0eb9",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/remove-domain.ts#removeDeveloperDomain",
+      "input": "appId_and_domainId",
+      "authority": "live_actor_owns_app",
+      "success": "success_true_object_even_when_no_domain_row_matches",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-1f1465957551f1c4",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/regenerate-keys.ts#regenerateDeveloperKeys",
+      "input": "appId",
+      "authority": "live_actor_owns_app",
+      "success": "publicKey_secretKey_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-8328214ed9647abb",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/delete-video.ts#deleteDeveloperVideo",
+      "input": "appId_and_videoId",
+      "authority": "live_actor_owns_app",
+      "success": "success_true_object_even_when_no_video_row_matches",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    },
+    {
+      "id": "cap-v1-b822700b545118f6",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/developers/update-auto-topup.ts#updateDeveloperAutoTopUp",
+      "input": "appId_enabled_and_optional_thresholdMicroCredits_amountCents",
+      "authority": "live_actor_owns_app",
+      "success": "success_true_object",
+      "protected_gates": [
+        "released_legacy_client_e2e"
+      ],
+      "production_behavior": "fail_closed_unavailable"
+    }
+  ],
+  "presence": {
+    "update_name": "missing_or_nonempty_string; explicit_null_rejected",
+    "update_environment": "missing_or_development_or_production; explicit_null_rejected",
+    "update_logoUrl": "missing_preserves_existing; null_clears; string_replaces",
+    "update_empty_patch": "successful_no_op_with_atomic_receipt",
+    "auto_top_up_enabled": "required_boolean",
+    "auto_top_up_thresholdMicroCredits": "missing_preserves_existing; explicit_null_rejected",
+    "auto_top_up_amountCents": "missing_preserves_existing; explicit_null_rejected"
+  },
+  "secret_safety": {
+    "authority": "versioned_local_aead_key_from_exact_64_lowercase_nonzero_hex",
+    "storage": "public_and_secret_keys_hashed_and_encrypted_at_rest",
+    "plaintext": "returned_once_on_apply_or_unsealed_only_for_same_fingerprint_replay",
+    "debug": "all_key_bearing_types_redacted",
+    "missing_or_invalid_key": "fail_closed_unavailable_without_mutation"
+  },
+  "atomicity": {
+    "one_transaction": [
+      "live_actor_and_app_owner_authority_reassertion",
+      "action_specific_developer_mutation_and_exact_postcondition",
+      "protected_api_key_generation_storage_or_revocation",
+      "actor_action_scoped_idempotency_receipt",
+      "business_audit",
+      "dashboard_invalidation_effect_when_source_declares_it",
+      "sealed_secret_replay_receipt_for_key_returning_actions",
+      "one_use_browser_grant_consumption"
+    ],
+    "same_key_same_fingerprint": "replay_original_receipt_and_exact_same_key_pair_when_applicable",
+    "same_key_different_fingerprint": "conflict",
+    "race": "one_apply_one_replay",
+    "rollback": "no_partial_mutation_secret_receipt_or_consumed_grant"
+  },
+  "source_closure": {
+    "cap-v1-f303e703a4237888": 18,
+    "cap-v1-87fd6af55b891cb9": 13,
+    "cap-v1-9833b16bb80a3299": 13,
+    "cap-v1-aa86dd3d5351ec06": 13,
+    "cap-v1-f7d8036af53d0eb9": 13,
+    "cap-v1-1f1465957551f1c4": 18,
+    "cap-v1-8328214ed9647abb": 13,
+    "cap-v1-b822700b545118f6": 12
+  }
+}

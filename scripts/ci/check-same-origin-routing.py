@@ -30,6 +30,66 @@ CANONICAL_HOST = "frame.engmanager.xyz"
 STAGING_HOST = "frame-staging.engmanager.xyz"
 ROUTE_PATTERN = f"{CANONICAL_HOST}/api*"
 COMPATIBILITY_ROUTE_PATTERN = f"{CANONICAL_HOST}/media-server*"
+PROTECTED_MEDIA_CHILD_ROUTES = (
+    ("cap-v1-105318e146fceb4c", "POST", "/media-server/audio/check", "/media-server/audio/check"),
+    ("cap-v1-77fe8c9a4b418f53", "POST", "/media-server/audio/convert", "/media-server/audio/convert"),
+    ("cap-v1-a2814dde3550e586", "POST", "/media-server/audio/extract", "/media-server/audio/extract"),
+    ("cap-v1-fbd3d44a0ca1786f", "GET", "/media-server/audio/status", "/media-server/audio/status"),
+    ("cap-v1-0bf20f7e9b1a474c", "GET", "/media-server/health", "/media-server/health"),
+    ("cap-v1-ee9797dd352c4e11", "POST", "/media-server/video/cleanup", "/media-server/video/cleanup"),
+    ("cap-v1-9ed2e7b3f858eaaa", "POST", "/media-server/video/convert", "/media-server/video/convert"),
+    ("cap-v1-2b48f7704d996758", "POST", "/media-server/video/edit", "/media-server/video/edit"),
+    (
+        "cap-v1-aa975a14fd384a5c",
+        "POST",
+        "/media-server/video/force-cleanup",
+        "/media-server/video/force-cleanup",
+    ),
+    (
+        "cap-v1-bf2eb9302de590a1",
+        "POST",
+        "/media-server/video/mux-segments",
+        "/media-server/video/mux-segments",
+    ),
+    ("cap-v1-ba986b8c5b07cfd6", "POST", "/media-server/video/probe", "/media-server/video/probe"),
+    (
+        "cap-v1-320876fa0aec77cb",
+        "POST",
+        "/media-server/video/process",
+        "/media-server/video/process",
+    ),
+    (
+        "cap-v1-fc2e2bd0d28ffbf3",
+        "POST",
+        "/media-server/video/process/:jobId/cancel",
+        "/media-server/video/process/job-42/cancel",
+    ),
+    (
+        "cap-v1-43bc9ae6aa4f44a8",
+        "GET",
+        "/media-server/video/process/:jobId/status",
+        "/media-server/video/process/job-42/status",
+    ),
+    ("cap-v1-986bf73a0b5cb676", "GET", "/media-server/video/status", "/media-server/video/status"),
+    (
+        "cap-v1-4165632f8266ae06",
+        "POST",
+        "/media-server/video/thumbnail",
+        "/media-server/video/thumbnail",
+    ),
+)
+
+
+def protected_media_child_route_values() -> list[dict[str, str]]:
+    return [
+        {
+            "operation_id": operation_id,
+            "method": method,
+            "path": path,
+            "example_path": example_path,
+        }
+        for operation_id, method, path, example_path in PROTECTED_MEDIA_CHILD_ROUTES
+    ]
 
 
 class ContractError(RuntimeError):
@@ -68,9 +128,13 @@ def validate_matrix(matrix: dict[str, Any]) -> dict[str, int]:
         "matrix compatibility route pattern drifted",
     )
     require(matrix.get("lookalike_policy") == "non_cacheable_404", "lookalike policy drifted")
+    require(
+        matrix.get("protected_media_child_routes") == protected_media_child_route_values(),
+        "the 16 source-pinned protected media child routes drifted",
+    )
 
     cases = matrix.get("cases")
-    require(isinstance(cases, list) and len(cases) >= 25, "route matrix is not exhaustive")
+    require(isinstance(cases, list) and len(cases) >= 52, "route matrix is not exhaustive")
     ids = [case.get("id") for case in cases if isinstance(case, dict)]
     require(len(ids) == len(cases) == len(set(ids)), "route matrix IDs must be unique strings")
     allowed_owners = {
@@ -104,6 +168,30 @@ def validate_matrix(matrix: dict[str, Any]) -> dict[str, int]:
         elif owner == "worker_reject":
             require(intercepted is not None, f"{case.get('id')}: closed Worker path fell through")
 
+    expected_operation_ids = {route[0] for route in PROTECTED_MEDIA_CHILD_ROUTES}
+    source_cases = [
+        case for case in cases if isinstance(case, dict) and case.get("source_operation_id") is not None
+    ]
+    protected_cases = {case.get("source_operation_id"): case for case in source_cases}
+    require(
+        len(source_cases) == len(protected_cases) == len(PROTECTED_MEDIA_CHILD_ROUTES)
+        and set(protected_cases) == expected_operation_ids,
+        "protected media route cases must map one-to-one to the 16 source operation IDs",
+    )
+    for operation_id, method, _path, example_path in PROTECTED_MEDIA_CHILD_ROUTES:
+        case = protected_cases[operation_id]
+        require(case.get("method") == method, f"{operation_id}: source method drifted")
+        require(case.get("raw_path") == example_path, f"{operation_id}: concrete route example drifted")
+        require(
+            case.get("url") == f"https://{CANONICAL_HOST}{example_path}",
+            f"{operation_id}: canonical route URL drifted",
+        )
+        require(case.get("edge_owner") == "worker_compat", f"{operation_id}: edge owner drifted")
+        require(
+            case.get("worker_class") == "legacy_protected_media",
+            f"{operation_id}: Worker class drifted",
+        )
+
     for required_id in {
         "api-discovery-query",
         "api-repeated-slash",
@@ -120,7 +208,14 @@ def validate_matrix(matrix: dict[str, Any]) -> dict[str, int]:
         "media-server-root",
         "media-server-root-query",
         "media-server-trailing-slash",
-        "media-server-unpromoted-child",
+        "media-server-health",
+        "media-server-video-process-cancel",
+        "media-server-video-process-status",
+        "media-server-child-trailing-slash",
+        "media-server-unknown-child",
+        "media-server-child-prefix-lookalike",
+        "media-server-uppercase-child",
+        "media-server-empty-job-id",
         "media-server-lookalike",
         "render-media-server-uppercase",
     }:
@@ -232,6 +327,26 @@ def validate_declarations() -> None:
         "zone handoff compatibility route drifted",
     )
     require(zone.get("worker_route", {}).get("lookalike_policy") == "non_cacheable_404", "zone lookalike policy drifted")
+    protected_media = zone.get("worker_route", {}).get("protected_media_children", {})
+    require(protected_media.get("edge_owner") == "worker_compat", "zone protected-media owner drifted")
+    require(protected_media.get("source_pinned") is True, "zone protected-media source pin drifted")
+    require(protected_media.get("exact_count") == 16, "zone protected-media route count drifted")
+    require(
+        protected_media.get("route_shapes") == protected_media_child_route_values(),
+        "zone protected-media route shapes drifted",
+    )
+    require(
+        protected_media.get("release_state") == "fail_closed_unavailable",
+        "zone handoff overclaims protected-media availability",
+    )
+    require(
+        protected_media.get("protected_gates") == ["hardware_execution", "provider_execution"],
+        "zone protected-media gates drifted",
+    )
+    require(
+        protected_media.get("provider_promotion_claimed") is False,
+        "zone handoff must not claim provider promotion",
+    )
 
 
 def validate_runtime_and_docs() -> None:
@@ -306,6 +421,10 @@ def validate_runtime_and_docs() -> None:
         '"https://frame-staging.engmanager.xyz"',
         "--require-full",
         "request_id_spoof_rejected",
+        "/media-server/video/process/job-42/cancel",
+        "/media-server/video/process/job-42/status",
+        "protected_child_count",
+        "provider_promotion_claimed",
         "provider_state_changed",
     ):
         require(marker in live_runner, f"live conformance runner is missing {marker}")

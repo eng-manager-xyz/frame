@@ -28,6 +28,32 @@
     "script_owner": "wrangler",
     "lookalike_policy": "non_cacheable_404",
     "owned_pathnames": ["/api", "/api/", "/media-server"],
+    "protected_media_children": {
+      "edge_owner": "worker_compat",
+      "source_pinned": true,
+      "exact_count": 16,
+      "route_shapes": [
+        {"operation_id":"cap-v1-105318e146fceb4c","method":"POST","path":"/media-server/audio/check","example_path":"/media-server/audio/check"},
+        {"operation_id":"cap-v1-77fe8c9a4b418f53","method":"POST","path":"/media-server/audio/convert","example_path":"/media-server/audio/convert"},
+        {"operation_id":"cap-v1-a2814dde3550e586","method":"POST","path":"/media-server/audio/extract","example_path":"/media-server/audio/extract"},
+        {"operation_id":"cap-v1-fbd3d44a0ca1786f","method":"GET","path":"/media-server/audio/status","example_path":"/media-server/audio/status"},
+        {"operation_id":"cap-v1-0bf20f7e9b1a474c","method":"GET","path":"/media-server/health","example_path":"/media-server/health"},
+        {"operation_id":"cap-v1-ee9797dd352c4e11","method":"POST","path":"/media-server/video/cleanup","example_path":"/media-server/video/cleanup"},
+        {"operation_id":"cap-v1-9ed2e7b3f858eaaa","method":"POST","path":"/media-server/video/convert","example_path":"/media-server/video/convert"},
+        {"operation_id":"cap-v1-2b48f7704d996758","method":"POST","path":"/media-server/video/edit","example_path":"/media-server/video/edit"},
+        {"operation_id":"cap-v1-aa975a14fd384a5c","method":"POST","path":"/media-server/video/force-cleanup","example_path":"/media-server/video/force-cleanup"},
+        {"operation_id":"cap-v1-bf2eb9302de590a1","method":"POST","path":"/media-server/video/mux-segments","example_path":"/media-server/video/mux-segments"},
+        {"operation_id":"cap-v1-ba986b8c5b07cfd6","method":"POST","path":"/media-server/video/probe","example_path":"/media-server/video/probe"},
+        {"operation_id":"cap-v1-320876fa0aec77cb","method":"POST","path":"/media-server/video/process","example_path":"/media-server/video/process"},
+        {"operation_id":"cap-v1-fc2e2bd0d28ffbf3","method":"POST","path":"/media-server/video/process/:jobId/cancel","example_path":"/media-server/video/process/job-42/cancel"},
+        {"operation_id":"cap-v1-43bc9ae6aa4f44a8","method":"GET","path":"/media-server/video/process/:jobId/status","example_path":"/media-server/video/process/job-42/status"},
+        {"operation_id":"cap-v1-986bf73a0b5cb676","method":"GET","path":"/media-server/video/status","example_path":"/media-server/video/status"},
+        {"operation_id":"cap-v1-4165632f8266ae06","method":"POST","path":"/media-server/video/thumbnail","example_path":"/media-server/video/thumbnail"}
+      ],
+      "release_state": "fail_closed_unavailable",
+      "protected_gates": ["hardware_execution", "provider_execution"],
+      "provider_promotion_claimed": false
+    },
     "workers_dev": false
   },
   "cache": {

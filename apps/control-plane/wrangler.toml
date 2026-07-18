@@ -6,8 +6,11 @@ workers_dev = false
 [vars]
 FRAME_DEPLOYMENT = "production"
 FRAME_PUBLIC_HOST = "frame.engmanager.xyz"
+WEB_URL = "https://frame.engmanager.xyz"
 FRAME_MEDIA_MODE = "remote"
 FRAME_R2_BUCKET_NAME = "frame-recordings"
+NEXT_PUBLIC_IS_CAP = "true"
+CAP_VIDEOS_DEFAULT_PUBLIC = "true"
 
 # Browser authentication additionally requires three protected Worker
 # secrets. Each is a deny-unknown-field JSON keyring with one active key and up
@@ -16,13 +19,28 @@ FRAME_R2_BUCKET_NAME = "frame-recordings"
 # FRAME_AUTH_DELIVERY_KEYRING_V1
 # FRAME_AUTH_PENDING_KEYRING_V1
 
-# Direct PUT signing also requires FRAME_R2_ACCOUNT_ID,
+# Extension authentication additionally requires CAP_CHROME_EXTENSION_ID as a
+# protected Worker secret (or a deployment variable). It must be the exact
+# Chromium extension identifier allowed to receive authentication redirects.
+
+# Direct PUT and private legacy mobile GET signing also require FRAME_R2_ACCOUNT_ID,
 # FRAME_R2_ACCESS_KEY_ID, and FRAME_R2_SECRET_ACCESS_KEY from the protected
 # Worker environment. Never commit them or expose them through Render.
 
+# Retained Cap `/api/storage/object` tokens additionally require the original
+# NEXTAUTH-compatible HMAC material as the protected Worker secret
+# FRAME_LEGACY_CORE_STORAGE_NEXTAUTH_SECRET. Without it, token-only reads fail
+# closed; session and public-video authorization remain independent.
+
 # Cloudflare matches the full URL, so each query-safe pattern ends in `*`.
 # Raw-path and canonical-host checks narrow the broad edge prefixes to `/api`,
-# `/api/*`, and the exact legacy compatibility pathname `/media-server`.
+# `/api/*`, exact `/media-server`, and the 16 source-pinned protected media
+# child shapes recorded in the same-origin matrix. Dynamic examples include
+# `/media-server/video/process/job-42/cancel` and
+# `/media-server/video/process/job-42/status`. The child carriers remain fail
+# closed behind hardware/provider execution gates; route ownership is not a
+# provider-promotion claim. Unknown children, trailing slashes, prefix
+# lookalikes, and uppercase spellings are not compatibility routes.
 [[routes]]
 pattern = "frame.engmanager.xyz/api*"
 zone_name = "engmanager.xyz"

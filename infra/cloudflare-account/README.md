@@ -56,10 +56,11 @@ The application supports an explicit `direct` upload intent in addition to
 the default `brokered` transfer. Direct intent fails closed unless the Worker
 has `FRAME_R2_BUCKET_NAME` plus protected `FRAME_R2_ACCOUNT_ID`,
 `FRAME_R2_ACCESS_KEY_ID`, and `FRAME_R2_SECRET_ACCESS_KEY` bindings. The signing
-credential must be restricted to object-write access for this bucket; the
-Worker binding performs verification, promotion, and cleanup. Secret material
-is never supplied to Render or a browser; the browser receives only one
-five-minute capability for its random private staging key.
+credential must be restricted to object read-and-write access for this bucket:
+direct upload grants need write authority, while legacy mobile playback and
+download grants need read authority. The Worker binding performs verification,
+promotion, and cleanup. Secret material is never supplied to Render or a
+browser; clients receive only short-lived, object-scoped capabilities.
 
 The CORS allowlist intentionally includes the headers bound into that
 capability: `content-length`, `content-type`, `if-none-match`,

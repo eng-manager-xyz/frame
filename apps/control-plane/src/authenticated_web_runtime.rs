@@ -414,7 +414,7 @@ async fn visible_folders(
     let privileged = matches!(role, "owner" | "admin");
     let result = database
         .prepare(
-            "SELECT f.id,f.name FROM folders f JOIN spaces s ON s.id=f.space_id \
+            "SELECT f.id,COALESCE(f.legacy_name,f.name) AS name FROM folders f JOIN spaces s ON s.id=f.space_id \
              AND s.organization_id=f.organization_id AND s.deleted_at_ms IS NULL \
              WHERE f.organization_id=?1 AND f.deleted_at_ms IS NULL \
                AND (?3=1 OR f.is_public=1 OR s.is_public=1 OR f.created_by_user_id=?2 \

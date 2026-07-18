@@ -11,6 +11,12 @@ Frame needs durable storage for source recordings, segments, thumbnails, preview
 
 Use Cloudflare R2 as Frame's canonical hosted object store through the `RECORDINGS` binding. Store media under immutable, tenant-scoped, versioned keys and persist checksums and output manifests in D1. Domain and application code depend on provider-neutral `ObjectStore` and upload-broker ports so local fakes, contract tests, and any separately approved self-hosted or bring-your-own-storage adapters do not leak provider behavior into the domain.
 
+The checked-in binding maps production to the exact `frame-recordings` bucket
+and preview to the exact `frame-recordings-preview` bucket. Source and
+derivative objects share those environment-owned buckets but remain separated
+by the immutable role and revision namespaces defined by the storage contract.
+Local Wrangler uses `frame-recordings-local`; it is never a production target.
+
 Provider selection is settled. Issue 02 records the compatibility matrix for legacy S3-compatible, MinIO, user-owned bucket, and Google Drive modes; issue 18 implements the R2 adapter and key contract.
 
 ## Capability, compliance, residency, and cost model

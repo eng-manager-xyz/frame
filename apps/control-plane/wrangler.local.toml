@@ -9,7 +9,14 @@ command = "worker-build --release apps/control-plane"
 [vars]
 FRAME_DEPLOYMENT = "local"
 FRAME_PUBLIC_HOST = "localhost"
+WEB_URL = "http://localhost:8787"
 FRAME_MEDIA_MODE = "fake"
+FRAME_R2_BUCKET_NAME = "frame-recordings-local"
+NEXT_PUBLIC_IS_CAP = "true"
+CAP_VIDEOS_DEFAULT_PUBLIC = "true"
+
+# Token-only `/api/storage/object` requests intentionally fail closed unless
+# FRAME_LEGACY_CORE_STORAGE_NEXTAUTH_SECRET is supplied through `.dev.vars`.
 
 [[d1_databases]]
 binding = "DB"

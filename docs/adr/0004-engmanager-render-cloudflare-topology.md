@@ -38,14 +38,22 @@ flowchart LR
 Cloudflare Route patterns match the full URL, including its query string. Use
 one broad `frame.engmanager.xyz/api*` route so `/api?query` cannot fall through
 to Render, plus `frame.engmanager.xyz/media-server*` so the exact promoted
-legacy metadata adapter remains reachable with or without a query. Because a
-query-safe route must end in a wildcard, the Worker enforces the business
-boundary: handle only `/api`, `/api/...`, and exact `/media-server`; return a
-reviewed non-cacheable 404 for `/apix`, `/media-server/`, unpromoted children,
-and other prefix lookalikes. The routes invoke `frame-control-plane` directly;
-introduce a thin gateway Worker and service binding only if path normalization,
-independent policy, or isolation becomes necessary. Unmatched paths continue
-to Render.
+legacy metadata adapter and 16 source-pinned protected media child shapes are
+query-safe and cannot fall through to Render. Because a query-safe route must
+end in a wildcard, the Worker enforces the business boundary: handle only
+`/api`, `/api/...`, exact `/media-server`, and those 16 method-bound children.
+The dynamic shapes are represented concretely by
+`POST /media-server/video/process/job-42/cancel` and
+`GET /media-server/video/process/job-42/status`. Every protected child remains
+`fail_closed_unavailable` behind the `hardware_execution` and
+`provider_execution` gates; edge ownership does not claim provider promotion.
+The Worker returns a reviewed non-cacheable 404 for `/apix`,
+`/media-server/`, child trailing slashes, unknown children, empty dynamic IDs,
+prefix lookalikes, and lower-prefix uppercase children. Case-sensitive
+`/Media-server` misses the Worker Route and continues to Render. The routes
+invoke `frame-control-plane` directly; introduce a thin gateway Worker and
+service binding only if path normalization, independent policy, or isolation
+becomes necessary. Other unmatched paths continue to Render.
 
 `crates/frame-client` owns the versioned public browser/portfolio contract.
 Its URL builder uses the single public origin and prefixes API calls with
@@ -110,7 +118,8 @@ Use this staged sequence:
 4. Confirm direct HTTPS, then enable the Cloudflare proxy.
 5. Use Cloudflare Full (strict) after the Render certificate is valid.
 6. Add the broad `/api*` and narrow `/media-server*` Worker Routes together
-   and verify strict raw-path handling, including query strings and lookalikes.
+   and verify strict raw-path handling, including all 16 protected child
+   shapes, concrete dynamic examples, query strings, and negative lookalikes.
 7. After edge policy is proven, disable the default Render subdomain to reduce
    Cloudflare-policy bypass.
 

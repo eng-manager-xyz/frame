@@ -1,0 +1,80 @@
+{
+  "schema_version": "frame.legacy-library-id-reads.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-library-id-read-request.v1",
+    "max_body_bytes": 1024,
+    "authentication": "host_only_browser_session",
+    "same_origin": "required",
+    "csrf": "not_required_for_read_only_action",
+    "client_idempotency": "forbidden",
+    "rate_limit_bucket": "organization_library.v1",
+    "cache_control": "no-store, max-age=0"
+  },
+  "wire_contract": {
+    "success": "HTTP 200 application/json {success:true,data:string[]}",
+    "failure": "HTTP 200 application/json {success:false,error:string}",
+    "ordering": "source_unspecified_no_order_fabricated",
+    "retry": "read_only_and_safe_without_an_idempotency_key"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-b1027c7caafb92e2",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/folders/get-folder-videos.ts#getFolderVideoIds",
+      "input": "{schema_version,folder_id,space_id}",
+      "success": "source_success_true_and_unordered_legacy_video_id_array",
+      "failure": "Folder ID is required | Unauthorized | Failed to fetch folder videos",
+      "authorization": "actor_active_organization_and_exact_folder_namespace",
+      "source_count": 10,
+      "rust_source_manifest_sha256": "bab8979189df2978ae381303e209a0b4ee5832e3fba5949761976ab7e3b5d41b",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-cc52545598164806",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/organizations/get-organization-videos.ts#getOrganizationVideoIds",
+      "input": "{schema_version,organization_id}",
+      "success": "source_success_true_and_unordered_root_legacy_video_id_array",
+      "failure": "Organization ID is required | Unauthorized | Failed to fetch organization videos",
+      "authorization": "requested_organization_must_be_actor_active_organization",
+      "source_count": 9,
+      "rust_source_manifest_sha256": "cef5fc71ef1b95f9747d010bd3a04a744d33200f3d4427fb1a16fbc4fe72722b",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-a8ace95c6ab712f6",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/spaces/get-space-videos.ts#getSpaceVideoIds",
+      "input": "{schema_version,space_id}",
+      "success": "source_success_true_and_unordered_root_legacy_video_id_array",
+      "failure": "Space ID is required | Unauthorized | Failed to fetch space videos",
+      "authorization": "actor_active_organization_and_live_space_access",
+      "source_count": 9,
+      "rust_source_manifest_sha256": "0bf24570c914feabd6be1be0f83ff7c3567059e86098fc6f4e1ce0f5a948dcb4",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    }
+  ],
+  "authorization_closure": {
+    "source_residual": "Cap accepts caller-supplied folder, organization, and space IDs without a tenant authorization predicate",
+    "frame_correction": "live session actor, active organization, membership, requested namespace, and legacy alias are reasserted before every D1 read",
+    "non_disclosure": "foreign, stale, missing, duplicate, or corrupt authority never returns membership IDs"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_library_id_reads.rs",
+    "apps/control-plane/src/legacy_library_id_read_runtime.rs",
+    "apps/control-plane/src/legacy_library_id_read_web_runtime.rs",
+    "apps/control-plane/migrations/0045_legacy_library_id_reads_expand.sql",
+    "apps/control-plane/queries/legacy_library_id_reads",
+    "scripts/ci/legacy-library-id-reads-sqlite-conformance.py"
+  ]
+}

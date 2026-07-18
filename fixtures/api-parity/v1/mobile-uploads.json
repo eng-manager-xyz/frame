@@ -1,0 +1,48 @@
+{
+  "schema_version": "frame.legacy-mobile-uploads.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "operations": [
+    {"id":"cap-v1-b0116dd82b010477","method":"POST","path":"/api/mobile/uploads","source_count":16,"source_manifest_sha256":"de3bf22950e46dfdbe9bc54bc020888fa5f11398353b2c0890883ebfd7ee869c"},
+    {"id":"cap-v1-b43b6ede64a73798","method":"POST","path":"/api/mobile/uploads/:id/complete","source_count":12,"source_manifest_sha256":"08cb691aed6602219569e8c37977fe21b02b3f66dadf561d166916d8e84dfa04"},
+    {"id":"cap-v1-62469fe03e030052","method":"POST","path":"/api/mobile/uploads/:id/progress","source_count":12,"source_manifest_sha256":"29dd22432c3807153944b701e72c0aee34481ecd8ed1bf9c46577c88ca9699da"}
+  ],
+  "transport_contract": {
+    "authentication": "HttpAuthMiddleware: a split-space second segment of exactly 36 bytes selects API-key lookup regardless of scheme; otherwise host-only browser session",
+    "authorization": "create requires owner or active organization membership and an actor-created personal folder; progress/complete require the actor-owned video and disclose foreign or absent targets as 404",
+    "body": "bounded application/json; the released caller sends no Idempotency-Key and Frame rejects one instead of inventing retry identity",
+    "response": "JSON with Cache-Control: no-store, max-age=0",
+    "rate_limit": "upload_storage.v1",
+    "idempotency": "forbidden"
+  },
+  "create_contract": {
+    "identity": "every accepted request creates a fresh collision-safe native UUID plus immutable 15-character Cap video alias",
+    "organization": "optional Cap organization alias, otherwise the actor active organization; active owner/member authority is reasserted in the write batch",
+    "folder": "optional Cap folder alias must identify a nondeleted actor-created, null-space folder in that organization",
+    "title": "remove one final extension using /\\.[^/.]+$/ then ECMAScript trim; empty becomes Mobile Upload",
+    "extension": "validated final filename extension, otherwise quicktime=mov, webm=webm, matroska=mkv, x-msvideo=avi, x-m4v=m4v, default mp4",
+    "object_key": "legacyActorId/legacyVideoId/raw-upload.<extension>",
+    "upload_target": "R2 SigV4 PUT capability for the exact key and content type, valid 1800 seconds",
+    "response_shape": "id, shareUrl, rawFileKey, put upload target, and newly-created MobileCapSummary"
+  },
+  "progress_contract": {
+    "normalization": "Math.max(0, Math.trunc(value)) for both fields, then uploaded=min(uploaded,total)",
+    "target_tightening": "finite values outside JavaScript's safe-integer range are rejected instead of being rounded by D1 bindings",
+    "ordering": "the server timestamp fences writes; the latest accepted request wins and equal retries converge",
+    "projection": "native video_uploads and legacy_mobile_cap_uploads_v1 are updated in the same D1 batch"
+  },
+  "completion_contract": {
+    "key": "must equal the exact minted rawFileKey; source prefix-only acceptance is intentionally tightened to reject traversal and sibling objects",
+    "r2_evidence": "HEAD must observe the exact nonempty object and an optional contentLength must equal observed bytes",
+    "durability": "one immutable provider-pending processing intent per video plus exact authority/postcondition assertions",
+    "protected_gates": ["provider_execution"],
+    "production_behavior": "return 503 provider_execution while the workflow intent is pending; success=true is returned only after independently admitted submission evidence exists",
+    "non_fabrication": "provider-pending intent does not set the upload phase to processing and does not create a fake media job or workflow receipt"
+  },
+  "security_tightenings": [
+    "R2 replaces generic S3/Google Drive writable providers for this deployment",
+    "PUT adds If-None-Match: * so the minted object cannot overwrite existing bytes",
+    "rawFileKey must equal the server-minted key rather than merely sharing a lexical prefix",
+    "completion verifies nonempty R2 bytes and optional length before durable orchestration",
+    "all JSON numbers crossing D1 are finite JavaScript-safe integers where byte semantics require integers"
+  ]
+}

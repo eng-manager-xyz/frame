@@ -1,0 +1,31 @@
+INSERT INTO legacy_protected_integration_receipts_v1(
+  receipt_id,source_operation_id,operation_kind,method,surface_path,
+  auth_class,authority_class,provider_kind,principal_digest,actor_id,
+  tenant_id,target_id,tenant_domain,target_domain,legacy_tenant_id,legacy_target_id,
+  legacy_workflow_actor_id,legacy_workflow_cap_tenant_id,workflow_raw_file_key,
+  credential_kind,credential_subject_id,credential_key_version,credential_digest,
+  credential_expires_at_ms,policy_proofs_json,
+  entitlement_kind,entitlement_subject_id,entitlement_revision,entitlement_expires_at_ms,
+  conditional_bindings_json,authority_binding_digest,
+  parent_family,parent_receipt_id,parent_request_digest,parent_authority_binding_digest,
+  replay_key_digest,replay_origin,idempotency_mode,request_digest,
+  redacted_request_json,sealed_request_ref,sealed_request_digest,transport_body_digest,
+  terminal_kind,conditional_duration_seconds,conditional_password_requested,
+  conditional_pro_settings_requested,conditional_public_requested,seat_quantity,
+  state,created_at_ms,completed_at_ms
+) VALUES(
+  ?1,?2,?3,?4,?5,
+  ?6,?7,?8,?9,?10,
+  ?11,?12,?13,?14,?15,?16,
+  ?17,?18,?19,
+  ?20,?21,?22,?23,
+  ?24,?25,
+  ?26,?27,?28,?29,
+  ?30,?31,
+  ?32,?33,?34,?35,
+  ?36,?37,?38,?39,
+  ?40,?41,?42,?43,
+  ?44,?45,?46,
+  ?47,?48,?49,
+  'pending_provider_evidence',?50,NULL
+);

@@ -30,6 +30,7 @@ pub(crate) const LEGACY_ORG_CUSTOM_DOMAIN_UNAUTHENTICATED_BODY: &str = "User not
 pub(crate) const LEGACY_ORG_CUSTOM_DOMAIN_FAILURE_CONTENT_TYPE: &str = "application/json";
 pub(crate) const LEGACY_ORG_CUSTOM_DOMAIN_FAILURE_BODY: &str =
     r#"{"error":"Failed to fetch custom domain"}"#;
+#[cfg(test)]
 pub(crate) const LEGACY_ORG_CUSTOM_DOMAIN_VERIFIED_RUNTIME_TYPE: &str =
     "iso_timestamp_string_or_null";
 
@@ -63,11 +64,13 @@ impl LegacyOrganizationCustomDomainV1 {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn custom_domain(&self) -> Option<&str> {
         self.custom_domain.as_deref()
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn domain_verified(&self) -> Option<&str> {
         self.domain_verified.as_deref()
     }

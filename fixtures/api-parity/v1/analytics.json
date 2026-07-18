@@ -1,0 +1,231 @@
+{
+  "schema_version": "frame.legacy-analytics.v1",
+  "cap_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "completion": {
+    "decision": "mixed_provider_gate",
+    "local_work": "complete",
+    "production_behavior": {
+      "provider_execution": [
+        "cap-v1-c8a43dc80c502b6d",
+        "cap-v1-51dc2aa9f19a48cc",
+        "cap-v1-9b093898957efebb",
+        "cap-v1-be2ea6b474aae7c9",
+        "cap-v1-7c47f9a2a9a24ac0",
+        "cap-v1-9186738740a1ece1"
+      ],
+      "serve_exact_d1": ["cap-v1-dd88ded400188c1e"]
+    },
+    "release_rule": "Never return a count, provider success, email success, or notification success from a pending D1 outbox. Release each provider operation only after its Tinybird/email/notification executor and receipts prove the pinned contract."
+  },
+  "operations": [
+    {
+      "id": "cap-v1-c8a43dc80c502b6d",
+      "method": "GET",
+      "path": "/api/analytics",
+      "auth": "optional_session_and_password_grant",
+      "source_count": 5,
+      "idempotency": "forbidden",
+      "provider": "tinybird_query",
+      "query_kind": "video_count_route",
+      "success_shape": {"count": "provider_integer"},
+      "failure_shapes": [
+        {"status": 400, "body": {"error": "Video ID is required"}},
+        {"status": 404, "body": {"error": "Video not found"}},
+        {"status": 500, "body": {"error": "Failed to fetch analytics"}}
+      ]
+    },
+    {
+      "id": "cap-v1-51dc2aa9f19a48cc",
+      "method": "POST",
+      "path": "/api/analytics/track",
+      "auth": "optional_session",
+      "source_count": 6,
+      "idempotency": "optional_but_released_caller_omits",
+      "provider": "tinybird_page_hit_plus_optional_email_and_notification",
+      "query_kind": "page_hit",
+      "success_shape": {"success": true},
+      "failure_shapes": [
+        {"status": 400, "body": {"error": "Invalid JSON payload"}},
+        {"status": 400, "body": {"error": "videoId is required"}}
+      ]
+    },
+    {
+      "id": "cap-v1-9b093898957efebb",
+      "method": "GET",
+      "path": "/api/dashboard/analytics",
+      "auth": "session_required_with_active_organization",
+      "source_count": 5,
+      "idempotency": "forbidden",
+      "provider": "d1_series_plus_tinybird_query",
+      "query_kind": "dashboard",
+      "success_shape": {"data": "OrgAnalyticsResponse"},
+      "failure_shapes": [
+        {"status": 401, "body": {"error": "Unauthorized"}},
+        {"status": 400, "body": {"error": "No active organization"}},
+        {"status": 403, "body": {"error": "Forbidden"}},
+        {"status": 500, "body": {"error": "Failed to load analytics"}}
+      ]
+    },
+    {
+      "id": "cap-v1-be2ea6b474aae7c9",
+      "method": "GET",
+      "path": "/api/video/analytics",
+      "auth": "optional_session_and_password_grant",
+      "source_count": 5,
+      "idempotency": "forbidden",
+      "provider": "tinybird_query",
+      "query_kind": "video_count_http",
+      "success_shape": {"count": "provider_integer"}
+    },
+    {
+      "id": "cap-v1-7c47f9a2a9a24ac0",
+      "method": "RPC",
+      "path": "VideosGetAnalytics",
+      "auth": "optional_rpc_session",
+      "source_count": 8,
+      "idempotency": "forbidden",
+      "provider": "tinybird_query",
+      "query_kind": "video_count_bulk",
+      "success_shape": "per_item_exit_array_in_input_order"
+    },
+    {
+      "id": "cap-v1-dd88ded400188c1e",
+      "method": "ACTION",
+      "path": "checkAndMarkUserSignedUpTracked",
+      "auth": "optional_session",
+      "source_count": 3,
+      "idempotency": "optional_but_released_caller_omits",
+      "provider": "none",
+      "success_shape": {"shouldTrack": "boolean"},
+      "error_policy": "anonymous_ineligible_or_database_failure_returns_false"
+    },
+    {
+      "id": "cap-v1-9186738740a1ece1",
+      "method": "ACTION",
+      "path": "getVideoAnalytics",
+      "auth": "optional_session_and_password_grant",
+      "source_count": 4,
+      "idempotency": "forbidden",
+      "provider": "tinybird_query",
+      "query_kind": "video_count_action",
+      "success_shape": {"count": "provider_integer"}
+    }
+  ],
+  "video_authority": {
+    "failure_disclosure": "not_found",
+    "resolution": ["native_video_id", "legacy_collaboration_video_aliases_v1"],
+    "owner_bypass": true,
+    "shared_membership": ["active_organization_share", "space_membership"],
+    "public_requirements": ["legacy_public", "verified_allowed_email_domain_if_configured"],
+    "password_rule": "A video or containing space password requires an unexpired D1 grant for everyone except the owner, including organization and space members.",
+    "caller_authorized_boolean_trusted": false
+  },
+  "range_normalization": {
+    "video_route": {
+      "algorithm": "trim; remove one trailing d/D; JavaScript Number.parseInt base 10; non-finite or <=0 means default; action then floors and clamps",
+      "default_days": 90,
+      "maximum_days": 90,
+      "examples": {
+        "7d": 7,
+        "7days": 7,
+        "+12D": 12,
+        "0": 90,
+        "-1": 90,
+        "garbage": 90,
+        "999": 90
+      }
+    },
+    "dashboard": {
+      "accepted": ["24h", "7d", "30d", "lifetime"],
+      "default": "7d",
+      "buckets": {"24h": "hour", "7d": "day", "30d": "day", "lifetime": "day"},
+      "lifetime_fallback_days": 30
+    }
+  },
+  "tracking": {
+    "session": "trim then truncate to 128 UTF-16 code units; empty or exact anonymous becomes null",
+    "sanitized_strings": "trim; exact unknown becomes absent; truncate to 256 UTF-16 code units",
+    "user_agent_precedence": ["user-agent header", "body.userAgent", "unknown"],
+    "user_agent_parser": "ua-parser-js@1.0.41; executor must prove exact parser parity from raw_user_agent before release",
+    "timestamp": "body.occurredAt parsed by Date then toISOString, otherwise request time",
+    "city": "decodeURIComponent with original value on decode failure, then sanitize",
+    "hostname_precedence": ["body.hostname", "request hostname", "empty"],
+    "pathname_default": "/s/{videoId}",
+    "skip": ["viewer_is_owner", "any_video_upload_row", "video_updated_less_than_120000ms_ago"],
+    "missing_video": "still_stage_page_hit",
+    "tenant_precedence": ["body.orgId", "video.ownerId", "body.ownerId", "domain:{hostname}", "public"],
+    "new_video_cutoff_iso": "2026-03-04T00:00:00Z",
+    "event_failure": "fail_closed",
+    "email_and_notification_failure": "provider executor records a terminal receipt; never claim success from insertion",
+    "anonymous_notification": {
+      "requires_session": true,
+      "deduplication_key": "anon_view:{videoId}:{sha256(sessionId)}",
+      "rate_limit": "50 per recipient+video per rolling five minutes",
+      "name": "first eight SHA-256 hex digits modulo 32 over pinned animal list"
+    },
+    "first_view_email": "one durable claim per video; respects pauseViews/pauseAnonViews"
+  },
+  "dashboard": {
+    "requested_organization_must_equal_active": true,
+    "space_and_video_scope_failures": "not_found",
+    "d1_series": ["caps", "comments", "reactions"],
+    "provider_series": ["views", "breakdowns", "top_caps"],
+    "provider_failure": "fail_closed_without_partial_counts",
+    "clickhouse_literal_escape_order": ["backslash", "single_quote"],
+    "normalizer_order": {
+      "operating_system": ["mac", "windows", "linux", "android", "ios", "ubuntu", "fedora"],
+      "browser": ["chrome_not_chromium", "firefox", "safari", "edge", "opera", "brave", "internet_explorer"],
+      "device": ["desktop", "mobile", "tablet"]
+    }
+  },
+  "rpc": {
+    "maximum_video_ids": 50,
+    "concurrency": 10,
+    "authorization": "per_item_can_view",
+    "failure_shape": "per_item_not_found_exit_without_cross_item_disclosure",
+    "provider_query": "group authorized videos by organization; aggregate then raw fallback over 90 days"
+  },
+  "signup": {
+    "eligibility_days_inclusive": 7,
+    "claim": "Atomic conditional UPDATE with JSON_SET; the preference value is the durable CAS claim",
+    "preference_path": "$.trackedEvents.user_signed_up",
+    "anonymous": false,
+    "already_tracked": false,
+    "database_failure": false
+  },
+  "persistence": {
+    "migration": "0059_legacy_analytics_expand.sql",
+    "queries": [
+      "actor_profile.sql",
+      "audit_insert.sql",
+      "dashboard_authority.sql",
+      "email_outbox_insert.sql",
+      "event_outbox_insert.sql",
+      "notification_outbox_insert.sql",
+      "operation_claim.sql",
+      "operation_read.sql",
+      "password_grant_issue.sql",
+      "query_outbox_insert.sql",
+      "signup_claim.sql",
+      "track_video_snapshot.sql",
+      "video_authority.sql"
+    ],
+    "tables": [
+      "legacy_analytics_password_grants_v1",
+      "legacy_analytics_provider_operations_v1",
+      "legacy_analytics_query_outbox_v1",
+      "legacy_analytics_event_outbox_v1",
+      "legacy_analytics_email_outbox_v1",
+      "legacy_analytics_notification_outbox_v1",
+      "legacy_analytics_audit_v1"
+    ],
+    "provider_result_storage": "absent_until_verified_executor_receipts_are_added"
+  },
+  "implementation": {
+    "application_module": "legacy_analytics",
+    "control_plane_module": "legacy_analytics_runtime",
+    "control_plane_web_module": "legacy_analytics_web_runtime",
+    "control_plane_port": "D1LegacyAnalyticsPortV1",
+    "sqlite_conformance": "scripts/ci/legacy-analytics-sqlite-conformance.py"
+  }
+}

@@ -41,6 +41,24 @@ pub(crate) const AUTH_DELIVERY_ADMISSION_PER_MINUTE: u32 = 8;
 const AUTH_KEYRING_SECRET: &str = "FRAME_AUTH_HASH_KEYRING_V1";
 const MAX_ACTION_VALUE_BYTES: usize = 120;
 const MAX_ACTION_BODY_BYTES: usize = 8 * 1024;
+const BROWSER_MUTATION_GRANT_ASSERT_SQL: &str =
+    include_str!("../queries/auth/browser_mutation_grant_assert.sql");
+const BROWSER_MUTATION_GRANT_DELETE_BY_PROOF_SQL: &str =
+    include_str!("../queries/auth/browser_mutation_grant_delete_by_proof.sql");
+const BROWSER_MUTATION_GRANT_PRESENCE_SQL: &str =
+    include_str!("../queries/auth/browser_mutation_grant_presence.sql");
+const BROWSER_MUTATION_CHANGE_ASSERT_SQL: &str =
+    include_str!("../queries/auth/browser_mutation_change_assert.sql");
+const CURRENT_BROWSER_SESSION_BINDING_SQL: &str = "SELECT session.token_key_version,session.token_digest AS credential_digest \
+     FROM auth_sessions_v2 session \
+     JOIN auth_identities_v2 identity ON identity.user_id=session.user_id \
+     JOIN users actor ON actor.id=session.user_id \
+     WHERE session.id=?1 AND session.user_id=?2 \
+       AND session.state='active' AND session.revoked_at_ms IS NULL \
+       AND session.session_version=identity.session_version \
+       AND session.idle_expires_at_ms>?3 AND session.absolute_expires_at_ms>?3 \
+       AND actor.status='active' AND actor.deleted_at_ms IS NULL \
+     LIMIT 1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserWebFailure {
@@ -267,6 +285,39 @@ impl WebAction {
 struct BrowserAdmission {
     token: OpaqueAuthToken,
     user_id: String,
+    session_id: String,
+}
+
+/// Narrow secret-export carrier used only by the source-pinned desktop
+/// session handoff. Callers receive the already-verified host-only cookie and
+/// its matching durable expiry; no other compatibility route may use it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostOnlyBrowserSessionExportV1 {
+    pub user_id: String,
+    pub token: String,
+    pub expires_at_ms: i64,
+}
+
+/// Digest-only binding for compatibility carriers that must reassert the exact
+/// authenticated browser session when a protected effect is executed later.
+/// Unlike the desktop handoff export, this type never exposes the cookie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostOnlyBrowserSessionBindingV1 {
+    pub user_id: String,
+    pub session_id: String,
+    pub token_key_version: i64,
+    pub credential_digest: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HostOnlyBrowserSessionExpiryRowV1 {
+    expires_at_ms: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct HostOnlyBrowserSessionBindingRowV1 {
+    token_key_version: i64,
+    credential_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -893,6 +944,44 @@ async fn authenticate_read(
     authenticate_session_credential(request, env, now_ms).await
 }
 
+/// Authenticate a browser-direct compatibility action through the same
+/// session, exact-origin, Fetch Metadata, and double-submit CSRF boundary as
+/// native Frame mutations. The returned one-use proof must be consumed in the
+/// same D1 batch as a durable action effect (or before emitting a response-only
+/// effect); callers cannot supply a tenant or actor identifier in the payload.
+pub(crate) async fn authenticate_compatibility_mutation(
+    request: &Request,
+    env: &Env,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<ValidatedBrowserMutationProof>> {
+    let admission = match authenticate_read(request, env, now_ms).await? {
+        Ok(admission) => admission,
+        Err(failure) => return Ok(Err(failure)),
+    };
+    let proof = match authenticate_mutation(request, env, &admission, now_ms).await? {
+        Ok(proof) => proof,
+        Err(failure) => return Ok(Err(failure)),
+    };
+    if proof.user_id().to_string() != admission.user_id {
+        return Ok(Err(BrowserWebFailure::Unavailable));
+    }
+    Ok(Ok(proof))
+}
+
+/// Authenticate a browser-direct compatibility read through Frame's exact
+/// origin, Fetch Metadata, and current browser-session boundary. Unlike a
+/// mutation this returns no one-use grant and requires no CSRF token.
+pub(crate) async fn authenticate_compatibility_read(
+    request: &Request,
+    env: &Env,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<String>> {
+    match authenticate_read(request, env, now_ms).await? {
+        Ok(admission) => Ok(Ok(admission.user_id)),
+        Err(failure) => Ok(Err(failure)),
+    }
+}
+
 /// Verify only Cap's host-only browser session credential. This deliberately
 /// does not add Origin, Fetch Metadata, CSRF, organization, or API-key policy
 /// to standalone legacy GET routes whose pinned source calls `getCurrentUser`.
@@ -910,6 +999,131 @@ pub(crate) async fn authenticate_host_only_browser_session(
         Err(BrowserWebFailure::Forbidden) => Ok(Err(BrowserWebFailure::Unavailable)),
         Err(failure) => Ok(Err(failure)),
     }
+}
+
+/// Authenticate Cap's host-only browser credential and retain only its current
+/// D1 token digest. Protected deferred execution uses this binding to reject a
+/// session that was revoked, rotated, version-invalidated, or expired after
+/// request admission without ever persisting the raw cookie.
+pub(crate) async fn authenticate_host_only_browser_session_binding(
+    request: &Request,
+    env: &Env,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<HostOnlyBrowserSessionBindingV1>> {
+    let admission = match authenticate_session_credential(request, env, now_ms).await? {
+        Ok(admission) => admission,
+        Err(BrowserWebFailure::Invalid) => {
+            return Ok(Err(BrowserWebFailure::Unauthenticated));
+        }
+        Err(BrowserWebFailure::Forbidden) => {
+            return Ok(Err(BrowserWebFailure::Unavailable));
+        }
+        Err(failure) => return Ok(Err(failure)),
+    };
+    current_host_only_browser_session_binding(
+        &env.d1("DB")?,
+        &admission.session_id,
+        &admission.user_id,
+        now_ms,
+    )
+    .await
+}
+
+/// Resolve the exact session tuple behind an already-validated one-use
+/// browser mutation proof. This deliberately performs no cookie parsing and
+/// exposes no credential material: it binds the protected receipt to the D1
+/// session id, hash-key version, and digest that minted the opaque proof.
+pub(crate) async fn validated_browser_mutation_session_binding(
+    database: &D1Database,
+    proof: &ValidatedBrowserMutationProof,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<HostOnlyBrowserSessionBindingV1>> {
+    current_host_only_browser_session_binding(
+        database,
+        &proof.session_id().to_string(),
+        &proof.user_id().to_string(),
+        now_ms,
+    )
+    .await
+}
+
+async fn current_host_only_browser_session_binding(
+    database: &D1Database,
+    session_id: &str,
+    user_id: &str,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<HostOnlyBrowserSessionBindingV1>> {
+    let row = database
+        .prepare(CURRENT_BROWSER_SESSION_BINDING_SQL)
+        .bind(&[
+            JsValue::from_str(session_id),
+            JsValue::from_str(user_id),
+            JsValue::from_f64(now_ms as f64),
+        ])?
+        .first::<HostOnlyBrowserSessionBindingRowV1>(None)
+        .into_send()
+        .await?;
+    let Some(row) = row.filter(|row| {
+        (1..=65_535).contains(&row.token_key_version)
+            && valid_selection_context(&row.credential_digest)
+    }) else {
+        return Ok(Err(BrowserWebFailure::Unavailable));
+    };
+    Ok(Ok(HostOnlyBrowserSessionBindingV1 {
+        user_id: user_id.into(),
+        session_id: session_id.into(),
+        token_key_version: row.token_key_version,
+        credential_digest: row.credential_digest,
+    }))
+}
+
+/// Authenticate and export the exact current browser credential for Cap's
+/// desktop sign-in bridge. Authentication still runs through `AuthService`;
+/// the follow-up query binds the authenticated session id and actor so an
+/// unrelated session can never supply the expiry.
+pub(crate) async fn authenticate_host_only_browser_session_export(
+    request: &Request,
+    env: &Env,
+    now_ms: i64,
+) -> Result<BrowserWebOutcome<HostOnlyBrowserSessionExportV1>> {
+    let Some(token_text) = unique_cookie(request, SESSION_COOKIE_NAME)? else {
+        return Ok(Err(BrowserWebFailure::Unauthenticated));
+    };
+    let admission = match authenticate_session_credential(request, env, now_ms).await? {
+        Ok(admission) => admission,
+        Err(BrowserWebFailure::Invalid) => {
+            return Ok(Err(BrowserWebFailure::Unauthenticated));
+        }
+        Err(BrowserWebFailure::Forbidden) => {
+            return Ok(Err(BrowserWebFailure::Unavailable));
+        }
+        Err(failure) => return Ok(Err(failure)),
+    };
+    let database = env.d1("DB")?;
+    let row = database
+        .prepare(
+            "SELECT CASE WHEN idle_expires_at_ms < absolute_expires_at_ms \
+             THEN idle_expires_at_ms ELSE absolute_expires_at_ms END AS expires_at_ms \
+             FROM auth_sessions_v2 \
+             WHERE id = ?1 AND user_id = ?2 AND state = 'active' \
+               AND idle_expires_at_ms > ?3 AND absolute_expires_at_ms > ?3 \
+             LIMIT 1",
+        )
+        .bind(&[
+            JsValue::from_str(&admission.session_id),
+            JsValue::from_str(&admission.user_id),
+            JsValue::from_f64(now_ms as f64),
+        ])?
+        .first::<HostOnlyBrowserSessionExpiryRowV1>(None)
+        .await?;
+    let Some(row) = row.filter(|row| row.expires_at_ms > now_ms) else {
+        return Ok(Err(BrowserWebFailure::Unavailable));
+    };
+    Ok(Ok(HostOnlyBrowserSessionExportV1 {
+        user_id: admission.user_id,
+        token: token_text,
+        expires_at_ms: row.expires_at_ms,
+    }))
 }
 
 async fn authenticate_session_credential(
@@ -941,9 +1155,13 @@ async fn authenticate_session_credential(
     let service = AuthService::new(&repository, &clock, &secrets, &sealer, hash_keys, policy);
     match service.authenticate(&token, CorrelationId::new()).await {
         Ok(identity) if identity.client_kind() == AuthClientKind::Browser => {
+            let Some(session_id) = identity.session_id() else {
+                return Ok(Err(BrowserWebFailure::Unavailable));
+            };
             Ok(Ok(BrowserAdmission {
                 token,
                 user_id: identity.user_id().to_string(),
+                session_id: session_id.to_string(),
             }))
         }
         Ok(_) | Err(AuthFailure::Unauthenticated | AuthFailure::RequestRejected) => {
@@ -1042,6 +1260,19 @@ async fn active_membership(database: &D1Database, user_id: &str) -> Result<Optio
             && (0..=9_007_199_254_740_991).contains(&row.revision)
             && (0..=9_007_199_254_740_991).contains(&row.selection_revision)
     }))
+}
+
+/// Return the active organization selected by the authenticated user after
+/// applying the same live membership and organization-state checks used by
+/// native browser mutations. Exact compatibility writers reassert this value
+/// and its authority revisions atomically at their D1 boundary.
+pub(crate) async fn trusted_active_organization_id(
+    database: &D1Database,
+    user_id: &str,
+) -> Result<Option<String>> {
+    Ok(active_membership(database, user_id)
+        .await?
+        .map(|membership| membership.organization_id))
 }
 
 async fn selection_authority(database: &D1Database, user_id: &str) -> Result<Option<SelectionRow>> {
@@ -1607,7 +1838,7 @@ async fn consume_grant(
     }
 }
 
-async fn consume_session_grant(
+pub(crate) async fn consume_session_grant(
     database: &D1Database,
     proof: &ValidatedBrowserMutationProof,
     now_ms: i64,
@@ -1628,6 +1859,70 @@ async fn consume_session_grant(
         }
         Err(_) => Ok(false),
     }
+}
+
+/// Consume a browser grant before a non-atomic early return, or prove that an
+/// inner atomic adapter already consumed it. A failed batch is never treated
+/// as equivalent to consumption while the grant remains reusable.
+pub(crate) async fn consume_session_grant_or_confirm_absent(
+    database: &D1Database,
+    proof: &ValidatedBrowserMutationProof,
+    now_ms: i64,
+) -> Result<bool> {
+    if consume_session_grant(database, proof, now_ms).await? {
+        return Ok(true);
+    }
+    Ok(database
+        .prepare(BROWSER_MUTATION_GRANT_PRESENCE_SQL)
+        .bind(&[
+            JsValue::from_str(&proof.mutation_grant_id().to_string()),
+            JsValue::from_str(&proof.session_id().to_string()),
+            JsValue::from_str(&proof.user_id().to_string()),
+        ])?
+        .first::<PresenceRow>(None)
+        .await?
+        .is_none())
+}
+
+/// Consume the exact one-use grant after a validated browser mutation has been
+/// attempted, even when the session or user was revoked after the proof was
+/// minted. Re-running the live authority assertion in that failure path would
+/// roll back the delete and leave the already-used grant reusable. The opaque
+/// proof still binds all three identifiers, and the changed-row assertion makes
+/// deletion of zero or an unrelated grant fail closed. An already-consumed
+/// inner transaction is accepted only after proving the exact grant is absent.
+pub(crate) async fn consume_attempted_session_grant_or_confirm_absent(
+    database: &D1Database,
+    proof: &ValidatedBrowserMutationProof,
+) -> Result<bool> {
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    let statements = vec![
+        grant_delete_statement(database, proof)?,
+        change_assertion_statement(database, &operation_id, "grant_consumed")?,
+        database
+            .prepare("DELETE FROM authenticated_web_action_assertions_v1 WHERE operation_id=?1")
+            .bind(&[JsValue::from_str(&operation_id)])?,
+    ];
+    let expected_results = statements.len();
+    let consumed = match database.batch(statements).into_send().await {
+        Ok(results) => {
+            results.len() == expected_results && results.iter().all(|result| result.success())
+        }
+        Err(_) => false,
+    };
+    if consumed {
+        return Ok(true);
+    }
+    Ok(database
+        .prepare(BROWSER_MUTATION_GRANT_PRESENCE_SQL)
+        .bind(&[
+            JsValue::from_str(&proof.mutation_grant_id().to_string()),
+            JsValue::from_str(&proof.session_id().to_string()),
+            JsValue::from_str(&proof.user_id().to_string()),
+        ])?
+        .first::<PresenceRow>(None)
+        .await?
+        .is_none())
 }
 
 async fn consume_selection_grant(
@@ -1743,47 +2038,27 @@ fn target_membership_assertion_statement(
         ])
 }
 
-fn grant_assertion_statement(
+pub(crate) fn grant_assertion_statement(
     database: &D1Database,
     operation_id: &str,
     proof: &ValidatedBrowserMutationProof,
     now_ms: i64,
 ) -> Result<D1PreparedStatement> {
-    database
-        .prepare(
-            "INSERT INTO authenticated_web_action_assertions_v1( \
-               operation_id,assertion_kind,expected_count,actual_count) \
-             VALUES (?1,'mutation_grant',1,(SELECT COUNT(*) \
-               FROM auth_session_mutation_grants_v2 g \
-               JOIN auth_sessions_v2 s ON s.id=g.session_id AND s.user_id=g.user_id \
-               JOIN auth_identities_v2 i ON i.user_id=g.user_id \
-               JOIN users u ON u.id=g.user_id AND u.status='active' \
-                 AND u.deleted_at_ms IS NULL \
-               WHERE g.id=?2 AND g.session_id=?3 AND g.user_id=?4 \
-                 AND s.state='active' AND s.generation=g.generation \
-                 AND s.token_key_version=g.token_key_version \
-                 AND s.token_digest=g.token_digest \
-                 AND s.session_version=i.session_version \
-                 AND s.idle_expires_at_ms>?5 AND s.absolute_expires_at_ms>?5))",
-        )
-        .bind(&[
-            JsValue::from_str(operation_id),
-            JsValue::from_str(&proof.mutation_grant_id().to_string()),
-            JsValue::from_str(&proof.session_id().to_string()),
-            JsValue::from_str(&proof.user_id().to_string()),
-            JsValue::from_f64(now_ms as f64),
-        ])
+    database.prepare(BROWSER_MUTATION_GRANT_ASSERT_SQL).bind(&[
+        JsValue::from_str(operation_id),
+        JsValue::from_str(&proof.mutation_grant_id().to_string()),
+        JsValue::from_str(&proof.session_id().to_string()),
+        JsValue::from_str(&proof.user_id().to_string()),
+        JsValue::from_f64(now_ms as f64),
+    ])
 }
 
-fn grant_delete_statement(
+pub(crate) fn grant_delete_statement(
     database: &D1Database,
     proof: &ValidatedBrowserMutationProof,
 ) -> Result<D1PreparedStatement> {
     database
-        .prepare(
-            "DELETE FROM auth_session_mutation_grants_v2 \
-             WHERE id=?1 AND session_id=?2 AND user_id=?3",
-        )
+        .prepare(BROWSER_MUTATION_GRANT_DELETE_BY_PROOF_SQL)
         .bind(&[
             JsValue::from_str(&proof.mutation_grant_id().to_string()),
             JsValue::from_str(&proof.session_id().to_string()),
@@ -1791,17 +2066,13 @@ fn grant_delete_statement(
         ])
 }
 
-fn change_assertion_statement(
+pub(crate) fn change_assertion_statement(
     database: &D1Database,
     operation_id: &str,
     kind: &str,
 ) -> Result<D1PreparedStatement> {
     database
-        .prepare(
-            "INSERT INTO authenticated_web_action_assertions_v1( \
-               operation_id,assertion_kind,expected_count,actual_count) \
-             VALUES (?1,?2,1,changes())",
-        )
+        .prepare(BROWSER_MUTATION_CHANGE_ASSERT_SQL)
         .bind(&[JsValue::from_str(operation_id), JsValue::from_str(kind)])
 }
 
@@ -2067,6 +2338,52 @@ mod tests {
             r#"{"schema_version":"frame.web-action-request.v1","expected_revision":1,"selection_revision":3,"selection_context":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","idempotency_key":"key","value":null,"resource_id":null,"tenant_id":"forbidden"}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn grant_cleanup_can_distinguish_already_consumed_from_still_reusable() {
+        for token in [
+            "FROM auth_session_mutation_grants_v2",
+            "WHERE id = ?1",
+            "AND session_id = ?2",
+            "AND user_id = ?3",
+            "LIMIT 1",
+        ] {
+            assert!(BROWSER_MUTATION_GRANT_PRESENCE_SQL.contains(token));
+        }
+        assert!(!BROWSER_MUTATION_GRANT_PRESENCE_SQL.contains(" OR "));
+        for token in [
+            "DELETE FROM auth_session_mutation_grants_v2",
+            "WHERE id = ?1",
+            "AND session_id = ?2",
+            "AND user_id = ?3",
+        ] {
+            assert!(BROWSER_MUTATION_GRANT_DELETE_BY_PROOF_SQL.contains(token));
+        }
+        assert!(!BROWSER_MUTATION_GRANT_DELETE_BY_PROOF_SQL.contains("JOIN"));
+        assert!(!BROWSER_MUTATION_GRANT_DELETE_BY_PROOF_SQL.contains("state = 'active'"));
+    }
+
+    #[test]
+    fn protected_session_binding_is_exact_and_live() {
+        for token in [
+            "session.id=?1",
+            "session.user_id=?2",
+            "session.state='active'",
+            "session.revoked_at_ms IS NULL",
+            "session.session_version=identity.session_version",
+            "session.idle_expires_at_ms>?3",
+            "session.absolute_expires_at_ms>?3",
+            "actor.status='active'",
+            "actor.deleted_at_ms IS NULL",
+            "session.token_key_version",
+            "session.token_digest AS credential_digest",
+        ] {
+            assert!(
+                CURRENT_BROWSER_SESSION_BINDING_SQL.contains(token),
+                "{token}"
+            );
+        }
     }
 
     #[test]

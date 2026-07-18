@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "transport": {
+    "method": "POST",
+    "path": "/api/v1/web/compatibility-actions/cap-v1-7773d3e70d1d5919",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-compatibility-action-request.v1",
+    "max_body_bytes": 256,
+    "authentication": "host_only_session",
+    "same_origin": "required",
+    "csrf": "double_submit_required",
+    "client_idempotency": "forbidden",
+    "success_status": 204,
+    "success_body": "empty",
+    "cache_control": "no-store, max-age=0"
+  },
+  "operation": {
+    "id": "cap-v1-7773d3e70d1d5919",
+    "kind": "server_action",
+    "method": "ACTION",
+    "legacy_identity": "action://apps/web/app/(org)/dashboard/_components/actions.ts#setTheme",
+    "abstract_body_bytes": 0,
+    "abstract_content_types": [],
+    "output": "void_with_response_cookie"
+  },
+  "input": {
+    "field": "value",
+    "accepted": [
+      "light",
+      "dark"
+    ],
+    "all_other_values": "invalid_request"
+  },
+  "cookie": {
+    "name": "theme",
+    "path": "/",
+    "set_cookie": [
+      "theme=light; Path=/",
+      "theme=dark; Path=/"
+    ],
+    "http_only": false,
+    "secure": false,
+    "same_site": null,
+    "max_age": null
+  },
+  "retry": {
+    "mode": "last_write_wins_without_client_idempotency",
+    "same_value_repeat": "safe_cookie_replacement",
+    "concurrent_writes": "last_completed_cookie_write_wins"
+  },
+  "sources": [
+    {
+      "path": "apps/web/app/(org)/dashboard/_components/actions.ts",
+      "sha256": "3f73b91e1e105555846014adfbc7498d5c719b536b5edcd8a3876167ed84ad1a"
+    },
+    {
+      "path": "apps/web/app/(org)/dashboard/layout.tsx",
+      "sha256": "65221996b10ee679b5868e6cea9002256fc8043eb95b2dbf6b56a222ce9c1d33"
+    },
+    {
+      "path": "apps/web/app/(org)/dashboard/Contexts.tsx",
+      "sha256": "2b2df78eab9dbdde2918a4b5993a31cf73fb8de2465d318c7b27d3d439f2a0cb"
+    },
+    {
+      "path": "apps/web/package.json",
+      "sha256": "c1358cd1880ac5dc9d659760c2788cedd5c4f61fec2cb0dd1b60cbc9bb8af920"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "sha256": "fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"
+    }
+  ]
+}

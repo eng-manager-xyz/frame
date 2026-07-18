@@ -1,0 +1,93 @@
+{
+  "schema_version": "frame.declaration-only-dispositions.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "policy": {
+    "local_work": "complete",
+    "protected_gate": "human_approval",
+    "production_behavior": "fail_closed_unavailable",
+    "rule": "A declaration without an executable handler, authority, or stable failure mapping is audited but never promoted by inventing behavior. A repository owner must approve a concrete implementation contract or retirement."
+  },
+  "operations": [
+    {
+      "id": "cap-v1-9323d0178c5a63b5",
+      "method": "GET",
+      "path": "/api/org-custom-domain",
+      "declared_success": {
+        "custom_domain": "string|null",
+        "domain_verified": "boolean|null"
+      },
+      "declared_failure": {
+        "status": 500,
+        "body": {
+          "message": "string"
+        }
+      },
+      "contract_sources": [
+        {
+          "path": "packages/web-api-contract-effect/src/index.ts",
+          "sha256": "9c2185ebf12be4c9d231d42938c975ea6ad596a0031ed8a0aca2bb1cbec3c7a0"
+        },
+        {
+          "path": "packages/web-api-contract/src/index.ts",
+          "sha256": "98bb2529e27eba0ed1569d286a1f5d4069cbbf23cf9e1dde62fdc1f6a9737e3e"
+        }
+      ],
+      "executable_handler": null,
+      "missing_authority": "No source defines authorization, active-organization lookup, boolean verification derivation, or runtime failure mapping.",
+      "incompatible_concrete_neighbor": "The separately proven desktop route returns an ISO timestamp|null and cannot be silently coerced into boolean|null.",
+      "owner_decision": "implement an explicit boolean contract or approve retirement"
+    },
+    {
+      "id": "cap-v1-700b21489623a3e4",
+      "method": "POST",
+      "path": "/api/commercial/activate",
+      "declared_request": {
+        "headers": {
+          "licensekey": "string",
+          "instanceid": "string"
+        },
+        "body": {
+          "reset": "boolean|absent"
+        }
+      },
+      "declared_success": {
+        "message": "string",
+        "expiryDate": "number|absent",
+        "refresh": "number"
+      },
+      "declared_failure": {
+        "status": 403,
+        "body": {
+          "message": "string"
+        }
+      },
+      "contract_sources": [
+        {
+          "path": "packages/web-api-contract-effect/src/index.ts",
+          "sha256": "9c2185ebf12be4c9d231d42938c975ea6ad596a0031ed8a0aca2bb1cbec3c7a0"
+        },
+        {
+          "path": "packages/web-api-contract/src/index.ts",
+          "sha256": "98bb2529e27eba0ed1569d286a1f5d4069cbbf23cf9e1dde62fdc1f6a9737e3e"
+        }
+      ],
+      "caller_sources": [
+        {
+          "path": "apps/desktop/src/utils/web-api.ts",
+          "sha256": "d3655b985a21a54d97b9974b17536aebab490929850baffaa5186d7a5632b45a"
+        },
+        {
+          "path": "apps/desktop/src/routes/(window-chrome)/upgrade.tsx",
+          "sha256": "c5c22b8f4d113eeac0e1e08603130b363791c7970ad15d2dc23d93aa095eff32"
+        },
+        {
+          "path": "apps/desktop/src/routes/(window-chrome)/settings/license.tsx",
+          "sha256": "dfb1addc2818cb7ede7e65740d5dee0d20646986651473633adf01245aff316a"
+        }
+      ],
+      "executable_handler": null,
+      "missing_authority": "No source defines license verification, instance binding, reset semantics, expiry/refresh calculation, persistence, or stable failures.",
+      "owner_decision": "adopt and specify a Frame licensing authority or approve retirement"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "schema_version": "frame.legacy-space-authorization.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "method": "POST",
+    "path_prefix": "/api/v1/web/compatibility-actions/",
+    "role": "frame_selector_not_legacy_identity",
+    "request_schema": "frame.web-space-authorization-request.v1",
+    "max_body_bytes": 1024,
+    "authentication": "host_only_browser_session",
+    "same_origin": "required",
+    "csrf": "not_required_for_read_only_action",
+    "client_idempotency": "forbidden",
+    "rate_limit_bucket": "organization_library.v1",
+    "cache_control": "no-store, max-age=0"
+  },
+  "wire_contract": {
+    "get_success": "HTTP 200 application/json SpaceAccess | null",
+    "require_success": "HTTP 200 application/json SpaceAccess",
+    "require_missing": "HTTP 404 application/json {error:'Space not found'}",
+    "require_denied": "HTTP 403 application/json {error:'Only space admins, organization admins, and owners can manage this space'}",
+    "retry": "read_only_business_action_safe_without_an_idempotency_key"
+  },
+  "space_access_projection": {
+    "fields": [
+      "spaceId",
+      "organizationId",
+      "organizationOwnerId",
+      "createdById",
+      "organizationRole",
+      "spaceRole",
+      "canManage"
+    ],
+    "organization_roles": "owner | admin | member | null",
+    "space_roles": "admin | member | null",
+    "can_manage": "organization owner/admin or space admin"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-5595a9d384765e76",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/organization/space-authorization.ts#getSpaceAccess",
+      "input": "{schema_version,space_id}; userId is never accepted from the caller",
+      "success": "exact SpaceAccess object or null",
+      "failure": "missing, foreign, deleted, tombstoned, or stale active-tenant scope returns null",
+      "source_count": 2,
+      "rust_source_manifest_sha256": "b3cc205e302c0a50208b4a31e2c40144f438ba07965eabf0769e6458881e7183",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    },
+    {
+      "id": "cap-v1-14cb48febfd0fa5a",
+      "kind": "server_action",
+      "method": "ACTION",
+      "legacy_identity": "action://apps/web/actions/organization/space-authorization.ts#requireSpaceManager",
+      "input": "{schema_version,space_id}; userId is never accepted from the caller",
+      "success": "same SpaceAccess object when canManage is true",
+      "failure": "the two exact pinned source Error messages",
+      "source_count": 2,
+      "rust_source_manifest_sha256": "69438e783f7cac4aeae4faa061188d6a38ea2ca2e23b9d42205c592c64ad3667",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_action"
+    }
+  ],
+  "role_closure": {
+    "organization_owner": "owner pointer overrides any membership role",
+    "invalid_member_owner": "a non-owner membership role of owner normalizes to member",
+    "space_creator": "creator pointer overrides any space membership role to admin",
+    "frame_space_role_mapping": "manager -> admin; viewer -> member; contributor -> null",
+    "unknown_roles": "normalize to null"
+  },
+  "authorization_closure": {
+    "source_residual": "Cap accepts caller-supplied userId and spaceId",
+    "frame_correction": "actor comes only from the host session; live active organization membership and the immutable legacy space alias are reasserted in every D1 projection query",
+    "non_disclosure": "a legacy alias cannot cross the actor's active tenant and tombstoned organizations or deleted spaces project as missing"
+  },
+  "wire_identity_closure": {
+    "organization_and_space": "reuse legacy_user_account_organization_ids_v1 and legacy_library_space_aliases_v1",
+    "owner_and_creator": "require persisted globally unique legacy_collaboration_user_aliases_v1 rows",
+    "imported_users": "promote an exact legacy_space_member_aliases_v1 user ID into the global alias authority",
+    "native_users": "persist a deterministic SHA-256/Crockford candidate with eight bounded collision retries and database uniqueness",
+    "read_only_boundary": "no business row or idempotency journal is written; only a missing immutable compatibility projection alias may be materialized"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_space_authorization.rs",
+    "apps/control-plane/src/legacy_space_authorization_runtime.rs",
+    "apps/control-plane/src/legacy_space_authorization_web_runtime.rs",
+    "apps/control-plane/queries/legacy_space_authorization",
+    "scripts/ci/legacy-space-authorization-sqlite-conformance.py"
+  ]
+}

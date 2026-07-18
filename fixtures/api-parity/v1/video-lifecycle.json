@@ -1,0 +1,131 @@
+{
+  "schema_version": "frame.legacy-video-lifecycle.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "rpc": "GET or POST /api/erpc using Effect JSON serialization",
+    "rpc_request": "one {_tag:'Request',id,tag,payload,headers,traceId?,spanId?,sampled?} object",
+    "authentication": "host-only browser session on authenticated RPCs and DELETE; OG is anonymous",
+    "mutation_safety": "D1 authority snapshot plus immutable request digest and resumable R2 effect receipt",
+    "rate_limits": [
+      "service_misc.v1",
+      "organization_library.v1",
+      "video_media.v1"
+    ],
+    "cache_control": "RPC and mutations no-store; OG public max-age=60, stale-while-revalidate=300"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-6cee4f8c7f91f9fd",
+      "kind": "route",
+      "method": "GET",
+      "legacy_identity": "/api/erpc",
+      "source_manifest_sha256": "57cb6118cf51937714926f0224dff439316fc3fb63d3ec7be3c6670934559c9d",
+      "input": "exact route with no HTTP body",
+      "success": "Effect RPC transport response; an empty request is a stable redacted protocol defect",
+      "authorization": "the selected RPC middleware owns authentication; the carrier itself discloses no tenant data",
+      "idempotency": "forbidden transport probe",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-5d669b34ea762549",
+      "kind": "route",
+      "method": "POST",
+      "legacy_identity": "/api/erpc",
+      "source_manifest_sha256": "192311afed3b5b41691f047e143caa7b4ec8a56904dac3d17fc5937daafe67c7",
+      "input": "bounded application/json Effect Request; exactly one request object",
+      "success": "Effect JSON Exit array preserving request ID, void/value encoding, typed failures, dies, and defects",
+      "authorization": "host-only session and operation-family policy after tag decoding",
+      "idempotency": "the Effect request ID plus operation and actor form a durable replay key; different bytes conflict",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-ac0d7aa564f2991c",
+      "kind": "route",
+      "method": "DELETE",
+      "legacy_identity": "/api/video/delete",
+      "source_manifest_sha256": "dd25867cd3c7463db76a86eb36c7d8d08807b0aa5a9282b3f8e8fc854fcba066",
+      "input": "one videoId query value and an empty body",
+      "success": "204 empty only after the owner-scoped D1 tombstone and bounded paginated R2 prefix deletion",
+      "authorization": "required session and owner-only lookup with foreign/missing collapse",
+      "idempotency": "derived actor/video cleanup receipt resumes storage_pending and replays complete",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-7d6fa824a5356ace",
+      "kind": "route",
+      "method": "GET",
+      "legacy_identity": "/api/video/og",
+      "source_manifest_sha256": "39585178b30cac46c9781c1b1b4e052f2cebe8745ddc019316603eddafd413ff",
+      "input": "one 15-character videoId query value",
+      "success": "200 image/png at 1200x630; public videos render a play card and missing/private videos render non-disclosing fallback cards",
+      "authorization": "anonymous read of the public bit only; private and missing storage never produce a capability",
+      "idempotency": "safe read recomputation",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-e32af2138aa62c8d",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#OrganisationUpdate",
+      "source_manifest_sha256": "229bed2ab2a667671f65e8f749d96422bf6912b07c51c56c031496ff24f98875",
+      "input": "{id,image?}; image is Effect None for removal or Some<{data base64,contentType,fileName}> for replacement",
+      "success": "Effect void after admin/owner authorization; replacement orders R2 put, D1 pointer swap, old managed-key delete",
+      "authorization": "active organization admin or owner; authorization also runs for the no-image no-op",
+      "idempotency": "request ID binds the exact new/old icon keys; storage_pending resumes only old-object cleanup",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-1e909cc023a9c4a7",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#VideoDelete",
+      "source_manifest_sha256": "048aa5e3395314a1cb2098ca08be393b65edc60cf5ae76439077fb188d1b8ea0",
+      "input": "one 15-character video ID payload",
+      "success": "Effect void only after atomic D1 tombstone and bounded paginated R2 prefix deletion",
+      "authorization": "session owner only with non-disclosing lookup",
+      "idempotency": "request ID and digest; storage_pending retries the bound prefix and complete replays void",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-e6a882aeeffaa4f6",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#VideoDuplicate",
+      "source_manifest_sha256": "1904dd12c0d4b01a670a8f6db33c45e9e81eadd672340c025121a99ba3197f72",
+      "input": "one 15-character source video ID payload",
+      "success": "Effect void after metadata clone without password/shares and serial streaming R2 prefix copy",
+      "authorization": "source video owner only",
+      "idempotency": "durable destination IDs and per-source-object copy receipts make interruption and concurrency converge",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-7b4e8210491e549d",
+      "kind": "rpc",
+      "method": "RPC",
+      "legacy_identity": "/api/erpc#VideoInstantCreate",
+      "source_manifest_sha256": "89d80ada406a40b1e8d6a7642b510bb638d2f82ac2ca20dfd3d3424679e23557",
+      "input": "{orgId,folderId Effect Option,durationSeconds?,resolution?,width?,height?,videoCodec?,audioCodec?,supportsUploadProgress?}",
+      "success": "Effect {id,shareUrl,upload:{type:'put',url,headers}} with exact R2 key and optional custom-domain share URL",
+      "authorization": "requested organization equals the actor active organization, live membership, optional in-org folder, writable R2 integration",
+      "idempotency": "recording rows, upload capability response, and Effect request receipt commit in one D1 batch; a losing concurrent retry replays the winner",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    }
+  ],
+  "local_evidence": [
+    "crates/application/src/legacy_video_lifecycle.rs",
+    "apps/control-plane/migrations/0060_legacy_video_lifecycle_expand.sql",
+    "apps/control-plane/queries/legacy_video_lifecycle",
+    "apps/control-plane/src/legacy_video_lifecycle_runtime.rs",
+    "apps/control-plane/src/legacy_video_lifecycle_web_runtime.rs",
+    "apps/control-plane/src/legacy_extension_instant_recordings_runtime.rs",
+    "scripts/ci/legacy-video-lifecycle-sqlite-conformance.py"
+  ]
+}

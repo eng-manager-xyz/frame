@@ -95,6 +95,21 @@ def main() -> int:
                 require(reference == expected, f"{path}: {action} must use immutable SHA {expected}", errors)
 
     quality = texts.get("quality-gates.yml", "")
+    api_parity = texts.get("api-workflow-parity.yml", "")
+    parity_runner = "python3 -I scripts/ci/run-legacy-api-parity.py"
+    parity_runner_test = "python3 -I scripts/ci/test-legacy-api-parity-runner.py"
+    require(
+        (ROOT / "scripts/ci/run-legacy-api-parity.py").is_file()
+        and (ROOT / "scripts/ci/test-legacy-api-parity-runner.py").is_file(),
+        "legacy/API parity aggregate runner and its fail-fast tests must exist",
+        errors,
+    )
+    require(
+        api_parity.count(parity_runner) == 1
+        and api_parity.count(parity_runner_test) == 1,
+        "api-workflow-parity.yml: the aggregate legacy/API runner and its tests must run exactly once",
+        errors,
+    )
     require("pull_request:" in quality and "push:" in quality, "quality-gates.yml: must run for pull requests and main pushes", errors)
     require("${{ secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
     require("check-parity-evidence.py" in quality,
@@ -324,17 +339,18 @@ def main() -> int:
     require("test-release-change-plan.py" in production_untrusted
             and "test-release-change-plan.py" in quality,
             "release-change-plan compile-time fixture behavior must be tested before release", errors)
+    require(
+        production_untrusted.count(parity_runner) == 1
+        and production_untrusted.count(parity_runner_test) == 1
+        and quality.count(parity_runner_test) == 1,
+        "aggregate legacy/API parity must block production and its runner tests must block PR and release lanes",
+        errors,
+    )
     require("media-job-inputs-sqlite-conformance.py" in production_untrusted
             and "r2-completion-reconciliation-sqlite-conformance.py" in production_untrusted
             and "r2-storage-conformance.py" in production_untrusted
             and "r2-storage-conformance-production-preflight.json" in production_untrusted,
             "production-gate.yml: media-input and compiled R2 contract proofs must block provider mutation", errors)
-    require("compatibility-rate-limit-sqlite-conformance.py" in production_untrusted
-            and "legacy-organization-selection-sqlite-conformance.py" in production_untrusted
-            and "legacy-org-custom-domain-sqlite-conformance.py" in production_untrusted
-            and "legacy-notification-preferences-sqlite-conformance.py" in production_untrusted
-            and "legacy-api-execution-sqlite-conformance.py" in production_untrusted,
-            "production-gate.yml: exact compatibility and legacy SQLite proofs must block provider mutation", errors)
     require("release-join-conformance.py --self-test" in production_untrusted,
             "production-gate.yml: release-join semantics must block provider mutation", errors)
     require("package-release.sh" in production and "verify-release-bundle.sh" in production,

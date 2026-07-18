@@ -174,9 +174,8 @@ case "$command" in
     python3 -I scripts/ci/check-issue-closure.py
     python3 -I scripts/ci/check-desktop-product.py
     python3 -I scripts/ci/check-media-service.py
-    python3 scripts/ci/check-api-workflow-parity.py
-    python3 -I scripts/ci/api-workflow-d1-conformance.py
-    python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py
+    python3 -I scripts/ci/run-legacy-api-parity.py \
+      --evidence-dir target/evidence
     python3 scripts/ci/check-cloudflare-zone-contract.py
     python3 -I scripts/ci/check-cloudflare-edge-policy.py
     python3 -I scripts/ci/test-frame-cache-purge.py
@@ -185,15 +184,10 @@ case "$command" in
       --evidence target/evidence/share-player-local.json
     python3 -I scripts/ci/check-engmanager-portfolio-integration.py
     python3 -I scripts/ci/check-launch-observability.py
-    python3 scripts/ci/check-migrations.py
     python3 scripts/ci/test-migration.py
     python3 scripts/ci/cutover-authority-conformance.py
     python3 -I scripts/ci/business-sqlite-semantic-conformance.py
     python3 -I scripts/ci/organization-sqlite-semantic-conformance.py
-    python3 -I scripts/ci/legacy-organization-selection-sqlite-conformance.py
-    python3 -I scripts/ci/legacy-org-custom-domain-sqlite-conformance.py
-    python3 -I scripts/ci/legacy-notification-preferences-sqlite-conformance.py
-    python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
     python3 -I scripts/ci/public-collaboration-sqlite-conformance.py
     python3 -I scripts/ci/direct-upload-sqlite-conformance.py
     python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
@@ -212,8 +206,8 @@ case "$command" in
     configure_gstreamer
     "$GSTREAMER_EXEC" cargo test --workspace
     "$GSTREAMER_EXEC" cargo test --locked -p frame-desktop-core --features instant-finalize
-    python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py
-    python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
+    python3 -I scripts/ci/run-legacy-api-parity.py \
+      --evidence-dir target/evidence
     python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
     python3 -I scripts/ci/worker-auth-sqlite-conformance.py
     ;;

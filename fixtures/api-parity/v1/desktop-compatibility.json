@@ -1,0 +1,175 @@
+{
+  "schema_version": "frame.legacy-desktop-compatibility.v1",
+  "cap_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "completion": {
+    "decision": "serve_frame_exact_business",
+    "local_work": "complete",
+    "protected_gates": [],
+    "production_behavior": "serve_exact_d1"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-ab49cf36a3f243ac",
+      "method": "GET",
+      "path": "/api/desktop/organizations",
+      "source_count": 10,
+      "source_manifest_sha256": "57c38458f638ec3715c6ea08845e9e7ed34fa594244deca966d71734ce83d8e3",
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "forbidden",
+      "rate_limit_bucket": "organization_library.v1"
+    },
+    {
+      "id": "cap-v1-cdfdf7db0f5cb243",
+      "method": "PATCH",
+      "path": "/api/desktop/organizations/:organizationId/branding",
+      "source_count": 12,
+      "source_manifest_sha256": "644d6f74e135bcab7978f4921563b9454b1213345acce07049f360aec3333492",
+      "max_body_bytes": 1500000,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "organization_library.v1"
+    },
+    {
+      "id": "cap-v1-a77171e54b2ba955",
+      "method": "POST",
+      "path": "/api/desktop/storage/set-active",
+      "source_count": 8,
+      "source_manifest_sha256": "12fd70ac75df2f65fa8daaeaa1f27b0e622e973745b02b199531251dd0bf5ae8",
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "upload_storage.v1"
+    },
+    {
+      "id": "cap-v1-7508c5a7da637a0b",
+      "method": "GET",
+      "path": "/api/desktop/user/profile",
+      "source_count": 9,
+      "source_manifest_sha256": "d3b9e425a3c603aa946511e3418ff607fc0654fe0bdbfa08a8a1942713437cdd",
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "forbidden",
+      "rate_limit_bucket": "client_compatibility.v1"
+    },
+    {
+      "id": "cap-v1-acc98d2d5e8ff345",
+      "method": "DELETE",
+      "path": "/api/desktop/video/delete",
+      "source_count": 9,
+      "source_manifest_sha256": "d79e69c91b9fddae0fb55620cde75649e2ab85ad18d1cc16756f5a241d071822",
+      "max_body_bytes": 0,
+      "accepted_content_types": [],
+      "idempotency": "optional",
+      "rate_limit_bucket": "video_media.v1"
+    },
+    {
+      "id": "cap-v1-117b0cb801816693",
+      "method": "POST",
+      "path": "/api/desktop/video/progress",
+      "source_count": 7,
+      "source_manifest_sha256": "80fab5666369f7d185f9c4aec1c7a16973a33e9948005078ca1e6b6b2018a135",
+      "max_body_bytes": 262144,
+      "accepted_content_types": ["application/json"],
+      "idempotency": "optional",
+      "rate_limit_bucket": "video_media.v1"
+    }
+  ],
+  "authentication": {
+    "class": "session_or_api_key",
+    "selector": "authorization split token index 1 with exactly 36 characters selects a digest-only active API key; all other values fall back to the host-only browser session",
+    "unauthenticated_status": 401,
+    "unauthenticated_body": "User not authenticated"
+  },
+  "cors": {
+    "credentials": true,
+    "allowed_origins": [
+      "configured web origin",
+      "http://localhost:3001",
+      "http://localhost:3000",
+      "tauri://localhost",
+      "http://tauri.localhost",
+      "https://tauri.localhost"
+    ],
+    "allow_methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "allow_headers": "Content-Type, Authorization, sentry-trace, baggage"
+  },
+  "wire_contracts": {
+    "organizations_success": "array of {id,name,ownerId,role,canEditBrand,iconUrl,brandColors}",
+    "branding_success": "one DesktopOrganization object",
+    "storage_success": {"success": true},
+    "profile_success": "{name,email,imageUrl} with nullable fields",
+    "video_success": true,
+    "branding_failures": {
+      "400": [
+        "Invalid logo data",
+        "Logo file is empty",
+        "Logo file must be less than 1MB",
+        "Logo file type is invalid"
+      ],
+      "403": "Only organization admins and owners can edit branding",
+      "404": "Organization not found"
+    },
+    "storage_not_connected": {"status": 404, "body": {"error": "not_connected"}},
+    "video_not_found": {"status": 404, "body": {"error": true, "message": "Video not found"}},
+    "internal_failure": {"status": 500, "body": {"error": "Internal server error"}}
+  },
+  "semantics": {
+    "organizations": [
+      "owned live organizations are loaded before active member organizations and duplicate map replacement does not reorder them",
+      "the organization owner pointer overrides a stale membership role",
+      "membership owner normalizes to member for non-owners; only owner and admin can edit branding",
+      "valid #RRGGBB colors are uppercase and invalid stored metadata colors project as null",
+      "source organization and owner IDs are durable NanoID aliases"
+    ],
+    "branding": [
+      "only a live organization owner or active admin can mutate",
+      "unknown organization metadata and unknown branding fields are preserved",
+      "logo keep, remove, and upload are distinct; decoded uploads are at most one MiB and magic bytes must match the declared image type",
+      "uploaded logos are retained as provider-independent renderable data URLs"
+    ],
+    "storage": [
+      "only actor-owned personal Google Drive rows participate",
+      "Google Drive selects active-first then latest-updated; a missing row is not_connected",
+      "S3 deactivates every actor-owned personal integration"
+    ],
+    "profile": [
+      "name joins truthy first and last names and applies ECMAScript trim",
+      "email and imageUrl preserve source nullability"
+    ],
+    "progress": [
+      "uploaded is Math.min(uploaded,total)",
+      "only actor-owned videos are visible",
+      "a missing upload row is inserted",
+      "an older source updatedAt is ignored by the conditional update branch",
+      "a completed non-multipart row is deleted while multipart progress is updated"
+    ],
+    "delete": [
+      "upload/import/progress projections are removed and the actor-owned video is tombstoned",
+      "known manifest objects and the source owner/video prefix are inventoried before provider I/O",
+      "R2 deletion is effect_pending and resumable; legal holds fail closed",
+      "D1 objects, manifests, jobs, immutable receipt, and audit finalize only after R2 deletion"
+    ]
+  },
+  "idempotency": {
+    "released_clients_send_header": false,
+    "mutations": "optional: a supplied key is durable and replayable; an absent key receives a one-execution server key",
+    "reads": "forbidden",
+    "same_key_different_request": "409 conflict",
+    "video_delete_continuation": "effect_pending resumes remaining R2 keys for the same supplied key"
+  },
+  "persistence": {
+    "migration": "0050_legacy_desktop_compatibility_expand.sql",
+    "query_root": "apps/control-plane/queries/legacy_desktop_compatibility",
+    "tables": [
+      "legacy_desktop_personal_storage_integrations_v1",
+      "legacy_desktop_video_uploads_v1",
+      "legacy_desktop_compatibility_operations_v1",
+      "legacy_desktop_compatibility_receipts_v1",
+      "legacy_desktop_video_delete_objects_v1",
+      "legacy_desktop_compatibility_audit_v1",
+      "legacy_desktop_compatibility_assertions_v1"
+    ],
+    "provider": "Cloudflare D1 plus the RECORDINGS R2 binding for video object deletion"
+  }
+}

@@ -32,6 +32,24 @@ MEDIA_SERVER_ROOT_BODY = (
     b'"/video/process","/video/edit","/video/process/:jobId/status",'
     b'"/video/process/:jobId/cancel","/video/cleanup","/video/force-cleanup"]}'
 )
+PROTECTED_MEDIA_CHILD_METHODS = {
+    "/media-server/audio/check": "POST",
+    "/media-server/audio/convert": "POST",
+    "/media-server/audio/extract": "POST",
+    "/media-server/audio/status": "GET",
+    "/media-server/health": "GET",
+    "/media-server/video/cleanup": "POST",
+    "/media-server/video/convert": "POST",
+    "/media-server/video/edit": "POST",
+    "/media-server/video/force-cleanup": "POST",
+    "/media-server/video/mux-segments": "POST",
+    "/media-server/video/probe": "POST",
+    "/media-server/video/process": "POST",
+    "/media-server/video/process/job-42/cancel": "POST",
+    "/media-server/video/process/job-42/status": "GET",
+    "/media-server/video/status": "GET",
+    "/media-server/video/thumbnail": "POST",
+}
 
 
 class ConformanceError(RuntimeError):
@@ -120,6 +138,14 @@ def request_path(url: str) -> str:
 
 def exercise(origin: str, public_share_id: str | None, require_full: bool) -> dict[str, Any]:
     matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+    declared_protected_media_methods = {
+        route["example_path"]: route["method"] for route in matrix["protected_media_child_routes"]
+    }
+    require(
+        len(matrix["protected_media_child_routes"]) == 16
+        and declared_protected_media_methods == PROTECTED_MEDIA_CHILD_METHODS,
+        "protected media child method/path contract drifted",
+    )
     client = Client(origin)
     route_results: list[dict[str, Any]] = []
 
@@ -136,24 +162,41 @@ def exercise(origin: str, public_share_id: str | None, require_full: bool) -> di
         "api-health",
     }
     media_server_bodies: list[bytes] = []
+    protected_media_statuses: dict[str, int] = {}
     for case in matrix["cases"]:
         owner = case["edge_owner"]
         if owner == "render":
             continue
-        response = client.request("GET", request_path(case["url"]))
+        method = case.get("method", "GET")
+        response = client.request(method, request_path(case["url"]))
         if owner == "worker_api":
             worker_response(response, case["id"])
             require(response.status == 200, f"{case['id']}: expected 200, got {response.status}")
             require(case["id"] in expected_api_success, f"{case['id']}: unreviewed API success")
         elif owner == "worker_compat":
             worker_response(response, case["id"])
-            require(response.status == 200, f"{case['id']}: expected 200, got {response.status}")
-            require(
-                response.headers.get("content-type", "").lower().startswith("application/json"),
-                f"{case['id']}: media-server metadata content type drifted",
-            )
-            require(response.body == MEDIA_SERVER_ROOT_BODY, f"{case['id']}: media-server metadata body drifted")
-            media_server_bodies.append(response.body)
+            if case["worker_class"] == "legacy_media_server_root":
+                require(response.status == 200, f"{case['id']}: expected 200, got {response.status}")
+                require(
+                    response.headers.get("content-type", "").lower().startswith("application/json"),
+                    f"{case['id']}: media-server metadata content type drifted",
+                )
+                require(response.body == MEDIA_SERVER_ROOT_BODY, f"{case['id']}: media-server metadata body drifted")
+                media_server_bodies.append(response.body)
+            else:
+                require(
+                    case["worker_class"] == "legacy_protected_media",
+                    f"{case['id']}: unreviewed compatibility route class",
+                )
+                require(
+                    response.status in {401, 403, 503},
+                    f"{case['id']}: protected carrier did not fail closed (got {response.status})",
+                )
+                require(
+                    not 200 <= response.status < 400,
+                    f"{case['id']}: protected carrier claimed executable availability",
+                )
+                protected_media_statuses[case["source_operation_id"]] = response.status
         elif owner == "worker_reject":
             worker_response(response, case["id"])
             require(response.status in {400, 404}, f"{case['id']}: expected closed 400/404, got {response.status}")
@@ -163,10 +206,11 @@ def exercise(origin: str, public_share_id: str | None, require_full: bool) -> di
             # discovery/capabilities success.
             require(response.status >= 400, f"{case['id']}: encoded lookalike entered an API handler")
             no_shared_cache(response, case["id"])
-        route_results.append({"id": case["id"], "status": response.status, "owner": owner})
+        route_results.append({"id": case["id"], "method": method, "status": response.status, "owner": owner})
 
     require(len(media_server_bodies) == 2, "media-server exact and query route evidence is incomplete")
     require(media_server_bodies[0] == media_server_bodies[1], "media-server query changed the exact response")
+    require(len(protected_media_statuses) == 16, "protected media child-route evidence is incomplete")
     media_server_post = client.request("POST", "/media-server")
     worker_response(media_server_post, "media-server-post")
     require(media_server_post.status == 405, f"POST /media-server returned {media_server_post.status}")
@@ -241,7 +285,14 @@ def exercise(origin: str, public_share_id: str | None, require_full: bool) -> di
         "origin": origin,
         "route_cases": route_results,
         "method_statuses": method_statuses,
-        "media_server": {"exact": 200, "query": 200, "post": media_server_post.status},
+        "media_server": {
+            "exact": 200,
+            "query": 200,
+            "post": media_server_post.status,
+            "protected_child_count": len(protected_media_statuses),
+            "protected_child_statuses": protected_media_statuses,
+            "provider_promotion_claimed": False,
+        },
         "chunked_body_status": chunked.status,
         "upgrade_status": upgrade.status,
         "request_id_spoof_rejected": True,
@@ -346,6 +397,25 @@ class FakeEdge(BaseHTTPRequestHandler):
                     {"code": "method_not_allowed"},
                     worker=True,
                     extra={"allow": "GET"},
+                )
+            return
+        protected_media_method = PROTECTED_MEDIA_CHILD_METHODS.get(path)
+        if protected_media_method is not None:
+            if self.command != protected_media_method:
+                self._send(
+                    405,
+                    {"code": "method_not_allowed"},
+                    worker=True,
+                    extra={"allow": protected_media_method},
+                )
+            else:
+                self._send(
+                    503,
+                    {
+                        "code": "EXECUTION_EVIDENCE_REQUIRED",
+                        "protected_gates": ["hardware_execution", "provider_execution"],
+                    },
+                    worker=True,
                 )
             return
         if path == f"/api/v1/public/shares/{SELF_TEST_SHARE}/media":

@@ -25,30 +25,58 @@ const UNKNOWN_EDGE_SOURCE: &[u8] = b"unattributed-cloudflare-source";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompatibilityRateLimitBucketV1 {
+    AuthSession,
+    BillingAdmin,
+    StripeWebhookIngress,
     ServiceMisc,
     ClientCompatibility,
     OrganizationLibrary,
+    UploadStorage,
     CollaborationNotifications,
+    DeveloperApi,
+    SharePlayback,
+    VideoMedia,
 }
 
 impl CompatibilityRateLimitBucketV1 {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::AuthSession => "auth_session.v1",
+            Self::BillingAdmin => "billing_admin.v1",
+            Self::StripeWebhookIngress => "stripe_webhook_ingress.v1",
             Self::ServiceMisc => "service_misc.v1",
             Self::ClientCompatibility => "client_compatibility.v1",
             Self::OrganizationLibrary => "organization_library.v1",
+            Self::UploadStorage => "upload_storage.v1",
             Self::CollaborationNotifications => "collaboration_notifications.v1",
+            Self::DeveloperApi => "developer_api.v1",
+            Self::SharePlayback => "share_playback.v1",
+            Self::VideoMedia => "video_media.v1",
         }
     }
 
     const fn request_limit(self) -> i64 {
         match self {
+            Self::AuthSession => 8,
+            // Billing and administrator execution is both expensive and
+            // independently approved; keep request-path intent staging tight.
+            Self::BillingAdmin => 8,
+            // Reject abusive webhook sources before a 1 MiB body/HMAC parse,
+            // while leaving enough headroom for legitimate Stripe retry bursts.
+            Self::StripeWebhookIngress => 120,
             // Low-cost metadata and preflight operations share this bucket.
             Self::ServiceMisc => 120,
             // The exact feed is 88,817 bytes, so bound polling more tightly.
             Self::ClientCompatibility => 12,
             Self::OrganizationLibrary => 12,
+            // Cap's developer SDK and REST middleware both freeze a
+            // 60-request, 60-second window. Multipart SDK calls retain the
+            // report's upload-storage bucket while using that source limit.
+            Self::UploadStorage => 60,
             Self::CollaborationNotifications => 30,
+            Self::DeveloperApi => 60,
+            Self::SharePlayback => 30,
+            Self::VideoMedia => 12,
         }
     }
 }
@@ -200,6 +228,22 @@ mod tests {
     #[test]
     fn bucket_labels_and_limits_are_closed_and_bounded() {
         assert_eq!(
+            CompatibilityRateLimitBucketV1::BillingAdmin.as_str(),
+            "billing_admin.v1"
+        );
+        assert_eq!(
+            CompatibilityRateLimitBucketV1::BillingAdmin.request_limit(),
+            8
+        );
+        assert_eq!(
+            CompatibilityRateLimitBucketV1::StripeWebhookIngress.as_str(),
+            "stripe_webhook_ingress.v1"
+        );
+        assert_eq!(
+            CompatibilityRateLimitBucketV1::StripeWebhookIngress.request_limit(),
+            120
+        );
+        assert_eq!(
             CompatibilityRateLimitBucketV1::ServiceMisc.as_str(),
             "service_misc.v1"
         );
@@ -230,6 +274,18 @@ mod tests {
         assert_eq!(
             CompatibilityRateLimitBucketV1::CollaborationNotifications.request_limit(),
             30
+        );
+        assert_eq!(
+            CompatibilityRateLimitBucketV1::DeveloperApi.as_str(),
+            "developer_api.v1"
+        );
+        assert_eq!(
+            CompatibilityRateLimitBucketV1::DeveloperApi.request_limit(),
+            60
+        );
+        assert_eq!(
+            CompatibilityRateLimitBucketV1::UploadStorage.request_limit(),
+            60
         );
     }
 

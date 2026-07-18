@@ -1,0 +1,148 @@
+{
+  "schema_version": "frame.legacy-upload-storage.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "transport": {
+    "rpc": "POST /api/erpc with Effect JSON serialization",
+    "action": "POST /api/v1/web/compatibility-actions/:operation_id",
+    "action_request_schema": "frame.web-upload-storage-action-request.v1",
+    "authentication": "host-only session; RPC reads additionally admit Cap public-view policy",
+    "mutation_safety": "same-origin CSRF proof plus D1 idempotency receipt",
+    "rate_limit_bucket": "upload_storage.v1",
+    "cache_control": "no-store, max-age=0"
+  },
+  "operations": [
+    {
+      "id": "cap-v1-e7c4af25d620a9b3",
+      "kind": "rpc",
+      "legacy_identity": "/api/erpc#GetUploadProgress",
+      "source_manifest_sha256": "cf23aeb83b2a69f2533bb5f2bd6ea014e7b59cdc880134ef29eaa6c29e3736f5",
+      "input": "Effect Request payload is one 15-character video ID",
+      "success": "Effect Option<UploadProgress>; absent row is None; dates are ISO strings; nullable messages are Effect Options; rawFileKey controls hasRawFallback",
+      "authorization": "owner bypass; otherwise explicit shared-organization/shared-space membership or public video, with video/space password candidates and public email restriction enforced",
+      "idempotency": "read-only",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-43270700eca33966",
+      "kind": "rpc",
+      "legacy_identity": "/api/erpc#VideoGetDownloadInfo",
+      "source_manifest_sha256": "db5d1f077a062da7e631624473a96176de6fd1e5825b24124ef55037d59c2c52",
+      "input": "Effect Request payload is one 15-character video ID",
+      "success": "Effect Option<{fileName,downloadUrl}>; screenshots select newest supported suffix; webMP4 prefers nonempty result.mp4 then rawFileKey; desktopMP4 signs result.mp4",
+      "authorization": "same optional-session public-view policy as GetUploadProgress",
+      "idempotency": "read-only short-lived exact-key R2 GET capability",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-4245d3bd72f59e22",
+      "kind": "rpc",
+      "legacy_identity": "/api/erpc#VideoUploadProgressUpdate",
+      "source_manifest_sha256": "61b186fa5111e86cd88c78e7535571e1e2d7576f981c202cee7087a0aed4eb53",
+      "input": "{videoId,uploaded,total,updatedAt}; nonnegative safe integers and an ISO Date",
+      "success": "Effect boolean true; uploaded is min(uploaded,total); updates with an older updatedAt are successful no-ops",
+      "authorization": "session owner only",
+      "idempotency": "Effect request id plus request digest; insert races replay",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-dd270efc913f9af9",
+      "kind": "server_action",
+      "legacy_identity": "action://apps/web/actions/video/upload.ts#createVideoAndGetUploadUrl",
+      "source_manifest_sha256": "9a664fd3fdd7b607bc3abebcd8f17ce24e9d0b59a4c668fd5e2a4e2a33530155",
+      "input": "{schema_version,idempotency_key,video_id?,duration?,resolution?,video_codec?,audio_codec?,is_screenshot,is_upload,folder_id?,org_id,screenshot_content_type?,supports_upload_progress}",
+      "success": "{id,presignedPostData:null,uploadTarget:{type:'put',url,headers}}; existing owner video mints only a new exact-key capability",
+      "normalization": "R2 PUT replaces Cap S3 POST without widening authority; screenshot extension is png only for case-insensitive image/png, otherwise jpg; title is Cap <kind> - <day> <month> <year>",
+      "authorization": "live organization member, optional in-organization folder, owner-only reuse; free plan rejects duration above 300 seconds",
+      "idempotency": "required Frame carrier; the original signed response is replayed",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-6ed7083eeb37e3f8",
+      "kind": "server_action",
+      "legacy_identity": "action://apps/web/actions/video/upload.ts#deleteVideoResultFile",
+      "source_manifest_sha256": "6f37d3f442c9819c803f0b9f17079d3d049f05697f592229c34b735911a7f2bc",
+      "input": "{schema_version,video_id,idempotency_key}",
+      "success": {"success": true},
+      "ordering": "delete compatibility progress and persist storage_pending atomically, retry exact result.mp4 R2 delete up to three times, then mark complete",
+      "authorization": "session owner only",
+      "idempotency": "required Frame carrier; pending retries resume the same object intent",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-09c995d62aea0fe7",
+      "kind": "server_action",
+      "legacy_identity": "action://apps/web/actions/videos/download.ts#downloadVideo",
+      "source_manifest_sha256": "a76cee98c2af8e2e6694ff7194fed93c63ba8d6caea6ecd0a4112d6cc8b07133",
+      "input": "{schema_version,video_id}",
+      "success": "{success:true,downloadUrl,filename:'<name>.mp4'}",
+      "authorization": "source-corrected from catalog inference to required session owner",
+      "idempotency": "read-only short-lived exact result.mp4 GET capability; no HEAD",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-cbc5472b81366dcb",
+      "kind": "server_action",
+      "legacy_identity": "action://apps/web/actions/videos/download.ts#getVideoDownloadInfo",
+      "source_manifest_sha256": "4c6591dd4f6e300256f9ebc8ef333e72c579ecf2b033c95fe1ba8d4ce8741bdd",
+      "input": "{schema_version,video_id,variant:'current'|'original'}",
+      "success": "{success:true,downloadUrl,filename} or source-exact {success:false,error}",
+      "authorization": "required session; owner, original-organization member, explicit shared-organization member, or shared-space member",
+      "current_fence": "desktopSegments or non-complete progress returns still-processing/failed message before R2 HEAD",
+      "original_key": "owner/video/source/original.mp4 retained beside native edit documents",
+      "idempotency": "read-only",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1_r2"
+    },
+    {
+      "id": "cap-v1-d89571c3e0f65def",
+      "kind": "workflow",
+      "legacy_identity": "workflow://apps/web/lib/video-edit-processing.ts#reconcileStaleEditUpload",
+      "source_manifest_sha256": "d54e3fb23770a4d8317ea49f665c9e72bb1faebe51ef9fa9036a5de69494ab6a",
+      "input": "session-bound {schema_version,video_id,idempotency_key}",
+      "success": "boolean indicating whether the exact edit progress row was deleted",
+      "staleness": "error immediately; complete/generating_thumbnail over 5m; processing 0% over 15m; other processing over 10m; uploading never",
+      "authority": "rawFileKey must equal owner/video/source/original.mp4 and the compared row snapshot must still match at delete time",
+      "idempotency": "required Frame carrier; result boolean is replayed",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    },
+    {
+      "id": "cap-v1-55d41a7742153f1b",
+      "kind": "server_action",
+      "legacy_identity": "action://apps/web/actions/caps/share.ts#shareCap",
+      "source_manifest_sha256": "7e163b7de3f3b1e1a51525ca46411c8925fe1898c368a5fa91f5886eaf30a341",
+      "input": "{schema_version,cap_id,space_ids,public?,idempotency_key}",
+      "success": {"success": true},
+      "semantics": "atomically replace organization and space shares with selected IDs visible through the owner's active memberships; ignore foreign/missing selections; update legacy public only when supplied",
+      "authorization": "session video owner only",
+      "idempotency": "required Frame carrier; request digest prevents key reuse with a different replacement set",
+      "protected_gates": [],
+      "production_behavior": "serve_exact_d1"
+    }
+  ],
+  "source_pins": [
+    {"path":"apps/web/app/api/erpc/route.ts","symbol":"Effect RPC HTTP transport","sha256":"01a2dee0518e44fe6137513f117100e6a626b904e4ee4608fc0be6d69e210783"},
+    {"path":"packages/web-backend/src/Rpcs.ts","symbol":"RpcsLive+RpcAuthMiddlewareLive","sha256":"cfb2cbee41a0abef4496fa2eb42c43688310cc13590e77c1425dc7f919304f19"},
+    {"path":"packages/web-backend/src/Videos/VideosRpcs.ts","symbol":"three retained video RPC handlers","sha256":"6edf9add90a28c542fb53c9a7bfa858bc89290e2a0fbeec827210bd5af189623"},
+    {"path":"packages/web-backend/src/Videos/index.ts","symbol":"progress and download services","sha256":"43b523a47ed667f70f7f10dde8677740d663811c61f1af278441929184963849"},
+    {"path":"packages/web-domain/src/Video.ts","symbol":"UploadProgress+three RPC contracts","sha256":"adc3db0eded2670b1ed89969e7bc85993e04021acb303082b3d015f0afb1c9a7"},
+    {"path":"apps/web/actions/video/upload.ts","symbol":"createVideoAndGetUploadUrl+deleteVideoResultFile","sha256":"924e12c8a8afc92250c45cb6432ed1098155107b7223f742af3b293dd48e57ce"},
+    {"path":"apps/web/actions/videos/download.ts","symbol":"downloadVideo+getVideoDownloadInfo","sha256":"76b72a7c65d79fab2798a9b7d2486bad0689d4aad48ba97e5941735b4b344d54"},
+    {"path":"apps/web/lib/video-edit-processing.ts","symbol":"reconcileStaleEditUpload","sha256":"f6589c669096552a798a298b03e48cf55fffc4392e1fbfdef0d29dd9ad762025"},
+    {"path":"apps/web/actions/caps/share.ts","symbol":"shareCap","sha256":"2069fc697bbf9e5e69ed49572b68b7b40c864ea7c2a67630aff5d905b4f54809"}
+  ],
+  "local_evidence": [
+    "crates/application/src/legacy_upload_storage.rs",
+    "apps/control-plane/migrations/0057_legacy_upload_storage_expand.sql",
+    "apps/control-plane/queries/legacy_upload_storage",
+    "apps/control-plane/src/legacy_upload_storage_runtime.rs",
+    "apps/control-plane/src/legacy_upload_storage_web_runtime.rs",
+    "scripts/ci/legacy-upload-storage-sqlite-conformance.py"
+  ]
+}

@@ -21,7 +21,7 @@ jobs:
   offline-contract:
     name: Inventory, security, compatibility, and fault contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Check out the exact revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -33,16 +33,9 @@ jobs:
           cache-on-failure: false
       - name: Validate the committed parity inventory and generated documentation
         run: |
-          python3 scripts/ci/check-api-workflow-parity.py
-          python3 scripts/ci/check-migrations.py
-          python3 -I scripts/ci/api-workflow-d1-conformance.py \
-            --evidence target/evidence/api-workflow-d1-conformance.json
-          python3 -I scripts/ci/legacy-api-execution-sqlite-conformance.py \
-            --evidence target/evidence/legacy-api-execution-sqlite-conformance.json
-          python3 -I scripts/ci/legacy-organization-selection-sqlite-conformance.py
-          python3 -I scripts/ci/legacy-org-custom-domain-sqlite-conformance.py
-          python3 -I scripts/ci/legacy-notification-preferences-sqlite-conformance.py
-          python3 -I scripts/ci/compatibility-rate-limit-sqlite-conformance.py
+          python3 -I scripts/ci/test-legacy-api-parity-runner.py
+          python3 -I scripts/ci/run-legacy-api-parity.py \
+            --evidence-dir target/evidence
       - name: Test public snapshots, admission, webhook, compatibility, and workflow faults
         run: |
           cargo test --locked -p frame-domain --test api_workflow_contract_v1
@@ -51,9 +44,79 @@ jobs:
           cargo test --locked -p frame-application --lib legacy_compatibility
           cargo test --locked -p frame-application --lib legacy_notification_preferences
           cargo test --locked -p frame-application --lib legacy_organization_selection
+          cargo test --locked -p frame-application --lib legacy_folder_assignment
+          cargo test --locked -p frame-application --lib legacy_library_placement
+          cargo test --locked -p frame-application --lib legacy_notification_actions
+          cargo test --locked -p frame-application --lib legacy_developer_actions
+          cargo test --locked -p frame-application --lib legacy_developer_api
+          cargo test --locked -p frame-application --lib legacy_membership_actions
+          cargo test --locked -p frame-application --lib legacy_folder_crud
+          cargo test --locked -p frame-application --lib legacy_user_account
+          cargo test --locked -p frame-application --lib legacy_collaboration
+          cargo test --locked -p frame-application --lib legacy_video_properties
+          cargo test --locked -p frame-application --lib legacy_library_id_reads
+          cargo test --locked -p frame-application --lib legacy_library_detail_reads
+          cargo test --locked -p frame-application --lib legacy_space_authorization
+          cargo test --locked -p frame-application --lib legacy_invite_lifecycle
+          cargo test --locked -p frame-application --lib legacy_mobile_session
+          cargo test --locked -p frame-application --lib legacy_mobile_bootstrap_caps
+          cargo test --locked -p frame-application --lib legacy_mobile_uploads
+          cargo test --locked -p frame-application --lib legacy_transcripts
+          cargo test --locked -p frame-application --lib legacy_extension_auth
+          cargo test --locked -p frame-application --lib legacy_extension_instant
+          cargo test --locked -p frame-application --lib legacy_desktop_session
+          cargo test --locked -p frame-application --lib legacy_desktop_compatibility
+          cargo test --locked -p frame-application --lib legacy_notification_read
+          cargo test --locked -p frame-application --lib legacy_org_custom_domain
+          cargo test --locked -p frame-application --lib legacy_video_domain_info
+          cargo test --locked -p frame-application --lib legacy_video_lifecycle
+          cargo test --locked -p frame-application --lib legacy_core_storage
+          cargo test --locked -p frame-application --lib legacy_upload_storage
+          cargo test --locked -p frame-application --lib legacy_analytics
+          cargo test --locked -p frame-application --lib legacy_organization_library
+          cargo test --locked -p frame-application --lib legacy_protected_media
+          cargo test --locked -p frame-application --lib legacy_protected_integrations
+          cargo test --locked -p frame-application --lib legacy_protected_billing_auth
+          cargo test --locked -p frame-application --lib legacy_theme
           cargo test --locked -p frame-control-plane --lib api_workflow_runtime
           cargo test --locked -p frame-control-plane --lib legacy_compatibility_runtime
+          cargo test --locked -p frame-control-plane --lib legacy_web_action_runtime
+          cargo test --locked -p frame-control-plane --lib legacy_folder
+          cargo test --locked -p frame-control-plane --lib legacy_library
+          cargo test --locked -p frame-control-plane --lib legacy_notification
+          cargo test --locked -p frame-control-plane --lib legacy_developer
+          cargo test --locked -p frame-control-plane --lib legacy_developer_api
+          cargo test --locked -p frame-control-plane --lib legacy_membership
+          cargo test --locked -p frame-control-plane --lib legacy_folder_crud
+          cargo test --locked -p frame-control-plane --lib legacy_user_account
+          cargo test --locked -p frame-control-plane --lib legacy_collaboration
+          cargo test --locked -p frame-control-plane --lib legacy_video_properties
+          cargo test --locked -p frame-control-plane --lib legacy_library_id_read
+          cargo test --locked -p frame-control-plane --lib legacy_library_detail_read
+          cargo test --locked -p frame-control-plane --lib legacy_space_authorization
+          cargo test --locked -p frame-control-plane --lib legacy_invite_lifecycle
+          cargo test --locked -p frame-control-plane --lib legacy_mobile_session
+          cargo test --locked -p frame-control-plane --lib legacy_mobile_bootstrap_caps
+          cargo test --locked -p frame-control-plane --lib legacy_mobile_uploads
+          cargo test --locked -p frame-control-plane --lib legacy_transcripts
+          cargo test --locked -p frame-control-plane --lib legacy_extension_auth
+          cargo test --locked -p frame-control-plane --lib legacy_extension_instant
+          cargo test --locked -p frame-control-plane --lib r2_direct_upload
+          cargo test --locked -p frame-control-plane --lib legacy_desktop_session
+          cargo test --locked -p frame-control-plane --lib legacy_desktop_compatibility
+          cargo test --locked -p frame-control-plane --lib legacy_notification_read_runtime
+          cargo test --locked -p frame-control-plane --lib legacy_org_custom_domain
+          cargo test --locked -p frame-control-plane --lib legacy_video_domain_info
+          cargo test --locked -p frame-control-plane --lib legacy_video_lifecycle
+          cargo test --locked -p frame-control-plane --lib legacy_core_storage
+          cargo test --locked -p frame-control-plane --lib legacy_upload_storage
+          cargo test --locked -p frame-control-plane --lib legacy_analytics
+          cargo test --locked -p frame-control-plane --lib legacy_organization_library
+          cargo test --locked -p frame-control-plane --lib legacy_protected_media
+          cargo test --locked -p frame-control-plane --lib legacy_protected_integrations
+          cargo test --locked -p frame-control-plane --lib legacy_protected_billing_auth
           cargo test --locked -p frame-control-plane --lib legacy_notification_preferences_runtime
+          cargo test --locked -p frame-web --lib browser_authenticated
       - name: Check formatting and strict focused lints
         run: |
           cargo fmt --all -- --check
@@ -69,9 +132,54 @@ jobs:
             fixtures/api-parity/v1/operation-contract-catalog.json
             fixtures/api-parity/v1/contract-cases.json
             fixtures/api-parity/v1/active-organization-selection.json
+            fixtures/api-parity/v1/theme-action.json
+            fixtures/api-parity/v1/folder-assignment-actions.json
+            fixtures/api-parity/v1/library-placement-actions.json
+            fixtures/api-parity/v1/notification-actions.json
+            fixtures/api-parity/v1/developer-actions.json
+            fixtures/api-parity/v1/developer-api.json
+            fixtures/api-parity/v1/membership-actions.json
+            fixtures/api-parity/v1/folder-crud.json
+            fixtures/api-parity/v1/user-account.json
+            fixtures/api-parity/v1/collaboration-actions.json
+            fixtures/api-parity/v1/video-properties.json
+            fixtures/api-parity/v1/library-id-reads.json
+            fixtures/api-parity/v1/library-detail-reads.json
+            fixtures/api-parity/v1/space-authorization.json
+            fixtures/api-parity/v1/invite-lifecycle.json
+            fixtures/api-parity/v1/mobile-session.json
+            fixtures/api-parity/v1/mobile-bootstrap-caps.json
+            fixtures/api-parity/v1/mobile-uploads.json
+            fixtures/api-parity/v1/transcripts.json
+            fixtures/api-parity/v1/extension-auth.json
+            fixtures/api-parity/v1/extension-instant-recordings.json
+            fixtures/api-parity/v1/desktop-session.json
+            fixtures/api-parity/v1/desktop-compatibility.json
+            fixtures/api-parity/v1/declaration-only-dispositions.json
+            fixtures/api-parity/v1/notification-read.json
+            fixtures/api-parity/v1/org-custom-domain.json
+            fixtures/api-parity/v1/video-domain-info.json
+            fixtures/api-parity/v1/video-lifecycle.json
+            fixtures/api-parity/v1/core-storage.json
+            fixtures/api-parity/v1/upload-storage.json
+            fixtures/api-parity/v1/analytics.json
+            fixtures/api-parity/v1/organization-library.json
+            fixtures/api-parity/v1/protected-media-contracts.json
+            fixtures/api-parity/v1/protected-integrations.json
+            fixtures/api-parity/v1/protected-billing-auth.json
+            fixtures/api-parity/v1/messenger-retirement.json
             docs/generated/api-workflow-parity-v1.md
             docs/evidence/api-workflow-parity-local.md
             target/evidence/api-workflow-d1-conformance.json
             target/evidence/legacy-api-execution-sqlite-conformance.json
+            target/evidence/legacy-folder-assignment-sqlite-conformance.json
+            target/evidence/legacy-library-placement-sqlite-conformance.json
+            target/evidence/legacy-notification-actions-sqlite-conformance.json
+            target/evidence/legacy-developer-actions-sqlite-conformance.json
+            target/evidence/legacy-membership-actions-sqlite-conformance.json
+            target/evidence/legacy-folder-crud-sqlite-conformance.json
+            target/evidence/legacy-user-account-sqlite-conformance.json
+            target/evidence/legacy-collaboration-sqlite-conformance.json
+            target/evidence/legacy-video-properties-sqlite-conformance.json
           if-no-files-found: error
           retention-days: 14

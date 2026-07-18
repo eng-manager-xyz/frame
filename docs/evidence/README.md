@@ -8,8 +8,8 @@ all 554 issue deliverable/acceptance checkboxes to locally satisfied,
 protected-pending, or true local-gap status. Its checker pins the complete
 requirement text and fails on missing evidence or classification drift.
 
-The current exact partition is 363 locally satisfied, 190 protected pending,
-and one true repository-local gap. Protected rows remain pending; this count
+The current exact partition is 363 locally satisfied, 191 protected pending,
+and zero true repository-local gaps. Protected rows remain pending; this count
 does not authorize production promotion.
 
 Run:
@@ -18,8 +18,8 @@ Run:
 python3 -I scripts/ci/check-issue-closure.py
 ```
 
-This audit is a ledger, not a waiver: protected records remain pending and
-local gaps remain open even when a surrounding design document or fake passes.
+This audit is a ledger, not a waiver: protected records remain pending, and
+any future local gap remains open even when a surrounding design document or fake passes.
 
 ## Local and CI evidence
 

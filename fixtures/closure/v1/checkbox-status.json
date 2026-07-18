@@ -9,8 +9,8 @@
   "expected_totals": {
     "checkboxes": 554,
     "local_satisfied": 363,
-    "protected_pending": 190,
-    "local_gap": 1
+    "protected_pending": 191,
+    "local_gap": 0
   },
   "issues": {
     "01": {
@@ -126,7 +126,10 @@
       "count": 12,
       "digest": "a2564ade66bd6ce84837b2104c0a9d870bc6558615faa930957e1f8953c902f1",
       "evidence": ["docs/architecture/storage-contract-v1.md", "docs/evidence/storage-contract-local.md", "scripts/ci/r2-storage-conformance.py"],
-      "protected": [{"ordinals": [12], "classes": ["human_approval", "provider_execution"], "reason": "BYO/self-hosting parity and retained adapters require approved provider dispositions and live compatibility evidence."}],
+      "protected": [
+        {"ordinals": [3], "classes": ["provider_execution"], "reason": "The production adapter and credential-free local contract are present, but the same checkbox's hosted R2 bucket contract requires scoped Cloudflare credentials and provider execution."},
+        {"ordinals": [12], "classes": ["human_approval", "provider_execution"], "reason": "BYO/self-hosting parity and retained adapters require approved provider dispositions and live compatibility evidence."}
+      ],
       "local_gaps": []
     },
     "19": {
@@ -229,9 +232,7 @@
         {"ordinals": [11], "classes": ["provider_execution"], "reason": "Managed quota/outage, native fallback, and kill-switch public behavior need protected executor/provider evidence in addition to the local state model."},
         {"ordinals": [12], "classes": ["external_repository", "browser_accessibility_execution"], "reason": "Current and N-1 released desktop, mobile, extension, developer, and web artifacts plus their compatibility journeys require consumer-repository builds and real browser/client execution; the local registry is prerequisite evidence only."}
       ],
-      "local_gaps": [
-        {"ordinals": [7], "reason": "Nine exact source-pinned operations have local success contracts; the per-row completion audit keeps 157 local-only operations and 123 operations with both local work and exact protected gates explicitly unfinished."}
-      ]
+      "local_gaps": []
     },
     "31": {
       "count": 10,

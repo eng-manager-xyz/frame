@@ -1,0 +1,73 @@
+{
+  "schema_version": "frame.legacy-extension-auth.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "source_count": 16,
+  "source_manifest_sha256": "6ec986a350a8f882e8f7150460a24f77f7a0fb5573f3b0b7f634d5578d79aca5",
+  "protected_gates": [],
+  "routes": [
+    {
+      "id": "cap-v1-249fbd2f77ee7209",
+      "method": "GET",
+      "path": "/api/extension/auth/start",
+      "authentication": "optional_host_only_browser_session",
+      "success": "HTTP 200 escaped consent HTML or HTTP 302 /login?next=consent URL",
+      "validation": "HTTPS non-empty *.chromiumapp.org hostname; exact configured extension ID outside safe localhost development",
+      "authorization": "no key mint or other product write; missing/expired session restarts login",
+      "idempotency_retry": "side-effect-free and retry-safe",
+      "failure": "HTTP 400 invalid redirect/configuration; HTTP 500 persistence failure"
+    },
+    {
+      "id": "cap-v1-96499b6c8e845b35",
+      "method": "POST",
+      "path": "/api/extension/auth/approve",
+      "authentication": "optional_host_only_browser_session_after_same_origin_gate",
+      "success": "HTTP 302 chromiumapp fragment authApiKey,userId,optional state",
+      "validation": "bounded application/x-www-form-urlencoded; Sec-Fetch-Site present must be same-origin, otherwise Origin must equal WEB_URL",
+      "authorization": "session actor owns minted key; expired session restarts at login/consent",
+      "idempotency_retry": "non-idempotent random UUID; maximum ten user keys in strict trailing hour",
+      "failure": "HTTP 400 CSRF/redirect/rate-limit; HTTP 500 persistence failure"
+    },
+    {
+      "id": "cap-v1-ed715d4d23e82181",
+      "method": "POST",
+      "path": "/api/extension/auth/revoke",
+      "authentication": "36-character API key takes precedence, otherwise host-only browser session",
+      "success": "{success:false} when authenticated by session without bearer; otherwise actor-owned digest delete and {success:true}",
+      "validation": "Cap-compatible second space-delimited Authorization segment",
+      "authorization": "delete predicate binds both resolved actor and key digest",
+      "idempotency_retry": "physical delete is retry-safe after an independently valid actor remains",
+      "failure": "HTTP 401 missing actor; HTTP 500 persistence failure"
+    },
+    {
+      "id": "cap-v1-12159b1acbaeba7a",
+      "method": "GET",
+      "path": "/api/extension/bootstrap",
+      "authentication": "36-character API key takes precedence, otherwise host-only browser session",
+      "success": "{user,organization,plan}; free maxRecordingSeconds=300, Pro=null; dangling pointer repaired",
+      "validation": "live actor, live organization, bounded lossless name and owner subscription projection",
+      "authorization": "active owned organization, then deterministic owned fallback, then oldest live membership",
+      "idempotency_retry": "deterministic selection and convergent active-pointer repair",
+      "failure": "HTTP 401 missing actor; HTTP 500 missing organization, corruption, or persistence failure"
+    }
+  ],
+  "security_corrections": {
+    "credential_storage": "Cap stores the returned UUID as the key ID; Frame returns the same UUID shape once and stores only SHA-256(key)",
+    "active_pointer": "Cap's active-ID query does not explicitly constrain ownerId to the actor; Frame requires active-owned before the source-ordered owned/member fallbacks, preventing a corrupt cross-tenant pointer from becoming authority",
+    "mint_atomicity": "insert, trailing-hour count/delete, postcondition assertion, and assertion cleanup execute in one D1 batch; overflow rolls back without key residue",
+    "production_redirect": "an empty extension subdomain is rejected and every reachable non-local deployment requires CAP_CHROME_EXTENSION_ID"
+  },
+  "entitlement": {
+    "cap_hosted": "third-party subscription ID or stripe status active/trialing/complete/paid is Pro",
+    "non_cap_hosted": "NEXT_PUBLIC_IS_CAP=false is always Pro",
+    "free_seconds": 300,
+    "pro_seconds": null
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_extension_auth.rs",
+    "apps/control-plane/src/legacy_extension_auth_runtime.rs",
+    "apps/control-plane/src/legacy_extension_auth_web_runtime.rs",
+    "apps/control-plane/migrations/0048_legacy_extension_auth_expand.sql",
+    "apps/control-plane/queries/legacy_extension_auth",
+    "scripts/ci/legacy-extension-auth-sqlite-conformance.py"
+  ]
+}

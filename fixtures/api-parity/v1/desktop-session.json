@@ -1,0 +1,138 @@
+{
+  "schema_version": "frame.legacy-desktop-session.v1",
+  "reference_commit": "6ba69561ac86b8efdb17616d6727f9638015546b",
+  "operation": {
+    "id": "cap-v1-768895bc99380850",
+    "kind": "route",
+    "method": "GET",
+    "path": "/api/desktop/session/request",
+    "auth": "session",
+    "policy": "auth_session.v1",
+    "idempotency": "forbidden",
+    "protected_gates": [],
+    "production_behavior": "serve_exact_d1"
+  },
+  "sources": [
+    {
+      "path": "apps/web/app/api/desktop/[...route]/session.ts",
+      "symbol": "GET /request+createDesktopRedirectPage+getDeploymentOrigin",
+      "sha256": "22c7b789cf901926e6ae4ffe2fcd574e5f6d8474a14c961d94ae3797b3ad45e0"
+    },
+    {
+      "path": "apps/web/app/api/desktop/[...route]/route.ts",
+      "symbol": "desktop mount+GET+OPTIONS+CORS",
+      "sha256": "34854ff6fc0839838165990bea1c9ebee86770b1648ec832bbbb786720c9db41"
+    },
+    {
+      "path": "apps/desktop/src/utils/auth.ts",
+      "symbol": "createSessionRequestUrl+paramsValidator+processAuthData",
+      "sha256": "ae80288f5caac230ff6390a96b3286f6eb961307cb85d3ca9dcc95f99931f914"
+    },
+    {
+      "path": "apps/desktop/src/utils/server-url-routing.ts",
+      "symbol": "shouldUseLocalServerSessionForUrl+resolveServerRequestPath",
+      "sha256": "3826d1163e4a8a558d199f2202290872d158ef0370f94c4841bebb5e614c46ff"
+    },
+    {
+      "path": "apps/web/app/api/utils.ts",
+      "symbol": "getAuth+corsMiddleware",
+      "sha256": "241e5259f690ece17b0c50f78a9dc30c3e783082287040fef0f47e56a937bb30"
+    },
+    {
+      "path": "apps/web/proxy.ts",
+      "symbol": "API matcher exclusion",
+      "sha256": "7da98445a31f6b48d01b56877c47aaa79ba3af93dff8c015ad06a6e94fb42fcb"
+    },
+    {
+      "path": "packages/database/auth/auth-options.ts",
+      "symbol": "decodeSessionToken+authOptions",
+      "sha256": "22b8923e1cab6b5b1b318609abe664e171fb740ae39817c2c962908ca0dc8595"
+    },
+    {
+      "path": "packages/database/auth/session.ts",
+      "symbol": "getCurrentUser",
+      "sha256": "d526dc9d7a6a1a7cb6a8695c24ab88b843ce09b4444f8e4ade24b7a06cbbc1ee"
+    },
+    {
+      "path": "packages/database/schema.ts",
+      "symbol": "users+authApiKeys",
+      "sha256": "7fce297f9076be78a9ac6280d9d060bf6e836a62e0f82b5390fa0e42dc7bb9e9"
+    },
+    {
+      "path": "packages/database/index.ts",
+      "symbol": "db",
+      "sha256": "161c1d1fd2a561fd2846aeceb148f24b58afc58bdaa95175240e48dbe61d9bbb"
+    },
+    {
+      "path": "packages/env/server.ts",
+      "symbol": "WEB_URL+VERCEL_ENV+VERCEL_BRANCH_URL_HOST+NEXTAUTH_SECRET",
+      "sha256": "235c2ea66843b610aee61c82cbcafe05086d00193545bc290650d3aa15a2a0a4"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "symbol": "Hono+Drizzle+NextAuth dependency resolutions",
+      "sha256": "fc0fe122ae5fbea4dcaa7e510bd6275635c14071c4e031996431a54fb7e25e3a"
+    }
+  ],
+  "query_contract": {
+    "port": "optional decimal TCP port 1..65535; Frame security tightening rejects Cap's unconstrained string",
+    "platform": "web|desktop; default web",
+    "type": "session|api_key; default session",
+    "unknown_or_duplicate_fields": "400 Bad Request"
+  },
+  "wire_contract": {
+    "unauthenticated_or_invalid_session": {
+      "status": 302,
+      "location": "<deployment-origin>/login?next=<absolute original request URL>",
+      "cache_control": "no-store"
+    },
+    "session": {
+      "credential": "the already-authenticated __Host-frame_session cookie",
+      "expires": "minimum durable idle/absolute expiry as Unix seconds",
+      "params": "type=token&token=<raw>&expires=<seconds>&user_id=<actor>"
+    },
+    "api_key": {
+      "credential": "random UUID v4 returned once; D1 retains SHA-256 digest only",
+      "source": "desktop",
+      "params": "type=api_key&api_key=<uuid>&user_id=<actor>"
+    },
+    "web_with_port": {
+      "status": 302,
+      "location": "http://127.0.0.1:<validated-port>?<params>"
+    },
+    "desktop_with_port": {
+      "status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "behavior": "escaped JSON state opens cap-desktop://signin first and loopback fallback after 1800ms",
+      "headers": "no-store, no-referrer, nosniff, restrictive CSP"
+    },
+    "without_port": {
+      "status": 302,
+      "location": "cap-desktop://signin?<params>"
+    },
+    "failure": {
+      "bad_query": 400,
+      "D1_or_auth_infrastructure": 500
+    },
+    "cors": {
+      "allowed_origins": "configured web origin plus localhost:3000, localhost:3001, and three Tauri origins",
+      "credentials": true,
+      "methods": "GET, POST, PATCH, DELETE, OPTIONS",
+      "headers": "Content-Type, Authorization, sentry-trace, baggage"
+    }
+  },
+  "authority": {
+    "session": "AuthService verifies the host-only cookie against D1 auth_sessions_v2 and returns only its matching session expiry",
+    "key_mint": "single D1 INSERT SELECT active actor RETURNING exact row; digest-only auth_api_keys storage",
+    "tenant_scope": "actor-owned identity credential; no request-controlled user id",
+    "provider_calls": "none"
+  },
+  "local_evidence": [
+    "crates/application/src/legacy_desktop_session.rs",
+    "apps/control-plane/src/browser_web_runtime.rs",
+    "apps/control-plane/src/legacy_desktop_session_runtime.rs",
+    "apps/control-plane/src/legacy_desktop_session_web_runtime.rs",
+    "apps/control-plane/queries/legacy_desktop_session/mint_desktop_key.sql",
+    "scripts/ci/legacy-desktop-session-sqlite-conformance.py"
+  ]
+}

@@ -1,6 +1,7 @@
 //! Race-safe D1 organization repository.
 
 use async_trait::async_trait;
+use frame_application::ValidatedBrowserMutationProof;
 use frame_domain::{
     ActiveOrganizationSelection, AllowedDomain, AllowedDomainRecord, CollaborationName, FolderId,
     FolderRecord, InviteState, MembershipState, OrganizationAction, OrganizationAuditDecision,
@@ -29,6 +30,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 use worker::{D1Database, D1PreparedStatement, send::IntoSendFuture};
+
+use crate::browser_web_runtime::{
+    change_assertion_statement, grant_assertion_statement, grant_delete_statement,
+};
 
 const OPERATION_BY_IDEMPOTENCY_SQL: &str =
     include_str!("../queries/organization/operation_by_idempotency.sql");
@@ -337,6 +342,32 @@ impl OrganizationRepositoryTelemetry {
 pub struct D1OrganizationRepository<'database> {
     database: &'database D1Database,
     tombstone_policy: TombstonePolicy,
+}
+
+/// Narrows the legacy selection port to a repository-minted browser mutation
+/// proof. The proof is asserted and consumed in the same D1 batch as the
+/// active-organization write and organization journals.
+pub(crate) struct BrowserFencedLegacySelectionRepository<'database, 'proof> {
+    inner: D1OrganizationRepository<'database>,
+    proof: &'proof ValidatedBrowserMutationProof,
+}
+
+impl<'database, 'proof> BrowserFencedLegacySelectionRepository<'database, 'proof> {
+    #[must_use]
+    pub(crate) const fn new(
+        database: &'database D1Database,
+        tombstone_policy: TombstonePolicy,
+        proof: &'proof ValidatedBrowserMutationProof,
+    ) -> Self {
+        Self {
+            inner: D1OrganizationRepository::new(database, tombstone_policy),
+            proof,
+        }
+    }
+}
+
+fn browser_proof_matches_actor(actor_id: UserId, proof_user_id: UserId) -> bool {
+    actor_id == proof_user_id
 }
 
 impl<'database> D1OrganizationRepository<'database> {
@@ -1332,11 +1363,30 @@ impl LegacyOrganizationSelectionRepositoryV1 for D1OrganizationRepository<'_> {
         &self,
         command: LegacySetActiveOrganizationCommandV1,
     ) -> Result<OrganizationMutationReceipt, OrganizationPortError> {
-        self.legacy_set_active_organization_inner(command)
+        self.legacy_set_active_organization_inner(command, None)
             .await
             .map_err(|failure| match failure {
                 // A failed compatibility predicate is a non-disclosing target
                 // denial, not a caller-visible optimistic concurrency error.
+                AdapterFailure::Stale => OrganizationPortError::AccessDenied,
+                other => other.into_port(),
+            })
+    }
+}
+
+#[async_trait]
+impl LegacyOrganizationSelectionRepositoryV1 for BrowserFencedLegacySelectionRepository<'_, '_> {
+    async fn legacy_set_active_organization(
+        &self,
+        command: LegacySetActiveOrganizationCommandV1,
+    ) -> Result<OrganizationMutationReceipt, OrganizationPortError> {
+        if !browser_proof_matches_actor(command.actor_id, self.proof.user_id()) {
+            return Err(OrganizationPortError::AccessDenied);
+        }
+        self.inner
+            .legacy_set_active_organization_inner(command, Some(self.proof))
+            .await
+            .map_err(|failure| match failure {
                 AdapterFailure::Stale => OrganizationPortError::AccessDenied,
                 other => other.into_port(),
             })
@@ -1696,6 +1746,7 @@ impl D1OrganizationRepository<'_> {
     async fn legacy_set_active_organization_inner(
         &self,
         command: LegacySetActiveOrganizationCommandV1,
+        browser_proof: Option<&ValidatedBrowserMutationProof>,
     ) -> AdapterResult<OrganizationMutationReceipt> {
         let operation_id = OrganizationOperationId::new();
         let operation_id_value = operation_id.to_string();
@@ -1715,66 +1766,90 @@ impl D1OrganizationRepository<'_> {
                 "source": "legacy_active_only_v1",
             }),
         )?;
-        let statements = vec![
-            self.statement(
-                LEGACY_SELECTION_AUTHORITY_ASSERT_SQL,
-                &[
-                    JsValue::from_str(&format!("{operation_id_value}:legacy_authority")),
-                    JsValue::from_str(&actor_id),
-                    JsValue::from_str(&organization_id),
-                    JsValue::from_str(command.lifecycle.stable_code()),
-                    JsValue::from_str(command.authorization.stable_code()),
-                ],
-            )?,
-            self.statement(
-                LEGACY_SELECTION_ACTIVE_UPDATE_SQL,
-                &[
-                    JsValue::from_str(&actor_id),
-                    JsValue::from_str(&organization_id),
-                    JsValue::from_str(&operation_id_value),
-                    timestamp_value(command.occurred_at),
-                ],
-            )?,
-            self.statement(
-                LEGACY_SELECTION_POSTCONDITION_SQL,
-                &[
-                    JsValue::from_str(&format!("{operation_id_value}:legacy_post")),
-                    JsValue::from_str(&actor_id),
-                    JsValue::from_str(&organization_id),
-                    JsValue::from_str(&operation_id_value),
-                ],
-            )?,
-            self.statement(
-                LEGACY_SELECTION_OPERATION_INSERT_SQL,
-                &[
-                    JsValue::from_str(&operation_id_value),
-                    JsValue::from_str(&organization_id),
-                    JsValue::from_str(&idempotency_key),
-                    JsValue::from_str(&actor_id),
-                    JsValue::from_str(fingerprint.expose_for_verification()),
-                    timestamp_value(command.occurred_at),
-                ],
-            )?,
-            self.statement(
-                ASSERTION_CLEANUP_SQL,
+        let mut statements = Vec::with_capacity(if browser_proof.is_some() { 10 } else { 6 });
+        if let Some(proof) = browser_proof {
+            statements.push(
+                grant_assertion_statement(
+                    self.database,
+                    &operation_id_value,
+                    proof,
+                    command.occurred_at.get(),
+                )
+                .map_err(|_| AdapterFailure::Unavailable)?,
+            );
+        }
+        statements.push(self.statement(
+            LEGACY_SELECTION_AUTHORITY_ASSERT_SQL,
+            &[
+                JsValue::from_str(&format!("{operation_id_value}:legacy_authority")),
+                JsValue::from_str(&actor_id),
+                JsValue::from_str(&organization_id),
+                JsValue::from_str(command.lifecycle.stable_code()),
+                JsValue::from_str(command.authorization.stable_code()),
+            ],
+        )?);
+        statements.push(self.statement(
+            LEGACY_SELECTION_ACTIVE_UPDATE_SQL,
+            &[
+                JsValue::from_str(&actor_id),
+                JsValue::from_str(&organization_id),
+                JsValue::from_str(&operation_id_value),
+                timestamp_value(command.occurred_at),
+            ],
+        )?);
+        statements.push(self.statement(
+            LEGACY_SELECTION_POSTCONDITION_SQL,
+            &[
+                JsValue::from_str(&format!("{operation_id_value}:legacy_post")),
+                JsValue::from_str(&actor_id),
+                JsValue::from_str(&organization_id),
+                JsValue::from_str(&operation_id_value),
+            ],
+        )?);
+        statements.push(self.statement(
+            LEGACY_SELECTION_OPERATION_INSERT_SQL,
+            &[
+                JsValue::from_str(&operation_id_value),
+                JsValue::from_str(&organization_id),
+                JsValue::from_str(&idempotency_key),
+                JsValue::from_str(&actor_id),
+                JsValue::from_str(fingerprint.expose_for_verification()),
+                timestamp_value(command.occurred_at),
+            ],
+        )?);
+        if let Some(proof) = browser_proof {
+            statements.push(
+                grant_delete_statement(self.database, proof)
+                    .map_err(|_| AdapterFailure::Unavailable)?,
+            );
+            statements.push(
+                change_assertion_statement(self.database, &operation_id_value, "grant_consumed")
+                    .map_err(|_| AdapterFailure::Unavailable)?,
+            );
+            statements.push(self.statement(
+                "DELETE FROM authenticated_web_action_assertions_v1 WHERE operation_id=?1",
                 &[JsValue::from_str(&operation_id_value)],
-            )?,
-            self.statement(
-                AUDIT_INSERT_SQL,
-                &[
-                    string(OrganizationAuditId::new()),
-                    JsValue::from_str(&operation_id_value),
-                    JsValue::from_str(&organization_id),
-                    JsValue::from_str(&actor_id),
-                    JsValue::from_str("active_organization_set"),
-                    JsValue::from_str("organization"),
-                    JsValue::from_str(&hex_sha256(actor_id.as_bytes())),
-                    JsValue::from_str("allow"),
-                    JsValue::NULL,
-                    timestamp_value(command.occurred_at),
-                ],
-            )?,
-        ];
+            )?);
+        }
+        statements.push(self.statement(
+            ASSERTION_CLEANUP_SQL,
+            &[JsValue::from_str(&operation_id_value)],
+        )?);
+        statements.push(self.statement(
+            AUDIT_INSERT_SQL,
+            &[
+                string(OrganizationAuditId::new()),
+                JsValue::from_str(&operation_id_value),
+                JsValue::from_str(&organization_id),
+                JsValue::from_str(&actor_id),
+                JsValue::from_str("active_organization_set"),
+                JsValue::from_str("organization"),
+                JsValue::from_str(&hex_sha256(actor_id.as_bytes())),
+                JsValue::from_str("allow"),
+                JsValue::NULL,
+                timestamp_value(command.occurred_at),
+            ],
+        )?);
         match self.batch(statements).await {
             Ok(()) => {
                 OrganizationRepositoryTelemetry::emit("legacy_active_organization_set", "allow", 1)
@@ -3491,5 +3566,13 @@ mod tests {
                 mismatch.expose_for_verification()
             );
         }
+    }
+
+    #[test]
+    fn browser_fenced_legacy_selection_rejects_a_proof_for_another_actor() {
+        let actor = UserId::parse("018f47a6-7b1c-7f55-8f39-8f8a8690a305").expect("actor");
+        let other = UserId::parse("018f47a6-7b1c-7f55-8f39-8f8a8690a306").expect("other");
+        assert!(browser_proof_matches_actor(actor, actor));
+        assert!(!browser_proof_matches_actor(actor, other));
     }
 }
