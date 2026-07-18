@@ -8,6 +8,7 @@
 //! frame and atomically commits an output.
 
 mod output;
+mod pump;
 
 use std::{
     collections::BTreeSet,
@@ -22,14 +23,22 @@ use gstreamer_app as gst_app;
 use thiserror::Error;
 
 use crate::{
-    CancellationToken, ColorSpace, FrameMemory, FrameTimestamp, MediaError, NativeExecutionError,
-    NativeStudioExportArtifact, NativeStudioExportProfile, PixelFormat, ScreenFrame,
-    VideoFrameSpec, pipeline_has_only_declared_authored_factories,
-    pipeline_has_trusted_factory_provenance, prepare_runtime, render_studio_export,
+    AppSrcBufferLifetime, CancellationToken, ColorSpace, FrameMemory, FrameTimestamp, MediaError,
+    NativeExecutionError, NativeStudioExportArtifact, NativeStudioExportProfile, PixelFormat,
+    RuntimeCapability, ScreenAppSrcPlan, ScreenFrame, ScreenFramePayload, VideoFrameSpec,
+    pipeline_has_only_declared_authored_factories, pipeline_has_trusted_factory_provenance,
+    prepare_runtime, render_studio_export,
 };
 use output::{
     ExpectedVideo, OutputReservation, preflight_verification, verify_playable_webm,
     verify_playable_webm_file,
+};
+
+pub use crate::ScreenFramePayload as ScreenRecordingPayload;
+pub use pump::{
+    ScreenPumpCancellationTeardown, ScreenPumpError, ScreenPumpOutcome, ScreenPumpReport,
+    ScreenPumpRetirementFailure, ScreenPumpTeardownStatus, ScreenPumpTerminalFailure,
+    ScreenRecordingPump,
 };
 
 pub const MAX_SCREEN_RECORDING_LONG_EDGE: u32 = 1_920;
@@ -99,6 +108,13 @@ pub enum ScreenRecordingError {
     Filesystem(#[source] std::io::Error),
     #[error("screen recording export failed")]
     Export(#[source] NativeExecutionError),
+    #[error("screen recording completed but graph teardown could not be confirmed")]
+    TeardownUnconfirmed(#[source] Box<ScreenRecordingError>),
+    #[error("screen recording operation and subsequent graph teardown both failed")]
+    OperationAndTeardown {
+        operation: Box<ScreenRecordingError>,
+        teardown: Box<ScreenRecordingError>,
+    },
 }
 
 /// Validated, fixed stream format for one screen recording.
@@ -127,6 +143,7 @@ impl ScreenRecordingSpec {
             || frame.memory != FrameMemory::Cpu
             || frame.width.max(frame.height) > MAX_SCREEN_RECORDING_LONG_EDGE
             || frame.width.min(frame.height) > MAX_SCREEN_RECORDING_SHORT_EDGE
+            || frame.nominal_frame_duration_ns > SCREEN_RECORDING_QUEUE_TIME_NS
         {
             return Err(ScreenRecordingError::InvalidConfiguration);
         }
@@ -157,6 +174,22 @@ impl ScreenRecordingSpec {
             frame_rate_numerator,
             frame_rate_denominator,
         })
+    }
+
+    /// Validates the complete provider-neutral appsrc negotiation before a
+    /// recording graph is allowed to consume its frames.
+    pub fn from_appsrc_plan(plan: ScreenAppSrcPlan) -> Result<Self, ScreenRecordingError> {
+        if plan.factory != "appsrc"
+            || plan.required_runtime_capability != RuntimeCapability::AppSourceBridge
+            || !plan.is_live
+            || !plan.time_format
+            || plan.do_timestamp
+            || plan.block
+            || plan.buffer_lifetime != AppSrcBufferLifetime::OwnedUntilDownstreamRelease
+        {
+            return Err(ScreenRecordingError::InvalidConfiguration);
+        }
+        Self::new(plan.frame_spec)
     }
 
     #[must_use]
@@ -204,6 +237,7 @@ impl BgraScreenFrame {
                 .pts_ns
                 .checked_add(timestamp.duration_ns)
                 .is_none()
+            || pixels.exact_retained_bytes().is_none()
         {
             return Err(ScreenRecordingError::InvalidFrame);
         }
@@ -362,6 +396,7 @@ pub struct ScreenRecording {
     first_pts_ns: Option<u64>,
     last_sequence: Option<u64>,
     last_end_pts_ns: Option<u64>,
+    timestamp_segment_offset_ns: u64,
     last_resource_check: Instant,
 }
 
@@ -372,6 +407,10 @@ impl std::fmt::Debug for ScreenRecording {
             .field("spec", &self.spec)
             .field("state", &self.state)
             .field("submitted_frames", &self.submitted_frames)
+            .field(
+                "timestamp_segment_offset_ns",
+                &self.timestamp_segment_offset_ns,
+            )
             .field("output", &"<redacted>")
             .finish_non_exhaustive()
     }
@@ -458,6 +497,7 @@ impl ScreenRecording {
             .map_err(|_| ScreenRecordingError::Pipeline)?;
         let caps = gst::Caps::builder("video/x-raw")
             .field("format", "BGRA")
+            .field("colorimetry", "sRGB")
             .field(
                 "width",
                 i32::try_from(spec.frame.width)
@@ -506,6 +546,7 @@ impl ScreenRecording {
             first_pts_ns: None,
             last_sequence: None,
             last_end_pts_ns: None,
+            timestamp_segment_offset_ns: 0,
             last_resource_check: Instant::now(),
         })
     }
@@ -532,6 +573,33 @@ impl ScreenRecording {
                 || ingress.time_ns >= self.spec.ingress_max_time_ns,
         }
     }
+
+    /// Number of frames accepted by this graph since it started.
+    #[must_use]
+    pub const fn submitted_frames(&self) -> u64 {
+        self.submitted_frames
+    }
+
+    /// True only before this live graph has accepted input, observed a
+    /// terminal bus failure, or begun EOS. Pump construction uses the full
+    /// predicate so a zero-frame but already-terminal graph cannot be claimed
+    /// as a fresh recording segment.
+    pub(crate) fn is_pristine_running(&mut self) -> bool {
+        if matches!(self.state, RecordingState::Running) && self.pipeline_failed() {
+            self.state = RecordingState::Failed(TerminalFailure::Pipeline);
+        }
+        let ingress = self.ingress_levels();
+        matches!(self.state, RecordingState::Running)
+            && self.submitted_frames == 0
+            && self.first_pts_ns.is_none()
+            && self.last_sequence.is_none()
+            && self.last_end_pts_ns.is_none()
+            && self.timestamp_segment_offset_ns == 0
+            && ingress.frames == 0
+            && ingress.bytes == 0
+            && ingress.time_ns == 0
+    }
+
     /// Submits one frame without waiting for downstream encoding.
     ///
     /// No queue leaks. If this frame would cross any appsrc ceiling, the call
@@ -541,6 +609,18 @@ impl ScreenRecording {
         &mut self,
         frame: BgraScreenFrame,
     ) -> Result<ScreenRecordingIngressStatus, ScreenRecordingError> {
+        self.push_owned_payload(frame.sequence, frame.timestamp, frame.pixels)
+    }
+
+    fn push_owned_payload<P>(
+        &mut self,
+        sequence: u64,
+        mut timestamp: FrameTimestamp,
+        pixels: P,
+    ) -> Result<ScreenRecordingIngressStatus, ScreenRecordingError>
+    where
+        P: ScreenRecordingPayload,
+    {
         match self.state {
             RecordingState::Running => {}
             RecordingState::EosSent => return Err(ScreenRecordingError::InvalidLifecycle),
@@ -551,21 +631,44 @@ impl ScreenRecording {
         }
         let expected_bytes = usize::try_from(self.spec.frame_bytes)
             .map_err(|_| ScreenRecordingError::InvalidConfiguration)?;
-        if frame.pixels.len() != expected_bytes {
+        if pixels.exact_retained_bytes() != Some(self.spec.frame_bytes)
+            || pixels.as_ref().len() != expected_bytes
+        {
             return self.fail(TerminalFailure::InvalidFrame);
         }
         if self
             .last_sequence
-            .is_some_and(|sequence| frame.sequence <= sequence)
-            || self
-                .last_end_pts_ns
-                .is_some_and(|end| frame.timestamp.pts_ns < end)
+            .is_some_and(|previous| sequence <= previous)
         {
             return self.fail(TerminalFailure::NonMonotonicFrame);
         }
-        let first_pts_ns = self.first_pts_ns.unwrap_or(frame.timestamp.pts_ns);
-        if frame
-            .timestamp
+        let timestamp_segment_offset_ns = if timestamp.discontinuity {
+            self.last_end_pts_ns
+                .and_then(|previous_end_pts_ns| previous_end_pts_ns.checked_sub(timestamp.pts_ns))
+                .unwrap_or(0)
+        } else {
+            self.timestamp_segment_offset_ns
+        };
+        let Some(adjusted_pts_ns) = timestamp.pts_ns.checked_add(timestamp_segment_offset_ns)
+        else {
+            return self.fail(TerminalFailure::InvalidFrame);
+        };
+        timestamp.pts_ns = adjusted_pts_ns;
+        if self
+            .last_end_pts_ns
+            .is_some_and(|previous_end_pts_ns| timestamp.pts_ns < previous_end_pts_ns)
+        {
+            return self.fail(TerminalFailure::NonMonotonicFrame);
+        }
+        if timestamp
+            .pts_ns
+            .checked_add(timestamp.duration_ns)
+            .is_none()
+        {
+            return self.fail(TerminalFailure::InvalidFrame);
+        }
+        let first_pts_ns = self.first_pts_ns.unwrap_or(timestamp.pts_ns);
+        if timestamp
             .end_ns()
             .checked_sub(first_pts_ns)
             .is_none_or(|duration| duration > MAX_SCREEN_RECORDING_DURATION_NS)
@@ -585,12 +688,15 @@ impl ScreenRecording {
             self.last_resource_check = Instant::now();
         }
         let ingress = self.ingress_levels();
-        if would_exceed_ingress(self.spec, ingress, frame.timestamp.duration_ns) {
+        if would_exceed_ingress(
+            self.spec,
+            ingress,
+            self.spec.frame_bytes,
+            timestamp.duration_ns,
+        ) {
             return self.fail(TerminalFailure::Backpressure);
         }
-        let sequence = frame.sequence;
-        let timestamp = frame.timestamp;
-        let buffer = match build_buffer(frame) {
+        let buffer = match build_owned_buffer(sequence, timestamp, pixels) {
             Ok(buffer) => buffer,
             Err(_) => return self.fail(TerminalFailure::InvalidFrame),
         };
@@ -604,25 +710,24 @@ impl ScreenRecording {
         self.first_pts_ns.get_or_insert(timestamp.pts_ns);
         self.last_sequence = Some(sequence);
         self.last_end_pts_ns = Some(timestamp.end_ns());
+        self.timestamp_segment_offset_ns = timestamp_segment_offset_ns;
         Ok(self.ingress_status())
     }
 
     /// Pushes a normalized screen-capture frame without copying its BGRA body.
-    pub fn push_screen_frame(
+    pub fn push_screen_frame<P>(
         &mut self,
-        frame: ScreenFrame<Vec<u8>>,
-    ) -> Result<ScreenRecordingIngressStatus, ScreenRecordingError> {
+        frame: ScreenFrame<P>,
+    ) -> Result<ScreenRecordingIngressStatus, ScreenRecordingError>
+    where
+        P: ScreenRecordingPayload,
+    {
         if frame.spec() != self.spec.frame || frame.retained_bytes() != self.spec.frame_bytes {
             return self.fail(TerminalFailure::InvalidFrame);
         }
         let sequence = frame.sequence();
         let timestamp = frame.timestamp();
-        let pixels = frame.into_payload();
-        let frame = match BgraScreenFrame::new(sequence, timestamp, pixels) {
-            Ok(frame) => frame,
-            Err(_) => return self.fail(TerminalFailure::InvalidFrame),
-        };
-        self.push_frame(frame)
+        self.push_owned_payload(sequence, timestamp, frame.into_payload())
     }
 
     /// Signals that no more frames will arrive. Repeating EOS is idempotent.
@@ -643,17 +748,33 @@ impl ScreenRecording {
         }
     }
 
+    /// Stops the graph without publishing an artifact and confirms the Null
+    /// state before returning. Cancellation and failure paths use this instead
+    /// of relying on `Drop`, whose teardown result cannot be observed.
+    pub fn abort(self) -> Result<(), ScreenRecordingError> {
+        set_null(&self.pipeline)
+    }
+
     /// Waits for muxer EOS, reaches Null, and independently decodes the WebM.
     pub fn finish(
         mut self,
         cancellation: &CancellationToken,
     ) -> Result<ScreenRecordingArtifact, ScreenRecordingError> {
-        match self.state {
-            RecordingState::EosSent if self.submitted_frames > 0 => {}
-            RecordingState::Failed(failure) => return Err(failure.error()),
+        let lifecycle_error = match self.state {
+            RecordingState::EosSent if self.submitted_frames > 0 => None,
+            RecordingState::Failed(failure) => Some(failure.error()),
             RecordingState::Running | RecordingState::EosSent => {
-                return Err(ScreenRecordingError::InvalidLifecycle);
+                Some(ScreenRecordingError::InvalidLifecycle)
             }
+        };
+        if let Some(operation) = lifecycle_error {
+            return match set_null(&self.pipeline) {
+                Ok(()) => Err(operation),
+                Err(teardown) => Err(ScreenRecordingError::OperationAndTeardown {
+                    operation: Box::new(operation),
+                    teardown: Box::new(teardown),
+                }),
+            };
         }
         let terminal = wait_for_eos(
             &self.pipeline,
@@ -661,8 +782,7 @@ impl ScreenRecording {
             SCREEN_RECORDING_FINISH_TIMEOUT,
         );
         let teardown = set_null(&self.pipeline);
-        terminal?;
-        teardown?;
+        classify_terminal_and_teardown(terminal, teardown)?;
         self.output.verify_ownership()?;
         enforce_output_bounds(self.output.retained_file()?, true)?;
         let first_input_pts_ns = self
@@ -724,6 +844,23 @@ impl ScreenRecording {
     }
 }
 
+fn classify_terminal_and_teardown(
+    terminal: Result<(), ScreenRecordingError>,
+    teardown: Result<(), ScreenRecordingError>,
+) -> Result<(), ScreenRecordingError> {
+    match (terminal, teardown) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(operation), Ok(())) => Err(operation),
+        (Ok(()), Err(teardown)) => Err(ScreenRecordingError::TeardownUnconfirmed(Box::new(
+            teardown,
+        ))),
+        (Err(operation), Err(teardown)) => Err(ScreenRecordingError::OperationAndTeardown {
+            operation: Box::new(operation),
+            teardown: Box::new(teardown),
+        }),
+    }
+}
+
 /// Proves that the current process can build and independently verify the
 /// production VP8/WebM screen graph without creating an output artifact.
 ///
@@ -751,6 +888,7 @@ struct IngressLevels {
 fn would_exceed_ingress(
     spec: ScreenRecordingSpec,
     levels: IngressLevels,
+    frame_bytes: u64,
     frame_duration_ns: u64,
 ) -> bool {
     levels
@@ -759,7 +897,7 @@ fn would_exceed_ingress(
         .is_none_or(|value| value > spec.ingress_max_frames)
         || levels
             .bytes
-            .checked_add(spec.frame_bytes)
+            .checked_add(frame_bytes)
             .is_none_or(|value| value > SCREEN_RECORDING_QUEUE_BYTES)
         || levels
             .time_ns
@@ -799,19 +937,33 @@ pub fn export_screen_recording_webm(
     Ok(artifact)
 }
 
+#[cfg(test)]
 fn build_buffer(frame: BgraScreenFrame) -> Result<gst::Buffer, ScreenRecordingError> {
-    let mut buffer = gst::Buffer::from_mut_slice(frame.pixels);
+    build_owned_buffer(frame.sequence, frame.timestamp, frame.pixels)
+}
+
+fn build_owned_buffer<P>(
+    sequence: u64,
+    timestamp: FrameTimestamp,
+    pixels: P,
+) -> Result<gst::Buffer, ScreenRecordingError>
+where
+    P: ScreenRecordingPayload,
+{
+    pixels
+        .exact_retained_bytes()
+        .ok_or(ScreenRecordingError::InvalidFrame)?;
+    let mut buffer = gst::Buffer::from_slice(pixels);
     let buffer_ref = buffer.get_mut().ok_or(ScreenRecordingError::InvalidFrame)?;
-    buffer_ref.set_pts(gst::ClockTime::from_nseconds(frame.timestamp.pts_ns));
-    buffer_ref.set_duration(gst::ClockTime::from_nseconds(frame.timestamp.duration_ns));
-    buffer_ref.set_offset(frame.sequence);
+    buffer_ref.set_pts(gst::ClockTime::from_nseconds(timestamp.pts_ns));
+    buffer_ref.set_duration(gst::ClockTime::from_nseconds(timestamp.duration_ns));
+    buffer_ref.set_offset(sequence);
     buffer_ref.set_offset_end(
-        frame
-            .sequence
+        sequence
             .checked_add(1)
             .ok_or(ScreenRecordingError::InvalidFrame)?,
     );
-    if frame.timestamp.discontinuity {
+    if timestamp.discontinuity {
         buffer_ref.set_flags(gst::BufferFlags::DISCONT);
     }
     Ok(buffer)
@@ -926,8 +1078,8 @@ fn set_null(pipeline: &gst::Pipeline) -> Result<(), ScreenRecordingError> {
     pipeline
         .set_state(gst::State::Null)
         .map_err(|_| ScreenRecordingError::Pipeline)?;
-    let (_, current, _) = pipeline.state(gst::ClockTime::from_seconds(5));
-    if current != gst::State::Null {
+    let (state_change, current, pending) = pipeline.state(gst::ClockTime::from_seconds(5));
+    if state_change.is_err() || current != gst::State::Null || pending != gst::State::VoidPending {
         return Err(ScreenRecordingError::Pipeline);
     }
     Ok(())
@@ -935,7 +1087,71 @@ fn set_null(pipeline: &gst::Pipeline) -> Result<(), ScreenRecordingError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
+
+    struct CountedPixels {
+        bytes: Vec<u8>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl AsRef<[u8]> for CountedPixels {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    // The sidecar exists only in this private test implementation so the test
+    // can observe GStreamer's final release. Shipping callers remain limited
+    // to the two exact-accounting implementations above.
+    impl crate::screen_capture::screen_payload_seal::Sealed for CountedPixels {}
+
+    impl ScreenFramePayload for CountedPixels {
+        fn exact_retained_bytes(&self) -> Option<u64> {
+            u64::try_from(self.bytes.len()).ok()
+        }
+    }
+
+    impl Drop for CountedPixels {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn test_frame_spec() -> VideoFrameSpec {
+        VideoFrameSpec {
+            width: 320,
+            height: 180,
+            pixel_format: PixelFormat::Bgra8,
+            color_space: ColorSpace::Srgb,
+            nominal_frame_duration_ns: 33_333_333,
+            memory: FrameMemory::Cpu,
+        }
+    }
+
+    fn test_appsrc_plan() -> ScreenAppSrcPlan {
+        ScreenAppSrcPlan {
+            factory: "appsrc",
+            required_runtime_capability: RuntimeCapability::AppSourceBridge,
+            is_live: true,
+            time_format: true,
+            do_timestamp: false,
+            block: false,
+            buffer_lifetime: AppSrcBufferLifetime::OwnedUntilDownstreamRelease,
+            frame_spec: test_frame_spec(),
+            queue: crate::ScreenCaptureQueuePolicy::new(
+                8,
+                SCREEN_RECORDING_QUEUE_BYTES,
+                500_000_000,
+                crate::CaptureQueueOverflow::DropOldest,
+            )
+            .expect("bounded test queue"),
+        }
+    }
 
     #[test]
     fn buffer_preserves_explicit_timing_and_discontinuity() {
@@ -954,6 +1170,77 @@ mod tests {
         assert_eq!(buffer.offset(), 7);
         assert_eq!(buffer.offset_end(), 8);
         assert!(buffer.flags().contains(gst::BufferFlags::DISCONT));
+    }
+
+    #[test]
+    fn buffer_retains_owned_payload_until_the_last_gstreamer_reference_drops() {
+        gst::init().expect("GStreamer runtime");
+        let drops = Arc::new(AtomicUsize::new(0));
+        let buffer = build_owned_buffer(
+            1,
+            FrameTimestamp::new(0, 10).expect("timestamp"),
+            CountedPixels {
+                bytes: vec![0; 16],
+                drops: Arc::clone(&drops),
+            },
+        )
+        .expect("owned GStreamer buffer");
+        let retained = buffer.clone();
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(buffer);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(retained);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn payload_contract_accepts_exact_box_and_rejects_vec_spare_capacity() {
+        gst::init().expect("GStreamer runtime");
+        let buffer = build_owned_buffer(
+            1,
+            FrameTimestamp::new(0, 10).expect("timestamp"),
+            vec![0; 16].into_boxed_slice(),
+        )
+        .expect("boxed slices retain exactly their visible bytes");
+        assert_eq!(buffer.size(), 16);
+
+        let mut pixels = Vec::with_capacity(17);
+        pixels.resize(16, 0);
+        assert!(pixels.capacity() > pixels.len());
+        assert!(matches!(
+            build_owned_buffer(2, FrameTimestamp::new(10, 10).expect("timestamp"), pixels,),
+            Err(ScreenRecordingError::InvalidFrame)
+        ));
+
+        let mut pixels = Vec::with_capacity(17);
+        pixels.resize(16, 0);
+        assert!(matches!(
+            BgraScreenFrame::new(1, FrameTimestamp::new(0, 10).expect("timestamp"), pixels,),
+            Err(ScreenRecordingError::InvalidFrame)
+        ));
+    }
+
+    #[test]
+    fn appsrc_plan_validation_is_exact_and_caps_declare_srgb() {
+        let plan = test_appsrc_plan();
+        let spec = ScreenRecordingSpec::from_appsrc_plan(plan).expect("exact appsrc plan");
+        assert_eq!(spec.frame(), test_frame_spec());
+
+        let mut invalid = plan;
+        invalid.do_timestamp = true;
+        assert!(matches!(
+            ScreenRecordingSpec::from_appsrc_plan(invalid),
+            Err(ScreenRecordingError::InvalidConfiguration)
+        ));
+
+        let directory = tempfile::tempdir().expect("temporary recording directory");
+        let recording = ScreenRecording::start(directory.path().join("caps.webm"), spec)
+            .expect("recording graph");
+        let caps = recording.appsrc.caps().expect("appsrc caps");
+        let structure = caps.structure(0).expect("raw-video caps structure");
+        assert_eq!(structure.get::<&str>("format"), Ok("BGRA"));
+        assert_eq!(structure.get::<&str>("colorimetry"), Ok("sRGB"));
+        recording.abort().expect("confirmed Null teardown");
     }
 
     #[test]
@@ -1002,6 +1289,7 @@ mod tests {
                 bytes: 0,
                 time_ns: 0,
             },
+            spec.frame_bytes(),
             spec.frame.nominal_frame_duration_ns,
         ));
         assert!(would_exceed_ingress(
@@ -1011,6 +1299,7 @@ mod tests {
                 bytes: 0,
                 time_ns: 0,
             },
+            spec.frame_bytes(),
             spec.frame.nominal_frame_duration_ns,
         ));
         assert!(would_exceed_ingress(
@@ -1020,6 +1309,7 @@ mod tests {
                 bytes: SCREEN_RECORDING_QUEUE_BYTES - spec.frame_bytes() + 1,
                 time_ns: 0,
             },
+            spec.frame_bytes(),
             spec.frame.nominal_frame_duration_ns,
         ));
         assert!(would_exceed_ingress(
@@ -1029,6 +1319,7 @@ mod tests {
                 bytes: 0,
                 time_ns: spec.ingress_max_time_ns(),
             },
+            spec.frame_bytes(),
             spec.frame.nominal_frame_duration_ns,
         ));
     }
@@ -1059,5 +1350,16 @@ mod tests {
                 .and_then(|end| end.checked_sub(first_pts_ns))
                 .is_some_and(|duration| duration > MAX_SCREEN_RECORDING_DURATION_NS)
         );
+    }
+
+    #[test]
+    fn terminal_success_does_not_hide_unconfirmed_teardown() {
+        let error = classify_terminal_and_teardown(Ok(()), Err(ScreenRecordingError::Pipeline))
+            .expect_err("teardown failure remains observable");
+        assert!(matches!(
+            error,
+            ScreenRecordingError::TeardownUnconfirmed(teardown)
+                if matches!(*teardown, ScreenRecordingError::Pipeline)
+        ));
     }
 }

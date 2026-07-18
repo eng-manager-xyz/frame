@@ -22,8 +22,31 @@ crate uses the published `screencapturekit = 8.0.0` and
    identifiers, and raw window identifiers are never read or reported.
 6. Drain `poll_frame` regularly. Recording finalizers call
    `stop_and_drain_frames` and ingest every returned frame before encoder EOS;
-   its tail is bounded to three frames. `stop` remains idempotent for callers
+   its tail is bounded to three frames. `MacOsCaptureStopError` distinguishes
+   an unconfirmed native stop, unconfirmed callback quiescence after native
+   stop, a capture fault observed before confirmed teardown, and a
+   tail-processing failure after confirmed teardown. An unconfirmed stop is
+   sticky: polling, enumeration, start, and repeated stop cannot reinterpret
+   it as reusable authority. A failed start is also sticky if its delegate
+   teardown cannot be proved within the bounded deadline. Never-started and
+   completely stopped sources remain idempotent. Compatibility `stop` maps a
+   structured failure back to its original `MacOsCaptureError` for callers
    that deliberately do not need the tail.
+
+The pinned ScreenCaptureKit crate implements shareable-content discovery,
+stream start, and stream stop with synchronous wrappers whose internal native
+completion wait has no deadline. This adapter transfers each of those calls,
+including `SCStream` ownership for start and stop, to a named helper and waits
+at most five seconds for the result. A process-wide lease permits only one
+in-flight native wait (and therefore at most one stream stranded in such a
+wait). If the deadline expires, the source becomes sticky/non-reusable, the
+result receiver is dropped, and the helper handle is detached rather than
+joined—even when the source itself is dropped. The lease remains held until a
+late native return. A late successful start then fails to return its stream
+through the dropped receiver, so the helper drops that stream. Once a native
+call returns, its lease can be released while the helper finishes its bounded
+result send/return; a subsequent short-lived helper can overlap only with that
+final non-native window, not with another stuck native wait or owner.
 
 `MacOsScreenCaptureSource` is `Send`: composition may construct it and move it
 onto one serial worker thread. Control and polling methods require `&mut self`,
@@ -55,11 +78,24 @@ binary setting.
   nominal-duration duplicate without touching an absent pixel buffer. At most
   one cached frame and one delivered frame are owned during ordinary polling;
   no unbounded idle-frame backlog exists.
-- `stop_and_drain_frames` first performs ScreenCaptureKit's blocking clean stop
-  and then drains at most the three samples already in the callback queue. Its
-  returned tail can temporarily coexist with the cached frame: four owned BGRA
-  frames total, about 506 MiB at the 7680x4320 dimension ceiling (and about
-  32 MiB in the current 1920x1080 production profile).
+- Every stream owns the serial queue passed to ScreenCaptureKit. After native
+  stop returns successfully within its five-second helper deadline, teardown
+  fences that queue but deliberately keeps the registered Rust handler
+  installed while dropping `SCStream`. It waits at most one second for the
+  custom delegate's drop signal. That signal is emitted only when the
+  ref-counted stream context, both Swift bridge callback owners, and every
+  in-flight callback are gone. A final queue fence plus a disconnected bounded
+  channel independently proves the callback tail is complete before the
+  adapter drains its at most three samples. This ordering retains a sample
+  queued between the first fence and stream release instead of silently losing
+  it through early handler removal. A missing handler ID fails the artifact
+  after teardown; a still-connected sender leaves teardown unconfirmed.
+- Delegate callbacks only set a per-stream atomic flag. The serial worker
+  records `unexpected_native_stops` when it observes that flag, preventing a
+  failed start's late callback from mutating a later session baseline.
+- The returned tail can temporarily coexist with the cached frame: four owned
+  BGRA frames total, about 506 MiB at the 7680x4320 dimension ceiling (and
+  about 32 MiB in the current 1920x1080 production profile).
 - Native sample durations outside 1 ms through 1 s fall back to the negotiated
   nominal duration and increment `duration_fallbacks`.
 - Backward/duplicate PTS, Core Media epoch changes, native state gaps, and

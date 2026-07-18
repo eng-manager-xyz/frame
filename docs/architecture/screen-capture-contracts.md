@@ -127,6 +127,8 @@ validated value constructors and read-only diagnostics are omitted.
 | `poll_source` | native poll and normalized event handling | common ingress/session/source check runs before cancellation and native poll; event/failure envelopes are owner-checked before the private handler performs mutation |
 | `apply_epoch_transition` | drains queue/cache and changes epoch/target | transition carries the opaque session binding; exact owner, source, epoch, and target checks all precede the first queue/cache mutation |
 | `try_pop` | cancellation or frame removal | exact ingress/session binding and epoch check precedes cancellation, queue clock observation, and removal |
+| `ScreenRecordingPump::new` | claims frame removal and the appsrc graph for one segment | requires a pristine running graph (not merely zero submitted frames), then retains an exclusive mutable borrow of the exact ingress until finish/abort; safe code cannot create a second pump or call competing pop/event mutators while that claim exists |
+| pump graceful-stop/retry/completion methods | retires native capture and may publish one artifact | the pump alone invokes the borrowed ingress; the request retains the exact post-request seal epoch and ingress-transition revision, retries preserve/rebind their one-shot Stop action, rejected pre-mutation correlation returns that exact proof, and finish consumes an opaque exact-Stop completion by value |
 | frame queue / cursor cache | push, pop, activate, reset, drain | types and mutators are private; they are reachable only through ingress paths after the checks above |
 | source session/call/operation tickets | adapter claim or native dispatch | fields and constructors are private; only the bound wrapper/action executor can mint them, and every ticket carries or borrows the exact binding |
 | internal session events / session actions / epoch transitions | state-machine input or deferred native/ingress work | internal event enum is private and created only by the typed paths above; action/transition fields are private and minted by the owning session; foreign-session replay fails before side effects |
@@ -155,17 +157,22 @@ rejected.
 
 Cursor image changes use a separately owned, release-on-drop update with a
 nonzero revision, BGRA/RGBA format, bounded dimensions/bytes, and a validated
-hotspot. Frame cursor metadata references that revision without copying image
-pixels into every frame. The mandatory ingress owns the negotiated
+hotspot. Frame and cursor-image payload types are sealed to exact-capacity
+vectors and boxed slices. Their constructors authenticate the declared bytes
+against the complete allocation, and the queue/cache repeats that check when
+the lease changes authority; spare capacity and caller-defined sidecars are
+therefore not hidden from retained-memory bounds. A sealed CPU allocation
+cannot claim a CoreVideo, D3D11, or DMA-BUF frame type. Frame cursor metadata
+references that revision without copying image pixels into every frame. The
+mandatory ingress owns the negotiated
 `CursorPolicy` and the one-entry cache together; adapters cannot write either
 the cache or frame queue directly. Hidden and embedded modes reject cursor
 metadata and cursor-image events. Metadata mode rejects unnegotiated revision
 or click fields, and revision-disabled mode rejects cursor images. The cache is
 capture-, target-, and stream-scoped. Updates must be strictly
-revision-monotonic; a visible
-cursor cannot omit a negotiated revision or reference a missing, future, or
-stale image. Replacement and epoch reset release the prior native lease and
-report the exact image/byte drain.
+revision-monotonic; a visible cursor cannot omit a negotiated revision or
+reference a missing, future, or stale image. Replacement and epoch reset
+release the prior owned CPU allocation and report the exact image/byte drain.
 
 Window exclusion is an explicit bounded list of source/catalog-bound window
 bindings.
@@ -182,20 +189,55 @@ permission preflight, topology/recovery, protected-content signaling, window
 exclusion, bounded-appsrc support, and explicit supported frame-profile
 tuples. Each tuple couples pixel format, color space, memory type, maximum
 dimensions, and maximum rate; negotiation never invents a cross-product of
-independently advertised values.
-Native memory claims are platform checked: CoreVideo is macOS-only, D3D11 is
-Windows-only, and DMA-BUF is Linux-only. CPU memory is portable.
+independently advertised values. Native-memory capability descriptions remain
+platform checked: CoreVideo is macOS-only, D3D11 is Windows-only, and DMA-BUF
+is Linux-only. The provider-neutral ingress intentionally negotiates only
+`FrameMemory::Cpu` in this slice because its sealed payload contract can prove
+the complete retained CPU allocation. CoreVideo, D3D11, and DMA-BUF zero-copy
+payload ownership/accounting remain an explicit implementation gap.
 
 Negotiation rejects unsupported target, cursor, image/click metadata,
 exclusion, recovery, protection, frame format, color space, memory, size, or
 rate. It also rejects a source bound to another host OS. The resulting
 `ScreenAppSrcPlan` requires the audited `AppSourceBridge` runtime capability,
 uses explicit platform PTS/duration (`do_timestamp=false`), never asks appsrc
-to block the driver (`block=false`), and retains a native frame lease until
-downstream releases the corresponding buffer. This lifetime permits zero-copy adapters
-where the OS and GStreamer memory feature support it without claiming that
-every platform is zero-copy.
+to block the driver (`block=false`), and retains an exact owned CPU allocation
+until downstream releases the corresponding buffer. An adapter must therefore
+perform any required native-to-CPU copy before ingress; this contract does not
+claim native-memory zero-copy.
 The negotiated plan retains the complete capability and target snapshots.
+`ScreenRecordingPump` validates every plan flag against the real
+`ScreenRecording` graph and exclusively borrows one exact capture ingress for
+the pump lifetime, binding the graph to that session, ingress epoch, and active
+stream. Safe code cannot create a second pump or pop the queue through another
+owner while that borrow is live. It declares BGRA plus sRGB caps, drains no
+more than the smaller of the upstream and appsrc frame bounds per call, expires
+and peeks the next frame before removal, checks live appsrc frame/actual-byte/
+actual-duration capacity, and moves each owned CPU payload into a GStreamer
+buffer without another full-frame copy after adapter conversion. It preserves
+source timing, cumulative submission accounting, and marks sequence-loss
+boundaries as discontinuities. Only a drained ingress can mint the opaque
+graceful-Stop request. The request records the exact post-request seal epoch
+and transition revision. Repeated exact Stop failures rebind either its
+publication proof or an opaque abort-only proof without discarding the new
+action. A mismatched
+acknowledgement/failure, exhausted ingress-transition revision, or exhausted
+retry operation id is rejected before mutation and returns the same one-shot
+proof so the exact result can still be applied. Any later epoch handoff,
+suspension, permission, target, or protected-content transition permanently
+invalidates publication. A matching old acknowledgement may still settle
+native teardown but produces only an abort completion. Artifact finish
+consumes the unchanged-lineage exact-Stop completion, so it cannot be
+replayed.
+Cancellation, suspension, fault transitions, and any terminal appsrc failure
+atomically retire ingress/session leases, preserve the exact native Stop
+transition and teardown status, and confirm Null without publishing a partial
+artifact. A frame that would exceed current appsrc time capacity remains in the
+upstream queue; it is never popped merely to terminalize the graph. The
+current source Stop contract still has no bounded-tail return channel, so
+adapters such as ScreenCaptureKit that produce final frames after quiescence
+cannot yet use this shared path losslessly.
+
 Executing a start/reconfigure action first verifies the action owner, session,
 bound source, and one pending operation. It then re-enumerates the complete
 catalog, reads the resulting live capabilities, and compares both exactly

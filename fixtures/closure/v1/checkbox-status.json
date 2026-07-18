@@ -178,7 +178,7 @@
       "digest": "72b5f8f1d6d028c4d88b54c28f144aecad0995064ea78bbc0fe5c1cfb31cf5d7",
       "evidence": ["docs/evidence/screen-capture-local.md", "docs/architecture/screen-capture-contracts.md", "crates/media/tests/screen_capture_contract.rs"],
       "protected": [],
-      "local_gaps": [{"ordinals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "reason": "Only contracts and test doubles exist: no production OS capture source, appsrc pump, permission integration, lifecycle handling, or recorded parity path is wired into Frame."}]
+      "local_gaps": [{"ordinals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "reason": "A real macOS full-display source, bounded GStreamer/WebM graph, and provider-neutral appsrc pump exist, but production still bypasses the shared capture contract; Windows/Linux adapters, window/region and cursor-metadata paths, lossless stop-tail integration, complete lifecycle handling, and recorded parity remain unwired."}]
     },
     "25": {
       "count": 10,
