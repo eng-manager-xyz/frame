@@ -79,6 +79,7 @@ def main() -> int:
         authenticated_web = fixture / ".github/workflows/leptos-authenticated-web.yml"
         api_parity = fixture / ".github/workflows/api-workflow-parity.yml"
         quality = fixture / ".github/workflows/quality-gates.yml"
+        desktop_hardware = fixture / ".github/workflows/desktop-real-hardware.yml"
         change_plan = fixture / "scripts/ci/release-change-plan.sh"
         contract = fixture / ".github/workflows/contract-migrations.yml"
         package = fixture / "scripts/ci/package-release.sh"
@@ -164,9 +165,75 @@ def main() -> int:
             ),
             (
                 quality,
-                '          FRAME_GSTREAMER_COMPILE_ONLY: "1"',
-                '          DOCS_RS: "1"',
-                "global docs.rs native-link bypass in desktop shell",
+                "--features tauri-app,custom-protocol --edges normal",
+                "--features macos-native,custom-protocol --edges normal",
+                "native media injected into the portable desktop graph",
+            ),
+            (
+                quality,
+                "frame-media|frame-macos-screen-capture|gstreamer",
+                "frame-unrelated|frame-macos-unrelated|not-gstreamer",
+                "portable desktop native-media dependency rejection removed",
+            ),
+            (
+                quality,
+                "--expected-adapter unavailable",
+                "--expected-adapter native_macos_display",
+                "portable desktop falsely advertises a native adapter",
+            ),
+            (
+                desktop_hardware,
+                "scripts/frame desktop-macos-bundle",
+                "cargo build --release --bin frame-desktop",
+                "macOS hardware lane bypassed signed application bundling",
+            ),
+            (
+                desktop_hardware,
+                "runs-on: frame-macos-hardware",
+                "runs-on: frame-windows-hardware",
+                "unavailable Windows capture admitted as native hardware evidence",
+            ),
+            (
+                desktop_hardware,
+                "--app-bundle target/release/bundle/macos/Frame.app",
+                "--binary target/release/frame-desktop",
+                "raw macOS executable admitted as TCC hardware evidence",
+            ),
+            (
+                desktop_hardware,
+                "secrets.FRAME_CODESIGN_IDENTITY",
+                "vars.FRAME_CODESIGN_IDENTITY",
+                "certificate signing identity no longer sourced from the protected secret",
+            ),
+            (
+                desktop_hardware,
+                "sign-macos-local-app.sh verify-trusted",
+                "sign-macos-local-app.sh verify",
+                "ad-hoc macOS signature admitted as protected evidence",
+            ),
+            (
+                desktop_hardware,
+                "--expected-source-sha",
+                "--untrusted-source-sha",
+                "hardware evidence detached from the checked-out source SHA",
+            ),
+            (
+                desktop_hardware,
+                "--expected-run-id",
+                "--untrusted-run-id",
+                "hardware evidence detached from the protected workflow run",
+            ),
+            (
+                desktop_hardware,
+                "group: desktop-macos-hardware",
+                "group: desktop-macos-hardware-${{ inputs.release_sha }}",
+                "macOS signing/TCC hardware jobs no longer serialized",
+            ),
+            (
+                quality,
+                "test-desktop-real-hardware.py",
+                "disabled-desktop-real-hardware.py",
+                "signed desktop hardware validator regressions no longer tested",
             ),
             (
                 quality,

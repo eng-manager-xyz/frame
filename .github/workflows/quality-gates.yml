@@ -29,6 +29,7 @@ jobs:
         run: |
           python3 scripts/ci/check-workflow-policy.py
           python3 -I scripts/ci/test-workflow-policy.py
+          python3 -I scripts/ci/test-desktop-real-hardware.py
           python3 -I scripts/ci/test-release-change-plan.py
           python3 -I scripts/ci/test-legacy-api-parity-runner.py
       - name: Validate YAML and Render authority
@@ -375,7 +376,7 @@ jobs:
           cargo check --locked -p frame-media --all-targets
 
   desktop_shell:
-    name: Tauri desktop shell on ${{ matrix.os }}
+    name: Portable Tauri desktop shell on ${{ matrix.os }}
     needs: policy
     strategy:
       fail-fast: false
@@ -398,14 +399,19 @@ jobs:
           cache-on-failure: false
       - name: Install the pinned Leptos asset bundler
         run: cargo install trunk --version 0.21.14 --locked
-      - name: Lint and test the native Tauri command boundary
-        env:
-          # The shell does not execute media. Bypass only GStreamer's discovery
-          # and link metadata; DOCS_RS would also suppress unrelated native sys
-          # crates and produce an invalid Tauri executable on macOS.
-          FRAME_GSTREAMER_COMPILE_ONLY: "1"
-          SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG: "1"
-          SYSTEM_DEPS_GSTREAMER_1_0_LIB: ${{ runner.os == 'Windows' && 'kernel32' || 'c' }}
+      - name: Prove the portable desktop dependency closure
+        shell: bash
+        run: |
+          mkdir -p target/evidence
+          cargo tree --locked -p frame-desktop-core \
+            --features tauri-app,custom-protocol --edges normal \
+            > target/evidence/desktop-portable-dependencies-${{ runner.os }}.txt
+          if rg -n '(frame-media|frame-macos-screen-capture|gstreamer[^[:space:]]*) v[0-9]' \
+            target/evidence/desktop-portable-dependencies-${{ runner.os }}.txt; then
+            echo "portable desktop dependency graph contains native media code" >&2
+            exit 1
+          fi
+      - name: Lint and test the portable Tauri command boundary
         run: |
           cargo test --locked -p frame-desktop-core --features tauri-app --bin frame-desktop
           cargo clippy --locked -p frame-desktop-core --features tauri-app --bin frame-desktop -- -D warnings
@@ -418,17 +424,14 @@ jobs:
         run: |
           python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-${{ runner.os }}.json
           python scripts/ci/check-desktop-advisory-exception.py
-      - name: Build the native desktop executable
-        env:
-          FRAME_GSTREAMER_COMPILE_ONLY: "1"
-          SYSTEM_DEPS_GSTREAMER_1_0_NO_PKG_CONFIG: "1"
-          SYSTEM_DEPS_GSTREAMER_1_0_LIB: ${{ runner.os == 'Windows' && 'kernel32' || 'c' }}
+      - name: Build the portable desktop executable
         run: >-
           cargo build --locked --release -p frame-desktop-core
           --features tauri-app,custom-protocol --bin frame-desktop
-      - name: Exercise the production-CSP WebView command boundary
+      - name: Exercise the portable production-CSP WebView command boundary
         run: >-
           python scripts/ci/desktop-shell-smoke.py
+          --expected-adapter unavailable
           --evidence target/evidence/desktop-smoke-${{ runner.os }}.json
       - name: Prove lockfile stability
         run: git diff --exit-code -- Cargo.lock
@@ -441,6 +444,7 @@ jobs:
             target/release/frame-desktop
             target/release/frame-desktop.exe
             target/evidence/desktop-*.json
+            target/evidence/desktop-portable-dependencies-*.txt
           if-no-files-found: error
           retention-days: 5
 

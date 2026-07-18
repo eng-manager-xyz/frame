@@ -1,11 +1,16 @@
-use std::{ffi::OsStr, fmt, path::Path};
+use std::{
+    ffi::OsStr,
+    fmt,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use gst::prelude::{ElementExt, GstBinExtManual, GstObjectExt, PluginFeatureExt};
 use gstreamer as gst;
 
 use crate::MediaError;
 
-pub const RUNTIME_MANIFEST_VERSION: u16 = 3;
+pub const RUNTIME_MANIFEST_VERSION: u16 = 5;
 pub const MEDIA_APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MINIMUM_GSTREAMER_VERSION: (u32, u32, u32) = (1, 22, 0);
 pub const MINIMUM_GSTREAMER_VERSION_TEXT: &str = "1.22.0";
@@ -172,6 +177,30 @@ const FACTORIES: &[FactorySpec] = &[
         factory: "filesrc",
         capability: RuntimeCapability::ThumbnailDecode,
         requirement: FactoryRequirement::Required,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "fdsink",
+        capability: RuntimeCapability::AppSourceBridge,
+        requirement: FactoryRequirement::Required,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "fdsrc",
+        capability: RuntimeCapability::DecodeAnalysis,
+        requirement: FactoryRequirement::Required,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "matroskademux",
+        capability: RuntimeCapability::DecodeAnalysis,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "vp8dec",
+        capability: RuntimeCapability::DecodeAnalysis,
+        requirement: FactoryRequirement::Optional,
         platform: PlatformScope::NativeDesktop,
     },
     FactorySpec {
@@ -382,6 +411,45 @@ impl ReadyRuntime {
     }
 }
 
+/// A pre-initialization launch decision for the native desktop executable.
+///
+/// The raw development/release binary may replace itself once with the exact
+/// build-time plugin root. A release-mode macOS bundle may do the same only
+/// while it remains beneath this checkout's canonical `target` directory;
+/// copied or installed bundles require the app-relative runtime from issue 22.
+pub enum DesktopRuntimeLaunchPlan {
+    Ready,
+    Reexec(DesktopRuntimeReexec),
+}
+
+/// The only environment mutation allowed for the raw desktop re-exec.
+///
+/// This type intentionally omits `Debug`: the canonical plugin root is an
+/// internal launch detail and must not enter privacy-safe diagnostics.
+pub struct DesktopRuntimeReexec {
+    executable: PathBuf,
+    plugin_root: PathBuf,
+}
+
+impl DesktopRuntimeReexec {
+    #[must_use]
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    /// Applies the audited environment to a command that replaces the current
+    /// process. Callers must preserve the current argument vector.
+    pub fn apply_to(&self, command: &mut Command) {
+        for variable in FORBIDDEN_PLUGIN_ENVIRONMENT {
+            command.env_remove(variable);
+        }
+        for variable in FORBIDDEN_LOADER_ENVIRONMENT {
+            command.env_remove(variable);
+        }
+        command.env(TRUSTED_PLUGIN_PATH_VARIABLE, self.plugin_root.as_os_str());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoryDiagnostic {
     pub factory: &'static str,
@@ -440,6 +508,103 @@ impl RuntimeDiagnostics {
                 FactoryRequirement::Prohibited => !factory.available,
             })
     }
+}
+
+/// Plans the trusted GStreamer environment before a macOS desktop process
+/// calls `gst::init` or creates application threads.
+///
+/// A missing trusted path is recoverable only for a raw executable, or for a
+/// release-mode application bundle still beneath this checkout's canonical
+/// `target` directory. Explicit overrides remain errors. A copied or installed
+/// application bundle must carry the signed, app-relative runtime tracked by
+/// issue 22.
+pub fn desktop_runtime_launch_plan() -> Result<DesktopRuntimeLaunchPlan, MediaError> {
+    let issues = plugin_loading_environment_issues();
+    let trusted_path_is_configured =
+        std::env::var_os(TRUSTED_PLUGIN_PATH_VARIABLE).is_some_and(|value| !value.is_empty());
+    let reported_executable = std::env::current_exe().map_err(|_| {
+        MediaError::Initialization(
+            "could not resolve the desktop executable before GStreamer initialization".into(),
+        )
+    })?;
+    let application_bundle_context = is_macos_application_bundle_executable(&reported_executable);
+    let executable = std::fs::canonicalize(&reported_executable).map_err(|_| {
+        MediaError::Initialization(
+            "could not resolve the desktop executable before GStreamer initialization".into(),
+        )
+    })?;
+    let application_bundle_context =
+        application_bundle_context || is_macos_application_bundle_executable(&executable);
+    let target_root = application_bundle_context
+        .then(canonical_workspace_target_root)
+        .flatten();
+    desktop_runtime_launch_plan_for(
+        executable,
+        application_bundle_context,
+        trusted_path_is_configured,
+        &issues,
+        target_root.as_deref(),
+    )
+}
+
+fn desktop_runtime_launch_plan_for(
+    executable: PathBuf,
+    application_bundle_context: bool,
+    trusted_path_is_configured: bool,
+    issues: &[DiagnosticIssue],
+    canonical_target_root: Option<&Path>,
+) -> Result<DesktopRuntimeLaunchPlan, MediaError> {
+    if let Some(issue) = issues
+        .iter()
+        .find(|issue| !matches!(issue, DiagnosticIssue::TrustedPluginPathRequired(_)))
+    {
+        return Err(diagnostic_issue_error(issue));
+    }
+
+    if application_bundle_context
+        && !canonical_target_root.is_some_and(|root| executable.starts_with(root))
+    {
+        return Err(MediaError::Initialization(
+            "the macOS application bundle has no audited app-relative GStreamer runtime".into(),
+        ));
+    }
+
+    if trusted_path_is_configured {
+        if issues.is_empty() {
+            Ok(DesktopRuntimeLaunchPlan::Ready)
+        } else {
+            Err(diagnostic_issue_error(&issues[0]))
+        }
+    } else {
+        Ok(DesktopRuntimeLaunchPlan::Reexec(DesktopRuntimeReexec {
+            executable,
+            plugin_root: PathBuf::from(BUILD_GSTREAMER_PLUGIN_DIR),
+        }))
+    }
+}
+
+fn canonical_workspace_target_root() -> Option<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.parent()?.parent()?;
+    std::fs::canonicalize(workspace.join("target")).ok()
+}
+
+fn is_macos_application_bundle_executable(executable: &Path) -> bool {
+    let Some(macos) = executable.parent() else {
+        return false;
+    };
+    let Some(contents) = macos.parent() else {
+        return false;
+    };
+    let Some(application) = contents.parent() else {
+        return false;
+    };
+    macos.file_name() == Some(OsStr::new("MacOS"))
+        && contents.file_name() == Some(OsStr::new("Contents"))
+        && application
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
 }
 
 /// Produces a privacy-safe doctor report containing only public runtime and
@@ -527,37 +692,7 @@ pub fn diagnose_runtime() -> RuntimeDiagnostics {
 pub fn prepare_runtime() -> Result<ReadyRuntime, MediaError> {
     let diagnostics = diagnose_runtime();
     if let Some(issue) = diagnostics.issues.first() {
-        return match issue {
-            DiagnosticIssue::InitializationFailed => Err(MediaError::Initialization(
-                "runtime initialization failed; run the media doctor".into(),
-            )),
-            DiagnosticIssue::RuntimeTooOld { required, found } => Err(MediaError::RuntimeVersion {
-                required,
-                found: found.clone(),
-            }),
-            DiagnosticIssue::MissingRequiredFactory(factory) => {
-                Err(MediaError::MissingPlugin((*factory).into()))
-            }
-            DiagnosticIssue::ProhibitedFactoryPresent(factory) => Err(MediaError::Initialization(
-                format!("prohibited GStreamer factory is installed: {factory}"),
-            )),
-            DiagnosticIssue::PluginSearchPathOverride(variable) => Err(MediaError::Initialization(
-                format!("untrusted GStreamer plugin search override is set in {variable}"),
-            )),
-            DiagnosticIssue::LoaderEnvironmentOverride(variable) => {
-                Err(MediaError::Initialization(format!(
-                    "untrusted native loader override is set in {variable}"
-                )))
-            }
-            DiagnosticIssue::TrustedPluginPathRequired(variable) => {
-                Err(MediaError::Initialization(format!(
-                    "the GStreamer plugin path in {variable} does not match the build-time runtime"
-                )))
-            }
-            DiagnosticIssue::FactoryOutsideTrustedRoot(factory) => Err(MediaError::Initialization(
-                format!("GStreamer factory {factory} is outside the build-time plugin root"),
-            )),
-        };
+        return Err(diagnostic_issue_error(issue));
     }
     let Some(version) = diagnostics.runtime_version.clone() else {
         return Err(MediaError::Initialization(
@@ -585,6 +720,38 @@ pub fn prepare_runtime() -> Result<ReadyRuntime, MediaError> {
                 .collect(),
         },
     })
+}
+
+fn diagnostic_issue_error(issue: &DiagnosticIssue) -> MediaError {
+    match issue {
+        DiagnosticIssue::InitializationFailed => {
+            MediaError::Initialization("runtime initialization failed; run the media doctor".into())
+        }
+        DiagnosticIssue::RuntimeTooOld { required, found } => MediaError::RuntimeVersion {
+            required,
+            found: found.clone(),
+        },
+        DiagnosticIssue::MissingRequiredFactory(factory) => {
+            MediaError::MissingPlugin((*factory).into())
+        }
+        DiagnosticIssue::ProhibitedFactoryPresent(factory) => MediaError::Initialization(format!(
+            "prohibited GStreamer factory is installed: {factory}"
+        )),
+        DiagnosticIssue::PluginSearchPathOverride(variable) => MediaError::Initialization(format!(
+            "untrusted GStreamer plugin search override is set in {variable}"
+        )),
+        DiagnosticIssue::LoaderEnvironmentOverride(variable) => MediaError::Initialization(
+            format!("untrusted native loader override is set in {variable}"),
+        ),
+        DiagnosticIssue::TrustedPluginPathRequired(variable) => {
+            MediaError::Initialization(format!(
+                "the GStreamer plugin path in {variable} does not match the build-time runtime"
+            ))
+        }
+        DiagnosticIssue::FactoryOutsideTrustedRoot(factory) => MediaError::Initialization(format!(
+            "GStreamer factory {factory} is outside the build-time plugin root"
+        )),
+    }
 }
 
 pub fn probe_runtime() -> Result<RuntimeInfo, MediaError> {
@@ -734,6 +901,168 @@ mod tests {
         assert_eq!(
             std::fs::canonicalize(directory).expect("canonical plugin directory"),
             directory
+        );
+    }
+
+    #[test]
+    fn raw_desktop_executable_is_not_mistaken_for_an_application_bundle() {
+        assert!(!is_macos_application_bundle_executable(Path::new(
+            "/workspace/frame/target/release/frame-desktop"
+        )));
+        assert!(is_macos_application_bundle_executable(Path::new(
+            "/Applications/Frame.app/Contents/MacOS/frame-desktop"
+        )));
+        assert!(is_macos_application_bundle_executable(Path::new(
+            "/Applications/Frame.APP/Contents/MacOS/frame-desktop"
+        )));
+    }
+
+    #[test]
+    fn desktop_launch_plan_has_no_marker_and_fails_closed_for_bundles() {
+        let raw = PathBuf::from("/workspace/frame/target/release/frame-desktop");
+        let bundled = PathBuf::from("/Applications/Frame.app/Contents/MacOS/frame-desktop");
+        let target_root = Path::new("/workspace/frame/target");
+        let local_bundle = PathBuf::from(
+            "/workspace/frame/target/release/bundle/macos/Frame.app/Contents/MacOS/frame-desktop",
+        );
+        let missing = [DiagnosticIssue::TrustedPluginPathRequired(
+            TRUSTED_PLUGIN_PATH_VARIABLE,
+        )];
+
+        assert!(matches!(
+            desktop_runtime_launch_plan_for(raw.clone(), false, true, &[], None),
+            Ok(DesktopRuntimeLaunchPlan::Ready)
+        ));
+        assert!(matches!(
+            desktop_runtime_launch_plan_for(raw.clone(), false, false, &missing, None),
+            Ok(DesktopRuntimeLaunchPlan::Reexec(_))
+        ));
+        assert!(matches!(
+            desktop_runtime_launch_plan_for(raw, false, true, &missing, None),
+            Err(MediaError::Initialization(_))
+        ));
+        assert!(matches!(
+            desktop_runtime_launch_plan_for(bundled, true, true, &[], Some(target_root)),
+            Err(MediaError::Initialization(_))
+        ));
+        assert!(matches!(
+            desktop_runtime_launch_plan_for(local_bundle, true, false, &missing, Some(target_root)),
+            Ok(DesktopRuntimeLaunchPlan::Reexec(_))
+        ));
+        assert!(matches!(
+            desktop_runtime_launch_plan_for(
+                PathBuf::from("/workspace/frame/target/release/frame-desktop"),
+                false,
+                false,
+                &[DiagnosticIssue::LoaderEnvironmentOverride(
+                    "DYLD_INSERT_LIBRARIES"
+                )],
+                None,
+            ),
+            Err(MediaError::Initialization(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_target_membership_rejects_traversal_and_symlink_escapes() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let target = temporary.path().join("target");
+        let outside = temporary.path().join("outside/Frame.app/Contents/MacOS");
+        std::fs::create_dir_all(&target).expect("target directory");
+        std::fs::create_dir_all(&outside).expect("outside bundle directory");
+        std::fs::write(outside.join("frame-desktop"), b"test").expect("test executable");
+        symlink(
+            temporary.path().join("outside/Frame.app"),
+            target.join("Escaped.app"),
+        )
+        .expect("bundle symlink");
+        let linked_macos = target.join("Linked.app/Contents/MacOS");
+        std::fs::create_dir_all(&linked_macos).expect("linked bundle directory");
+        let outside_raw = temporary.path().join("outside/frame-desktop");
+        std::fs::write(&outside_raw, b"test").expect("outside raw executable");
+        let linked_executable = linked_macos.join("frame-desktop");
+        symlink(&outside_raw, &linked_executable).expect("executable symlink");
+
+        let canonical_target = std::fs::canonicalize(&target).expect("canonical target");
+        let through_symlink =
+            std::fs::canonicalize(target.join("Escaped.app/Contents/MacOS/frame-desktop"))
+                .expect("canonical symlink executable");
+        let through_parent =
+            std::fs::canonicalize(target.join("../outside/Frame.app/Contents/MacOS/frame-desktop"))
+                .expect("canonical traversed executable");
+        let missing = [DiagnosticIssue::TrustedPluginPathRequired(
+            TRUSTED_PLUGIN_PATH_VARIABLE,
+        )];
+
+        for escaped in [through_symlink, through_parent] {
+            assert!(is_macos_application_bundle_executable(&escaped));
+            assert!(!escaped.starts_with(&canonical_target));
+            assert!(matches!(
+                desktop_runtime_launch_plan_for(
+                    escaped,
+                    true,
+                    false,
+                    &missing,
+                    Some(&canonical_target),
+                ),
+                Err(MediaError::Initialization(_))
+            ));
+        }
+
+        let canonical_linked =
+            std::fs::canonicalize(&linked_executable).expect("canonical linked executable");
+        assert!(is_macos_application_bundle_executable(&linked_executable));
+        assert!(!is_macos_application_bundle_executable(&canonical_linked));
+        assert!(matches!(
+            desktop_runtime_launch_plan_for(
+                canonical_linked,
+                true,
+                false,
+                &missing,
+                Some(&canonical_target),
+            ),
+            Err(MediaError::Initialization(_))
+        ));
+    }
+
+    #[test]
+    fn desktop_reexec_sets_only_the_canonical_path_and_clears_overrides() {
+        let plan = DesktopRuntimeReexec {
+            executable: PathBuf::from("/workspace/frame/target/release/frame-desktop"),
+            plugin_root: PathBuf::from(BUILD_GSTREAMER_PLUGIN_DIR),
+        };
+        let mut command = Command::new(plan.executable());
+        for variable in FORBIDDEN_PLUGIN_ENVIRONMENT {
+            command.env(variable, "/tmp/hostile-plugin-path");
+        }
+        for variable in FORBIDDEN_LOADER_ENVIRONMENT {
+            command.env(variable, "/tmp/hostile-loader-path");
+        }
+
+        plan.apply_to(&mut command);
+
+        for variable in FORBIDDEN_PLUGIN_ENVIRONMENT
+            .into_iter()
+            .chain(FORBIDDEN_LOADER_ENVIRONMENT)
+        {
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(name, _)| *name == OsStr::new(variable))
+                    .and_then(|(_, value)| value),
+                None,
+                "{variable} must be removed"
+            );
+        }
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(name, _)| *name == OsStr::new(TRUSTED_PLUGIN_PATH_VARIABLE))
+                .and_then(|(_, value)| value),
+            Some(OsStr::new(BUILD_GSTREAMER_PLUGIN_DIR))
         );
     }
 

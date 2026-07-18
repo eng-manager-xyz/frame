@@ -174,6 +174,7 @@ pub enum IntentKind {
     EditorApply { base_revision: u64 },
     EditorSave { expected_revision: u64 },
     ExportStart { project_revision: u64 },
+    CaptureExportStart { artifact_revision: u64 },
     ExportCancel,
     UploadStart,
     UploadPause,
@@ -198,7 +199,9 @@ impl IntentKind {
             Self::EditorOpen | Self::EditorApply { .. } | Self::EditorSave { .. } => {
                 WorkflowArea::Editor
             }
-            Self::ExportStart { .. } | Self::ExportCancel => WorkflowArea::Export,
+            Self::ExportStart { .. } | Self::CaptureExportStart { .. } | Self::ExportCancel => {
+                WorkflowArea::Export
+            }
             Self::UploadStart | Self::UploadPause | Self::UploadResume | Self::UploadCancel => {
                 WorkflowArea::Upload
             }
@@ -651,6 +654,18 @@ impl DesktopWorkflow {
                             }
                     )
             }
+            IntentKind::CaptureExportStart { artifact_revision } => {
+                artifact_revision > 0
+                    && matches!(
+                        self.export,
+                        ExportState::Idle
+                            | ExportState::Completed { .. }
+                            | ExportState::Failed {
+                                retryable: true,
+                                ..
+                            }
+                    )
+            }
             IntentKind::ExportCancel => matches!(self.export, ExportState::Running { .. }),
             IntentKind::UploadStart => matches!(
                 self.upload,
@@ -935,7 +950,13 @@ impl DesktopWorkflow {
                 project_revision,
             } => {
                 let pending = self.pending_intent_kind(WorkflowArea::Export, &intent_id)?;
-                require(pending == IntentKind::ExportStart { project_revision })?;
+                require(
+                    pending == IntentKind::ExportStart { project_revision }
+                        || pending
+                            == IntentKind::CaptureExportStart {
+                                artifact_revision: project_revision,
+                            },
+                )?;
                 self.pending.remove(&WorkflowArea::Export);
                 self.export = ExportState::Running {
                     project_revision,

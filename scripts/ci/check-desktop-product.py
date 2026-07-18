@@ -30,6 +30,12 @@ def require(content: str, markers: tuple[str, ...], label: str) -> None:
         fail(f"{label} is missing {missing}")
 
 
+def reject(content: str, markers: tuple[str, ...], label: str) -> None:
+    present = [marker for marker in markers if marker in content]
+    if present:
+        fail(f"{label} contains stale claims {present}")
+
+
 def digest(path: str) -> str:
     return hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
 
@@ -42,6 +48,15 @@ def main() -> int:
     ipc = text("apps/desktop/src/ipc.rs")
     runtime = text("apps/desktop/src/runtime.rs")
     native = text("apps/desktop/src/main.rs")
+    desktop_manifest = text("apps/desktop/Cargo.toml")
+    native_contract = text("apps/desktop/src/native_backend.rs")
+    macos_backend = text("apps/desktop/src/macos_native_backend.rs")
+    rooted_io = text("apps/desktop/src/rooted_io.rs")
+    gstreamer_bootstrap = text("apps/desktop/src/gstreamer_bootstrap.rs")
+    macos_capture = text("crates/macos-screen-capture/src/lib.rs") + text(
+        "crates/macos-screen-capture/src/platform.rs"
+    )
+    screen_recording = text("crates/media/src/screen_recording.rs")
     ui = text("apps/desktop/ui/src/main.rs")
     css = text("apps/desktop/ui/src/app.css")
     capability = json.loads(text("apps/desktop/capabilities/main.json"))
@@ -51,9 +66,14 @@ def main() -> int:
     )
     journey = text("apps/desktop/tests/fake_desktop_journey.rs")
     architecture = text("docs/architecture/desktop-product-v1.md")
+    adr = text("docs/adr/0005-leptos-rendering-and-tauri-shell.md")
+    screen_evidence = text("docs/evidence/screen-capture-local.md")
+    studio_evidence = text("docs/evidence/studio-mode-local.md")
     evidence_doc = text("docs/evidence/desktop-editor-a11y-local.md")
     operations = text("docs/operations/desktop-recovery-and-release.md")
     hardware_workflow = text(".github/workflows/desktop-real-hardware.yml")
+    hardware_validator = text("scripts/ci/desktop-real-hardware.py")
+    desktop_shell_smoke = text("scripts/ci/desktop-shell-smoke.py")
 
     require(
         ipc,
@@ -66,6 +86,7 @@ def main() -> int:
             "PathOutOfScope",
             "CommandOutOfScope",
             "SequenceGap",
+            '"recorder_poll"',
         ),
         "typed IPC",
     )
@@ -75,13 +96,19 @@ def main() -> int:
             "pub const DESKTOP_RUNTIME_VERSION",
             "DesktopAdapterKind::Unavailable",
             "DesktopAdapterKind::DeterministicFake",
+            "DesktopAdapterKind::NativeMacOs",
             "pub fn dispatch_json",
+            "pub fn dispatch_native_json",
             "pub fn advance_fake",
             "pub fn simulate_fake_device_loss",
             "pub fn simulate_fake_restart",
             "pub fn preflight_instant_finalize",
             "pub fn disable_native_instant_finalize",
             "InstantUiProgressV1",
+            "Native capture currently supports display video only.",
+            "ExportProfile::EditableWebm",
+            "NativeRecordingStopOutcome::Sealed",
+            "NativeRecordingCancelOutcome::Cancelled",
             "legacy_desktop_selectable: true",
         ),
         "native runtime",
@@ -98,9 +125,118 @@ def main() -> int:
             'app.emit("frame-desktop://event-v1"',
             'cfg!(debug_assertions)',
             'FRAME_DESKTOP_FAKE_PIPELINE',
+            'cfg!(all(target_os = "macos", feature = "macos-native"))',
+            "bootstrap_desktop_gstreamer()",
+            "RecorderAdapterState::NativeMacOsDisplay",
+            "DesktopAdapterKind::NativeMacOs",
             "DesktopAdapterKind::Unavailable",
+            "(DesktopAdapterKind::Unavailable, None)",
         ),
         "Tauri boundary",
+    )
+    require(
+        desktop_manifest,
+        (
+            'tauri-app = ["dep:tauri"]',
+            'macos-native = [',
+            '"dep:frame-media"',
+            '"dep:frame-macos-screen-capture"',
+        ),
+        "desktop feature boundary",
+    )
+    require(
+        native_contract,
+        (
+            "pub trait NativeDesktopBackend",
+            "fn prepare_display_capture",
+            "fn enumerate_displays",
+            "fn select_display",
+            "fn start_display_recording",
+            "fn poll_recording_terminal_failure",
+            "fn stop_recording",
+            "fn cancel_recording",
+            "fn export_editable_webm",
+        ),
+        "native desktop contract",
+    )
+    require(
+        macos_backend,
+        (
+            "records one full display",
+            "preflight_screen_recording_runtime()",
+            "PermissionPreflight::PromptRequired => source.request_permission()",
+            "fn enumerate_displays",
+            "fn start_display_recording",
+            "if !request.exclude_frame_windows",
+            "CursorCaptureMode::EmbeddedInFrame",
+            "ScreenRecording::start_preopened",
+            "create_new_file(&staging_relative)",
+            "publish_file_if_identity(",
+            "publish_file_to_root_if_identity(",
+            "ensure_media_directories_visible()",
+            "ensure_export_directories_visible()",
+            "export_staging_directory",
+            "verify_published_rooted_file(",
+            "stop_and_drain_frames()",
+            "source_sha256",
+            "fn poll_recording_terminal_failure(",
+            "fn export_editable_webm(",
+            "artifact.token == request.artifact_token",
+            "artifact.revision == request.artifact_revision",
+            "Unsupported audio,",
+        ),
+        "macOS display-only backend",
+    )
+    require(
+        rooted_io,
+        (
+            "pub struct DirectoryIdentity",
+            "pub fn matches_visible_path",
+            "pub fn publish_file_to_root_if_identity",
+            "RenameFlags::NOREPLACE",
+        ),
+        "descriptor-rooted publication boundary",
+    )
+    require(
+        gstreamer_bootstrap,
+        (
+            "desktop_runtime_launch_plan()?",
+            "plan.apply_to(&mut command)",
+            "command.exec()",
+        ),
+        "trusted desktop GStreamer bootstrap",
+    )
+    require(
+        macos_capture,
+        (
+            "pub struct MacOsScreenCaptureSource",
+            "pub fn preflight_permission",
+            "pub fn request_permission",
+            "pub fn enumerate_displays",
+            "SCShareableContent::get()",
+            "with_excluding_applications",
+            "select_current_application",
+            "SCFrameStatus::Idle",
+            "pub fn poll_frame",
+            "pub fn stop_and_drain_frames",
+        ),
+        "ScreenCaptureKit source",
+    )
+    require(
+        screen_recording,
+        (
+            "pub struct ScreenRecording",
+            "pub fn preflight_screen_recording_runtime",
+            "pub fn start_preopened",
+            "pub fn push_frame",
+            "pub fn finish",
+            "pub fn export_screen_recording_webm",
+            "fdsink name=screen_recording_sink",
+            "MAX_SCREEN_RECORDING_DURATION_NS",
+            "MAX_SCREEN_RECORDING_OUTPUT_BYTES",
+            "MIN_SCREEN_RECORDING_FREE_BYTES",
+        ),
+        "owned GStreamer screen recorder",
     )
 
     expected_permissions = [
@@ -150,6 +286,9 @@ def main() -> int:
             'class="instant-progress"',
             'instant_progress_announcement',
             'instant_error_message',
+            "RecorderAdapterState::NativeMacOsDisplay",
+            "ExportProfile::EditableWebm",
+            "Native macOS capture currently records display video only.",
             '<progress',
             '<meter',
         ),
@@ -183,32 +322,167 @@ def main() -> int:
             "workflow_dispatch:",
             "desktop-real-hardware.py",
             "frame-macos-hardware",
-            "frame-windows-hardware",
+            "macos_display_webm_v1",
+            "scripts/frame desktop-macos-bundle",
+            "sign-macos-local-app.sh verify-trusted",
+            "--app-bundle target/release/bundle/macos/Frame.app",
+            "FRAME_EXPECTED_APPLE_TEAM_ID",
+            "Windows stays on the portable/unavailable shell",
         ),
         "protected hardware workflow",
     )
-    require(architecture, ("Backend truth", "Window ownership", "Fake adapter"), "architecture")
+    require(
+        hardware_validator,
+        (
+            'MACOS_DISPLAY_CAPABILITY = "macos_display_webm_v1"',
+            'MACOS_BUNDLE_IDENTIFIER = "xyz.engmanager.frame"',
+            '"macos_display_capture_partial"',
+            'evidence.get("full_product_gate") != "not_claimed"',
+            '"screen_capture_preauthorized"',
+            "verify_signed_bundle",
+            'evidence.get("source_sha") != args.expected_source_sha',
+            'evidence.get("run_id") != args.expected_run_id',
+            'evidence.get("designated_requirement_sha256") != requirement_sha256',
+            "PROTECTED_FULL_PRODUCT_CASES",
+            "validator deliberately has no full-product mode",
+        ),
+        "partial macOS hardware validator",
+    )
+    require(
+        desktop_shell_smoke,
+        (
+            'ADAPTERS = ("unavailable", "deterministic_fake", "native_macos_display")',
+            'parser.add_argument("--expected-adapter", choices=ADAPTERS, required=True)',
+            "f\"recorder_adapter={args.expected_adapter}\"",
+        ),
+        "production desktop shell smoke",
+    )
+    require(
+        architecture,
+        (
+            "Backend truth",
+            "Composition and adapter truth",
+            "Window ownership",
+            "NativeMacOsDisplay",
+            "display-only",
+            "not a Studio project",
+            "does not wire a usable previous-channel selector",
+            "Production-mode build and smoke",
+            "Fake adapter",
+        ),
+        "architecture",
+    )
+    require(
+        adr,
+        (
+            "portable `tauri-app` build deliberately selects `Unavailable`",
+            "`NativeMacOsDisplay` is not the complete recorder",
+            "--features tauri-app,custom-protocol,macos-native",
+            "--expected-adapter unavailable",
+            "--expected-adapter native_macos_display",
+            "protected capture hardware, assistive-technology",
+        ),
+        "desktop ADR",
+    )
+    require(
+        screen_evidence,
+        (
+            "does not reclassify any checkbox",
+            "Native macOS display-only source evidence",
+            "source wired; physical run pending",
+            "does not start capture",
+            "--expected-adapter native_macos_display",
+        ),
+        "screen capture evidence",
+    )
+    require(
+        studio_evidence,
+        (
+            "It does not classify the complete Studio product path as locally implemented.",
+            "not an edit-aware Studio export",
+            "does not request capture permission",
+            "not to those multitrack helpers or the Studio coordinator",
+            "--expected-adapter native_macos_display",
+        ),
+        "Studio evidence",
+    )
     require(
         evidence_doc,
-        ("Local deterministic evidence", "Protected evidence still required"),
+        (
+            "Local deterministic evidence",
+            "Native macOS display-only source evidence",
+            "Protected evidence still required",
+            "publication journey; the native WebM path",
+            "--expected-adapter native_macos_display",
+        ),
         "evidence report",
     )
     require(
         operations,
-        ("Crash and recovery", "Rollback", "Real-hardware gate"),
+        (
+            "Build modes and current boundary",
+            "Crash and recovery",
+            "`macos-native` has no durable journal or recovery-store composition.",
+            "workflow and validator are not evidence that a physical run occurred",
+            "current `macos-native` display slice cannot execute this rollback procedure",
+            "--expected-adapter unavailable",
+            "--expected-adapter native_macos_display",
+            "Rollback",
+            "Real-hardware gate",
+        ),
         "operations runbook",
     )
+    for document, label in (
+        (adr, "desktop ADR"),
+        (architecture, "desktop architecture"),
+        (screen_evidence, "screen evidence"),
+        (studio_evidence, "Studio evidence"),
+        (evidence_doc, "desktop evidence"),
+        (operations, "desktop operations"),
+    ):
+        reject(
+            document,
+            (
+                "not_selected",
+                "NotSelected",
+                "The release binary selects only `DesktopAdapterKind::Unavailable`",
+                "A release binary selects `Unavailable`",
+            ),
+            label,
+        )
 
     reviewed = [
         "apps/desktop/src/ipc.rs",
         "apps/desktop/src/runtime.rs",
         "apps/desktop/src/main.rs",
+        "apps/desktop/Cargo.toml",
+        "apps/desktop/Info.plist",
+        "apps/desktop/src/native_backend.rs",
+        "apps/desktop/src/macos_native_backend.rs",
+        "apps/desktop/src/gstreamer_bootstrap.rs",
+        "crates/macos-screen-capture/src/lib.rs",
+        "crates/macos-screen-capture/src/platform.rs",
+        "crates/media/src/screen_recording.rs",
+        ".github/workflows/desktop-real-hardware.yml",
+        "scripts/ci/desktop-real-hardware.py",
+        "scripts/ci/test-desktop-real-hardware.py",
+        "scripts/ci/sign-macos-local-app.sh",
+        "scripts/ci/check-desktop-bundle.py",
+        "scripts/ci/desktop-shell-smoke.py",
         "apps/desktop/ui/src/main.rs",
         "apps/desktop/ui/src/app.css",
         "apps/desktop/capabilities/main.json",
         "apps/desktop/permissions/desktop.toml",
         "apps/desktop/permissions/autogenerated/finalize_instant.toml",
         "apps/desktop/tests/fake_desktop_journey.rs",
+        "docs/adr/0005-leptos-rendering-and-tauri-shell.md",
+        "docs/architecture/desktop-product-v1.md",
+        "docs/evidence/screen-capture-local.md",
+        "docs/evidence/studio-mode-local.md",
+        "docs/evidence/desktop-editor-a11y-local.md",
+        "docs/operations/desktop-recovery-and-release.md",
+        "docs/operations/macos-display-recording-local.md",
+        "scripts/ci/check-desktop-product.py",
     ]
     result = {
         "schema_version": 1,
@@ -217,10 +491,18 @@ def main() -> int:
             "typed_ipc": True,
             "logical_window_scopes": True,
             "backend_truth_runtime": True,
+            "portable_unavailable_shell_source": True,
+            "macos_native_display_source_contract": True,
             "explicit_tauri_capabilities": True,
             "fake_pipeline_journey_present": True,
+            "partial_macos_hardware_validator_present": True,
             "semantic_accessibility_surface": True,
             "real_hardware_evidence": False,
+            "native_display_physical_evidence": False,
+            "studio_edit_aware_integration": False,
+            "native_recovery_evidence": False,
+            "assistive_technology_evidence": False,
+            "signed_distribution_runtime_evidence": False,
         },
         "reviewed_files": [
             {"path": path, "sha256": digest(path)} for path in reviewed

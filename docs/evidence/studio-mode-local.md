@@ -3,8 +3,8 @@
 Issue: `_issues/27-p4-studio-mode.md`
 
 This record separates executable provider-neutral evidence from protected
-native, historical, hardware, UX, and release evidence. It does not classify
-the complete Studio product path as locally implemented.
+native, historical, hardware, UX, and release evidence.
+It does not classify the complete Studio product path as locally implemented.
 
 ## Closure ledger boundary
 
@@ -16,12 +16,15 @@ but still needs a reviewed representative legacy-project corpus.
 
 The remaining tests exercise contracts, synthetic GStreamer sources,
 filesystem components, and a reference renderer, not a production Studio
-service. No release path pumps screen/audio/camera adapters into the multitrack
-appsrc graph or connects recording to the journal and recovery stores. The
-playable preview and export helpers each consume a single source path and do
-not execute the canonical edit plan; the MP4 helper has no audio branch. The
-reference renderer writes a checksum-bound bundle rather than the requested
-playable edit-aware export. Therefore those artifacts cannot satisfy native
+service. The `macos-native` release composition now pumps one selected full
+display into a separate VP8/WebM recorder, but it does not supply microphone,
+system-audio, or camera tracks and is not connected to the Studio multitrack
+graph, journal, project, edit plan, or recovery stores. Its artifact-backed
+Editable WebM copy/publication is not an edit-aware Studio export. The playable
+preview and export helpers each consume a single source path and do not execute
+the canonical edit plan; the MP4 helper has no audio branch. The reference
+renderer writes a checksum-bound bundle rather than the requested playable
+edit-aware export. Therefore these paths cannot satisfy Studio native
 recording, recovery, edit-aware preview/export, Cloudflare distribution-master,
 decoded-golden, long-project, or hardware-fallback/cancellation checkboxes.
 
@@ -45,6 +48,10 @@ The external contract suite exercises:
   originals on one pipeline clock, validates nontrivial immutable outputs,
   decodes a bounded RGB preview frame at a requested position, and tears down
   every graph to `Null`;
+- a separately composed macOS display-only desktop source and recording graph
+  whose source-level checks cover permission preflight, opaque display
+  selection, bounded frame ingress, stop/cancel, and artifact-bound Editable
+  WebM export without claiming a physical capture run or Studio integration;
 - journal CAS, ownership fencing, lost acknowledgement reconciliation,
   idempotent replay, stale writers, exact pending asset/render continuity,
   asset/edit/render carry-forward and exact resolution from recoverable failure,
@@ -93,49 +100,68 @@ to EOS. These executable synthetic media artifacts prove factory availability
 and basic single-source encode/decode behavior, not the Studio recording or
 edit-aware renderer paths.
 
+The production-mode desktop composition can be built and its adapter-truth
+bootstrap smoked on macOS with:
+
+```text
+python3 scripts/ci/build-desktop-ui.py
+cargo build --locked --release -p frame-desktop-core \
+  --features tauri-app,custom-protocol,macos-native --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
+```
+
+This smoke does not request capture permission, record a frame, create a
+Studio project, execute an edit plan, or inspect an exported artifact.
+
+The [local macOS display-recording runbook](../operations/macos-display-recording-local.md)
+can now exercise a real five-second display-video recording and byte-identical
+Editable WebM export. That makes the narrow recorder/export adapter functional;
+it still does not create a Studio project, journal or recover multiple tracks,
+interpret edits, or render a distribution master, so issue 27 remains open.
+
 Focused command:
 
 ```text
 cargo test -p frame-media --test studio_mode_contract
-43 passed; 0 failed
 
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
 GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media \
   native_execution::tests::studio_tracks_preview_and_webm_export_are_real_and_playable
-pass
 ```
 
-Full media command (using the same exact plugin root embedded at build time):
+These commands exercise the provider-neutral Studio contract and synthetic
+native-execution helper. Their results must not be reused as evidence that the
+new macOS display source was exercised.
+
+Full media command (using the audited plugin root discovered for this build):
 
 ```text
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
-GST_PLUGIN_SYSTEM_PATH_1_0=/opt/homebrew/Cellar/gstreamer/1.28.0_2/lib/gstreamer-1.0 \
+GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media --all-targets
-261 passed; 0 failed (75 unit + 54 A/V + 5 conformance + 26 Instant +
-4 media-service + 54 screen + 43 Studio)
 ```
 
-Static gates:
+Record fresh output from this aggregate command for the revision under review;
+historical pass counts predate the native display-only composition and are not
+native capture evidence.
+
+Static gate commands:
 
 ```text
-cargo clippy -p frame-media --all-targets -- -D warnings
-pass
+cargo clippy --locked -p frame-media --all-targets -- -D warnings
 
 RUSTDOCFLAGS=-Dwarnings cargo doc -p frame-media --no-deps
-pass
 
 rustfmt --edition 2024 --check crates/media/src/studio.rs crates/media/tests/studio_mode_contract.rs
-pass
 
 python3 scripts/ci/check-secrets.py
-self-test: 5 fixtures; tracked scan: 392 files; pass
 ```
 
-The exact Studio-owned files also passed whitespace and secret-marker scans.
-Production modules contain no intentional panic/todo boundary and use no
-unsafe media bridge. The repository-wide format, lint, and test commands are
-rerun at the aggregate gate after concurrent issue lanes merge.
+Record fresh command output and the reviewed commit with any evidence bundle.
+Production modules contain no intentional panic/todo boundary and use no unsafe
+media bridge. The repository-wide format, lint, and test commands are rerun at
+the aggregate gate after concurrent issue lanes merge.
 
 ## Synthetic and component evidence only
 
@@ -147,9 +173,9 @@ The contract suite uses deterministic fake native ports alongside production
 filesystem durability components. Its reference renderer writes a canonical
 checksum-bound bundle, while the separate native execution helpers supply
 synthetic tracks and single-source preview, WebM, and gated video-only MP4
-evidence. Those helpers are not connected to the Studio coordinator or desktop
-release. Timeline goldens remain mathematical and are not claimed as decoded
-or perceptual-diff evidence.
+evidence. The display-only desktop recorder is connected to the release shell
+but not to those multitrack helpers or the Studio coordinator. Timeline goldens
+remain mathematical and are not claimed as decoded or perceptual-diff evidence.
 The JSON keys and non-fragmented `.mp4`/`.ogg` paths were checked against
 `crates/project/src/meta.rs`, `crates/project/src/configuration.rs`, and
 `crates/recording/src/studio_recording.rs` at the pinned revision.

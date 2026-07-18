@@ -34,15 +34,27 @@ assets and does not provide a server runtime inside the desktop application.
   `ShellCapabilities` Rust type returned by the Tauri command. A protocol and
   backend-truth check must pass before the UI enables native work.
 - Tauri's global bridge is enabled because that is the supported Tauri/Leptos
-  integration. The only registered bootstrap command re-checks the exact
-  `main` window label. The build manifest and capability file allow only that
-  command and grant no filesystem, shell,
-  process, network, or dialog permission, and the CSP rejects remote scripts.
+  integration. Each of the four registered commands re-checks the exact `main`
+  window label. The build manifest and capability file allow only those
+  commands and grant no filesystem, shell, process, network, or dialog
+  permission, and the CSP rejects remote scripts.
 - Desktop runtime builds currently support macOS and Windows. Linux remains
   disabled until the time-bounded GLib advisory record in
   `docs/security/dependency-policy.md` can be removed.
-- The shell reports `not_selected` for capture until a real platform adapter is
-  integrated. UI controls remain disabled instead of simulating success.
+- A portable `tauri-app` build deliberately selects `Unavailable` in release
+  mode. On macOS, adding `macos-native` composes the narrow
+  `NativeMacOsDisplay` adapter; construction includes trusted GStreamer
+  recorder preflight and native-source initialization and falls back to
+  `Unavailable` if either cannot be established. ScreenCaptureKit permission
+  preflight/request occurs only when the user prepares capture. The debug-only
+  deterministic fake remains separately gated by `FRAME_DESKTOP_FAKE_PIPELINE=1`.
+- `NativeMacOsDisplay` is not the complete recorder described by issues 24,
+  27, and 33. It enumerates opaque displays, requests screen-recording
+  permission, records one full display with embedded cursor and Frame-owned
+  window exclusion, and seals and safely publishes an Editable WebM artifact. Window/region
+  capture, microphone, system audio, camera, pause/resume, multitrack Studio,
+  edit-aware export, recovery, MP4 distribution, updater, and native lifecycle
+  integrations remain unavailable.
 
 ## Commands and evidence
 
@@ -54,8 +66,15 @@ cargo test --locked -p frame-desktop-core --features tauri-app --bin frame-deskt
 cargo clippy --locked -p frame-desktop-ui --no-default-features --features csr --target wasm32-unknown-unknown -- -D warnings
 python3 scripts/ci/build-desktop-ui.py
 python3 scripts/ci/check-desktop-bundle.py
+# Portable macOS/Windows shell: release adapter remains Unavailable.
 cargo build --locked --release -p frame-desktop-core --features tauri-app,custom-protocol --bin frame-desktop
-python3 scripts/ci/desktop-shell-smoke.py
+python3 scripts/ci/desktop-shell-smoke.py --expected-adapter unavailable
+
+# Native macOS display-only shell, run on a macOS build machine with the
+# audited GStreamer installation discovered by pkg-config.
+cargo build --locked --release -p frame-desktop-core \
+  --features tauri-app,custom-protocol,macos-native --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
 
 cargo test --locked -p frame-web
 cargo clippy --locked -p frame-web --no-default-features --features hydrate --target wasm32-unknown-unknown --bin frame-web-hydrate -- -D warnings
@@ -64,11 +83,14 @@ python3 -I scripts/ci/check-web-hydration-bundle.py
 python3 -I scripts/ci/web-hydration-smoke.py --origin http://127.0.0.1:3000
 ```
 
-`quality-gates.yml` repeats the command boundary, Wasm bundle, and native
+`quality-gates.yml` repeats the portable command boundary, Wasm bundle, and
 release build on both supported operating systems and retains the exact binary
-and frontend bundle. The deterministic core tests remain the fake-backend
-evidence for replay, stale revisions, device loss, recovery, paths, and
-accessibility state.
+and frontend bundle. That cross-platform shell lane does not enable
+`macos-native`. The deterministic core tests remain the fake-backend evidence
+for replay, stale revisions, device loss, recovery, paths, and accessibility
+state. Source checks and a production-CSP smoke for a `macos-native` binary do
+not replace protected capture hardware, assistive-technology, signing,
+notarization, or clean-machine evidence.
 
 The release handoff copies `web-dist` next to `frame-web`, and Render copies the
 same verified directory next to `target/release/frame-web`. Production and

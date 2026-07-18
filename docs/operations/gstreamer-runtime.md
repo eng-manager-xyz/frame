@@ -33,6 +33,21 @@ cannot undo code already injected into its own process by a hostile parent
 loader. A signed launch chain, app-relative macOS/Windows loading and Windows
 DLL search hardening remain protected issue 22 gates.
 
+The macOS desktop's raw release executable has one additional local-only
+bootstrap. Before Tauri or GStreamer creates threads, an executable outside an
+application bundle either confirms the exact build-time plugin root or replaces
+itself with `GST_PLUGIN_SYSTEM_PATH_1_0` as the sole plugin-search setting. The
+replacement uses `exec`, so process identity, signals, exit status, arguments,
+and standard streams are preserved; there is no recursion marker that a parent
+can forge.
+Explicit plugin or loader overrides still fail closed. A locally built
+`*.app/Contents/MacOS` executable may use the same path only while its
+canonical location remains beneath this checkout's canonical `target`
+directory. Canonicalization prevents a parent traversal or symlink from turning
+that developer exception into an installed-app fallback. A copied or installed
+bundle fails until an audited app-relative runtime, native dependency closure,
+signatures, license inventory, and clean-machine evidence are present.
+
 After initialization, every manifest factory's backing plugin filename must
 canonicalize under the build-time root. The thumbnail path repeats that audit
 over the full live graph after `decodebin` autoplugging, so dynamically selected
@@ -117,6 +132,44 @@ bundle, rebuild/sign, rerun synthetic and platform smoke, and retain the old
 compatible bundle for rollback.
 
 ## Local verification
+
+On a macOS development machine with the audited GStreamer installation used at
+build time, the native desktop release binary bootstraps its own trusted plugin
+path; do not export a substitute path:
+
+```sh
+cargo build --locked --release -p frame-desktop-core \
+  --features tauri-app,custom-protocol,macos-native --bin frame-desktop
+./target/release/frame-desktop
+```
+
+This raw-binary path is suitable for backend boot and GStreamer diagnostics,
+but not for a physical ScreenCaptureKit permission test: its linker-generated
+code-signing identity is not `xyz.engmanager.frame`. Build, sign, verify, and
+launch a release-mode local `.app` with:
+
+```sh
+export FRAME_CODESIGN_IDENTITY='Apple Development: Your Name (TEAMID)'
+scripts/frame desktop-macos-bundle
+scripts/frame desktop-macos-open
+```
+
+On current macOS releases, an Apple Development or Developer ID identity is
+required for reliable ScreenCaptureKit TCC behavior. The bundle command has an
+identifier-stable ad-hoc fallback for shell testing, but that fallback is not
+physical-capture evidence.
+
+Do not move that artifact before testing it. This developer exception is not a
+distributable bundle and is not clean-machine, signing, notarization, license,
+or native dependency-closure evidence for issue 22. Once copied outside the
+checkout's canonical `target` tree, it fails rather than borrowing the build
+machine's GStreamer installation.
+
+Follow the [macOS display-recording runbook](macos-display-recording-local.md)
+for the permission, five-second static-screen, seal, export, duration, and hash
+checks. Production display recording uses `fdsink`/`fdsrc` against a retained
+private descriptor; path-based `filesink` remains in synthetic and other
+non-display media helpers and is not the native capture writer.
 
 ```sh
 export GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)"

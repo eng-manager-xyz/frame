@@ -21,7 +21,9 @@ pub enum DesktopShell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecorderAdapterState {
-    NotSelected,
+    Unavailable,
+    DeterministicFake,
+    NativeMacOsDisplay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +49,7 @@ impl ShellCapabilities {
             protocol_version: IPC_PROTOCOL_VERSION,
             shell: DesktopShell::Tauri2LeptosCsr,
             backend_truth: true,
-            recorder_adapter: RecorderAdapterState::NotSelected,
+            recorder_adapter: RecorderAdapterState::Unavailable,
             editor_adapter: EditorAdapterState::RevisionFencedCore,
             instant_finalize: InstantFinalizeCapabilityState::NotConfigured,
         }
@@ -112,7 +114,7 @@ opaque_id!(RequestId);
 opaque_id!(WindowId);
 opaque_id!(SessionId);
 
-fn valid_opaque_id(value: &str) -> bool {
+pub(crate) fn valid_opaque_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 96
         && value
@@ -136,6 +138,7 @@ pub enum WindowRole {
 pub enum CommandKind {
     WindowOpen,
     RecorderPrepare,
+    RecorderPoll,
     RecorderStart,
     RecorderPause,
     RecorderResume,
@@ -291,6 +294,7 @@ pub enum IpcCommand {
         role: WindowRole,
     },
     RecorderPrepare,
+    RecorderPoll,
     RecorderStart {
         intent_id: String,
     },
@@ -400,6 +404,7 @@ impl IpcCommand {
         match self {
             Self::WindowOpen { .. } => CommandKind::WindowOpen,
             Self::RecorderPrepare => CommandKind::RecorderPrepare,
+            Self::RecorderPoll => CommandKind::RecorderPoll,
             Self::RecorderStart { .. } => CommandKind::RecorderStart,
             Self::RecorderPause { .. } => CommandKind::RecorderPause,
             Self::RecorderResume { .. } => CommandKind::RecorderResume,
@@ -567,6 +572,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "recorder_resume",
     "recorder_stop",
     "recorder_cancel",
+    "recorder_poll",
     "device_enumerate",
     "device_select",
     "recovery_scan",
@@ -1004,6 +1010,7 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
         WindowRole::Recorder => matches!(
             command,
             CommandKind::RecorderPrepare
+                | CommandKind::RecorderPoll
                 | CommandKind::RecorderStart
                 | CommandKind::RecorderPause
                 | CommandKind::RecorderResume
@@ -1225,6 +1232,43 @@ mod tests {
             "request-2",
         );
         assert!(registry.accept(accepted).is_ok());
+    }
+
+    #[test]
+    fn recorder_poll_is_scoped_only_to_the_recorder_window() {
+        assert_eq!(
+            serde_json::to_value(IpcCommand::RecorderPoll).expect("serialize poll"),
+            serde_json::json!({ "command": "recorder_poll" }),
+            "the poll command has no WebView-controlled token or unbounded payload"
+        );
+        assert!(
+            serde_json::from_value::<IpcCommand>(serde_json::json!({
+                "command": "recorder_poll",
+                "payload": { "repeat": 100 }
+            }))
+            .is_err()
+        );
+        let envelope = request(IpcCommand::RecorderPoll, 1, "request-poll");
+        let json = serde_json::to_string(&envelope).expect("serialize poll envelope");
+        assert_eq!(
+            decode_request(&json).expect("decode poll envelope"),
+            envelope,
+            "the production decoder must recognize the allowlisted poll command"
+        );
+        assert!(command_allowed(
+            WindowRole::Recorder,
+            CommandKind::RecorderPoll
+        ));
+        for role in [
+            WindowRole::Main,
+            WindowRole::Recovery,
+            WindowRole::Editor,
+            WindowRole::Export,
+            WindowRole::Settings,
+            WindowRole::Overlay,
+        ] {
+            assert!(!command_allowed(role, CommandKind::RecorderPoll));
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the production Tauri binary and require a WebView-to-Rust marker."""
+"""Launch a production-CSP Tauri binary and verify its advertised adapter."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MARKER = "FRAME_DESKTOP_SMOKE_V1 protocol=1 backend_truth=true"
+ADAPTERS = ("unavailable", "deterministic_fake", "native_macos_display")
 
 
 def digest(path: Path) -> str:
@@ -32,8 +32,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=default_binary)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--expected-adapter", choices=ADAPTERS, required=True)
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args()
+
+    marker = (
+        "FRAME_DESKTOP_SMOKE_V1 protocol=1 backend_truth=true "
+        f"recorder_adapter={args.expected_adapter}"
+    )
 
     binary = args.binary.resolve()
     if not binary.is_file():
@@ -62,7 +68,7 @@ def main() -> int:
             + stderr[-2_000:]
         )
     elapsed_ms = round((time.monotonic() - started) * 1_000)
-    if process.returncode != 0 or MARKER not in stdout.splitlines():
+    if process.returncode != 0 or marker not in stdout.splitlines():
         raise SystemExit(
             f"desktop shell smoke failed: exit={process.returncode}, marker absent\n"
             + stdout[-2_000:]
@@ -76,7 +82,8 @@ def main() -> int:
         "platform": os.environ.get("RUNNER_OS", sys.platform),
         "binary_sha256": digest(binary),
         "elapsed_ms": elapsed_ms,
-        "marker": MARKER,
+        "expected_adapter": args.expected_adapter,
+        "marker": marker,
         "exit_code": process.returncode,
     }
     if args.evidence:
@@ -85,7 +92,10 @@ def main() -> int:
         output.write_text(
             json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-    print(f"desktop production-CSP WebView smoke passed in {elapsed_ms} ms")
+    print(
+        "desktop production-CSP WebView smoke passed "
+        f"with adapter={args.expected_adapter} in {elapsed_ms} ms"
+    )
     return 0
 
 

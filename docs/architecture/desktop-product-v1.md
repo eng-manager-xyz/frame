@@ -1,8 +1,10 @@
 # Desktop product contract v1
 
-Issue 33 owns the Leptos/Tauri recorder and editor boundary, not the native capture or media
-implementations from issues 24–27. This contract connects those future adapters without allowing the
-WebView to acquire filesystem, shell, device, tray, updater, or arbitrary Tauri authority.
+Issue 33 owns the Leptos/Tauri recorder and editor boundary, while issues 24–27
+own capture and media behavior. The portable contract now composes one narrow
+macOS display-video adapter without allowing the WebView to acquire filesystem,
+shell, device, tray, updater, or arbitrary Tauri authority. That slice is not
+the complete recorder or editor required to close any of those issues.
 
 ## Backend truth
 
@@ -24,6 +26,46 @@ There are four Tauri commands:
 All product operations are variants of the Rust `IpcCommand` enum. Unknown commands, malformed or
 oversized JSON, unsupported protocol versions, duplicate request IDs, replayed/gapped sequences,
 stale settings/editor/update revisions, and invalid payloads fail closed.
+
+## Composition and adapter truth
+
+Adapter truth is a build- and startup-time property, not a UI inference:
+
+- a release build with `tauri-app,custom-protocol` is the portable shell and
+  selects `DesktopAdapterKind::Unavailable` on macOS and Windows;
+- a macOS release build that also enables `macos-native` requests
+  `DesktopAdapterKind::NativeMacOs`, runs the trusted GStreamer bootstrap, and
+  constructs `MacOsNativeDesktopBackend`; failed construction degrades to
+  `Unavailable` before the runtime is exposed to the WebView; and
+- only a debug build with `FRAME_DESKTOP_FAKE_PIPELINE=1` selects
+  `DeterministicFake`.
+
+`bootstrap_main` derives `RecorderAdapterState` from the runtime snapshot, so
+the WebView observes `Unavailable`, `DeterministicFake`, or
+`NativeMacOsDisplay` consistently with `bootstrap_desktop`. Native commands use
+`dispatch_native_json` only while that same runtime snapshot names
+`NativeMacOs`; the portable shell continues through the non-native dispatcher.
+
+The native macOS implementation is deliberately display-only. It performs
+GStreamer factory preflight before backend construction, uses ScreenCaptureKit
+permission preflight/request, enumerates bounded privacy-safe display summaries,
+records one selected full display as BGRA/sRGB video with embedded cursor and
+whole-Frame-application exclusion. ScreenCaptureKit `Idle` callbacks repeat the
+last valid Complete frame at the nominal cadence, including the bounded stop
+tail, so unchanged display time remains in the media timeline. The recorder
+writes and verifies through a preopened descriptor, publishes the sealed inode
+with a rooted no-replace rename, retains its SHA-256, and copies exports through
+rooted descriptors while checking that digest. Media, recordings, export, and
+private export-staging directories stay pinned for the backend lifetime; their
+visible identities are revalidated around publication so a rename or real-directory
+replacement fails closed instead of producing a false path. Export keeps its
+staging descriptor through the cross-root rename and rehashes the published inode.
+A bounded health poll reconciles
+terminal worker failures without leaving the UI in Recording. The first slice
+is capped at four hours, 2 GB, and a 512 MB filesystem reserve. It
+rejects microphone, system audio, camera, window, region, pause/resume, and MP4
+paths. Its export is artifact-backed single-source WebM, not the canonical
+Studio edit plan or a multitrack/distribution-master render.
 
 ## Window ownership
 
@@ -58,7 +100,7 @@ general `unsafe-eval`, object embedding, base URI, ancestor framing, or broad ne
 
 ## Recorder and project state
 
-The contract represents Instant/Studio mode, bounded countdown, display/window/region targets,
+The portable contract represents Instant/Studio mode, bounded countdown, display/window/region targets,
 Frame-window exclusion, permission state, typed device counts and selection, microphone/system-audio
 meters, camera activity, pause/resume/stop/cancel, recovery copies, revision-fenced trim/save,
 monotonic export progress, verified multipart upload progress/pause/resume, settings/presets, and
@@ -66,6 +108,13 @@ update/relaunch state. Instant publication status uses the shared versioned
 phase/progress/retry/error DTO. Active work has determinate or indeterminate
 progress, terminal states remove the opaque WebView handle, and stable error
 copy is announced without exposing credentials or recording identity.
+
+Representation is not implementation. `NativeMacOsDisplay` currently enables
+permission preparation, display refresh/selection, display-video start, stop,
+cancel, and Editable WebM export. The remaining represented operations continue
+to return unavailable or stay disabled. In particular, a sealed native
+recording is not a Studio project, export progress is not a cancellable
+edit-aware render, and no native recording journal/recovery owner is wired.
 
 The Leptos product uses native buttons, fieldsets, labels, meters, progress elements, headings,
 landmarks, a polite atomic status region, an assertive modal error surface, visible focus, a skip
@@ -77,11 +126,18 @@ focus restoration, and Escape dismissal.
 ## Hotkey, tray, overlay, and update lifecycle
 
 Lifecycle transitions are typed and backend-owned. The fake adapter proves ownership and state
-reconstruction without pretending to call OS APIs. A release binary selects `Unavailable`; only a
-debug build with `FRAME_DESKTOP_FAKE_PIPELINE=1` can select the deterministic fake. Native global
+reconstruction without pretending to call OS APIs. The portable release shell
+selects `Unavailable`; the `macos-native` release composition selects the narrow
+display adapter when backend construction succeeds; and only a debug build with
+`FRAME_DESKTOP_FAKE_PIPELINE=1` can select the deterministic fake. Native global
 hotkey registration, tray actions, overlay placement, target-picker placement, real updater install,
-and OS window exclusion remain blocked until the platform adapters and the protected hardware matrix
-pass.
+and cross-platform window-exclusion integration remain blocked until the
+platform adapters and the protected hardware matrix pass.
+
+The entire current Frame application is excluded inside the ScreenCaptureKit
+display filter, including windows created after capture starts, but that
+source-level invariant is not physical exclusion-recording
+evidence and does not close the broader window/lifecycle acceptance gate.
 
 ## Fake adapter
 
@@ -96,5 +152,36 @@ never rendered or logged.
 Legacy settings and project headers are inspected into explicit compatible, migratable,
 needs-review, unsupported, or invalid reports. Inspection never mutates input, every proposed project
 plan preserves the original, and unknown settings/effects require review rather than silent loss.
-The previous signed desktop remains selectable until parity gate 29 is approved. Rollback changes
-the release selector; it does not rewrite projects produced by either desktop.
+The state model retains a legacy-selector flag and rollback contract, but the
+current native slice does not wire a usable previous-channel selector or
+updater. A future signed release must retain the previous desktop until parity
+gate 29 is approved; once wired, rollback changes the release selector and does
+not rewrite projects produced by either desktop.
+
+## Production-mode build and smoke
+
+From the repository root, build and smoke the portable shell separately from
+the native macOS composition:
+
+```sh
+# Cross-platform portable shell; recorder truth is Unavailable.
+python3 scripts/ci/build-desktop-ui.py
+cargo build --locked --release -p frame-desktop-core \
+  --features tauri-app,custom-protocol --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py --expected-adapter unavailable
+
+# macOS only; recorder truth is NativeMacOsDisplay if backend construction succeeds.
+cargo build --locked --release -p frame-desktop-core \
+  --features tauri-app,custom-protocol,macos-native --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
+```
+
+The smoke proves the production-CSP WebView reaches the allowlisted Rust
+bootstrap and reports coherent adapter truth. It does not grant screen-recording
+permission, enumerate a physical display, record a frame, inspect the output,
+exercise recovery, or provide accessibility or distribution evidence.
+
+The separate [local macOS recording runbook](../operations/macos-display-recording-local.md)
+builds the `.app` and exercises the narrow real display-video path. A successful
+run proves that slice only; it does not close the complete issue-24, issue-27,
+or issue-33 product contracts.

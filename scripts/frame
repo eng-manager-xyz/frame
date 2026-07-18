@@ -11,6 +11,8 @@ LOCAL_STATE=apps/control-plane/.wrangler/state
 PID_FILE=.tmp/frame-local.pids
 MEDIA_ADDR=${FRAME_MEDIA_ADDR:-127.0.0.1:8790}
 GSTREAMER_EXEC="$ROOT/scripts/ci/gstreamer-sanitized-exec"
+MACOS_APP="$ROOT/target/release/bundle/macos/Frame.app"
+MACOS_SIGNER="$ROOT/scripts/ci/sign-macos-local-app.sh"
 
 # `scripts/frame` is a trusted local/service entrypoint. Clear native loader
 # overrides before invoking any child process; raw binaries also reject these
@@ -34,10 +36,39 @@ Usage: scripts/frame <command>
   stop         stop processes started by scripts/frame start
   logs         tail the local web and Worker logs
   media-smoke  create a synthetic WebM artifact under target/
+  desktop-macos-bundle
+               build and sign the local release-mode Frame.app
+  desktop-macos-sign
+               re-sign and verify the existing local Frame.app
+  desktop-macos-open
+               verify and launch the existing signed Frame.app
+  desktop-macos-identities
+               list installed Apple code-signing identities
   d1-conformance
                 run aggregate repository parity/fault tests in isolated local D1
   preview-e2e   run the credential-free two-origin portfolio/Frame journey
 EOF
+}
+
+require_macos() {
+  if [[ $(uname -s) != Darwin ]]; then
+    printf 'this command requires macOS\n' >&2
+    exit 2
+  fi
+}
+
+build_macos_app() {
+  require_macos
+  need cargo
+  need python3
+  python3 scripts/ci/build-desktop-ui.py
+  python3 scripts/ci/check-desktop-bundle.py
+  (
+    cd apps/desktop
+    cargo tauri build --bundles app \
+      --features macos-native,custom-protocol
+  )
+  "$MACOS_SIGNER" sign
 }
 
 need() {
@@ -56,6 +87,22 @@ configure_gstreamer() {
     return 1
   fi
   export GST_PLUGIN_SYSTEM_PATH_1_0=$plugin_dir
+}
+
+check_macos_native_desktop() {
+  if [[ $(uname -s) != Darwin ]]; then
+    return 0
+  fi
+  "$GSTREAMER_EXEC" cargo clippy --locked -p frame-desktop-core \
+    --features macos-native,custom-protocol --all-targets -- -D warnings
+}
+
+test_macos_native_desktop() {
+  if [[ $(uname -s) != Darwin ]]; then
+    return 0
+  fi
+  "$GSTREAMER_EXEC" cargo test --locked -p frame-desktop-core \
+    --features macos-native,custom-protocol
 }
 
 refuse_production() {
@@ -165,6 +212,7 @@ case "$command" in
     cargo fmt --all --check
     "$GSTREAMER_EXEC" cargo clippy --workspace --all-targets -- -D warnings
     "$GSTREAMER_EXEC" cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
+    check_macos_native_desktop
     cargo deny check advisories bans licenses sources
     scripts/ci/check-workspace-boundaries.sh
     python3 scripts/ci/check-secrets.py
@@ -206,6 +254,7 @@ case "$command" in
     configure_gstreamer
     "$GSTREAMER_EXEC" cargo test --workspace
     "$GSTREAMER_EXEC" cargo test --locked -p frame-desktop-core --features instant-finalize
+    test_macos_native_desktop
     python3 -I scripts/ci/run-legacy-api-parity.py \
       --evidence-dir target/evidence
     python3 -I scripts/ci/r2-completion-reconciliation-sqlite-conformance.py
@@ -240,6 +289,23 @@ case "$command" in
   media-smoke)
     configure_gstreamer
     "$GSTREAMER_EXEC" cargo run -p frame-media-worker -- smoke target/frame-smoke.webm
+    ;;
+  desktop-macos-bundle)
+    configure_gstreamer
+    build_macos_app
+    ;;
+  desktop-macos-sign)
+    require_macos
+    "$MACOS_SIGNER" sign
+    ;;
+  desktop-macos-open)
+    require_macos
+    "$MACOS_SIGNER" verify
+    open "$MACOS_APP"
+    ;;
+  desktop-macos-identities)
+    require_macos
+    "$MACOS_SIGNER" identities
     ;;
   d1-conformance)
     refuse_production

@@ -14,6 +14,7 @@ mod native_execution;
 mod pipeline;
 mod runtime;
 mod screen_capture;
+mod screen_recording;
 mod studio;
 mod supervisor;
 
@@ -33,6 +34,7 @@ pub use native_execution::*;
 pub use pipeline::*;
 pub use runtime::*;
 pub use screen_capture::*;
+pub use screen_recording::*;
 pub use studio::*;
 pub use supervisor::*;
 

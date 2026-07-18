@@ -19,9 +19,18 @@ use crate::{
         InstantFinalizeHandle, InstantFinalizeRegistrationV1,
     },
     ipc::{
-        CaptureTargetKind, CommandOutcome, DeviceClass, IpcCommand, IpcError, LifecycleAction,
-        PathPolicy, PublicErrorCode, RecorderMode, RequestEnvelope, ResponseEnvelope, RootAccess,
-        ScopeRegistry, SessionId, UpdateAction, WindowId, WindowRole, WindowScope, decode_request,
+        CaptureTargetKind, CommandOutcome, DeviceClass, ExportProfile, IpcCommand, IpcError,
+        LifecycleAction, PathPolicy, PathUse, PublicErrorCode, RecorderMode, RequestEnvelope,
+        ResponseEnvelope, RootAccess, ScopeRegistry, SessionId, UpdateAction, ValidatedPath,
+        WindowId, WindowRole, WindowScope, decode_request, valid_opaque_id,
+    },
+    native_backend::{
+        CAPTURE_ARTIFACT_SUMMARY_VERSION, CaptureArtifactSummary, CaptureTargetCatalog,
+        CaptureTargetSummary, NativeCaptureArtifact, NativeCaptureStartRequest,
+        NativeDesktopBackend, NativeDesktopBackendError, NativeEditableWebmExportRequest,
+        NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
+        NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
+        NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
     },
     workflow::{
         BackendEvent, BackendEventEnvelope, DesktopWorkflow, DeviceCounts, DeviceState,
@@ -37,6 +46,7 @@ pub const DESKTOP_RUNTIME_VERSION: u16 = 2;
 pub enum DesktopAdapterKind {
     Unavailable,
     DeterministicFake,
+    NativeMacOs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +127,10 @@ pub struct DesktopRuntimeSnapshot {
     pub meter: AudioMeterSnapshot,
     pub recorder_configuration: RecorderConfiguration,
     pub selected_sources: SelectedSources,
+    #[serde(default = "CaptureTargetCatalog::empty")]
+    pub capture_targets: CaptureTargetCatalog,
+    #[serde(default)]
+    pub capture_artifact: Option<CaptureArtifactSummary>,
     pub settings: DesktopSettingsSnapshot,
     pub lifecycle: LifecycleSnapshot,
     pub update: UpdateState,
@@ -209,6 +223,42 @@ pub struct DesktopRoots {
     exports: String,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct NativeRecordingAuthority {
+    recording_token: String,
+    catalog_generation: u64,
+    target_token: String,
+}
+
+impl fmt::Debug for NativeRecordingAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeRecordingAuthority")
+            .field("recording_token", &"<redacted>")
+            .field("catalog_generation", &self.catalog_generation)
+            .field("target_token", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct NativeArtifactAuthority {
+    summary: CaptureArtifactSummary,
+    media_path: ValidatedPath,
+    export_path: Option<ValidatedPath>,
+}
+
+impl fmt::Debug for NativeArtifactAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeArtifactAuthority")
+            .field("summary", &self.summary)
+            .field("media_path", &self.media_path)
+            .field("export_path", &self.export_path)
+            .finish()
+    }
+}
+
 impl DesktopRoots {
     #[must_use]
     pub fn new(
@@ -254,6 +304,12 @@ pub struct DesktopRuntime {
     meter: AudioMeterSnapshot,
     recorder_configuration: RecorderConfiguration,
     selected_sources: SelectedSources,
+    capture_targets: CaptureTargetCatalog,
+    selected_capture_target: Option<CaptureTargetSummary>,
+    native_recording: Option<NativeRecordingAuthority>,
+    native_artifact: Option<NativeArtifactAuthority>,
+    native_media_paths: PathPolicy,
+    native_export_paths: PathPolicy,
     settings: DesktopSettingsSnapshot,
     lifecycle: LifecycleSnapshot,
     update: UpdateState,
@@ -280,6 +336,22 @@ impl DesktopRuntime {
         session_nonce: &str,
     ) -> Result<Self, DesktopRuntimeError> {
         let backend_session = SessionId::new(format!("backend-{session_nonce}"))?;
+        let native_media_paths = PathPolicy::empty().allow_root(
+            &roots.media,
+            RootAccess {
+                read: true,
+                write: false,
+                delete: false,
+            },
+        )?;
+        let native_export_paths = PathPolicy::empty().allow_root(
+            &roots.exports,
+            RootAccess {
+                read: true,
+                write: true,
+                delete: false,
+            },
+        )?;
         let mut registry = ScopeRegistry::new();
         let mut contexts = Vec::new();
         for role in [
@@ -354,12 +426,18 @@ impl DesktopRuntime {
                 system_audio_selected: false,
                 camera_selected: false,
             },
+            capture_targets: CaptureTargetCatalog::empty(),
+            selected_capture_target: None,
+            native_recording: None,
+            native_artifact: None,
+            native_media_paths,
+            native_export_paths,
             settings: DesktopSettingsSnapshot {
                 revision: 1,
                 mode: RecorderMode::Instant,
                 frame_rate: 30,
-                microphone_enabled: true,
-                system_audio_enabled: true,
+                microphone_enabled: adapter != DesktopAdapterKind::NativeMacOs,
+                system_audio_enabled: adapter != DesktopAdapterKind::NativeMacOs,
                 camera_enabled: false,
                 reduced_motion: false,
             },
@@ -379,6 +457,9 @@ impl DesktopRuntime {
                 }
                 DesktopAdapterKind::DeterministicFake => {
                     "Deterministic fake desktop backend ready.".into()
+                }
+                DesktopAdapterKind::NativeMacOs => {
+                    "Native macOS display capture is ready for permission setup.".into()
                 }
             },
         })
@@ -418,6 +499,11 @@ impl DesktopRuntime {
             meter: self.meter,
             recorder_configuration: self.recorder_configuration,
             selected_sources: self.selected_sources,
+            capture_targets: self.capture_targets.clone(),
+            capture_artifact: self
+                .native_artifact
+                .as_ref()
+                .map(|artifact| artifact.summary.clone()),
             settings: self.settings,
             lifecycle: self.lifecycle,
             update: self.update,
@@ -552,15 +638,59 @@ impl DesktopRuntime {
         self.dispatch(request)
     }
 
+    /// Decodes the same fail-closed IPC envelope, then invokes an explicitly
+    /// injected native backend only after scope, replay, and path checks pass.
+    pub fn dispatch_native_json<B: NativeDesktopBackend>(
+        &mut self,
+        json: &str,
+        backend: &mut B,
+    ) -> Result<DesktopDispatch, DesktopRuntimeError> {
+        let request = decode_request(json)?;
+        self.dispatch_native(request, backend)
+    }
+
     pub fn dispatch(
         &mut self,
         request: RequestEnvelope,
     ) -> Result<DesktopDispatch, DesktopRuntimeError> {
         let accepted = self.registry.accept(request)?;
         let owner = self.owner_for(&accepted.request)?;
-        let response_scope = &accepted.request;
         let mut candidate = self.clone();
-        match candidate.execute(owner, &accepted.request.command) {
+        let result = candidate.execute(owner, &accepted.request.command);
+        self.finish_dispatch(&accepted.request, owner, candidate, result)
+    }
+
+    /// Native capture entry point. This is separate from [`Self::dispatch`] so
+    /// a runtime without an injected platform capability remains fail-closed.
+    pub fn dispatch_native<B: NativeDesktopBackend>(
+        &mut self,
+        request: RequestEnvelope,
+        backend: &mut B,
+    ) -> Result<DesktopDispatch, DesktopRuntimeError> {
+        let accepted = self.registry.accept(request)?;
+        let owner = self.owner_for(&accepted.request)?;
+        let mut candidate = self.clone();
+        let result = if candidate.adapter == DesktopAdapterKind::NativeMacOs {
+            candidate.execute_native(
+                owner,
+                &accepted.request.command,
+                accepted.validated_path.as_ref(),
+                backend,
+            )
+        } else {
+            Err(ExecutionFailure::unavailable())
+        };
+        self.finish_dispatch(&accepted.request, owner, candidate, result)
+    }
+
+    fn finish_dispatch(
+        &mut self,
+        response_scope: &RequestEnvelope,
+        owner: WindowRole,
+        mut candidate: Self,
+        result: Result<Vec<BackendEvent>, ExecutionFailure>,
+    ) -> Result<DesktopDispatch, DesktopRuntimeError> {
+        match result {
             Ok(backend_events) => {
                 candidate.operation_revision = candidate
                     .operation_revision
@@ -699,6 +829,416 @@ impl DesktopRuntime {
         Ok(())
     }
 
+    fn execute_native<B: NativeDesktopBackend>(
+        &mut self,
+        owner: WindowRole,
+        command: &IpcCommand,
+        validated_path: Option<&ValidatedPath>,
+        backend: &mut B,
+    ) -> Result<Vec<BackendEvent>, ExecutionFailure> {
+        match command {
+            IpcCommand::RecorderPrepare => {
+                if !matches!(
+                    self.workflow.recorder(),
+                    RecorderState::Idle | RecorderState::Ready | RecorderState::Failed { .. }
+                ) {
+                    return Err(ExecutionFailure::conflict(
+                        "Screen recording permission cannot change during capture.",
+                    ));
+                }
+                let events = match backend
+                    .prepare_display_capture()
+                    .map_err(ExecutionFailure::native_backend)?
+                {
+                    NativePermissionOutcome::Granted => {
+                        self.permission = PermissionState::Granted;
+                        self.announcement =
+                            "Native screen recording permission was confirmed.".into();
+                        Vec::new()
+                    }
+                    NativePermissionOutcome::Denied => {
+                        self.permission = PermissionState::Denied;
+                        self.selected_capture_target = None;
+                        self.selected_sources.target = None;
+                        self.selected_sources.display_selected = false;
+                        self.announcement =
+                            "Screen recording permission was denied by macOS.".into();
+                        let event = BackendEvent::DevicePermissionDenied;
+                        self.apply_unsolicited(std::slice::from_ref(&event))
+                            .map_err(|_| ExecutionFailure::internal())?;
+                        vec![event]
+                    }
+                };
+                Ok(events)
+            }
+            IpcCommand::RecorderPoll => {
+                if self.workflow.recorder() != RecorderState::Recording {
+                    return Err(ExecutionFailure::conflict(
+                        "Native recording health can only be polled during capture.",
+                    ));
+                }
+                let recording = self
+                    .native_recording
+                    .clone()
+                    .ok_or_else(ExecutionFailure::internal)?;
+                let failure = backend
+                    .poll_recording_terminal_failure(&NativeRecordingControlRequest {
+                        recording_token: recording.recording_token.clone(),
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                let Some(failure) = failure else {
+                    return Ok(Vec::new());
+                };
+                if failure.recording_token != recording.recording_token
+                    || !valid_opaque_id(&failure.recording_token)
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+
+                let (code, retryable) =
+                    native_terminal_failure_state(&failure, &recording.recording_token);
+                let event = BackendEvent::RecorderFailed { code, retryable };
+                self.apply_unsolicited(std::slice::from_ref(&event))
+                    .map_err(|_| ExecutionFailure::internal())?;
+                self.clear_native_recording_session();
+                self.native_artifact = None;
+                self.announcement =
+                    "Native recording failed and its capture session was retired.".into();
+                Ok(vec![event])
+            }
+            IpcCommand::DeviceEnumerate {
+                class: DeviceClass::Display,
+            } => {
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::DevicesRefresh)?;
+                let catalog = backend
+                    .enumerate_displays()
+                    .map_err(ExecutionFailure::native_backend)?;
+                catalog
+                    .validate_enumeration()
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                if catalog
+                    .targets
+                    .iter()
+                    .any(|target| target.kind != CaptureTargetKind::Display)
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                if catalog.generation < self.capture_targets.generation
+                    || (catalog.generation == self.capture_targets.generation
+                        && catalog != self.capture_targets)
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                let display_count = u16::try_from(catalog.targets.len())
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let keep_selection =
+                    self.selected_capture_target
+                        .as_ref()
+                        .is_some_and(|selected| {
+                            self.capture_targets.generation == catalog.generation
+                                && catalog.targets.iter().any(|target| target == selected)
+                        });
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::DevicesRefresh,
+                    vec![
+                        BackendEvent::DevicesEnumerating {
+                            intent_id: intent_id.clone(),
+                        },
+                        BackendEvent::DevicesReady {
+                            counts: DeviceCounts {
+                                displays: display_count,
+                                microphones: 0,
+                                system_audio_sources: 0,
+                                cameras: 0,
+                            },
+                        },
+                    ],
+                )?;
+                self.capture_targets = catalog;
+                if !keep_selection {
+                    self.selected_capture_target = None;
+                    self.selected_sources.target = None;
+                    self.selected_sources.display_selected = false;
+                }
+                self.announcement = "Native display catalog refreshed.".into();
+                Ok(events)
+            }
+            IpcCommand::CaptureTargetSelect {
+                kind: CaptureTargetKind::Display,
+                target_token,
+            } => {
+                let target = self
+                    .capture_targets
+                    .targets
+                    .iter()
+                    .find(|target| {
+                        target.kind == CaptureTargetKind::Display && target.token == *target_token
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        ExecutionFailure::conflict(
+                            "The display catalog changed. Refresh displays and select again.",
+                        )
+                    })?;
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::DeviceSelect)?;
+                let outcome = backend
+                    .select_display(&NativeTargetSelectionRequest {
+                        catalog_generation: self.capture_targets.generation,
+                        target: target.clone(),
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                validate_selection_outcome(
+                    &outcome,
+                    self.capture_targets.generation,
+                    &target.token,
+                )?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::DeviceSelect,
+                    vec![BackendEvent::DeviceSelected {
+                        intent_id: intent_id.clone(),
+                    }],
+                )?;
+                self.selected_capture_target = Some(target);
+                self.selected_sources.target = Some(CaptureTargetKind::Display);
+                self.selected_sources.display_selected = true;
+                self.announcement = "Native display selected by opaque token.".into();
+                Ok(events)
+            }
+            IpcCommand::RecorderStart { intent_id } => {
+                if self.permission != PermissionState::Granted {
+                    return Err(ExecutionFailure::invalid(
+                        "Confirm macOS screen recording permission before recording.",
+                    ));
+                }
+                if self.settings.microphone_enabled
+                    || self.settings.system_audio_enabled
+                    || self.settings.camera_enabled
+                    || self.selected_sources.microphone_selected
+                    || self.selected_sources.system_audio_selected
+                    || self.selected_sources.camera_selected
+                {
+                    return Err(ExecutionFailure::invalid(
+                        "Native capture currently supports display video only.",
+                    ));
+                }
+                let target = self
+                    .selected_capture_target
+                    .as_ref()
+                    .filter(|selected| {
+                        selected.kind == CaptureTargetKind::Display
+                            && self
+                                .capture_targets
+                                .targets
+                                .iter()
+                                .any(|current| current == *selected)
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        ExecutionFailure::conflict(
+                            "The selected display is stale. Refresh displays and select again.",
+                        )
+                    })?;
+                self.preflight_transition(intent_id, IntentKind::RecorderStart)?;
+                let outcome = backend
+                    .start_display_recording(&NativeCaptureStartRequest {
+                        catalog_generation: self.capture_targets.generation,
+                        target: target.clone(),
+                        frame_rate: self.settings.frame_rate,
+                        exclude_frame_windows: self.recorder_configuration.exclude_frame_windows,
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                validate_start_outcome(&outcome, self.capture_targets.generation, &target.token)?;
+                let events = self.transition(
+                    intent_id,
+                    IntentKind::RecorderStart,
+                    vec![
+                        BackendEvent::RecorderPreparing {
+                            intent_id: intent_id.clone(),
+                        },
+                        BackendEvent::RecorderStarted,
+                    ],
+                )?;
+                self.native_recording = Some(NativeRecordingAuthority {
+                    recording_token: outcome.recording_token,
+                    catalog_generation: outcome.catalog_generation,
+                    target_token: outcome.target_token,
+                });
+                self.native_artifact = None;
+                self.lifecycle.overlay_visible = true;
+                self.meter = AudioMeterSnapshot {
+                    microphone_basis_points: 0,
+                    system_audio_basis_points: 0,
+                    camera_active: false,
+                };
+                self.announcement = "Native display recording started.".into();
+                Ok(events)
+            }
+            IpcCommand::RecorderStop { intent_id } => {
+                let recording = self
+                    .native_recording
+                    .clone()
+                    .ok_or_else(|| ExecutionFailure::conflict("No native recording is active."))?;
+                self.preflight_transition(intent_id, IntentKind::RecorderStop)?;
+                let outcome = backend
+                    .stop_recording(&NativeRecordingControlRequest {
+                        recording_token: recording.recording_token.clone(),
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                match outcome {
+                    NativeRecordingStopOutcome::Sealed(artifact) => {
+                        let Ok(authority) = self.validate_native_artifact(&recording, artifact)
+                        else {
+                            return self.commit_native_recording_failure(
+                                intent_id,
+                                IntentKind::RecorderStop,
+                                SafeFailureCode::Internal,
+                                false,
+                            );
+                        };
+                        let events = self.transition(
+                            intent_id,
+                            IntentKind::RecorderStop,
+                            vec![BackendEvent::RecorderStopped {
+                                intent_id: intent_id.clone(),
+                                recoverable: false,
+                            }],
+                        )?;
+                        self.clear_native_recording_session();
+                        self.native_artifact = Some(authority);
+                        self.announcement =
+                            "Native recording stopped and its artifact was sealed.".into();
+                        Ok(events)
+                    }
+                    NativeRecordingStopOutcome::Failed(failure) => {
+                        let (code, retryable) =
+                            native_terminal_failure_state(&failure, &recording.recording_token);
+                        self.commit_native_recording_failure(
+                            intent_id,
+                            IntentKind::RecorderStop,
+                            code,
+                            retryable,
+                        )
+                    }
+                }
+            }
+            IpcCommand::RecorderCancel { intent_id } => {
+                let recording = self
+                    .native_recording
+                    .clone()
+                    .ok_or_else(|| ExecutionFailure::conflict("No native recording is active."))?;
+                self.preflight_transition(intent_id, IntentKind::RecorderCancel)?;
+                let outcome = backend
+                    .cancel_recording(&NativeRecordingControlRequest {
+                        recording_token: recording.recording_token.clone(),
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                match outcome {
+                    NativeRecordingCancelOutcome::Cancelled { recording_token }
+                        if recording_token == recording.recording_token
+                            && valid_opaque_id(&recording_token) =>
+                    {
+                        let events = self.transition(
+                            intent_id,
+                            IntentKind::RecorderCancel,
+                            vec![BackendEvent::RecorderCancelled {
+                                intent_id: intent_id.clone(),
+                            }],
+                        )?;
+                        self.clear_native_recording_session();
+                        self.native_artifact = None;
+                        self.announcement = "Native recording cancelled.".into();
+                        Ok(events)
+                    }
+                    NativeRecordingCancelOutcome::Cancelled { .. } => self
+                        .commit_native_recording_failure(
+                            intent_id,
+                            IntentKind::RecorderCancel,
+                            SafeFailureCode::Internal,
+                            false,
+                        ),
+                    NativeRecordingCancelOutcome::Failed(failure) => {
+                        let (code, retryable) =
+                            native_terminal_failure_state(&failure, &recording.recording_token);
+                        self.commit_native_recording_failure(
+                            intent_id,
+                            IntentKind::RecorderCancel,
+                            code,
+                            retryable,
+                        )
+                    }
+                }
+            }
+            IpcCommand::ExportStart {
+                project_revision,
+                profile: ExportProfile::EditableWebm,
+                ..
+            } => {
+                let output_path = validated_path.ok_or_else(ExecutionFailure::internal)?;
+                let artifact = self.native_artifact.clone().ok_or_else(|| {
+                    ExecutionFailure::conflict(
+                        "Stop and seal a native recording before exporting it.",
+                    )
+                })?;
+                let expected_output = artifact.export_path.as_ref().ok_or_else(|| {
+                    ExecutionFailure::conflict(
+                        "This recording has no approved editable WebM destination.",
+                    )
+                })?;
+                if artifact.summary.artifact_revision != *project_revision
+                    || output_path.as_path() != expected_output.as_path()
+                {
+                    return Err(ExecutionFailure::conflict(
+                        "The recording artifact or export destination changed. Refresh and retry.",
+                    ));
+                }
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(
+                    &intent_id,
+                    IntentKind::CaptureExportStart {
+                        artifact_revision: *project_revision,
+                    },
+                )?;
+                let outcome = backend
+                    .export_editable_webm(&NativeEditableWebmExportRequest {
+                        artifact_token: artifact.summary.artifact_token.clone(),
+                        artifact_revision: artifact.summary.artifact_revision,
+                        source_media_path: artifact.media_path,
+                        output_path: output_path.clone(),
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                if outcome.artifact_token != artifact.summary.artifact_token
+                    || outcome.artifact_revision != artifact.summary.artifact_revision
+                    || outcome.bytes_written == 0
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::CaptureExportStart {
+                        artifact_revision: *project_revision,
+                    },
+                    vec![
+                        BackendEvent::ExportStarted {
+                            intent_id: intent_id.clone(),
+                            project_revision: *project_revision,
+                        },
+                        BackendEvent::ExportProgress {
+                            progress_basis_points: 10_000,
+                        },
+                        BackendEvent::ExportCompleted,
+                    ],
+                )?;
+                self.announcement = "Editable WebM export completed.".into();
+                Ok(events)
+            }
+            _ => Err(ExecutionFailure::unavailable()),
+        }
+    }
+
     fn execute(
         &mut self,
         owner: WindowRole,
@@ -719,6 +1259,7 @@ impl DesktopRuntime {
                 self.announcement = "Capture permissions confirmed.".into();
                 Ok(Vec::new())
             }
+            IpcCommand::RecorderPoll => Err(ExecutionFailure::unavailable()),
             IpcCommand::RecorderStart { intent_id } => {
                 if self.adapter != DesktopAdapterKind::DeterministicFake {
                     return self.transition(
@@ -1214,6 +1755,107 @@ impl DesktopRuntime {
         Ok(events)
     }
 
+    fn preflight_transition(
+        &self,
+        intent_id: &str,
+        intent_kind: IntentKind,
+    ) -> Result<(), ExecutionFailure> {
+        let mut next = self.workflow.clone();
+        let intent = UiIntent::new(intent_id, intent_kind).map_err(ExecutionFailure::workflow)?;
+        next.request(intent).map_err(ExecutionFailure::workflow)
+    }
+
+    fn validate_native_artifact(
+        &self,
+        recording: &NativeRecordingAuthority,
+        artifact: NativeCaptureArtifact,
+    ) -> Result<NativeArtifactAuthority, ExecutionFailure> {
+        if artifact.recording_token != recording.recording_token
+            || !valid_opaque_id(&artifact.artifact_token)
+            || artifact.artifact_revision == 0
+            || artifact.duration_ms == 0
+            || artifact.bytes_written == 0
+        {
+            return Err(ExecutionFailure::invalid_backend_response());
+        }
+        let media_path = self
+            .native_media_paths
+            .validate(&artifact.media_path, PathUse::MediaRead)
+            .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+        let export_path = artifact
+            .editable_webm_output_path
+            .as_deref()
+            .map(|path| {
+                let validated = self
+                    .native_export_paths
+                    .validate(path, PathUse::ExportWrite)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                if validated
+                    .as_path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_none_or(|extension| !extension.eq_ignore_ascii_case("webm"))
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                Ok(validated)
+            })
+            .transpose()?;
+        if export_path
+            .as_ref()
+            .is_some_and(|output| output.as_path() == media_path.as_path())
+        {
+            return Err(ExecutionFailure::invalid_backend_response());
+        }
+        let summary = CaptureArtifactSummary {
+            schema_version: CAPTURE_ARTIFACT_SUMMARY_VERSION,
+            artifact_token: artifact.artifact_token,
+            artifact_revision: artifact.artifact_revision,
+            duration_ms: artifact.duration_ms,
+            bytes_written: artifact.bytes_written,
+            editable_webm_output_path: export_path
+                .as_ref()
+                .map(|path| path.as_path().to_string_lossy().into_owned()),
+        };
+        Ok(NativeArtifactAuthority {
+            summary,
+            media_path,
+            export_path,
+        })
+    }
+
+    fn commit_native_recording_failure(
+        &mut self,
+        intent_id: &str,
+        intent_kind: IntentKind,
+        code: SafeFailureCode,
+        retryable: bool,
+    ) -> Result<Vec<BackendEvent>, ExecutionFailure> {
+        let events = self.transition(
+            intent_id,
+            intent_kind,
+            vec![BackendEvent::RecorderFailed { code, retryable }],
+        )?;
+        self.clear_native_recording_session();
+        self.native_artifact = None;
+        self.announcement = "Native recording failed and its capture session was retired.".into();
+        Ok(events)
+    }
+
+    fn clear_native_recording_session(&mut self) {
+        self.native_recording = None;
+        self.lifecycle.overlay_visible = false;
+        self.meter = AudioMeterSnapshot {
+            microphone_basis_points: 0,
+            system_audio_basis_points: 0,
+            camera_active: false,
+        };
+        self.capture_targets.targets.clear();
+        self.selected_capture_target = None;
+        self.selected_sources.target = None;
+        self.selected_sources.display_selected = false;
+    }
+
     fn apply_unsolicited(&mut self, events: &[BackendEvent]) -> Result<(), DesktopRuntimeError> {
         let mut next = self.workflow.clone();
         let mut sequence = self.backend_sequence;
@@ -1368,6 +2010,61 @@ fn current_intent_id(owner: WindowRole, revision: u64) -> String {
     format!("runtime-{}-{revision:016x}", role_label(owner))
 }
 
+fn validate_selection_outcome(
+    outcome: &NativeTargetSelectionOutcome,
+    catalog_generation: u64,
+    target_token: &str,
+) -> Result<(), ExecutionFailure> {
+    if outcome.catalog_generation != catalog_generation
+        || outcome.target_token != target_token
+        || !valid_opaque_id(&outcome.target_token)
+    {
+        Err(ExecutionFailure::invalid_backend_response())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_start_outcome(
+    outcome: &NativeRecordingStartOutcome,
+    catalog_generation: u64,
+    target_token: &str,
+) -> Result<(), ExecutionFailure> {
+    if outcome.catalog_generation != catalog_generation
+        || outcome.target_token != target_token
+        || !valid_opaque_id(&outcome.target_token)
+        || !valid_opaque_id(&outcome.recording_token)
+    {
+        Err(ExecutionFailure::invalid_backend_response())
+    } else {
+        Ok(())
+    }
+}
+
+fn native_terminal_failure_state(
+    failure: &NativeRecordingTerminalFailure,
+    recording_token: &str,
+) -> (SafeFailureCode, bool) {
+    if failure.recording_token != recording_token
+        || !valid_opaque_id(&failure.recording_token)
+        || !failure.teardown_confirmed
+    {
+        return (SafeFailureCode::BackendUnavailable, false);
+    }
+    match failure.error {
+        NativeDesktopBackendError::PermissionDenied => (SafeFailureCode::PermissionDenied, true),
+        NativeDesktopBackendError::StaleCatalog | NativeDesktopBackendError::TargetUnavailable => {
+            (SafeFailureCode::DeviceLost, true)
+        }
+        NativeDesktopBackendError::Unavailable => (SafeFailureCode::BackendUnavailable, false),
+        NativeDesktopBackendError::Filesystem => (SafeFailureCode::DiskFull, true),
+        NativeDesktopBackendError::Cancelled => (SafeFailureCode::Cancelled, false),
+        NativeDesktopBackendError::Busy | NativeDesktopBackendError::Internal => {
+            (SafeFailureCode::Internal, false)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExecutionFailure {
     code: PublicErrorCode,
@@ -1408,6 +2105,14 @@ impl ExecutionFailure {
         }
     }
 
+    const fn invalid_backend_response() -> Self {
+        Self {
+            code: PublicErrorCode::Internal,
+            retryable: false,
+            announcement: "The native backend returned an invalid confirmation.",
+        }
+    }
+
     const fn internal() -> Self {
         Self {
             code: PublicErrorCode::Internal,
@@ -1425,6 +2130,37 @@ impl ExecutionFailure {
                 Self::conflict("Backend state changed before this operation. Refresh and retry.")
             }
             _ => Self::internal(),
+        }
+    }
+
+    const fn native_backend(error: NativeDesktopBackendError) -> Self {
+        match error {
+            NativeDesktopBackendError::Unavailable => Self::unavailable(),
+            NativeDesktopBackendError::Busy => Self {
+                code: PublicErrorCode::Busy,
+                retryable: true,
+                announcement: "The native capture backend is busy.",
+            },
+            NativeDesktopBackendError::PermissionDenied => Self {
+                code: PublicErrorCode::Forbidden,
+                retryable: true,
+                announcement: "macOS screen recording permission is required.",
+            },
+            NativeDesktopBackendError::StaleCatalog
+            | NativeDesktopBackendError::TargetUnavailable => {
+                Self::conflict("The display catalog changed. Refresh displays and select again.")
+            }
+            NativeDesktopBackendError::Cancelled => Self {
+                code: PublicErrorCode::Cancelled,
+                retryable: false,
+                announcement: "The native operation was cancelled.",
+            },
+            NativeDesktopBackendError::Filesystem => Self {
+                code: PublicErrorCode::Internal,
+                retryable: true,
+                announcement: "The native recording file could not be completed.",
+            },
+            NativeDesktopBackendError::Internal => Self::internal(),
         }
     }
 }
@@ -1471,6 +2207,167 @@ mod tests {
 
     use super::*;
     use crate::ipc::{EditorMutation, ExportProfile, IPC_PROTOCOL_VERSION, RequestId};
+    use crate::native_backend::NativeEditableWebmExportOutcome;
+
+    #[derive(Debug)]
+    struct TestNativeBackend {
+        catalog: CaptureTargetCatalog,
+        calls: Vec<&'static str>,
+        permission: NativePermissionOutcome,
+        select_generation_override: Option<u64>,
+        start_error: Option<NativeDesktopBackendError>,
+        poll_error: Option<NativeDesktopBackendError>,
+        poll_failure: Option<NativeRecordingTerminalFailure>,
+        poll_request_matches_recording: bool,
+        stop_error: Option<NativeDesktopBackendError>,
+        stop_failure: Option<NativeRecordingTerminalFailure>,
+        stop_artifact: NativeCaptureArtifact,
+        cancel_error: Option<NativeDesktopBackendError>,
+        cancel_failure: Option<NativeRecordingTerminalFailure>,
+        cancel_token_override: Option<String>,
+        export_calls: usize,
+    }
+
+    impl TestNativeBackend {
+        fn new() -> Self {
+            Self {
+                catalog: native_catalog(1, "display-token-1"),
+                calls: Vec::new(),
+                permission: NativePermissionOutcome::Granted,
+                select_generation_override: None,
+                start_error: None,
+                poll_error: None,
+                poll_failure: None,
+                poll_request_matches_recording: true,
+                stop_error: None,
+                stop_failure: None,
+                stop_artifact: NativeCaptureArtifact {
+                    recording_token: "recording-token-1".into(),
+                    artifact_token: "artifact-token-1".into(),
+                    artifact_revision: 11,
+                    duration_ms: 2_000,
+                    bytes_written: 512_000,
+                    media_path: absolute_test_path(&["frame", "media", "capture.webm"]),
+                    editable_webm_output_path: Some(absolute_test_path(&[
+                        "frame",
+                        "exports",
+                        "capture-editable.webm",
+                    ])),
+                },
+                cancel_error: None,
+                cancel_failure: None,
+                cancel_token_override: None,
+                export_calls: 0,
+            }
+        }
+
+        fn call_count(&self, name: &str) -> usize {
+            self.calls.iter().filter(|call| **call == name).count()
+        }
+    }
+
+    impl NativeDesktopBackend for TestNativeBackend {
+        fn prepare_display_capture(
+            &mut self,
+        ) -> Result<NativePermissionOutcome, NativeDesktopBackendError> {
+            self.calls.push("prepare");
+            Ok(self.permission)
+        }
+
+        fn enumerate_displays(
+            &mut self,
+        ) -> Result<CaptureTargetCatalog, NativeDesktopBackendError> {
+            self.calls.push("enumerate");
+            Ok(self.catalog.clone())
+        }
+
+        fn select_display(
+            &mut self,
+            request: &NativeTargetSelectionRequest,
+        ) -> Result<NativeTargetSelectionOutcome, NativeDesktopBackendError> {
+            self.calls.push("select");
+            Ok(NativeTargetSelectionOutcome {
+                catalog_generation: self
+                    .select_generation_override
+                    .unwrap_or(request.catalog_generation),
+                target_token: request.target.token.clone(),
+            })
+        }
+
+        fn start_display_recording(
+            &mut self,
+            request: &NativeCaptureStartRequest,
+        ) -> Result<NativeRecordingStartOutcome, NativeDesktopBackendError> {
+            self.calls.push("start");
+            if let Some(error) = self.start_error {
+                return Err(error);
+            }
+            Ok(NativeRecordingStartOutcome {
+                catalog_generation: request.catalog_generation,
+                target_token: request.target.token.clone(),
+                recording_token: "recording-token-1".into(),
+            })
+        }
+
+        fn stop_recording(
+            &mut self,
+            _request: &NativeRecordingControlRequest,
+        ) -> Result<NativeRecordingStopOutcome, NativeDesktopBackendError> {
+            self.calls.push("stop");
+            if let Some(error) = self.stop_error {
+                return Err(error);
+            }
+            Ok(match self.stop_failure.clone() {
+                Some(failure) => NativeRecordingStopOutcome::Failed(failure),
+                None => NativeRecordingStopOutcome::Sealed(self.stop_artifact.clone()),
+            })
+        }
+
+        fn poll_recording_terminal_failure(
+            &mut self,
+            request: &NativeRecordingControlRequest,
+        ) -> Result<Option<NativeRecordingTerminalFailure>, NativeDesktopBackendError> {
+            self.calls.push("poll");
+            self.poll_request_matches_recording &=
+                request.recording_token == self.stop_artifact.recording_token;
+            if let Some(error) = self.poll_error {
+                return Err(error);
+            }
+            Ok(self.poll_failure.clone())
+        }
+
+        fn cancel_recording(
+            &mut self,
+            request: &NativeRecordingControlRequest,
+        ) -> Result<NativeRecordingCancelOutcome, NativeDesktopBackendError> {
+            self.calls.push("cancel");
+            if let Some(error) = self.cancel_error {
+                return Err(error);
+            }
+            Ok(match self.cancel_failure.clone() {
+                Some(failure) => NativeRecordingCancelOutcome::Failed(failure),
+                None => NativeRecordingCancelOutcome::Cancelled {
+                    recording_token: self
+                        .cancel_token_override
+                        .clone()
+                        .unwrap_or_else(|| request.recording_token.clone()),
+                },
+            })
+        }
+
+        fn export_editable_webm(
+            &mut self,
+            request: &NativeEditableWebmExportRequest,
+        ) -> Result<NativeEditableWebmExportOutcome, NativeDesktopBackendError> {
+            self.calls.push("export");
+            self.export_calls += 1;
+            Ok(NativeEditableWebmExportOutcome {
+                artifact_token: request.artifact_token.clone(),
+                artifact_revision: request.artifact_revision,
+                bytes_written: 256_000,
+            })
+        }
+    }
 
     fn absolute_test_path(components: &[&str]) -> String {
         #[cfg(windows)]
@@ -1489,9 +2386,31 @@ mod tests {
         )
     }
 
+    fn native_catalog(generation: u64, token: &str) -> CaptureTargetCatalog {
+        CaptureTargetCatalog {
+            schema_version: crate::native_backend::CAPTURE_TARGET_CATALOG_VERSION,
+            generation,
+            targets: vec![CaptureTargetSummary {
+                token: token.into(),
+                kind: CaptureTargetKind::Display,
+                ordinal: 1,
+                width_pixels: 1_920,
+                height_pixels: 1_080,
+                scale_numerator: 2,
+                scale_denominator: 1,
+                rotation_degrees: 0,
+            }],
+        }
+    }
+
     fn runtime() -> DesktopRuntime {
         DesktopRuntime::new(DesktopAdapterKind::DeterministicFake, roots(), "test-1")
             .expect("runtime")
+    }
+
+    fn native_runtime() -> DesktopRuntime {
+        DesktopRuntime::new(DesktopAdapterKind::NativeMacOs, roots(), "native-test-1")
+            .expect("native runtime")
     }
 
     fn context(runtime: &DesktopRuntime, role: WindowRole) -> DesktopWindowContext {
@@ -1518,6 +2437,33 @@ mod tests {
             session_id: context.session_id,
             sequence,
             command,
+        }
+    }
+
+    fn prepare_native_recording(runtime: &mut DesktopRuntime, backend: &mut TestNativeBackend) {
+        for (sequence, id, command) in [
+            (
+                1,
+                "native-enumerate",
+                IpcCommand::DeviceEnumerate {
+                    class: DeviceClass::Display,
+                },
+            ),
+            (
+                2,
+                "native-select",
+                IpcCommand::CaptureTargetSelect {
+                    kind: CaptureTargetKind::Display,
+                    target_token: "display-token-1".into(),
+                },
+            ),
+            (3, "native-prepare", IpcCommand::RecorderPrepare),
+        ] {
+            let envelope = request(runtime, WindowRole::Recorder, sequence, id, command);
+            let dispatch = runtime
+                .dispatch_native(envelope, backend)
+                .expect("native preparation command");
+            ok(&dispatch);
         }
     }
 
@@ -1864,6 +2810,19 @@ mod tests {
     }
 
     #[test]
+    fn additive_capture_snapshot_fields_default_for_existing_runtime_v2_payloads() {
+        let runtime = runtime();
+        let mut value = serde_json::to_value(runtime.snapshot()).expect("snapshot json");
+        let object = value.as_object_mut().expect("snapshot object");
+        object.remove("capture_targets");
+        object.remove("capture_artifact");
+        let decoded: DesktopRuntimeSnapshot =
+            serde_json::from_value(value).expect("compatible v2 snapshot");
+        assert_eq!(decoded.capture_targets, CaptureTargetCatalog::empty());
+        assert!(decoded.capture_artifact.is_none());
+    }
+
+    #[test]
     fn rejected_execution_discards_candidate_state_atomically() {
         let mut runtime = runtime();
         let before = runtime.snapshot();
@@ -1891,6 +2850,742 @@ mod tests {
             "candidate source selection must not leak through a rejected workflow transition"
         );
         assert_eq!(dispatch.snapshot.devices, before.devices);
+    }
+
+    #[test]
+    fn injected_native_backend_confirms_display_capture_and_editable_webm_export() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "native-start",
+            IpcCommand::RecorderStart {
+                intent_id: "native-start".into(),
+            },
+        );
+        let started = runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start");
+        ok(&started);
+        assert_eq!(started.snapshot.recorder, RecorderState::Recording);
+        assert!(started.snapshot.capture_artifact.is_none());
+
+        let stop = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "native-stop",
+            IpcCommand::RecorderStop {
+                intent_id: "native-stop".into(),
+            },
+        );
+        let stopped = runtime
+            .dispatch_native(stop, &mut backend)
+            .expect("native stop");
+        ok(&stopped);
+        assert_eq!(stopped.snapshot.recorder, RecorderState::Ready);
+        let artifact = stopped
+            .snapshot
+            .capture_artifact
+            .expect("sealed artifact summary");
+        assert_eq!(artifact.artifact_revision, 11);
+        assert_eq!(artifact.schema_version, CAPTURE_ARTIFACT_SUMMARY_VERSION);
+        assert!(artifact.editable_webm_output_path.is_some());
+
+        let export = request(
+            &runtime,
+            WindowRole::Export,
+            1,
+            "native-export",
+            IpcCommand::ExportStart {
+                project_revision: artifact.artifact_revision,
+                output_path: artifact
+                    .editable_webm_output_path
+                    .expect("approved export path"),
+                profile: ExportProfile::EditableWebm,
+            },
+        );
+        let exported = runtime
+            .dispatch_native(export, &mut backend)
+            .expect("native export");
+        ok(&exported);
+        assert_eq!(
+            exported.snapshot.export,
+            ExportState::Completed {
+                project_revision: 11,
+            }
+        );
+        assert_eq!(
+            backend.calls,
+            ["enumerate", "select", "prepare", "start", "stop", "export"]
+        );
+    }
+
+    #[test]
+    fn native_target_selection_rejects_stale_token_and_generation() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        let enumerate = request(
+            &runtime,
+            WindowRole::Recorder,
+            1,
+            "catalog-one",
+            IpcCommand::DeviceEnumerate {
+                class: DeviceClass::Display,
+            },
+        );
+        ok(&runtime
+            .dispatch_native(enumerate, &mut backend)
+            .expect("first catalog"));
+
+        backend.catalog = native_catalog(2, "display-token-2");
+        let enumerate = request(
+            &runtime,
+            WindowRole::Recorder,
+            2,
+            "catalog-two",
+            IpcCommand::DeviceEnumerate {
+                class: DeviceClass::Display,
+            },
+        );
+        ok(&runtime
+            .dispatch_native(enumerate, &mut backend)
+            .expect("second catalog"));
+
+        let stale_token = request(
+            &runtime,
+            WindowRole::Recorder,
+            3,
+            "stale-token",
+            IpcCommand::CaptureTargetSelect {
+                kind: CaptureTargetKind::Display,
+                target_token: "display-token-1".into(),
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(stale_token, &mut backend)
+            .expect("bounded stale-token response");
+        assert!(matches!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Conflict,
+                ..
+            }
+        ));
+        assert_eq!(backend.call_count("select"), 0);
+
+        backend.select_generation_override = Some(1);
+        let stale_generation = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "stale-generation",
+            IpcCommand::CaptureTargetSelect {
+                kind: CaptureTargetKind::Display,
+                target_token: "display-token-2".into(),
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(stale_generation, &mut backend)
+            .expect("bounded stale-generation response");
+        assert_eq!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Internal,
+                retryable: false,
+            }
+        );
+        assert!(rejected.snapshot.selected_sources.target.is_none());
+        assert_eq!(backend.call_count("select"), 1);
+    }
+
+    #[test]
+    fn native_backend_error_never_creates_optimistic_recording_success() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        backend.start_error = Some(NativeDesktopBackendError::Busy);
+
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "busy-start",
+            IpcCommand::RecorderStart {
+                intent_id: "busy-start".into(),
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(start, &mut backend)
+            .expect("bounded busy response");
+        assert_eq!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Busy,
+                retryable: true,
+            }
+        );
+        assert_eq!(rejected.snapshot.recorder, RecorderState::Idle);
+        assert!(rejected.snapshot.capture_artifact.is_none());
+        assert!(runtime.native_recording.is_none());
+        assert_eq!(backend.call_count("start"), 1);
+    }
+
+    #[test]
+    fn native_recorder_poll_is_bounded_to_an_active_recording() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+
+        let premature = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "premature-native-poll",
+            IpcCommand::RecorderPoll,
+        );
+        let rejected = runtime
+            .dispatch_native(premature, &mut backend)
+            .expect("bounded poll response");
+        assert_eq!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Conflict,
+                retryable: true,
+            }
+        );
+        assert_eq!(backend.call_count("poll"), 0);
+        assert_eq!(rejected.snapshot.recorder, RecorderState::Idle);
+    }
+
+    #[test]
+    fn native_recorder_poll_without_failure_preserves_recording_authority() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "poll-healthy-start",
+            IpcCommand::RecorderStart {
+                intent_id: "poll-healthy-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+
+        let poll = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "poll-healthy",
+            IpcCommand::RecorderPoll,
+        );
+        let healthy = runtime
+            .dispatch_native(poll, &mut backend)
+            .expect("healthy poll");
+        ok(&healthy);
+        assert_eq!(healthy.snapshot.recorder, RecorderState::Recording);
+        assert!(runtime.native_recording.is_some());
+        assert_eq!(backend.call_count("poll"), 1);
+        assert!(backend.poll_request_matches_recording);
+        assert!(healthy.events.iter().all(|event| !matches!(
+            &event.event,
+            DesktopRuntimeEvent::Backend(BackendEvent::RecorderFailed { .. })
+        )));
+    }
+
+    #[test]
+    fn native_recorder_poll_reconciles_terminal_worker_failure_unsolicited() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "poll-failure-start",
+            IpcCommand::RecorderStart {
+                intent_id: "poll-failure-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+        backend.poll_failure = Some(NativeRecordingTerminalFailure {
+            recording_token: "recording-token-1".into(),
+            error: NativeDesktopBackendError::Filesystem,
+            teardown_confirmed: true,
+        });
+
+        let poll = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "poll-failure",
+            IpcCommand::RecorderPoll,
+        );
+        let failed = runtime
+            .dispatch_native(poll, &mut backend)
+            .expect("terminal poll response");
+        ok(&failed);
+        assert_eq!(
+            failed.snapshot.recorder,
+            RecorderState::Failed {
+                code: SafeFailureCode::DiskFull,
+                retryable: true,
+            }
+        );
+        assert!(failed.events.iter().any(|event| matches!(
+            &event.event,
+            DesktopRuntimeEvent::Backend(BackendEvent::RecorderFailed {
+                code: SafeFailureCode::DiskFull,
+                retryable: true,
+            })
+        )));
+        assert!(runtime.native_recording.is_none());
+        assert!(failed.snapshot.capture_targets.targets.is_empty());
+        assert!(failed.snapshot.selected_sources.target.is_none());
+        assert!(!failed.snapshot.lifecycle.overlay_visible);
+        assert!(failed.snapshot.capture_artifact.is_none());
+        assert_eq!(backend.call_count("poll"), 1);
+        assert!(backend.poll_request_matches_recording);
+    }
+
+    #[test]
+    fn native_recorder_poll_rejects_failure_for_another_recording() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "poll-stale-start",
+            IpcCommand::RecorderStart {
+                intent_id: "poll-stale-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+        backend.poll_failure = Some(NativeRecordingTerminalFailure {
+            recording_token: "stale-recording-token".into(),
+            error: NativeDesktopBackendError::Internal,
+            teardown_confirmed: true,
+        });
+
+        let poll = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "poll-stale",
+            IpcCommand::RecorderPoll,
+        );
+        let rejected = runtime
+            .dispatch_native(poll, &mut backend)
+            .expect("bounded invalid-backend response");
+        assert_eq!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Internal,
+                retryable: false,
+            }
+        );
+        assert_eq!(rejected.snapshot.recorder, RecorderState::Recording);
+        assert!(runtime.native_recording.is_some());
+        assert_eq!(backend.call_count("poll"), 1);
+    }
+
+    #[test]
+    fn native_terminal_stop_failure_clears_consumed_authority_and_catalog() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "terminal-failure-start",
+            IpcCommand::RecorderStart {
+                intent_id: "terminal-failure-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+        backend.stop_failure = Some(NativeRecordingTerminalFailure {
+            recording_token: "recording-token-1".into(),
+            error: NativeDesktopBackendError::Internal,
+            teardown_confirmed: true,
+        });
+
+        let stop = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "terminal-failure-stop",
+            IpcCommand::RecorderStop {
+                intent_id: "terminal-failure-stop".into(),
+            },
+        );
+        let failed = runtime
+            .dispatch_native(stop, &mut backend)
+            .expect("terminal failure response");
+        ok(&failed);
+        assert_eq!(
+            failed.snapshot.recorder,
+            RecorderState::Failed {
+                code: SafeFailureCode::Internal,
+                retryable: false,
+            }
+        );
+        assert!(runtime.native_recording.is_none());
+        assert!(failed.snapshot.capture_targets.targets.is_empty());
+        assert_eq!(failed.snapshot.capture_targets.generation, 1);
+        assert!(failed.snapshot.selected_sources.target.is_none());
+        assert!(!failed.snapshot.lifecycle.overlay_visible);
+
+        let cancel = request(
+            &runtime,
+            WindowRole::Recorder,
+            6,
+            "terminal-failure-cancel",
+            IpcCommand::RecorderCancel {
+                intent_id: "terminal-failure-cancel".into(),
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(cancel, &mut backend)
+            .expect("bounded no-authority response");
+        assert!(matches!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Conflict,
+                ..
+            }
+        ));
+        assert_eq!(backend.call_count("cancel"), 0);
+    }
+
+    #[test]
+    fn native_unconfirmed_cancel_transitions_to_nonretryable_backend_failure() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "unconfirmed-cancel-start",
+            IpcCommand::RecorderStart {
+                intent_id: "unconfirmed-cancel-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+        backend.cancel_failure = Some(NativeRecordingTerminalFailure {
+            recording_token: "recording-token-1".into(),
+            error: NativeDesktopBackendError::Internal,
+            teardown_confirmed: false,
+        });
+
+        let cancel = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "unconfirmed-cancel",
+            IpcCommand::RecorderCancel {
+                intent_id: "unconfirmed-cancel".into(),
+            },
+        );
+        let failed = runtime
+            .dispatch_native(cancel, &mut backend)
+            .expect("terminal cancel failure response");
+        ok(&failed);
+        assert_eq!(
+            failed.snapshot.recorder,
+            RecorderState::Failed {
+                code: SafeFailureCode::BackendUnavailable,
+                retryable: false,
+            }
+        );
+        assert!(runtime.native_recording.is_none());
+        assert!(failed.snapshot.capture_targets.targets.is_empty());
+    }
+
+    #[test]
+    fn native_busy_stop_error_preserves_active_recording_authority() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "busy-stop-start",
+            IpcCommand::RecorderStart {
+                intent_id: "busy-stop-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+        let before = runtime.snapshot();
+        backend.stop_error = Some(NativeDesktopBackendError::Busy);
+
+        let stop = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "busy-stop",
+            IpcCommand::RecorderStop {
+                intent_id: "busy-stop".into(),
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(stop, &mut backend)
+            .expect("bounded busy response");
+        assert_eq!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Busy,
+                retryable: true,
+            }
+        );
+        assert_eq!(rejected.snapshot.recorder, RecorderState::Recording);
+        assert_eq!(rejected.snapshot.capture_targets, before.capture_targets);
+        assert_eq!(rejected.snapshot.selected_sources, before.selected_sources);
+        assert!(runtime.native_recording.is_some());
+    }
+
+    #[test]
+    fn native_permission_denial_is_a_confirmed_state_not_recording_success() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        for (sequence, id, command) in [
+            (
+                1,
+                "denied-enumerate",
+                IpcCommand::DeviceEnumerate {
+                    class: DeviceClass::Display,
+                },
+            ),
+            (
+                2,
+                "denied-select",
+                IpcCommand::CaptureTargetSelect {
+                    kind: CaptureTargetKind::Display,
+                    target_token: "display-token-1".into(),
+                },
+            ),
+        ] {
+            let envelope = request(&runtime, WindowRole::Recorder, sequence, id, command);
+            ok(&runtime
+                .dispatch_native(envelope, &mut backend)
+                .expect("native setup"));
+        }
+        backend.permission = NativePermissionOutcome::Denied;
+        let prepare = request(
+            &runtime,
+            WindowRole::Recorder,
+            3,
+            "permission-denied",
+            IpcCommand::RecorderPrepare,
+        );
+        let denied = runtime
+            .dispatch_native(prepare, &mut backend)
+            .expect("confirmed denial");
+        ok(&denied);
+        assert_eq!(denied.snapshot.permission, PermissionState::Denied);
+        assert_eq!(denied.snapshot.devices, DeviceState::PermissionDenied);
+        assert!(denied.snapshot.selected_sources.target.is_none());
+        assert_eq!(denied.snapshot.recorder, RecorderState::Idle);
+    }
+
+    #[test]
+    fn native_artifact_and_export_paths_remain_scoped() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "scoped-start",
+            IpcCommand::RecorderStart {
+                intent_id: "scoped-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+
+        backend.stop_artifact.media_path =
+            absolute_test_path(&["private", "outside", "capture.webm"]);
+        let stop = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "unscoped-artifact",
+            IpcCommand::RecorderStop {
+                intent_id: "unscoped-artifact".into(),
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(stop, &mut backend)
+            .expect("bounded invalid artifact response");
+        ok(&rejected);
+        assert_eq!(
+            rejected.snapshot.recorder,
+            RecorderState::Failed {
+                code: SafeFailureCode::Internal,
+                retryable: false,
+            }
+        );
+        assert!(runtime.native_recording.is_none());
+        assert!(rejected.snapshot.capture_artifact.is_none());
+
+        let export = request(
+            &runtime,
+            WindowRole::Export,
+            1,
+            "outside-export",
+            IpcCommand::ExportStart {
+                project_revision: 11,
+                output_path: absolute_test_path(&["private", "outside", "capture.webm"]),
+                profile: ExportProfile::EditableWebm,
+            },
+        );
+        assert!(matches!(
+            runtime.dispatch_native(export, &mut backend),
+            Err(DesktopRuntimeError::Ipc(IpcError::PathOutOfScope))
+        ));
+        assert_eq!(backend.export_calls, 0);
+    }
+
+    #[test]
+    fn native_adapter_without_injection_keeps_dispatch_json_fail_closed() {
+        let mut runtime = native_runtime();
+        let envelope = request(
+            &runtime,
+            WindowRole::Recorder,
+            1,
+            "no-injection",
+            IpcCommand::RecorderPrepare,
+        );
+        let json = serde_json::to_string(&envelope).expect("request json");
+        let rejected = runtime.dispatch_json(&json).expect("bounded response");
+        assert_eq!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Unavailable,
+                retryable: true,
+            }
+        );
+        assert_eq!(rejected.snapshot.permission, PermissionState::NotDetermined);
+    }
+
+    #[test]
+    fn native_backend_rejects_window_audio_camera_pause_and_mp4_capabilities() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+
+        for (sequence, id, command) in [
+            (
+                1,
+                "native-microphones",
+                IpcCommand::DeviceEnumerate {
+                    class: DeviceClass::Microphone,
+                },
+            ),
+            (
+                2,
+                "native-window",
+                IpcCommand::CaptureTargetSelect {
+                    kind: CaptureTargetKind::Window,
+                    target_token: "window-token-1".into(),
+                },
+            ),
+            (
+                3,
+                "native-pause",
+                IpcCommand::RecorderPause {
+                    intent_id: "native-pause".into(),
+                },
+            ),
+        ] {
+            let envelope = request(&runtime, WindowRole::Recorder, sequence, id, command);
+            let rejected = runtime
+                .dispatch_native(envelope, &mut backend)
+                .expect("bounded unsupported response");
+            assert_eq!(
+                rejected.response.outcome,
+                CommandOutcome::Error {
+                    code: PublicErrorCode::Unavailable,
+                    retryable: true,
+                }
+            );
+        }
+
+        let settings = request(
+            &runtime,
+            WindowRole::Settings,
+            1,
+            "native-av-settings",
+            IpcCommand::SettingsApply {
+                expected_revision: 1,
+                mode: RecorderMode::Instant,
+                frame_rate: 30,
+                microphone_enabled: true,
+                system_audio_enabled: true,
+                camera_enabled: true,
+                reduced_motion: false,
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(settings, &mut backend)
+            .expect("bounded unsupported settings response");
+        assert!(matches!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Unavailable,
+                ..
+            }
+        ));
+        assert!(!rejected.snapshot.settings.microphone_enabled);
+        assert!(!rejected.snapshot.settings.system_audio_enabled);
+        assert!(!rejected.snapshot.settings.camera_enabled);
+
+        let mp4 = request(
+            &runtime,
+            WindowRole::Export,
+            1,
+            "native-mp4",
+            IpcCommand::ExportStart {
+                project_revision: 1,
+                output_path: absolute_test_path(&["frame", "exports", "capture.mp4"]),
+                profile: ExportProfile::DistributionMp4,
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(mp4, &mut backend)
+            .expect("bounded unsupported MP4 response");
+        assert!(matches!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Unavailable,
+                ..
+            }
+        ));
+        assert!(backend.calls.is_empty());
     }
 
     #[test]

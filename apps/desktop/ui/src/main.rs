@@ -6,16 +6,18 @@ mod browser {
             Arc, Mutex,
             atomic::{AtomicU64, Ordering},
         },
+        time::Duration,
     };
 
     use frame_client::{InstantUiPhaseV1, InstantUiProgressV1};
     use frame_desktop_core::{
-        CaptureTargetKind, CommandOutcome, DESKTOP_RUNTIME_VERSION, DesktopAdapterKind,
-        DesktopBootstrap, DesktopDispatch, DesktopRuntimeSnapshot, DesktopWindowContext,
-        DeviceClass, DeviceState, EditorMutation, EditorState, ExportProfile, ExportState,
-        IPC_PROTOCOL_VERSION, InstantFinalizeCapabilityState, InstantFinalizeCommandV1,
-        InstantFinalizeHandle, InstantFinalizeUiUpdate, IpcCommand, LifecycleAction,
-        PublicErrorCode, RecorderMode, RecorderState, RequestEnvelope, RequestId,
+        CAPTURE_ARTIFACT_SUMMARY_VERSION, CAPTURE_TARGET_CATALOG_VERSION, CaptureTargetKind,
+        CommandOutcome, DESKTOP_RUNTIME_VERSION, DesktopAdapterKind, DesktopBootstrap,
+        DesktopDispatch, DesktopRuntimeSnapshot, DesktopWindowContext, DeviceClass, DeviceState,
+        EditorMutation, EditorState, ExportProfile, ExportState, IPC_PROTOCOL_VERSION,
+        InstantFinalizeCapabilityState, InstantFinalizeCommandV1, InstantFinalizeHandle,
+        InstantFinalizeUiUpdate, IpcCommand, LifecycleAction, PublicErrorCode,
+        RecorderAdapterState, RecorderMode, RecorderState, RequestEnvelope, RequestId,
         ShellCapabilities, UpdateAction, UpdateState, UploadState, WindowRole,
         instant_error_message, instant_progress_announcement,
     };
@@ -24,6 +26,8 @@ mod browser {
     use serde::Serialize;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
+
+    const RECORDER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
     #[wasm_bindgen]
     extern "C" {
@@ -184,9 +188,29 @@ mod browser {
             serde_wasm_bindgen::from_value(desktop_value).map_err(|_| ())?;
         (desktop.runtime_version == DESKTOP_RUNTIME_VERSION
             && desktop.snapshot.version == DESKTOP_RUNTIME_VERSION
+            && recorder_adapter_matches(shell.recorder_adapter, desktop.snapshot.adapter)
             && shell.instant_finalize == desktop.snapshot.instant_finalize)
             .then_some((shell, desktop))
             .ok_or(())
+    }
+
+    const fn recorder_adapter_matches(
+        shell: RecorderAdapterState,
+        runtime: DesktopAdapterKind,
+    ) -> bool {
+        matches!(
+            (shell, runtime),
+            (
+                RecorderAdapterState::Unavailable,
+                DesktopAdapterKind::Unavailable
+            ) | (
+                RecorderAdapterState::DeterministicFake,
+                DesktopAdapterKind::DeterministicFake
+            ) | (
+                RecorderAdapterState::NativeMacOsDisplay,
+                DesktopAdapterKind::NativeMacOs
+            )
+        )
     }
 
     fn submit(
@@ -409,16 +433,53 @@ mod browser {
             });
         });
 
+        Effect::new(move |_| {
+            if let Ok(handle) = set_interval_with_handle(
+                move || {
+                    let should_poll = snapshot.get_untracked().is_some_and(|state| {
+                        state.adapter == DesktopAdapterKind::NativeMacOs
+                            && state.recorder == RecorderState::Recording
+                    });
+                    if should_poll && !busy.get_untracked() {
+                        submit(
+                            client,
+                            snapshot,
+                            status,
+                            error,
+                            busy,
+                            WindowRole::Recorder,
+                            IpcCommand::RecorderPoll,
+                        );
+                    }
+                },
+                RECORDER_POLL_INTERVAL,
+            ) {
+                on_cleanup(move || handle.clear());
+            }
+        });
+
         let is_fake = move || {
             snapshot
                 .get()
                 .is_some_and(|state| state.adapter == DesktopAdapterKind::DeterministicFake)
         };
+        let is_native = move || {
+            snapshot
+                .get()
+                .is_some_and(|state| state.adapter == DesktopAdapterKind::NativeMacOs)
+        };
+        let supports_display_capture = move || is_fake() || is_native();
         let can_start = move || {
             snapshot.get().is_some_and(|state| {
-                is_fake()
-                    && state.permission == frame_desktop_core::PermissionState::Granted
+                matches!(
+                    state.adapter,
+                    DesktopAdapterKind::DeterministicFake | DesktopAdapterKind::NativeMacOs
+                ) && state.permission == frame_desktop_core::PermissionState::Granted
                     && state.selected_sources.target.is_some()
+                    && (state.adapter == DesktopAdapterKind::DeterministicFake
+                        || (!state.settings.microphone_enabled
+                            && !state.settings.system_audio_enabled
+                            && !state.settings.camera_enabled))
                     && matches!(
                         state.recorder,
                         RecorderState::Idle | RecorderState::Ready | RecorderState::Failed { .. }
@@ -426,23 +487,28 @@ mod browser {
             }) && !busy.get()
         };
         let can_pause = move || {
-            snapshot
-                .get()
-                .is_some_and(|state| state.recorder == RecorderState::Recording)
+            is_fake()
+                && snapshot
+                    .get()
+                    .is_some_and(|state| state.recorder == RecorderState::Recording)
                 && !busy.get()
         };
         let can_resume = move || {
-            snapshot
-                .get()
-                .is_some_and(|state| state.recorder == RecorderState::Paused)
+            is_fake()
+                && snapshot
+                    .get()
+                    .is_some_and(|state| state.recorder == RecorderState::Paused)
                 && !busy.get()
         };
         let can_stop = move || {
             snapshot.get().is_some_and(|state| {
-                matches!(
-                    state.recorder,
-                    RecorderState::Recording | RecorderState::Paused
-                )
+                (state.adapter == DesktopAdapterKind::DeterministicFake
+                    && matches!(
+                        state.recorder,
+                        RecorderState::Recording | RecorderState::Paused
+                    ))
+                    || (state.adapter == DesktopAdapterKind::NativeMacOs
+                        && state.recorder == RecorderState::Recording)
             }) && !busy.get()
         };
         let fake_paths = move || {
@@ -487,7 +553,7 @@ mod browser {
                             <button
                                 type="button"
                                 aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Instant)
-                                disabled=move || busy.get()
+                                disabled=move || !is_fake() || busy.get()
                                 on:click=move |_| submit(
                                     client,
                                     snapshot,
@@ -505,7 +571,7 @@ mod browser {
                             <button
                                 type="button"
                                 aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Studio)
-                                disabled=move || busy.get()
+                                disabled=move || !is_fake() || busy.get()
                                 on:click=move |_| submit(
                                     client,
                                     snapshot,
@@ -540,6 +606,48 @@ mod browser {
                                 IpcCommand::CaptureTargetSelect { kind: CaptureTargetKind::Region, target_token: "fake-region-1".into() }
                             )>"Screen region"</button>
                         </div>
+                        <Show when=move || is_native()>
+                            <div class="button-row" aria-label="Native displays">
+                                <For
+                                    each=move || snapshot
+                                        .get()
+                                        .filter(|state| {
+                                            state.capture_targets.schema_version
+                                                == CAPTURE_TARGET_CATALOG_VERSION
+                                        })
+                                        .map(|state| state.capture_targets.targets)
+                                        .unwrap_or_default()
+                                    key=|target| target.token.clone()
+                                    children=move |target| {
+                                        let token = target.token.clone();
+                                        let label = format!(
+                                            "Display {} — {} by {} pixels",
+                                            target.ordinal,
+                                            target.width_pixels,
+                                            target.height_pixels,
+                                        );
+                                        view! {
+                                            <button
+                                                type="button"
+                                                disabled=move || busy.get()
+                                                on:click=move |_| submit(
+                                                    client,
+                                                    snapshot,
+                                                    status,
+                                                    error,
+                                                    busy,
+                                                    WindowRole::Recorder,
+                                                    IpcCommand::CaptureTargetSelect {
+                                                        kind: CaptureTargetKind::Display,
+                                                        target_token: token.clone(),
+                                                    },
+                                                )
+                                            >{label}</button>
+                                        }
+                                    }
+                                />
+                            </div>
+                        </Show>
                     </fieldset>
 
                     <div class="permission-card">
@@ -550,11 +658,11 @@ mod browser {
                             _ => "Permission has not been confirmed. Recording stays disabled.",
                         }}</p>
                         <div class="button-row">
-                            <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            <button type="button" disabled=move || !supports_display_capture() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::DeviceEnumerate { class: DeviceClass::Display }
-                            )>"Refresh devices"</button>
-                            <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            )>"Refresh displays"</button>
+                            <button type="button" disabled=move || !supports_display_capture() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::RecorderPrepare
                             )>"Confirm permissions"</button>
@@ -576,6 +684,11 @@ mod browser {
                         <label for="system-meter">"System audio"</label>
                         <meter id="system-meter" min="0" max="10000" value=move || snapshot.get().map_or(0, |state| state.meter.system_audio_basis_points)>"System audio level"</meter>
                     </div>
+                    <Show when=move || is_native()>
+                        <p class="privacy-note">
+                            "Native macOS capture currently records display video only. Window and region capture, pause, microphone, system audio, camera, and MP4 export remain disabled."
+                        </p>
+                    </Show>
 
                     <div class="primary-actions" role="group" aria-label="Recording controls">
                         <button class="primary" type="button" disabled=move || !can_start() on:click=move |_| {
@@ -724,7 +837,7 @@ mod browser {
                     </div>
                     <p>"Recovery opens a preserved copy. Discard is explicit and never mutates the source project silently."</p>
                     <div class="button-row">
-                        <button type="button" disabled=move || busy.get() on:click=move |_| submit(
+                        <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                             client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryScan
                         )>"Scan for recovery"</button>
                         <button type="button" disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
@@ -809,16 +922,57 @@ mod browser {
                                 {move || format!("{} percent", snapshot.get().map_or(0, |state| progress(state.export) / 100))}
                             </progress>
                             <div class="button-row">
-                                <button type="button" disabled=move || fake_paths().is_none() || !snapshot.get().is_some_and(|state| matches!(state.editor, EditorState::Ready { dirty: false, .. })) || busy.get() on:click=move |_| {
-                                    if let (Some(paths), Some(EditorState::Ready { revision, .. })) = (fake_paths(), snapshot.get().map(|state| state.editor)) {
-                                        submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportStart {
-                                            project_revision: revision,
-                                            output_path: paths.export,
-                                            profile: ExportProfile::DistributionMp4,
-                                        });
+                                <button type="button" disabled=move || {
+                                    if busy.get() {
+                                        return true;
                                     }
-                                }>"Start export"</button>
-                                <button type="button" disabled=move || !snapshot.get().is_some_and(|state| matches!(state.export, ExportState::Running { .. })) || busy.get() on:click=move |_| {
+                                    snapshot.get().is_none_or(|state| match state.adapter {
+                                        DesktopAdapterKind::DeterministicFake => {
+                                            fake_paths().is_none()
+                                                || !matches!(state.editor, EditorState::Ready { dirty: false, .. })
+                                        }
+                                        DesktopAdapterKind::NativeMacOs => state
+                                            .capture_artifact
+                                            .as_ref()
+                                            .filter(|artifact| {
+                                                artifact.schema_version
+                                                    == CAPTURE_ARTIFACT_SUMMARY_VERSION
+                                            })
+                                            .and_then(|artifact| artifact.editable_webm_output_path.as_ref())
+                                            .is_none(),
+                                        DesktopAdapterKind::Unavailable => true,
+                                    })
+                                } on:click=move |_| {
+                                    let Some(state) = snapshot.get_untracked() else {
+                                        return;
+                                    };
+                                    match state.adapter {
+                                        DesktopAdapterKind::DeterministicFake => {
+                                            if let (Some(paths), EditorState::Ready { revision, .. }) = (fake_paths(), state.editor) {
+                                                submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportStart {
+                                                    project_revision: revision,
+                                                    output_path: paths.export,
+                                                    profile: ExportProfile::DistributionMp4,
+                                                });
+                                            }
+                                        }
+                                        DesktopAdapterKind::NativeMacOs => {
+                                            if let Some(artifact) = state.capture_artifact
+                                                && artifact.schema_version
+                                                    == CAPTURE_ARTIFACT_SUMMARY_VERSION
+                                                && let Some(output_path) = artifact.editable_webm_output_path
+                                            {
+                                                submit(client, snapshot, status, error, busy, WindowRole::Export, IpcCommand::ExportStart {
+                                                    project_revision: artifact.artifact_revision,
+                                                    output_path,
+                                                    profile: ExportProfile::EditableWebm,
+                                                });
+                                            }
+                                        }
+                                        DesktopAdapterKind::Unavailable => {}
+                                    }
+                                }>{move || if is_native() { "Export editable WebM" } else { "Start export" }}</button>
+                                <button type="button" disabled=move || !is_fake() || !snapshot.get().is_some_and(|state| matches!(state.export, ExportState::Running { .. })) || busy.get() on:click=move |_| {
                                     if let Some(client_value) = client.get_untracked() {
                                         let intent_id = client_value.next_intent_id();
                                         submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportCancel { intent_id });
@@ -867,7 +1021,7 @@ mod browser {
                         |state| format!("Settings revision {}. {} frames per second.", state.settings.revision, state.settings.frame_rate),
                     )}</p>
                     <div class="button-row">
-                        <button type="button" disabled=move || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                        <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                             if let Some(state) = snapshot.get_untracked() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::PresetApply {
                                     preset_token: "preset-balanced".into(),
@@ -875,7 +1029,7 @@ mod browser {
                                 });
                             }
                         }>"Apply balanced preset"</button>
-                        <button type="button" disabled=move || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                        <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                             if let Some(state) = snapshot.get_untracked() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::PresetApply {
                                     preset_token: "preset-quality".into(),
@@ -883,7 +1037,7 @@ mod browser {
                                 });
                             }
                         }>"Apply quality preset"</button>
-                        <button type="button" disabled=move || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                        <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                             if let Some(state) = snapshot.get_untracked() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::SettingsApply {
                                     expected_revision: state.settings.revision,

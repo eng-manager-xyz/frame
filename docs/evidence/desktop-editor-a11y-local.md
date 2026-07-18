@@ -6,21 +6,30 @@ Issue 33 checkboxes 3, 4, 5, 6, 8, 9, and 10 are repository-local gaps.
 Checkboxes 1, 2, and 7 remain locally satisfied by the typed Tauri surface,
 backend-owned state model, and IPC security boundary. No issue-33 checkbox is
 currently `protected_pending`: real hardware and assistive-technology runs will
-eventually be required, but they cannot validate product journeys that the
-release adapter cannot execute.
+eventually be required, but they cannot validate the still-incomplete recorder,
+editor, recovery, lifecycle, and updater journeys.
 
-The release binary selects only `DesktopAdapterKind::Unavailable`; the
-deterministic adapter is debug-only and fake-gated. Recorder preparation,
-device selection, recording, export, lifecycle, updater, and fault journeys do
-not call production capture, Studio, OS, or updater services. The checked-in
-hardware workflow invokes `frame-hardware-driver`, but this repository does not
-provide that driver or a release adapter for it to exercise. Its validator and
-workflow shape are not real-hardware-suite evidence.
+The portable release shell selects `DesktopAdapterKind::Unavailable`. A macOS
+release built with `macos-native` instead requests `NativeMacOs`, reports
+`NativeMacOsDisplay` after successful backend construction, and falls back to
+`Unavailable` if trusted GStreamer preflight or native source construction
+fails. The deterministic
+adapter remains debug-only and fake-gated. This new native slice covers only
+permission preparation, opaque full-display selection, display-video
+record/stop/cancel, and artifact-backed Editable WebM export. It does not make
+the fake recovery, lifecycle, updater, multitrack Studio, or accessibility
+journeys production behavior.
 
-## Local deterministic contract and fake evidence
+The checked-in hardware workflow invokes `frame-hardware-driver`, but this
+repository does not provide that driver. Its validator and workflow shape are
+not real-hardware-suite evidence.
 
-This evidence covers the locally reproducible portion of issue 33. It does not claim native capture,
-real provider upload, signed updater, platform permission, or assistive-technology parity.
+## Local deterministic evidence
+
+This evidence covers the locally reproducible portable contract and fake
+portion of issue 33. It does not claim a physical native capture, real provider
+upload, signed updater, observed platform permission flow, or
+assistive-technology parity.
 
 Validated contract, state-model, and fake implementation:
 
@@ -29,7 +38,7 @@ Validated contract, state-model, and fake implementation:
 - replay/gap/duplicate-operation, cross-window, malformed-payload, and path-root rejection;
 - backend-confirmed recorder/device/recovery/editor/export/upload/settings/lifecycle/update snapshots
   within the deterministic fake state machine;
-- explicit release `Unavailable` adapter and debug-only deterministic fake selection;
+- explicit portable-release `Unavailable` adapter and debug-only deterministic fake selection;
 - explicit release `NotConfigured` Instant provider, strict main-window opaque-handle finalize
   command, native-only secret/request registry, and zero-network disabled state;
 - versioned shared Instant progress/error events with determinate/indeterminate accessible progress,
@@ -37,22 +46,56 @@ Validated contract, state-model, and fake implementation:
 - fake record/pause/resume/stop, recovery, trim/save, export, verified upload, device-loss,
   crash/restart, settings/preset, and update/relaunch journeys;
 - semantic Leptos recorder, recovery, numeric timeline, export, upload, settings, and bounded error
-  surfaces that are not connected to a usable release backend; and
+  surfaces; only the narrow native display controls described below are
+  connected to a release backend; and
 - read-only legacy settings/project inspection models and a retained-selector flag, without a
   production migration adapter or usable legacy-desktop selection action.
 
+## Native macOS display-only source evidence
+
+Static source checks and focused Rust tests establish a bounded native path:
+
+- `macos-native` is an explicit opt-in feature; the portable Tauri shell does
+  not accidentally acquire capture or GStreamer authority;
+- the Tauri composition derives shell capability truth from the runtime
+  snapshot, invokes `dispatch_native_json` only for `NativeMacOs`, and degrades
+  failed backend construction to `Unavailable`;
+- the backend performs GStreamer recorder preflight and ScreenCaptureKit
+  permission preflight/request before accepting a recording;
+- display catalogs expose opaque tokens and coarse geometry rather than native
+  display IDs or titles;
+- native start accepts only a selected full display with Frame-owned window
+  exclusion, embedded cursor, and all audio/camera inputs disabled; and
+- stop/cancel and artifact-bound Editable WebM publication require confirmed
+  backend outcomes before the runtime announces success.
+
+This is source and deterministic boundary evidence. It is not a physical
+screen-capture, output-playback, recovery, accessibility, performance, signing,
+notarization, clean-install, or distribution result.
+
 Commands run from the repository root:
 
-```text
-cargo test -p frame-desktop-core
-cargo test -p frame-desktop-core --features tauri-app --bin frame-desktop
-cargo clippy -p frame-desktop-core --all-targets -- -D warnings
-cargo clippy -p frame-desktop-core --features tauri-app --bin frame-desktop -- -D warnings
-cargo clippy -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
-cargo clippy -p frame-desktop-ui --no-default-features --features csr --target wasm32-unknown-unknown -- -D warnings
-python scripts/ci/build-desktop-ui.py
-python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-local.json
-python scripts/ci/check-desktop-product.py --evidence target/evidence/desktop-product-local.json
+```sh
+cargo test --locked -p frame-desktop-core
+cargo test --locked -p frame-desktop-core --features tauri-app --bin frame-desktop
+cargo clippy --locked -p frame-desktop-core --all-targets -- -D warnings
+cargo clippy --locked -p frame-desktop-core --features tauri-app --bin frame-desktop -- -D warnings
+cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings
+cargo clippy --locked -p frame-desktop-ui --no-default-features --features csr --target wasm32-unknown-unknown -- -D warnings
+
+# macOS native source and composition tests require the exact build-time plugin root.
+GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
+  cargo test --locked -p frame-desktop-core \
+  --features tauri-app,macos-native --all-targets
+
+python3 scripts/ci/build-desktop-ui.py
+python3 scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-local.json
+python3 scripts/ci/check-desktop-product.py --evidence target/evidence/desktop-product-local.json
+
+# Production-mode macOS adapter-truth smoke; it does not start capture.
+cargo build --locked --release -p frame-desktop-core \
+  --features tauri-app,custom-protocol,macos-native --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
 ```
 
 The fake integration test is `apps/desktop/tests/fake_desktop_journey.rs`; security/race/fault tests
@@ -62,15 +105,16 @@ project paths, session tokens, or user data.
 
 ## Local result boundary
 
-Local code currently satisfies only the typed surface, backend-owned state model, and IPC security
-classifications. The deterministic state/race behavior, fake device/pipeline harness, semantic
-accessibility structure, legacy inspection model, and rollout design remain useful development
-evidence, but they do not close their product-integration checkboxes. The production shell refuses
-capture, OS lifecycle, export, upload, updater, and Instant publication success because no release
-adapter or native authenticated journal owner is selected. The registered Instant command therefore
-proves a fail-closed boundary and state model, not a working publication or desktop journey.
+Local code still satisfies the typed surface, backend-owned state model, and IPC
+security classifications without closing broader product-integration
+checkboxes. In addition, the macOS composition now has a real but narrow
+display-video source and WebM path. It continues to refuse unsupported audio,
+camera, window, region, pause, MP4, upload, updater, Instant publication,
+recovery, and edit-aware Studio behavior. The registered Instant command
+therefore proves a fail-closed boundary and state model, not a working
+publication journey; the native WebM path proves no editor or recovery journey.
 
-## Hardware and accessibility evidence not yet valid
+## Protected evidence still required
 
 The following evidence will still be required after the repository-local gaps
 close. It cannot currently convert checkboxes 3–6 or 8–10 to

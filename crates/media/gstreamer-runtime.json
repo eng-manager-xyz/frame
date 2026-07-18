@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "rust_manifest_version": 3,
+  "rust_manifest_version": 5,
   "minimum_gstreamer": "1.22.0",
   "plugin_search_policy": {
     "denied_environment_variables": [
@@ -50,6 +50,10 @@
     {"factory": "webmmux", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
     {"factory": "filesink", "capability": "synthetic_smoke", "requirement": "required", "platform": "all"},
     {"factory": "filesrc", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "fdsink", "capability": "appsrc_bridge", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "fdsrc", "capability": "decode_analysis", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "matroskademux", "capability": "decode_analysis", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "vp8dec", "capability": "decode_analysis", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "decodebin", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
     {"factory": "videoscale", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
     {"factory": "pngenc", "capability": "thumbnail_decode", "requirement": "required", "platform": "native_desktop"},
