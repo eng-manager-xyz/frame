@@ -367,6 +367,7 @@ struct TimestampNormalizer {
 }
 
 impl TimestampNormalizer {
+    #[cfg(target_os = "macos")]
     const fn new() -> Self {
         Self {
             segment_epoch: None,
@@ -405,6 +406,7 @@ impl TimestampNormalizer {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn normalize_nominal(
         &mut self,
         pts: RawMediaTime,

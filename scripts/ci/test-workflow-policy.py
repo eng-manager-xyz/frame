@@ -230,6 +230,12 @@ def main() -> int:
                 "macOS signing/TCC hardware jobs no longer serialized",
             ),
             (
+                desktop_hardware,
+                "cancel-in-progress: false",
+                "cancel-in-progress: true",
+                "active macOS signing/TCC evidence can be cancelled",
+            ),
+            (
                 quality,
                 "test-desktop-real-hardware.py",
                 "disabled-desktop-real-hardware.py",

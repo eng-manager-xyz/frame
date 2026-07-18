@@ -272,7 +272,12 @@ def main() -> int:
         "macos_display:" in hardware
         and "runs-on: frame-macos-hardware" in hardware
         and "environment: desktop-macos-hardware" in hardware
-        and "group: desktop-macos-hardware" in hardware
+        and re.search(
+            r"^concurrency:\n  group: desktop-macos-hardware\n"
+            r"  cancel-in-progress: false$",
+            hardware,
+            re.MULTILINE,
+        ) is not None
         and "fetch-depth: 0" in hardware
         and 'git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main' in hardware
         and "secrets.FRAME_CODESIGN_IDENTITY" in hardware
