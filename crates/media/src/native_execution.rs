@@ -1647,8 +1647,9 @@ mod tests {
             );
         }
         // GstAggregator versions may materialize the empty serialized audio
-        // interval as GAP|DROPPABLE buffers. Those carry no source payload and
-        // are distinct from the forbidden fake primer buffers.
+        // interval as GAP buffers (some additionally mark them DROPPABLE).
+        // Those carry no source payload and are distinct from forbidden fake
+        // primer buffers.
         let mixed_audio_sink = graph
             .mixed_audio_sink()
             .expect("mixed audio sink")
@@ -1660,7 +1661,6 @@ mod tests {
             assert!(gap_buffers <= MIXED_AUDIO_SINK_MAX_BUFFERS);
             let flags = sample.buffer().expect("gap buffer").flags();
             assert!(flags.contains(gst::BufferFlags::GAP));
-            assert!(flags.contains(gst::BufferFlags::DROPPABLE));
         }
         for sink in [
             graph.camera_record_sink().expect("camera record sink"),
