@@ -47,9 +47,10 @@ adapter must return the exact durable metadata or the core rejects it.
 
 An interrupted recording seal may contain a mixture of
 `recording-partials/<asset>.recording-partial` and
-`temporary/<asset>.media`. Reopen only with the original four-track graph and
-byte ceiling. Recovery rehashes every retained file, appends only to partials,
-and refuses to mutate a track already sealed into the temporary namespace.
+`temporary/<asset>.media`. Reopen only with the exact persisted enabled-track
+graph and byte ceiling. Recovery rehashes every retained file, appends only to
+partials, and refuses to mutate a track already sealed into the temporary
+namespace.
 Dropping the session preserves these files; deletion requires the separate
 journal recovery decision for that exact asset identity.
 

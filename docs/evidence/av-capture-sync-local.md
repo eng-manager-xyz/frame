@@ -18,14 +18,16 @@ and integration gaps close.
 `NativeAvBridge` still has no production implementation in this repository.
 `NativeAvAppSrc` is a real CPU-byte adapter and `NativeAvRuntime` executes a
 real bounded graph against hostile bridges, but no production device source
-pumps owned buffers through that bridge and the coalesced events have no
-desktop IPC caller. `DurableAvSettingsStore` provides the macOS adapter's
-strict storage semantics without pretending to be the older unversioned
-`AvSettingsStorage` trait. `MacOsSystemAudioSource` is a real target-gated
-source primitive, but it intentionally stops short of the bridge's
-calibration/hotplug/default/sleep-wake contract and is not muxed with screen
-capture. Consequently these local results are not evidence that a release
-recording contains audio or implements checkboxes 1 or 4–8.
+pumps owned buffers through that bridge. The narrower macOS desktop composition
+does mux `MacOsSystemAudioSource` with full-display video and now computes a
+bounded coarse system-audio peak in its capture worker. The existing one-second
+recorder poll carries only a 0..=10,000 value; raw PCM never crosses IPC. This
+direct path still stops short of the bridge's microphone, camera,
+calibration/hotplug/default/sleep-wake, and coalesced-event contracts.
+`DurableAvSettingsStore` provides strict storage semantics without pretending
+to be the older unversioned `AvSettingsStorage` trait. Consequently these local
+results implement a real narrow system-audio slice but do not satisfy complete
+checkboxes 1 or 4–8.
 
 ## Contract surface exercised locally
 
@@ -45,7 +47,7 @@ recording contains audio or implements checkboxes 1 or 4–8.
   discontinuity, fair bounded runtime polling, source calibration,
   non-draining appsinks that cannot stall EOS, deadline-bounded EOS-to-`Null`
   completion, serialized empty-source TIME-segment/EOS ordering, and
-  fail-closed attach/poll teardown;
+  fail-closed attach/poll teardown plus one-attempt abandonment cleanup;
 - safe macOS ScreenCaptureKit system-audio format/permission/start/stop
   primitives with current-process exclusion, a 1.6-second callback prequeue,
   stable secret-bound IDs, five-second native-call deadlines, one-second queue
@@ -110,7 +112,15 @@ three-stage ingress partition, pushes owned CPU buffers through a real
 GStreamer appsink, proves pre-transfer rejection versus post-transfer failure,
 observes bounded appsrc/queue overload and next-buffer discontinuity, rotates
 hostile one-buffer polls fairly, reconciles a lost Stop acknowledgement without
-double release, and confirms deadline-bounded EOS/`Null` teardown. It does not
+double release, and confirms deadline-bounded EOS/`Null` teardown. Running and
+EOS-requested abandonment tests prove that Drop attempts native quiescence and
+confirms the graph `Null` without a second release. A hostile adapter-panic test
+proves the unwind is contained, the graph is still confirmed `Null`, and native
+authority remains explicitly unconfirmed; explicit `quiesce` then reconciles
+the same terminal ID on retry. This is a one-attempt destructor safeguard, not
+a hard preemption boundary: an adapter that ignores its operation-ticket
+timeout can still block its caller and needs a platform watchdog or process
+isolation. The suite does not
 push a production device buffer, consume the mixed-media sinks as a recording,
 emit production meters, or connect a UI event consumer.
 

@@ -65,7 +65,12 @@ Static source checks and focused Rust tests establish a bounded native path:
 - display catalogs expose opaque tokens and coarse geometry rather than native
   display IDs or titles;
 - native start accepts only a selected full display with Frame-owned window
-  exclusion, embedded cursor, and all audio/camera inputs disabled; and
+  exclusion and embedded cursor, can optionally include exact 48 kHz stereo
+  system audio while excluding Frame's own process audio, and keeps microphone
+  and camera inputs disabled;
+- the bounded one-second recorder poll carries only a coarse system-audio level
+  (0..=10,000) from a worker-owned atomic; no PCM, device label, or native
+  identifier crosses the WebView boundary; and
 - stop/cancel and artifact-bound Editable WebM publication require confirmed
   backend outcomes before the runtime announces success.
 
@@ -108,9 +113,11 @@ project paths, session tokens, or user data.
 Local code still satisfies the typed surface, backend-owned state model, and IPC
 security classifications without closing broader product-integration
 checkboxes. In addition, the macOS composition now has a real but narrow
-display-video source and WebM path. It continues to refuse unsupported audio,
-camera, window, region, pause, MP4, upload, updater, Instant publication,
-recovery, and edit-aware Studio behavior. The registered Instant command
+display-video and optional-system-audio WebM path. It continues to refuse
+microphone, camera, window, region, pause, MP4, upload, updater, Instant
+publication, recovery, and edit-aware Studio behavior.
+Optional macOS system audio is the only native audio source currently supported;
+microphone capture remains unavailable. The registered Instant command
 therefore proves a fail-closed boundary and state model, not a working
 publication journey; the native WebM path proves no editor or recovery journey.
 

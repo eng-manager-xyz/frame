@@ -1,7 +1,10 @@
 # frame-macos-screen-capture
 
-Safe, bounded full-display capture for Frame's macOS production path. The
-crate uses the published `screencapturekit = 8.0.0` and
+Safe, bounded display, window, and single-display-region capture primitives
+for Frame's macOS production path. The desktop composition still deliberately
+enables only full-display recording until the broader product contract and
+physical evidence gates land. The crate uses the published
+`screencapturekit = 8.0.0` and
 `core-graphics = 0.25.0` crates; it contains no direct FFI or unsafe block.
 
 ## Lifecycle
@@ -10,16 +13,32 @@ crate uses the published `screencapturekit = 8.0.0` and
    validated `ScreenSourceInstanceId` and 32 fresh CSPRNG bytes.
 2. Call `preflight_permission`. Only call `request_permission` in response to
    an explicit user action when the preflight result is `PromptRequired`.
-3. Call `enumerate_displays`. The returned `ScreenTargetSnapshot` contains no
-   display labels or raw macOS handles. Target tokens are HMAC-derived and
-   valid only for the source session that produced them.
+3. Call `enumerate_displays` for a pre-permission display-only catalog. After
+   permission is granted, call `enumerate_targets` to include on-screen,
+   layer-zero windows and optional user-defined regions. A region references
+   only an opaque, topology-bound display binding from a prior catalog and
+   must remain wholly inside that unchanged display. Returned snapshots
+   contain no titles, application names, PIDs, labels, or raw macOS handles.
+   Target tokens are kind-separated, HMAC-derived, and valid only for the
+   adapter session that produced them.
 4. Create a `MacOsCaptureConfig` from a catalog binding, a CPU BGRA/sRGB
-   `VideoFrameSpec`, and either a hidden or frame-embedded cursor mode.
-5. Call `start`. The adapter resolves exactly one `SCRunningApplication` for
-   the current process PID and excludes that whole application from the
-   display filter. This also excludes Frame windows created after capture
-   starts. A missing or ambiguous PID match fails closed; names, bundle
-   identifiers, and raw window identifiers are never read or reported.
+   `VideoFrameSpec`, and either a hidden or frame-embedded cursor mode. Display
+   and region outputs may scale into a bounded negotiated canvas only when its
+   aspect ratio matches their normalized physical selection, allowing one
+   output pixel of integer-rounding tolerance. The validated native crop does
+   not grow with the output canvas. Window filters may scale their isolated
+   window into the negotiated output canvas.
+5. Call `start`. The adapter re-fetches shareable content and independently
+   verifies the selected native display geometry or window owner/geometry.
+   A moved, resized, closed, minimized, or otherwise stale target fails before
+   stream creation. Display and region filters resolve exactly one
+   `SCRunningApplication` for the current process PID and exclude that whole
+   application, including Frame windows created after capture starts. Current-
+   process windows are omitted from window catalogs. A missing or ambiguous
+   PID match fails closed; names, bundle identifiers, titles, and raw window
+   identifiers are never read or reported. Region capture applies a validated
+   display-local logical `sourceRect`; the normalized display transform
+   independently proves containment and output aspect ratio.
 6. Drain `poll_frame` regularly. Recording finalizers call
    `stop_and_drain_frames` and ingest every returned frame before encoder EOS;
    its tail is bounded to three frames. `MacOsCaptureStopError` distinguishes
@@ -55,7 +74,17 @@ so callers cannot concurrently drive its lifecycle.
 `MacOsCaptureFrame` owns tightly packed BGRA bytes. Its sequence, normalized
 PTS, duration, and discontinuity bit can be passed to
 `frame_media::BgraScreenFrame`; use a 1920x1080-or-smaller configuration for
-the current `ScreenRecordingSpec` production graph.
+the current `ScreenRecordingSpec` production graph. `source_pts_ns()` also
+exposes the raw epoch-zero ScreenCaptureKit media time when it is comparable
+with another native source. Shared-clock A/V composition must reject `None`
+and calibrate both first samples before publishing either timeline.
+
+Catalogs contain at most the normalized contract's 256 targets. The adapter
+rejects excess or duplicate native identities rather than truncating. Display,
+window, and region records are deterministically ordered before comparison;
+any catalog change advances the topology generation and invalidates every old
+binding. Region identities also cover their complete logical geometry, so a
+moved edge creates a new opaque target rather than reusing authority.
 
 The crate build script embeds the Xcode Swift runtime search path into this
 package's test/example executables. A downstream application binary must also
@@ -67,6 +96,7 @@ binary setting.
 ## Callback and memory bounds
 
 - ScreenCaptureKit's native queue depth is exactly three.
+- Target catalogs are capped at 256 display/window/region descriptors.
 - The Rust callback queue is a `sync_channel(3)` and uses `try_send`; native
   callbacks never wait for the consumer or encoder.
 - A full queue drops the incoming sample and increments

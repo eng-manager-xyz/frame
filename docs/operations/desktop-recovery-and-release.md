@@ -19,10 +19,11 @@ cargo build --locked --release -p frame-desktop-core \
 python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
 ```
 
-The native slice records one selected full display as video-only VP8/WebM,
-embeds the cursor, excludes Frame-owned windows in the ScreenCaptureKit filter,
-and supports stop, cancel, and artifact-bound Editable WebM publication. It does
-not support window/region capture, microphone, system audio, camera,
+The native slice records one selected full display as VP8/WebM, embeds the
+cursor, excludes Frame-owned windows in the ScreenCaptureKit filter, and can
+optionally mux exact 48 kHz stereo system audio as Opus while excluding Frame's
+own process audio. It supports stop, cancel, and artifact-bound Editable WebM
+publication. It does not support window/region capture, microphone, camera,
 pause/resume, multitrack or edit-aware Studio export, MP4, persisted recording
 recovery, native tray/hotkey/overlay lifecycle, or updater installation.
 
@@ -42,8 +43,9 @@ distributable app-relative runtime.
    and desktop product/accessibility checker.
 3. Run `.github/workflows/desktop-real-hardware.yml` on the protected macOS
    display runner and retain its complete non-fake JSON trace. This lane is
-   deliberately narrower than the full desktop matrix; Windows, audio, camera,
-   Studio, updater, recovery, and accessibility hardware gates remain pending.
+   deliberately narrower than the full desktop matrix; Windows,
+   microphone/camera, system-audio playback, Studio, updater, recovery, and
+   accessibility hardware gates remain pending.
 4. Name the macOS VoiceOver and Windows Narrator versions used for the keyboard/screen-reader
    journeys. Record OS build, architecture, monitor topology/DPI/rotation, device models, permission
    reset procedure, and binary digest.

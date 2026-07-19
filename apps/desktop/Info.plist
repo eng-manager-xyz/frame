@@ -13,7 +13,7 @@
   <key>CFBundleVersion</key>
   <string>0.1.0</string>
   <key>LSMinimumSystemVersion</key>
-  <string>12.3</string>
+  <string>13.0</string>
 
   <key>NSScreenCaptureUsageDescription</key>
   <string>Frame records the display you select so you can create and export a video.</string>

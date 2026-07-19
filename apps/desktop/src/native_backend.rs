@@ -196,6 +196,9 @@ pub struct NativeCaptureStartRequest {
     pub target: CaptureTargetSummary,
     pub frame_rate: u16,
     pub exclude_frame_windows: bool,
+    /// Request system audio when the native backend can start it safely.
+    /// A backend may report a verified screen-only fallback in its outcome.
+    pub system_audio_enabled: bool,
 }
 
 impl fmt::Debug for NativeCaptureStartRequest {
@@ -206,6 +209,7 @@ impl fmt::Debug for NativeCaptureStartRequest {
             .field("target", &self.target)
             .field("frame_rate", &self.frame_rate)
             .field("exclude_frame_windows", &self.exclude_frame_windows)
+            .field("system_audio_enabled", &self.system_audio_enabled)
             .finish()
     }
 }
@@ -215,6 +219,8 @@ pub struct NativeRecordingStartOutcome {
     pub catalog_generation: u64,
     pub target_token: String,
     pub recording_token: String,
+    /// True only when the owned recording graph accepted system-audio PCM.
+    pub system_audio_included: bool,
 }
 
 impl fmt::Debug for NativeRecordingStartOutcome {
@@ -224,6 +230,7 @@ impl fmt::Debug for NativeRecordingStartOutcome {
             .field("catalog_generation", &self.catalog_generation)
             .field("target_token", &"<redacted>")
             .field("recording_token", &"<redacted>")
+            .field("system_audio_included", &self.system_audio_included)
             .finish()
     }
 }
@@ -358,6 +365,12 @@ pub struct NativeEditableWebmExportOutcome {
     pub bytes_written: u64,
 }
 
+/// Privacy-safe, raw-media-free telemetry for one active native recording.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeRecordingMeter {
+    pub system_audio_basis_points: u16,
+}
+
 impl fmt::Debug for NativeEditableWebmExportOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -397,6 +410,15 @@ pub trait NativeDesktopBackend {
         _request: &NativeRecordingControlRequest,
     ) -> Result<Option<NativeRecordingTerminalFailure>, NativeDesktopBackendError> {
         Ok(None)
+    }
+
+    /// Reads coarse recording telemetry without transferring PCM through IPC.
+    /// The default keeps portable and non-audio backends silent.
+    fn poll_recording_meter(
+        &mut self,
+        _request: &NativeRecordingControlRequest,
+    ) -> Result<NativeRecordingMeter, NativeDesktopBackendError> {
+        Ok(NativeRecordingMeter::default())
     }
 
     fn stop_recording(

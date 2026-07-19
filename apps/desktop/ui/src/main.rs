@@ -344,6 +344,54 @@ mod browser {
         }
     }
 
+    const fn capture_target_kind_label(kind: CaptureTargetKind) -> &'static str {
+        match kind {
+            CaptureTargetKind::Display => "Display",
+            CaptureTargetKind::Window => "Window",
+            CaptureTargetKind::Region => "Region",
+        }
+    }
+
+    fn native_target_pressed(
+        state: &DesktopRuntimeSnapshot,
+        kind: CaptureTargetKind,
+    ) -> Option<bool> {
+        let matching_targets = state
+            .capture_targets
+            .targets
+            .iter()
+            .filter(|target| target.kind == kind)
+            .count();
+        (matching_targets == 1).then_some(state.selected_sources.target == Some(kind))
+    }
+
+    fn permission_guidance(snapshot: Option<DesktopRuntimeSnapshot>) -> &'static str {
+        match snapshot.map(|state| (state.adapter, state.permission)) {
+            Some((
+                DesktopAdapterKind::NativeMacOs,
+                frame_desktop_core::PermissionState::Granted,
+            )) => {
+                "macOS reports Screen & System Audio Recording access. If access was just granted, quit and reopen Frame before recording."
+            }
+            Some((
+                DesktopAdapterKind::NativeMacOs,
+                frame_desktop_core::PermissionState::Denied,
+            )) => {
+                "Allow Frame in System Settings under Privacy & Security, Screen & System Audio Recording, then quit and reopen Frame."
+            }
+            Some((DesktopAdapterKind::NativeMacOs, _)) => {
+                "macOS Screen & System Audio Recording access has not been confirmed. Recording stays disabled."
+            }
+            Some((_, frame_desktop_core::PermissionState::Granted)) => {
+                "Screen and device permissions are confirmed."
+            }
+            Some((_, frame_desktop_core::PermissionState::Denied)) => {
+                "Permission was denied. Open system privacy settings and return to Frame."
+            }
+            _ => "Permission has not been confirmed. Recording stays disabled.",
+        }
+    }
+
     fn progress(export: ExportState) -> u16 {
         match export {
             ExportState::Running {
@@ -468,7 +516,7 @@ mod browser {
                 .get()
                 .is_some_and(|state| state.adapter == DesktopAdapterKind::NativeMacOs)
         };
-        let supports_display_capture = move || is_fake() || is_native();
+        let supports_capture_targets = move || is_fake() || is_native();
         let can_start = move || {
             snapshot.get().is_some_and(|state| {
                 matches!(
@@ -477,9 +525,7 @@ mod browser {
                 ) && state.permission == frame_desktop_core::PermissionState::Granted
                     && state.selected_sources.target.is_some()
                     && (state.adapter == DesktopAdapterKind::DeterministicFake
-                        || (!state.settings.microphone_enabled
-                            && !state.settings.system_audio_enabled
-                            && !state.settings.camera_enabled))
+                        || (!state.settings.microphone_enabled && !state.settings.camera_enabled))
                     && matches!(
                         state.recorder,
                         RecorderState::Idle | RecorderState::Ready | RecorderState::Failed { .. }
@@ -509,6 +555,15 @@ mod browser {
                     ))
                     || (state.adapter == DesktopAdapterKind::NativeMacOs
                         && state.recorder == RecorderState::Recording)
+            }) && !busy.get()
+        };
+        let can_configure_native_audio = move || {
+            snapshot.get().is_some_and(|state| {
+                state.adapter == DesktopAdapterKind::NativeMacOs
+                    && matches!(
+                        state.recorder,
+                        RecorderState::Idle | RecorderState::Ready | RecorderState::Failed { .. }
+                    )
             }) && !busy.get()
         };
         let fake_paths = move || {
@@ -591,23 +646,23 @@ mod browser {
 
                     <fieldset>
                         <legend>"Capture target"</legend>
-                        <p id="target-help">"Frame windows are excluded. Choose one opaque target; titles are not sent to the UI."</p>
+                        <p id="target-help">"Frame windows are excluded. Choose one opaque target; application names, window titles, and platform identifiers are not sent to the UI."</p>
                         <div class="button-row" aria-describedby="target-help">
-                            <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            <button type="button" aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Display)) disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::CaptureTargetSelect { kind: CaptureTargetKind::Display, target_token: "fake-display-1".into() }
                             )>"Entire display"</button>
-                            <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            <button type="button" aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Window)) disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::CaptureTargetSelect { kind: CaptureTargetKind::Window, target_token: "fake-window-1".into() }
                             )>"Application window"</button>
-                            <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            <button type="button" aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Region)) disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::CaptureTargetSelect { kind: CaptureTargetKind::Region, target_token: "fake-region-1".into() }
                             )>"Screen region"</button>
                         </div>
                         <Show when=move || is_native()>
-                            <div class="button-row" aria-label="Native displays">
+                            <div class="button-row" role="group" aria-label="Native capture targets">
                                 <For
                                     each=move || snapshot
                                         .get()
@@ -620,15 +675,24 @@ mod browser {
                                     key=|target| target.token.clone()
                                     children=move |target| {
                                         let token = target.token.clone();
+                                        let kind = target.kind;
                                         let label = format!(
-                                            "Display {} — {} by {} pixels",
+                                            "{} {} — {} by {} pixels, {} degree rotation",
+                                            capture_target_kind_label(kind),
                                             target.ordinal,
                                             target.width_pixels,
                                             target.height_pixels,
+                                            target.rotation_degrees,
                                         );
+                                        let accessible_label = label.clone();
                                         view! {
                                             <button
                                                 type="button"
+                                                aria-label=accessible_label
+                                                aria-pressed=move || snapshot
+                                                    .get()
+                                                    .as_ref()
+                                                    .and_then(|state| native_target_pressed(state, kind))
                                                 disabled=move || busy.get()
                                                 on:click=move |_| submit(
                                                     client,
@@ -638,7 +702,7 @@ mod browser {
                                                     busy,
                                                     WindowRole::Recorder,
                                                     IpcCommand::CaptureTargetSelect {
-                                                        kind: CaptureTargetKind::Display,
+                                                        kind,
                                                         target_token: token.clone(),
                                                     },
                                                 )
@@ -652,20 +716,16 @@ mod browser {
 
                     <div class="permission-card">
                         <h3>"Permissions and devices"</h3>
-                        <p>{move || match snapshot.get().map(|state| state.permission) {
-                            Some(frame_desktop_core::PermissionState::Granted) => "Screen and device permissions are confirmed.",
-                            Some(frame_desktop_core::PermissionState::Denied) => "Permission was denied. Open system privacy settings and return to Frame.",
-                            _ => "Permission has not been confirmed. Recording stays disabled.",
-                        }}</p>
+                        <p>{move || permission_guidance(snapshot.get())}</p>
                         <div class="button-row">
-                            <button type="button" disabled=move || !supports_display_capture() || busy.get() on:click=move |_| submit(
+                            <button type="button" disabled=move || !supports_capture_targets() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::DeviceEnumerate { class: DeviceClass::Display }
-                            )>"Refresh displays"</button>
-                            <button type="button" disabled=move || !supports_display_capture() || busy.get() on:click=move |_| submit(
+                            )>"Refresh capture targets"</button>
+                            <button type="button" disabled=move || !supports_capture_targets() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::RecorderPrepare
-                            )>"Confirm permissions"</button>
+                            )>{move || if is_native() { "Check macOS access" } else { "Confirm permissions" }}</button>
                         </div>
                         <p class="device-summary">{move || match snapshot.get().map(|state| state.devices) {
                             Some(DeviceState::Ready(counts)) => format!(
@@ -678,15 +738,17 @@ mod browser {
                         }}</p>
                     </div>
 
-                    <div class="meter-grid" aria-label="Live input meters">
-                        <label for="microphone-meter">"Microphone"</label>
-                        <meter id="microphone-meter" min="0" max="10000" value=move || snapshot.get().map_or(0, |state| state.meter.microphone_basis_points)>"Microphone level"</meter>
-                        <label for="system-meter">"System audio"</label>
-                        <meter id="system-meter" min="0" max="10000" value=move || snapshot.get().map_or(0, |state| state.meter.system_audio_basis_points)>"System audio level"</meter>
-                    </div>
+                    <Show when=move || is_fake()>
+                        <div class="meter-grid" aria-label="Live input meters">
+                            <label for="microphone-meter">"Microphone"</label>
+                            <meter id="microphone-meter" min="0" max="10000" value=move || snapshot.get().map_or(0, |state| state.meter.microphone_basis_points)>"Microphone level"</meter>
+                            <label for="system-meter">"System audio"</label>
+                            <meter id="system-meter" min="0" max="10000" value=move || snapshot.get().map_or(0, |state| state.meter.system_audio_basis_points)>"System audio level"</meter>
+                        </div>
+                    </Show>
                     <Show when=move || is_native()>
                         <p class="privacy-note">
-                            "Native macOS capture currently records display video only. Window and region capture, pause, microphone, system audio, camera, and MP4 export remain disabled."
+                            "Native macOS capture records the selected target and can optionally include system audio. Microphone, camera, pause/resume, and MP4 export remain unavailable; native export is Editable WebM."
                         </p>
                     </Show>
 
@@ -1020,6 +1082,47 @@ mod browser {
                         || "Settings are loading.".into(),
                         |state| format!("Settings revision {}. {} frames per second.", state.settings.revision, state.settings.frame_rate),
                     )}</p>
+                    <Show when=move || is_native()>
+                        <div class="privacy-note" aria-labelledby="native-audio-heading">
+                            <h3 id="native-audio-heading">"Native macOS system audio"</h3>
+                            <p id="native-audio-help">
+                                "System audio is optional and uses macOS Screen & System Audio Recording access. Frame excludes its own process audio. Microphone and camera remain off."
+                            </p>
+                            <button
+                                type="button"
+                                aria-describedby="native-audio-help"
+                                aria-pressed=move || snapshot
+                                    .get()
+                                    .is_some_and(|state| state.settings.system_audio_enabled)
+                                disabled=move || !can_configure_native_audio()
+                                on:click=move |_| {
+                                    if let Some(state) = snapshot.get_untracked() {
+                                        submit(
+                                            client,
+                                            snapshot,
+                                            status,
+                                            error,
+                                            busy,
+                                            WindowRole::Settings,
+                                            IpcCommand::SettingsApply {
+                                                expected_revision: state.settings.revision,
+                                                mode: state.settings.mode,
+                                                frame_rate: state.settings.frame_rate,
+                                                microphone_enabled: false,
+                                                system_audio_enabled: !state.settings.system_audio_enabled,
+                                                camera_enabled: false,
+                                                reduced_motion: state.settings.reduced_motion,
+                                            },
+                                        );
+                                    }
+                                }
+                            >{move || if snapshot.get().is_some_and(|state| state.settings.system_audio_enabled) {
+                                "Include system audio: on"
+                            } else {
+                                "Include system audio: off"
+                            }}</button>
+                        </div>
+                    </Show>
                     <div class="button-row">
                         <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                             if let Some(state) = snapshot.get_untracked() {

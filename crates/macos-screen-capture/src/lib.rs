@@ -9,10 +9,13 @@
 use std::fmt;
 
 use frame_media::{
-    CaptureError, ColorSpace, CursorCaptureMode, FrameMemory, FrameTimestamp, PixelFormat,
-    ScreenTargetBinding, VideoFrameSpec,
+    CaptureError, ColorSpace, CursorCaptureMode, FrameMemory, FrameTimestamp, LogicalRect,
+    PixelFormat, ScreenTargetBinding, ScreenTargetKind, VideoFrameSpec,
 };
 use thiserror::Error;
+
+#[cfg(any(target_os = "macos", test))]
+mod target_catalog;
 
 #[cfg(target_os = "macos")]
 mod platform;
@@ -33,6 +36,49 @@ const MAX_FRAME_DURATION_NS: u64 = 1_000_000_000;
 #[cfg(any(target_os = "macos", test))]
 const TIMESTAMP_GAP_DISCONTINUITY_NS: u64 = 2_000_000_000;
 
+/// One user-selected region, bound to an opaque display identity from a prior
+/// catalog. Native display handles never cross the adapter boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MacOsRegionSelection {
+    display: ScreenTargetBinding,
+    logical_bounds: LogicalRect,
+}
+
+impl MacOsRegionSelection {
+    pub fn new(
+        display: ScreenTargetBinding,
+        logical_bounds: LogicalRect,
+    ) -> Result<Self, MacOsCaptureError> {
+        if display.id().kind() != ScreenTargetKind::Display {
+            return Err(MacOsCaptureError::RegionRequiresDisplayTarget);
+        }
+        Ok(Self {
+            display,
+            logical_bounds,
+        })
+    }
+
+    #[must_use]
+    pub const fn display(self) -> ScreenTargetBinding {
+        self.display
+    }
+
+    #[must_use]
+    pub const fn logical_bounds(self) -> LogicalRect {
+        self.logical_bounds
+    }
+}
+
+impl fmt::Debug for MacOsRegionSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacOsRegionSelection")
+            .field("display", &self.display)
+            .field("logical_bounds", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Why this crate does not implement [`frame_media::ScreenCaptureSource`].
 ///
 /// The provider-free contract requires an exact protected-content event.
@@ -47,7 +93,7 @@ pub enum FrameMediaContractStatus {
 pub const FRAME_MEDIA_CONTRACT_STATUS: FrameMediaContractStatus =
     FrameMediaContractStatus::BlockedByMissingProtectedContentSignal;
 
-/// Configuration for one full-display BGRA capture.
+/// Configuration for one catalog-bound display, window, or region BGRA capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacOsCaptureConfig {
     target: ScreenTargetBinding,
@@ -115,6 +161,7 @@ impl MacOsCaptureConfig {
 pub struct MacOsCaptureFrame {
     target: ScreenTargetBinding,
     sequence: u64,
+    source_pts_ns: Option<u64>,
     timestamp: FrameTimestamp,
     spec: VideoFrameSpec,
     pixels: Vec<u8>,
@@ -129,6 +176,14 @@ impl MacOsCaptureFrame {
     #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// Raw ScreenCaptureKit presentation time in the shared epoch-zero media
+    /// clock. `None` means this sample cannot be compared with another native
+    /// source and therefore must not enter a shared-clock A/V graph.
+    #[must_use]
+    pub const fn source_pts_ns(&self) -> Option<u64> {
+        self.source_pts_ns
     }
 
     #[must_use]
@@ -205,6 +260,20 @@ pub enum MacOsCaptureError {
     TopologyGenerationExhausted,
     #[error("the display target is stale or did not come from this adapter")]
     StaleOrForeignTarget,
+    #[error("a region selection must reference an opaque display target")]
+    RegionRequiresDisplayTarget,
+    #[error("the region's display token is stale or came from another adapter session")]
+    StaleOrForeignRegionDisplay,
+    #[error("the selected region is not wholly contained by its display")]
+    InvalidRegionGeometry,
+    #[error("the requested output aspect ratio does not match the selected target")]
+    OutputAspectRatioDoesNotMatchTarget,
+    #[error("the native target catalog contains a duplicate identity")]
+    DuplicateNativeTarget,
+    #[error("the native target catalog exceeds the normalized 256-target bound")]
+    TargetCatalogLimitExceeded,
+    #[error("the selected target changed after it was enumerated")]
+    StaleTargetTopology,
     #[error("a capture stream is already running")]
     AlreadyRunning,
     #[error("no capture stream is running")]
@@ -437,6 +506,7 @@ impl RawMediaTime {
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy)]
 struct NormalizedTimestamp {
+    source_pts_ns: Option<u64>,
     timestamp: FrameTimestamp,
     used_nominal_duration: bool,
 }
@@ -568,6 +638,9 @@ impl TimestampNormalizer {
         self.last_raw_pts_ns = Some(raw_pts_ns);
         self.last_output_end_ns = timestamp.end_ns();
         Ok(NormalizedTimestamp {
+            source_pts_ns: (pts.epoch == 0)
+                .then(|| u64::try_from(raw_pts_ns).ok())
+                .flatten(),
             timestamp,
             used_nominal_duration,
         })
@@ -613,6 +686,14 @@ mod tests {
         assert_eq!(
             MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata),
             Err(MacOsCaptureError::UnsupportedCursorMode)
+        );
+    }
+
+    #[test]
+    fn configuration_accepts_exact_hidden_and_embedded_cursor_modes() {
+        assert!(MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Hidden).is_ok());
+        assert!(
+            MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::EmbeddedInFrame).is_ok()
         );
     }
 
@@ -690,6 +771,7 @@ mod tests {
             )
             .expect("second");
         assert_eq!(first.timestamp.pts_ns, 0);
+        assert_eq!(first.source_pts_ns, Some(30_000_000_000));
         assert_eq!(first.timestamp.duration_ns, 33_333_333);
         assert!(!first.used_nominal_duration);
         assert_eq!(second.timestamp.pts_ns, 33_333_333);
@@ -774,5 +856,6 @@ mod tests {
             .expect("epoch reset");
         assert!(epoch.timestamp.discontinuity);
         assert_eq!(epoch.timestamp.pts_ns, gap.timestamp.end_ns());
+        assert_eq!(epoch.source_pts_ns, None);
     }
 }

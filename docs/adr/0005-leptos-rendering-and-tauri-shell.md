@@ -51,10 +51,11 @@ assets and does not provide a server runtime inside the desktop application.
 - `NativeMacOsDisplay` is not the complete recorder described by issues 24,
   27, and 33. It enumerates opaque displays, requests screen-recording
   permission, records one full display with embedded cursor and Frame-owned
-  window exclusion, and seals and safely publishes an Editable WebM artifact. Window/region
-  capture, microphone, system audio, camera, pause/resume, multitrack Studio,
-  edit-aware export, recovery, MP4 distribution, updater, and native lifecycle
-  integrations remain unavailable.
+  window exclusion, optionally includes exact 48 kHz stereo system audio, and
+  seals and safely publishes an Editable WebM artifact. Window/region capture,
+  microphone, camera, pause/resume, multitrack Studio, edit-aware export,
+  recovery, MP4 distribution, updater, and native lifecycle integrations remain
+  unavailable.
 
 ## Commands and evidence
 

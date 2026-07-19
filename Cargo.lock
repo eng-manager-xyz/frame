@@ -1327,6 +1327,7 @@ dependencies = [
  "async-trait",
  "frame-authenticated-client",
  "frame-client",
+ "frame-macos-av-capture",
  "frame-macos-screen-capture",
  "frame-media",
  "reqwest",

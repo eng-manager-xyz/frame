@@ -82,6 +82,14 @@ and the single terminal event; one channel slot is reserved for that terminal
 notification and the joined report remains the authoritative outcome. Raw
 frames never cross that boundary.
 
+Studio asset v2 uses the same shipped codec baseline for originals: VP8/WebM
+for each enabled video track and Opus/WebM for each enabled audio track.
+`wavenc` remains optional only for the retained two-pass audio-normalization
+graph; it is not a production Studio asset encoder. VP9 recording, FLAC
+recording, and Matroska recording are not declared as production Studio
+factories. A graph that names those older contract-only families is not
+migrated into a different codec implicitly.
+
 Operational failures produce one typed terminal outcome. Cancellation,
 deadline, blocked-output, startup failure, and streaming-error tests all verify
 an attempted teardown for the audited synthetic graph. Polls and state

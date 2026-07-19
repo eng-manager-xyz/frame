@@ -38,7 +38,7 @@
     "category": "Productivity",
     "shortDescription": "Secure screen recording and editing",
     "macOS": {
-      "minimumSystemVersion": "12.3",
+      "minimumSystemVersion": "13.0",
       "infoPlist": "Info.plist"
     }
   }

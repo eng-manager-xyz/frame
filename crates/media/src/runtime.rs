@@ -5,12 +5,12 @@ use std::{
     process::Command,
 };
 
-use gst::prelude::{ElementExt, GstBinExtManual, GstObjectExt, PluginFeatureExt};
+use gst::prelude::{Cast, ElementExt, GstBinExtManual, GstObjectExt, PluginFeatureExt};
 use gstreamer as gst;
 
 use crate::MediaError;
 
-pub const RUNTIME_MANIFEST_VERSION: u16 = 5;
+pub const RUNTIME_MANIFEST_VERSION: u16 = 6;
 pub const MEDIA_APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MINIMUM_GSTREAMER_VERSION: (u32, u32, u32) = (1, 22, 0);
 pub const MINIMUM_GSTREAMER_VERSION_TEXT: &str = "1.22.0";
@@ -55,6 +55,7 @@ pub enum RuntimeCapability {
     AppSinkBridge,
     AudioMixing,
     AudioMetering,
+    AudioNormalize,
     CameraComposition,
     InstantSegmentation,
     StudioPreview,
@@ -64,7 +65,6 @@ pub enum RuntimeCapability {
     SoftwareH264,
     SoftwareAac,
     SoftwareOpus,
-    StudioMultitrack,
     MediaTransform,
 }
 
@@ -77,6 +77,7 @@ impl fmt::Display for RuntimeCapability {
             Self::AppSinkBridge => "appsink_bridge",
             Self::AudioMixing => "audio_mixing",
             Self::AudioMetering => "audio_metering",
+            Self::AudioNormalize => "audio_normalize",
             Self::CameraComposition => "camera_composition",
             Self::InstantSegmentation => "instant_segmentation",
             Self::StudioPreview => "studio_preview",
@@ -86,7 +87,6 @@ impl fmt::Display for RuntimeCapability {
             Self::SoftwareH264 => "software_h264",
             Self::SoftwareAac => "software_aac",
             Self::SoftwareOpus => "software_opus",
-            Self::StudioMultitrack => "studio_multitrack",
             Self::MediaTransform => "media_transform",
         };
         formatter.write_str(value)
@@ -276,6 +276,12 @@ const FACTORIES: &[FactorySpec] = &[
         platform: PlatformScope::NativeDesktop,
     },
     FactorySpec {
+        factory: "wavenc",
+        capability: RuntimeCapability::AudioNormalize,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
         factory: "compositor",
         capability: RuntimeCapability::CameraComposition,
         requirement: FactoryRequirement::Optional,
@@ -336,12 +342,6 @@ const FACTORIES: &[FactorySpec] = &[
         platform: PlatformScope::NativeDesktop,
     },
     FactorySpec {
-        factory: "wavenc",
-        capability: RuntimeCapability::StudioMultitrack,
-        requirement: FactoryRequirement::Optional,
-        platform: PlatformScope::NativeDesktop,
-    },
-    FactorySpec {
         factory: "videorate",
         capability: RuntimeCapability::MediaTransform,
         requirement: FactoryRequirement::Optional,
@@ -374,6 +374,12 @@ const FACTORIES: &[FactorySpec] = &[
     FactorySpec {
         factory: "opusenc",
         capability: RuntimeCapability::SoftwareOpus,
+        requirement: FactoryRequirement::Required,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "opusdec",
+        capability: RuntimeCapability::DecodeAnalysis,
         requirement: FactoryRequirement::Required,
         platform: PlatformScope::NativeDesktop,
     },
@@ -814,11 +820,16 @@ fn factory_plugin_version(factory: &gst::ElementFactory) -> Option<String> {
 #[must_use]
 pub fn pipeline_has_trusted_factory_provenance(pipeline: &gst::Pipeline) -> bool {
     pipeline.iterate_recurse().into_iter().all(|element| {
-        element
-            .ok()
-            .and_then(|element| element.factory())
-            .as_ref()
-            .is_some_and(factory_has_trusted_provenance)
+        element.is_ok_and(|element| {
+            element
+                .factory()
+                .as_ref()
+                .is_some_and(factory_has_trusted_provenance)
+                // Autopluggers may assemble anonymous/core structural bins.
+                // They contain no plugin code of their own, and recursive
+                // iteration still validates every executable child factory.
+                || element.downcast_ref::<gst::Bin>().is_some()
+        })
     })
 }
 
@@ -830,16 +841,13 @@ pub fn pipeline_has_trusted_factory_provenance(pipeline: &gst::Pipeline) -> bool
 #[must_use]
 pub fn pipeline_has_only_declared_authored_factories(pipeline: &gst::Pipeline) -> bool {
     let manifest = runtime_manifest();
-    pipeline.iterate_recurse().into_iter().all(|element| {
-        element
-            .ok()
-            .and_then(|element| element.factory())
-            .is_some_and(|factory| {
-                manifest
-                    .factories
-                    .iter()
-                    .any(|declared| declared.factory == factory.name().as_str())
-            })
+    pipeline.children().iter().all(|element| {
+        element.factory().is_some_and(|factory| {
+            manifest
+                .factories
+                .iter()
+                .any(|declared| declared.factory == factory.name().as_str())
+        })
     })
 }
 
@@ -856,6 +864,32 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count);
+    }
+
+    #[test]
+    fn decodebin_descendants_use_provenance_not_the_authored_allowlist() {
+        prepare_runtime().expect("trusted test runtime");
+        let pipeline = gst::parse::launch("filesrc ! decodebin ! fakesink")
+            .expect("decode graph")
+            .downcast::<gst::Pipeline>()
+            .expect("pipeline");
+        let descendants = pipeline
+            .iterate_recurse()
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter_map(|element| element.factory())
+            .map(|factory| factory.name().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(descendants.iter().any(|factory| factory == "typefind"));
+        assert!(
+            !runtime_manifest()
+                .factories
+                .iter()
+                .any(|declared| declared.factory == "typefind")
+        );
+        assert!(pipeline_has_only_declared_authored_factories(&pipeline));
+        assert!(pipeline_has_trusted_factory_provenance(&pipeline));
     }
 
     #[test]
