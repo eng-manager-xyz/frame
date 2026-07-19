@@ -1,7 +1,11 @@
 //! Fair, bounded ownership loop for ScreenCaptureKit video plus system audio.
 
 use std::{
-    sync::mpsc::Receiver,
+    sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
+        mpsc::Receiver,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -26,6 +30,12 @@ use super::{
 };
 
 const STARTUP_CALIBRATION_TIMEOUT: Duration = Duration::from_millis(80);
+
+pub(super) struct AvWorkerTelemetry {
+    pub(super) screen_diagnostic_baseline: MacOsCaptureDiagnostics,
+    pub(super) audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
+    pub(super) system_audio_meter: Arc<AtomicU16>,
+}
 
 #[derive(Debug)]
 pub(super) struct SharedClockNormalizer {
@@ -106,8 +116,7 @@ pub(super) fn run_av_capture_worker(
     mut recording: ScreenAudioRecording,
     mut timestamps: SharedClockNormalizer,
     control: Receiver<WorkerControl>,
-    screen_diagnostic_baseline: MacOsCaptureDiagnostics,
-    audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
+    telemetry: AvWorkerTelemetry,
 ) -> WorkerCompletion {
     let mut poll_audio_first = false;
     loop {
@@ -118,8 +127,8 @@ pub(super) fn run_av_capture_worker(
                     &mut system_audio,
                     recording,
                     &mut timestamps,
-                    screen_diagnostic_baseline,
-                    audio_diagnostic_baseline,
+                    telemetry.screen_diagnostic_baseline,
+                    telemetry.audio_diagnostic_baseline,
                 );
                 return WorkerCompletion { outcome };
             }
@@ -128,8 +137,8 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
-                    screen_diagnostic_baseline,
-                    audio_diagnostic_baseline,
+                    telemetry.screen_diagnostic_baseline,
+                    telemetry.audio_diagnostic_baseline,
                 );
                 return WorkerCompletion { outcome };
             }
@@ -140,7 +149,12 @@ pub(super) fn run_av_capture_worker(
         // from each source per turn. Neither callback queue can starve the
         // other, and control is observed before every bounded pair.
         let first = if poll_audio_first {
-            poll_audio(&mut system_audio, &mut recording, &mut timestamps)
+            poll_audio(
+                &mut system_audio,
+                &mut recording,
+                &mut timestamps,
+                &telemetry.system_audio_meter,
+            )
         } else {
             poll_screen(&mut source, &mut recording, &mut timestamps)
         };
@@ -151,8 +165,8 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
-                    screen_diagnostic_baseline,
-                    audio_diagnostic_baseline,
+                    telemetry.screen_diagnostic_baseline,
+                    telemetry.audio_diagnostic_baseline,
                     error,
                 );
                 return WorkerCompletion { outcome };
@@ -161,7 +175,12 @@ pub(super) fn run_av_capture_worker(
         let second = if poll_audio_first {
             poll_screen(&mut source, &mut recording, &mut timestamps)
         } else {
-            poll_audio(&mut system_audio, &mut recording, &mut timestamps)
+            poll_audio(
+                &mut system_audio,
+                &mut recording,
+                &mut timestamps,
+                &telemetry.system_audio_meter,
+            )
         };
         let second_did_work = match second {
             Ok(did_work) => did_work,
@@ -170,8 +189,8 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
-                    screen_diagnostic_baseline,
-                    audio_diagnostic_baseline,
+                    telemetry.screen_diagnostic_baseline,
+                    telemetry.audio_diagnostic_baseline,
                     error,
                 );
                 return WorkerCompletion { outcome };
@@ -257,15 +276,29 @@ fn poll_audio(
     system_audio: &mut MacOsSystemAudioSource,
     recording: &mut ScreenAudioRecording,
     timestamps: &mut SharedClockNormalizer,
+    system_audio_meter: &AtomicU16,
 ) -> Result<bool, NativeDesktopBackendError> {
     match system_audio.poll_chunk() {
         Ok(Some(chunk)) => {
+            system_audio_meter.store(
+                audio_level_basis_points(chunk.samples_f32le()),
+                Ordering::Release,
+            );
             push_audio_chunk(recording, chunk, timestamps).map_err(map_recording_error)?;
             Ok(true)
         }
         Ok(None) => Ok(false),
         Err(error) => Err(map_system_audio_error(error)),
     }
+}
+
+fn audio_level_basis_points(samples_f32le: &[u8]) -> u16 {
+    let peak = samples_f32le
+        .chunks_exact(4)
+        .map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]).abs())
+        .fold(0.0_f32, f32::max)
+        .clamp(0.0, 1.0);
+    (peak * 10_000.0).round() as u16
 }
 
 fn push_capture_frame(
@@ -503,5 +536,14 @@ mod tests {
             normalize_timestamp(10_000, &mut end, 9_999, 1_000, false),
             Err(ScreenRecordingError::NonMonotonicFrame)
         ));
+    }
+
+    #[test]
+    fn audio_meter_is_bounded_and_uses_no_raw_payload() {
+        let samples: Vec<_> = [0.0_f32, -0.25, 0.75, 1.5]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        assert_eq!(audio_level_basis_points(&samples), 10_000);
     }
 }

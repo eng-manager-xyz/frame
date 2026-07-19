@@ -365,6 +365,12 @@ pub struct NativeEditableWebmExportOutcome {
     pub bytes_written: u64,
 }
 
+/// Privacy-safe, raw-media-free telemetry for one active native recording.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeRecordingMeter {
+    pub system_audio_basis_points: u16,
+}
+
 impl fmt::Debug for NativeEditableWebmExportOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -404,6 +410,15 @@ pub trait NativeDesktopBackend {
         _request: &NativeRecordingControlRequest,
     ) -> Result<Option<NativeRecordingTerminalFailure>, NativeDesktopBackendError> {
         Ok(None)
+    }
+
+    /// Reads coarse recording telemetry without transferring PCM through IPC.
+    /// The default keeps portable and non-audio backends silent.
+    fn poll_recording_meter(
+        &mut self,
+        _request: &NativeRecordingControlRequest,
+    ) -> Result<NativeRecordingMeter, NativeDesktopBackendError> {
+        Ok(NativeRecordingMeter::default())
     }
 
     fn stop_recording(

@@ -881,6 +881,19 @@ impl DesktopRuntime {
                     .native_recording
                     .clone()
                     .ok_or_else(ExecutionFailure::internal)?;
+                let meter = backend
+                    .poll_recording_meter(&NativeRecordingControlRequest {
+                        recording_token: recording.recording_token.clone(),
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                if meter.system_audio_basis_points > 10_000 {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                self.meter = AudioMeterSnapshot {
+                    microphone_basis_points: 0,
+                    system_audio_basis_points: meter.system_audio_basis_points,
+                    camera_active: false,
+                };
                 let failure = backend
                     .poll_recording_terminal_failure(&NativeRecordingControlRequest {
                         recording_token: recording.recording_token.clone(),
@@ -2251,7 +2264,7 @@ mod tests {
 
     use super::*;
     use crate::ipc::{EditorMutation, ExportProfile, IPC_PROTOCOL_VERSION, RequestId};
-    use crate::native_backend::NativeEditableWebmExportOutcome;
+    use crate::native_backend::{NativeEditableWebmExportOutcome, NativeRecordingMeter};
 
     #[derive(Debug)]
     struct TestNativeBackend {
@@ -2262,6 +2275,7 @@ mod tests {
         start_error: Option<NativeDesktopBackendError>,
         poll_error: Option<NativeDesktopBackendError>,
         poll_failure: Option<NativeRecordingTerminalFailure>,
+        poll_meter: NativeRecordingMeter,
         poll_request_matches_recording: bool,
         stop_error: Option<NativeDesktopBackendError>,
         stop_failure: Option<NativeRecordingTerminalFailure>,
@@ -2282,6 +2296,7 @@ mod tests {
                 start_error: None,
                 poll_error: None,
                 poll_failure: None,
+                poll_meter: NativeRecordingMeter::default(),
                 poll_request_matches_recording: true,
                 stop_error: None,
                 stop_failure: None,
@@ -2379,6 +2394,16 @@ mod tests {
                 return Err(error);
             }
             Ok(self.poll_failure.clone())
+        }
+
+        fn poll_recording_meter(
+            &mut self,
+            request: &NativeRecordingControlRequest,
+        ) -> Result<NativeRecordingMeter, NativeDesktopBackendError> {
+            self.calls.push("meter");
+            self.poll_request_matches_recording &=
+                request.recording_token == self.stop_artifact.recording_token;
+            Ok(self.poll_meter)
         }
 
         fn cancel_recording(
@@ -3124,6 +3149,7 @@ mod tests {
         ok(&runtime
             .dispatch_native(start, &mut backend)
             .expect("native start"));
+        backend.poll_meter.system_audio_basis_points = 7_500;
 
         let poll = request(
             &runtime,
@@ -3139,7 +3165,9 @@ mod tests {
         assert_eq!(healthy.snapshot.recorder, RecorderState::Recording);
         assert!(runtime.native_recording.is_some());
         assert_eq!(backend.call_count("poll"), 1);
+        assert_eq!(backend.call_count("meter"), 1);
         assert!(backend.poll_request_matches_recording);
+        assert_eq!(healthy.snapshot.meter.system_audio_basis_points, 7_500);
         assert!(healthy.events.iter().all(|event| !matches!(
             &event.event,
             DesktopRuntimeEvent::Backend(BackendEvent::RecorderFailed { .. })

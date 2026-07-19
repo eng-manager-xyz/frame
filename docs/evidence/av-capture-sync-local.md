@@ -18,14 +18,16 @@ and integration gaps close.
 `NativeAvBridge` still has no production implementation in this repository.
 `NativeAvAppSrc` is a real CPU-byte adapter and `NativeAvRuntime` executes a
 real bounded graph against hostile bridges, but no production device source
-pumps owned buffers through that bridge and the coalesced events have no
-desktop IPC caller. `DurableAvSettingsStore` provides the macOS adapter's
-strict storage semantics without pretending to be the older unversioned
-`AvSettingsStorage` trait. `MacOsSystemAudioSource` is a real target-gated
-source primitive, but it intentionally stops short of the bridge's
-calibration/hotplug/default/sleep-wake contract and is not muxed with screen
-capture. Consequently these local results are not evidence that a release
-recording contains audio or implements checkboxes 1 or 4–8.
+pumps owned buffers through that bridge. The narrower macOS desktop composition
+does mux `MacOsSystemAudioSource` with full-display video and now computes a
+bounded coarse system-audio peak in its capture worker. The existing one-second
+recorder poll carries only a 0..=10,000 value; raw PCM never crosses IPC. This
+direct path still stops short of the bridge's microphone, camera,
+calibration/hotplug/default/sleep-wake, and coalesced-event contracts.
+`DurableAvSettingsStore` provides strict storage semantics without pretending
+to be the older unversioned `AvSettingsStorage` trait. Consequently these local
+results implement a real narrow system-audio slice but do not satisfy complete
+checkboxes 1 or 4–8.
 
 ## Contract surface exercised locally
 

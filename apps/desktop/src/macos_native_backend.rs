@@ -16,7 +16,11 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     mem,
     path::{Path, PathBuf},
-    sync::mpsc::{SyncSender, TryRecvError, TrySendError, sync_channel},
+    sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
+        mpsc::{SyncSender, TryRecvError, TrySendError, sync_channel},
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -37,8 +41,8 @@ use frame_media::{
 };
 
 use self::av_worker::{
-    SharedClockNormalizer, calibrate_av_startup, classify_audio_stop, classify_screen_stop,
-    run_av_capture_worker,
+    AvWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup, classify_audio_stop,
+    classify_screen_stop, run_av_capture_worker,
 };
 use ring::{
     digest::{Context as Sha256Context, SHA256},
@@ -52,8 +56,9 @@ use crate::{
     DurableAvSettingsStore, NativeCaptureArtifact, NativeCaptureStartRequest, NativeDesktopBackend,
     NativeDesktopBackendError, NativeEditableWebmExportOutcome, NativeEditableWebmExportRequest,
     NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
-    NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
-    NativeTargetSelectionOutcome, NativeTargetSelectionRequest, PathUse,
+    NativeRecordingMeter, NativeRecordingStartOutcome, NativeRecordingStopOutcome,
+    NativeRecordingTerminalFailure, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
+    PathUse,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
 };
 
@@ -87,6 +92,7 @@ struct ActiveRecording {
     control: SyncSender<WorkerControl>,
     worker: JoinHandle<WorkerCompletion>,
     output: PendingRecordingOutput,
+    system_audio_meter: Arc<AtomicU16>,
 }
 
 struct PendingRecordingOutput {
@@ -977,6 +983,8 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         };
 
         let (control, receiver) = sync_channel(WORKER_CONTROL_CAPACITY);
+        let system_audio_meter = Arc::new(AtomicU16::new(0));
+        let worker_system_audio_meter = Arc::clone(&system_audio_meter);
         // Keep both native authorities on this thread until worker creation is
         // confirmed. A failed startup send returns the tuple for explicit
         // teardown instead of hiding graph failure in Drop.
@@ -1016,8 +1024,11 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             recording,
                             timestamps,
                             receiver,
-                            screen_diagnostic_baseline,
-                            audio_diagnostic_baseline,
+                            AvWorkerTelemetry {
+                                screen_diagnostic_baseline,
+                                audio_diagnostic_baseline,
+                                system_audio_meter: worker_system_audio_meter,
+                            },
                         )
                     }
                 }
@@ -1053,6 +1064,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             control,
             worker,
             output,
+            system_audio_meter,
         });
         self.artifact = None;
         Ok(NativeRecordingStartOutcome {
@@ -1108,6 +1120,23 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             error,
             teardown_confirmed,
         }))
+    }
+
+    fn poll_recording_meter(
+        &mut self,
+        request: &NativeRecordingControlRequest,
+    ) -> Result<NativeRecordingMeter, NativeDesktopBackendError> {
+        let active = match &self.capture {
+            CaptureLifecycle::Recording(active) => active,
+            CaptureLifecycle::Ready(_) => return Err(NativeDesktopBackendError::TargetUnavailable),
+            CaptureLifecycle::Poisoned => return Err(NativeDesktopBackendError::Unavailable),
+        };
+        if active.token != request.recording_token {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        Ok(NativeRecordingMeter {
+            system_audio_basis_points: active.system_audio_meter.load(Ordering::Acquire),
+        })
     }
 
     fn stop_recording(
@@ -2430,6 +2459,7 @@ mod tests {
             control,
             worker,
             output,
+            system_audio_meter: Arc::new(AtomicU16::new(0)),
         });
         NativeRecordingControlRequest { recording_token }
     }
@@ -2716,6 +2746,7 @@ mod tests {
                 control,
                 worker,
                 output,
+                system_audio_meter: Arc::new(AtomicU16::new(0)),
             }),
             installation_secret: Zeroizing::new(TEST_INSTALLATION_SECRET),
             media_root: PathBuf::from("/private/tmp"),
@@ -2770,6 +2801,7 @@ mod tests {
             control,
             worker,
             output,
+            system_audio_meter: Arc::new(AtomicU16::new(0)),
         });
         let request = NativeRecordingControlRequest {
             recording_token: "recording-poll-token".into(),

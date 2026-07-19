@@ -67,7 +67,10 @@ Static source checks and focused Rust tests establish a bounded native path:
 - native start accepts only a selected full display with Frame-owned window
   exclusion and embedded cursor, can optionally include exact 48 kHz stereo
   system audio while excluding Frame's own process audio, and keeps microphone
-  and camera inputs disabled; and
+  and camera inputs disabled;
+- the bounded one-second recorder poll carries only a coarse system-audio level
+  (0..=10,000) from a worker-owned atomic; no PCM, device label, or native
+  identifier crosses the WebView boundary; and
 - stop/cancel and artifact-bound Editable WebM publication require confirmed
   backend outcomes before the runtime announces success.
 
