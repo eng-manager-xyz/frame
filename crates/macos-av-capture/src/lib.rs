@@ -220,6 +220,7 @@ impl fmt::Debug for MacOsSystemAudioChunk {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct NativeAudioDescription {
     pub sample_rate_hz: f64,
@@ -230,12 +231,14 @@ pub(crate) struct NativeAudioDescription {
     pub big_endian: bool,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy)]
 pub(crate) struct AudioPlane<'a> {
     pub channels: u32,
     pub bytes: &'a [u8],
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn validate_audio_description(
     description: NativeAudioDescription,
 ) -> Result<(), MacOsSystemAudioError> {
@@ -251,6 +254,7 @@ pub(crate) fn validate_audio_description(
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn extract_stereo_f32le(
     frames: u32,
     planes: &[AudioPlane<'_>],
@@ -300,6 +304,7 @@ pub(crate) fn extract_stereo_f32le(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn validate_finite_samples(bytes: &[u8]) -> Result<(), MacOsSystemAudioError> {
     let (samples, remainder) = bytes.as_chunks::<4>();
     if !remainder.is_empty()
