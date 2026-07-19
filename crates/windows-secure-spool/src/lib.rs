@@ -116,6 +116,51 @@ mod windows {
         FileOrDirectory,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    pub(super) enum PrivateAclStage {
+        EncodePath,
+        OpenPath,
+        QueryAttributes,
+        OpenProcessToken,
+        SizeTokenUser,
+        ReadTokenUser,
+        EncodeSid,
+        ParseSecurityDescriptor,
+        ReadDacl,
+        SetDacl,
+        Invariant,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    pub(super) struct PrivateAclDiagnostic {
+        stage: PrivateAclStage,
+        win32_status: Option<u32>,
+    }
+
+    impl PrivateAclDiagnostic {
+        const fn invariant(stage: PrivateAclStage) -> Self {
+            Self {
+                stage,
+                win32_status: None,
+            }
+        }
+
+        fn last_error(stage: PrivateAclStage) -> Self {
+            // SAFETY: callers invoke this immediately after the failing Win32
+            // call and before any other FFI boundary can replace last-error.
+            Self::status(stage, unsafe { GetLastError() })
+        }
+
+        const fn status(stage: PrivateAclStage, win32_status: u32) -> Self {
+            Self {
+                stage,
+                win32_status: Some(win32_status),
+            }
+        }
+    }
+
     pub fn credential_load(
         service: &str,
         account: &str,
@@ -199,9 +244,10 @@ mod windows {
     }
 
     pub fn create_private_file(path: &Path) -> Result<fs::File, WindowsSecureSpoolError> {
-        let user_sid = current_user_sid()?;
+        let user_sid = current_user_sid().map_err(|_| WindowsSecureSpoolError)?;
         let descriptor =
-            security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))?;
+            security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))
+                .map_err(|_| WindowsSecureSpoolError)?;
         let path = path_wide(path)?;
         let security_attributes = SECURITY_ATTRIBUTES {
             nLength: u32::try_from(mem::size_of::<SECURITY_ATTRIBUTES>())
@@ -224,11 +270,15 @@ mod windows {
             )
         };
         let handle = Handle::new(raw)?;
-        validate_handle(&handle, ExpectedObject::File)?;
+        validate_handle(&handle, ExpectedObject::File).map_err(|_| WindowsSecureSpoolError)?;
         Ok(handle.into_file())
     }
 
     pub fn enforce_private_permissions(path: &Path) -> Result<(), WindowsSecureSpoolError> {
+        enforce_private_permissions_inner(path).map_err(|_| WindowsSecureSpoolError)
+    }
+
+    fn enforce_private_permissions_inner(path: &Path) -> Result<(), PrivateAclDiagnostic> {
         let handle = open_path(
             path,
             WRITE_DAC | FILE_READ_ATTRIBUTES,
@@ -239,7 +289,12 @@ mod windows {
         apply_private_dacl(&handle)
     }
 
-    fn apply_private_dacl(handle: &Handle) -> Result<(), WindowsSecureSpoolError> {
+    #[cfg(test)]
+    pub(super) fn diagnose_private_permissions(path: &Path) -> Result<(), PrivateAclDiagnostic> {
+        enforce_private_permissions_inner(path)
+    }
+
+    fn apply_private_dacl(handle: &Handle) -> Result<(), PrivateAclDiagnostic> {
         let user_sid = current_user_sid()?;
         let descriptor =
             security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))?;
@@ -258,11 +313,11 @@ mod windows {
             || dacl_present == 0
             || dacl.is_null()
         {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::ReadDacl));
         }
         // SAFETY: the DACL is owned by the live descriptor and the handle pins
         // the already-validated object. The API retains neither value.
-        if unsafe {
+        let status = unsafe {
             SetSecurityInfo(
                 handle.0,
                 SE_FILE_OBJECT,
@@ -272,9 +327,12 @@ mod windows {
                 dacl,
                 ptr::null_mut(),
             )
-        } != ERROR_SUCCESS
-        {
-            return Err(WindowsSecureSpoolError);
+        };
+        if status != ERROR_SUCCESS {
+            return Err(PrivateAclDiagnostic::status(
+                PrivateAclStage::SetDacl,
+                status,
+            ));
         }
         Ok(())
     }
@@ -363,12 +421,13 @@ mod windows {
         access: u32,
         share: u32,
         flags: u32,
-    ) -> Result<Handle, WindowsSecureSpoolError> {
-        let path = path_wide(path)?;
+    ) -> Result<Handle, PrivateAclDiagnostic> {
+        let path = path_wide(path)
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::EncodePath))?;
         // SAFETY: the path is live and NUL-terminated. OPEN_EXISTING plus
         // OPEN_REPARSE_POINT returns a handle to the named final object rather
         // than following a final-component reparse point.
-        Handle::new(unsafe {
+        let raw = unsafe {
             CreateFileW(
                 path.as_ptr(),
                 access,
@@ -378,14 +437,21 @@ mod windows {
                 flags,
                 ptr::null_mut(),
             )
-        })
+        };
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+            Err(PrivateAclDiagnostic::last_error(PrivateAclStage::OpenPath))
+        } else {
+            Ok(Handle(raw))
+        }
     }
 
     fn validate_handle(
         handle: &Handle,
         expected: ExpectedObject,
-    ) -> Result<(), WindowsSecureSpoolError> {
+    ) -> Result<(), PrivateAclDiagnostic> {
         let mut information = FILE_ATTRIBUTE_TAG_INFO::default();
+        let information_size = u32::try_from(mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))?;
         // SAFETY: the output points to a correctly sized live structure and the
         // handle remains owned for the call.
         if unsafe {
@@ -393,18 +459,27 @@ mod windows {
                 handle.0,
                 FileAttributeTagInfo,
                 ptr::addr_of_mut!(information).cast(),
-                u32::try_from(mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
-                    .map_err(|_| WindowsSecureSpoolError)?,
+                information_size,
             )
         } == 0
-            || information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::QueryAttributes,
+            ));
+        }
+        if information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::QueryAttributes,
+            ));
         }
         let is_directory = information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
         match expected {
-            ExpectedObject::File if is_directory => Err(WindowsSecureSpoolError),
-            ExpectedObject::Directory if !is_directory => Err(WindowsSecureSpoolError),
+            ExpectedObject::File if is_directory => {
+                Err(PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))
+            }
+            ExpectedObject::Directory if !is_directory => {
+                Err(PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))
+            }
             _ => Ok(()),
         }
     }
@@ -445,12 +520,19 @@ mod windows {
         Ok(wide)
     }
 
-    fn current_user_sid() -> Result<String, WindowsSecureSpoolError> {
+    fn current_user_sid() -> Result<String, PrivateAclDiagnostic> {
         let mut token: HANDLE = ptr::null_mut();
         // SAFETY: token is a valid out pointer and the process pseudo-handle
         // remains valid for this call.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::OpenProcessToken,
+            ));
+        }
+        if token.is_null() || token == INVALID_HANDLE_VALUE {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::OpenProcessToken,
+            ));
         }
         let token = Handle(token);
         let mut required = 0_u32;
@@ -458,25 +540,35 @@ mod windows {
         let sizing_result =
             unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut required) };
         // SAFETY: this reads the error from the immediately preceding sizing
-        // call, which must fail specifically because the buffer was absent.
-        if sizing_result != 0
-            || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
-            || required < mem::size_of::<TOKEN_USER>() as u32
-            || required > 64 * 1024
-        {
-            return Err(WindowsSecureSpoolError);
+        // call before any other Win32 boundary can replace it.
+        let sizing_status = unsafe { GetLastError() };
+        if sizing_result != 0 {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::SizeTokenUser,
+            ));
+        }
+        if sizing_status != ERROR_INSUFFICIENT_BUFFER {
+            return Err(PrivateAclDiagnostic::status(
+                PrivateAclStage::SizeTokenUser,
+                sizing_status,
+            ));
+        }
+        if required < mem::size_of::<TOKEN_USER>() as u32 || required > 64 * 1024 {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::SizeTokenUser,
+            ));
         }
         let words = usize::try_from(required)
             .ok()
             .and_then(|bytes| bytes.checked_add(mem::size_of::<usize>() - 1))
             .map(|bytes| bytes / mem::size_of::<usize>())
-            .ok_or(WindowsSecureSpoolError)?;
+            .ok_or(PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))?;
         let mut buffer = vec![0_usize; words];
         let buffer_bytes = u32::try_from(buffer.len() * mem::size_of::<usize>())
-            .map_err(|_| WindowsSecureSpoolError)?;
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))?;
         // SAFETY: the aligned buffer is writable for `buffer_bytes`; success
         // initializes TOKEN_USER and its SID within the allocation.
-        if unsafe {
+        let read_result = unsafe {
             GetTokenInformation(
                 token.0,
                 TokenUser,
@@ -484,11 +576,16 @@ mod windows {
                 buffer_bytes,
                 &mut required,
             )
-        } == 0
-            || required < mem::size_of::<TOKEN_USER>() as u32
-            || required > buffer_bytes
-        {
-            return Err(WindowsSecureSpoolError);
+        };
+        if read_result == 0 {
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::ReadTokenUser,
+            ));
+        }
+        if required < mem::size_of::<TOKEN_USER>() as u32 || required > buffer_bytes {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::ReadTokenUser,
+            ));
         }
         // SAFETY: the successful call initialized TOKEN_USER at the aligned
         // start of the still-live buffer.
@@ -496,24 +593,25 @@ mod windows {
         let mut encoded = ptr::null_mut();
         // SAFETY: the SID stays live in `buffer`; the returned allocation is
         // immediately guarded and later released with LocalFree.
-        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut encoded) } == 0
-            || encoded.is_null()
-        {
-            return Err(WindowsSecureSpoolError);
+        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut encoded) } == 0 {
+            return Err(PrivateAclDiagnostic::last_error(PrivateAclStage::EncodeSid));
+        }
+        if encoded.is_null() {
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid));
         }
         let encoded = LocalAllocation(encoded.cast());
         let length = (0..512)
             // SAFETY: the API returns a NUL-terminated SID string whose
             // documented representation is well below this hard bound.
             .find(|offset| unsafe { *encoded.0.cast::<u16>().add(*offset) } == 0)
-            .ok_or(WindowsSecureSpoolError)?;
+            .ok_or(PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid))?;
         // SAFETY: `length` is bounded by the first NUL in the live allocation.
         let sid = String::from_utf16(unsafe { slice::from_raw_parts(encoded.0.cast(), length) })
-            .map_err(|_| WindowsSecureSpoolError)?;
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid))?;
         if valid_sid_string(&sid) {
             Ok(sid)
         } else {
-            Err(WindowsSecureSpoolError)
+            Err(PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid))
         }
     }
 
@@ -527,8 +625,10 @@ mod windows {
             })
     }
 
-    fn security_descriptor(value: &str) -> Result<LocalAllocation, WindowsSecureSpoolError> {
-        let encoded = wide_string(value, 1_024)?;
+    fn security_descriptor(value: &str) -> Result<LocalAllocation, PrivateAclDiagnostic> {
+        let encoded = wide_string(value, 1_024).map_err(|_| {
+            PrivateAclDiagnostic::invariant(PrivateAclStage::ParseSecurityDescriptor)
+        })?;
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
         // SAFETY: input is NUL-terminated and `descriptor` is a valid out
         // pointer. Windows allocates the result with LocalAlloc.
@@ -540,9 +640,15 @@ mod windows {
                 ptr::null_mut(),
             )
         } == 0
-            || descriptor.is_null()
         {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::ParseSecurityDescriptor,
+            ));
+        }
+        if descriptor.is_null() {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::ParseSecurityDescriptor,
+            ));
         }
         Ok(LocalAllocation(descriptor))
     }
@@ -613,6 +719,9 @@ pub use windows::{
     enforce_private_permissions, metadata_is_indirect, publish_file,
 };
 
+#[cfg(all(test, windows))]
+use windows::diagnose_private_permissions;
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -664,7 +773,7 @@ mod windows_tests {
     };
 
     use super::{
-        WindowsPublishError, create_private_file, enforce_private_permissions, publish_file,
+        WindowsPublishError, create_private_file, diagnose_private_permissions, publish_file,
     };
 
     struct TestDirectory(PathBuf);
@@ -678,7 +787,7 @@ mod windows_tests {
             let path = std::env::temp_dir()
                 .join(format!("frame-secure-spool-{}-{nonce}", std::process::id()));
             fs::create_dir(&path).expect("test directory");
-            enforce_private_permissions(&path).expect("private test directory");
+            diagnose_private_permissions(&path).expect("private test directory");
             Self(path)
         }
 
