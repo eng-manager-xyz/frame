@@ -1,0 +1,22 @@
+[package]
+name = "frame-macos-av-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+frame-media = { path = "../media" }
+ring.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-cf.workspace = true
+core-graphics.workspace = true
+screencapturekit.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

@@ -14,6 +14,7 @@ permissions:
 concurrency:
   group: desktop-macos-hardware
   cancel-in-progress: false
+  queue: max
 
 jobs:
   macos_display:

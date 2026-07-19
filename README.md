@@ -39,6 +39,8 @@ infrastructure, browser security, E2E, and launch.
 - `apps/desktop`: typed workflow core plus a Tauri 2 shell embedding Leptos CSR.
 - `crates/domain`: IDs, recording state, object keys, and transition rules.
 - `crates/media`: GStreamer pipeline construction and runtime checks.
+- `crates/macos-screen-capture`: safe, bounded ScreenCaptureKit display primitives.
+- `crates/macos-av-capture`: safe, bounded ScreenCaptureKit system-audio primitives.
 - `crates/ports`: repository, object-store, and media-transform contracts with deterministic in-memory adapters.
 - `apps/control-plane/migrations`: D1/SQLite migrations.
 - `_issues`: the migration program, ordered by phase and dependency.

@@ -183,9 +183,9 @@
     "25": {
       "count": 10,
       "digest": "4a6b8211c0eaa63f99e798d8fad533b61b965bf7afc3a7ccd512bba2d3f49695",
-      "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs"],
+      "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs", "crates/media/tests/av_runtime_contract.rs", "crates/macos-av-capture/src/lib.rs", "apps/desktop/src/av_settings.rs"],
       "protected": [],
-      "local_gaps": [{"ordinals": [1, 4, 5, 6, 7, 8], "reason": "Native A/V bridges, durable settings, production UI event coalescing, and real device or permission recovery remain unwired repository-local implementation work."}]
+      "local_gaps": [{"ordinals": [1, 4, 5, 6, 7, 8], "reason": "A bounded macOS system-audio primitive, durable settings store, and concrete GStreamer appsrc runtime now exist, but the production NativeAvBridge, shared-clock recording mux, desktop UI events/meters, microphone/camera adapters, and device/permission recovery remain unwired repository-local work."}]
     },
     "26": {
       "count": 11,

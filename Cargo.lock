@@ -1370,6 +1370,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "frame-macos-av-capture"
+version = "0.1.0"
+dependencies = [
+ "apple-cf",
+ "core-graphics",
+ "frame-media",
+ "ring",
+ "screencapturekit",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "frame-macos-screen-capture"
 version = "0.1.0"
 dependencies = [

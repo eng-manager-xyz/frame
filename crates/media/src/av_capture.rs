@@ -828,6 +828,56 @@ impl AvQueueSpec {
         }
         Ok(self)
     }
+
+    /// Partitions this authoritative per-source ingress budget across the
+    /// session queue, appsrc's internal queue, and the explicit downstream
+    /// queue. Every dimension is nonzero and the three stages sum exactly to
+    /// the negotiated total.
+    pub fn partition_ingress(self) -> Result<AvIngressQueuePartition, AvCaptureError> {
+        let total = self.validate()?;
+        if total.max_buffers < 3 || total.max_bytes < 3 || total.max_age_ns < 3 {
+            return Err(AvCaptureError::InvalidQueueSpec);
+        }
+        let [session_buffers, appsrc_buffers, downstream_buffers] =
+            partition_three_u16(total.max_buffers);
+        let [session_bytes, appsrc_bytes, downstream_bytes] = partition_three_u64(total.max_bytes);
+        let [session_age_ns, appsrc_age_ns, downstream_age_ns] =
+            partition_three_u64(total.max_age_ns);
+        let stage = |max_buffers, max_bytes, max_age_ns| AvQueueSpec {
+            max_buffers,
+            max_bytes,
+            max_age_ns,
+            backpressure: total.backpressure,
+            producer_blocks: false,
+        };
+        Ok(AvIngressQueuePartition {
+            session: stage(session_buffers, session_bytes, session_age_ns).validate()?,
+            appsrc: stage(appsrc_buffers, appsrc_bytes, appsrc_age_ns).validate()?,
+            downstream: stage(downstream_buffers, downstream_bytes, downstream_age_ns)
+                .validate()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AvIngressQueuePartition {
+    pub session: AvQueueSpec,
+    pub appsrc: AvQueueSpec,
+    pub downstream: AvQueueSpec,
+}
+
+fn partition_three_u16(total: u16) -> [u16; 3] {
+    let session = total.div_ceil(3);
+    let remainder = total - session;
+    let appsrc = remainder.div_ceil(2);
+    [session, appsrc, remainder - appsrc]
+}
+
+fn partition_three_u64(total: u64) -> [u64; 3] {
+    let session = total.div_ceil(3);
+    let remainder = total - session;
+    let appsrc = remainder.div_ceil(2);
+    [session, appsrc, remainder - appsrc]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1092,6 +1142,38 @@ pub struct CalibrationSample {
     pub master_arrival: MonotonicTimeNs,
     pub source_pts_ns: u64,
     pub latency: SourceLatency,
+}
+
+/// A bounded, source-authenticated startup sample set returned by a native
+/// bridge for one stream epoch.
+///
+/// Construction validates the complete sample set before ownership crosses
+/// into the session. Keeping the source stamp beside the samples prevents a
+/// delayed batch from calibrating a replacement stream after reconfiguration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeAvCalibrationBatch {
+    stamp: AvSourceStamp,
+    samples: Vec<CalibrationSample>,
+}
+
+impl NativeAvCalibrationBatch {
+    pub fn new(
+        stamp: AvSourceStamp,
+        samples: Vec<CalibrationSample>,
+    ) -> Result<Self, AvCaptureError> {
+        StartupCalibration::measure(&samples)?;
+        Ok(Self { stamp, samples })
+    }
+
+    #[must_use]
+    pub const fn stamp(&self) -> AvSourceStamp {
+        self.stamp
+    }
+
+    #[must_use]
+    pub fn samples(&self) -> &[CalibrationSample] {
+        &self.samples
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2201,7 +2283,78 @@ impl fmt::Debug for AvAppSrcInput {
 pub trait AvLocalAppSrcAdapter {
     /// Ownership transfers to the adapter. It must retain the input until the
     /// downstream buffer is released; dropping it releases the native lease.
-    fn push(&mut self, input: AvAppSrcInput) -> Result<(), Box<AvAppSrcInput>>;
+    /// A rejection before transfer returns the exact untouched input. Once the
+    /// downstream push is called, an error consumes ownership and must never
+    /// claim that the input can be recovered.
+    fn push(&mut self, input: AvAppSrcInput) -> Result<(), AvAppSrcPushFailure>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvAppSrcRejection {
+    OpaquePayload,
+    SourceMismatch,
+    FormatMismatch,
+    RuntimeNotPlaying,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvAppSrcDownstreamFailure {
+    Flushing,
+    EndOfStream,
+    NotNegotiated,
+    NotLinked,
+    NotSupported,
+    Fault,
+}
+
+#[derive(Debug, Error)]
+pub enum AvAppSrcPushFailure {
+    #[error("local appsrc rejected an input before ownership transfer: {reason:?}")]
+    Rejected {
+        reason: AvAppSrcRejection,
+        input: Box<AvAppSrcInput>,
+    },
+    #[error("local appsrc failed after ownership transfer: {code:?}")]
+    Downstream { code: AvAppSrcDownstreamFailure },
+}
+
+impl AvAppSrcPushFailure {
+    #[must_use]
+    pub fn rejected(reason: AvAppSrcRejection, input: AvAppSrcInput) -> Self {
+        Self::Rejected {
+            reason,
+            input: Box::new(input),
+        }
+    }
+
+    #[must_use]
+    pub const fn downstream(code: AvAppSrcDownstreamFailure) -> Self {
+        Self::Downstream { code }
+    }
+
+    #[must_use]
+    pub const fn rejection(&self) -> Option<AvAppSrcRejection> {
+        match self {
+            Self::Rejected { reason, .. } => Some(*reason),
+            Self::Downstream { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn downstream_code(&self) -> Option<AvAppSrcDownstreamFailure> {
+        match self {
+            Self::Rejected { .. } => None,
+            Self::Downstream { code } => Some(*code),
+        }
+    }
+
+    #[must_use]
+    pub fn into_rejected_input(self) -> Option<Box<AvAppSrcInput>> {
+        match self {
+            Self::Rejected { input, .. } => Some(input),
+            Self::Downstream { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2895,6 +3048,14 @@ pub trait NativeAvBridge {
         ticket: AvSourceCallTicket<'_>,
     ) -> Result<AvDeviceCatalog, NativeAvFailure>;
 
+    /// Returns one bounded startup calibration batch for the exact active
+    /// source stamp. Implementations must not reuse samples across epochs.
+    fn startup_calibration(
+        &mut self,
+        ticket: AvSourceCallTicket<'_>,
+        stamp: AvSourceStamp,
+    ) -> Result<NativeAvCalibrationBatch, NativeAvFailure>;
+
     /// Reports whether the stable terminal request was already applied. The
     /// adapter must not perform another native release while reconciling.
     fn reconcile_terminal(
@@ -2980,6 +3141,28 @@ impl<B: NativeAvBridge> BoundNativeAvBridge<B> {
             return Err(AvCaptureError::OwnerMismatch);
         }
         Ok(catalog)
+    }
+
+    pub fn startup_calibration(
+        &mut self,
+        stamp: AvSourceStamp,
+    ) -> Result<NativeAvCalibrationBatch, AvCaptureError> {
+        if stamp.owner != self.binding {
+            return Err(AvCaptureError::OwnerMismatch);
+        }
+        let batch = self
+            .bridge
+            .startup_calibration(
+                AvSourceCallTicket {
+                    binding: &self.binding,
+                },
+                stamp,
+            )
+            .map_err(AvCaptureError::Native)?;
+        if batch.stamp() != stamp {
+            return Err(AvCaptureError::StaleSourceStamp);
+        }
+        Ok(batch)
     }
 
     pub fn poll_owned(&mut self) -> Result<Option<OwnedNativeAvEvent>, AvCaptureError> {
@@ -3355,6 +3538,36 @@ impl AvCaptureSession {
         self.active.get(&class).map(|active| active.stamp)
     }
 
+    #[must_use]
+    pub fn source_format(&self, class: AvSourceClass) -> Option<AvFormat> {
+        self.active.get(&class).map(|active| active.format)
+    }
+
+    /// Returns the session-owned share of the negotiated aggregate ingress
+    /// budget for this active source.
+    #[must_use]
+    pub fn source_ingress_queue_spec(&self, class: AvSourceClass) -> Option<AvQueueSpec> {
+        self.active.get(&class).map(|active| active.queue.spec)
+    }
+
+    /// Returns the authoritative aggregate ingress budget negotiated for this
+    /// source before it is split across the three live queue stages.
+    #[must_use]
+    pub fn source_ingress_budget(&self, class: AvSourceClass) -> Option<AvQueueSpec> {
+        self.graph
+            .as_ref()?
+            .source(class)
+            .map(|source| source.queue)
+    }
+
+    #[must_use]
+    pub fn source_calibration(&self, class: AvSourceClass) -> Option<StartupCalibration> {
+        self.active
+            .get(&class)
+            .and_then(|active| active.timebase.as_ref())
+            .map(SourceTimebase::calibration)
+    }
+
     pub fn calibrate_source(
         &mut self,
         stamp: AvSourceStamp,
@@ -3373,6 +3586,9 @@ impl AvCaptureSession {
             .ok_or(AvCaptureError::StaleSourceStamp)?;
         if active.stamp != stamp {
             return Err(AvCaptureError::StaleSourceStamp);
+        }
+        if active.timebase.is_some() {
+            return Err(AvCaptureError::CalibrationAlreadyInstalled);
         }
         let calibration = StartupCalibration::measure(samples)?;
         let anchor = *samples
@@ -3911,7 +4127,8 @@ impl AvCaptureSession {
                 ExactCapsSpec::Audio(caps) => AvFormat::Audio(caps.format),
                 ExactCapsSpec::Camera(caps) => AvFormat::Camera(caps.format),
             };
-            let queue = AvIngressQueue::new(stamp, format, source.queue)?;
+            let queue =
+                AvIngressQueue::new(stamp, format, source.queue.partition_ingress()?.session)?;
             self.active.insert(
                 source.class,
                 ActiveAvSource {
@@ -4433,6 +4650,8 @@ pub enum AvCaptureError {
     CorrectedTimestampRollback,
     #[error("the active A/V source has not been calibrated for this stream epoch")]
     CalibrationRequired,
+    #[error("the active A/V source was already calibrated for this stream epoch")]
+    CalibrationAlreadyInstalled,
     #[error("A/V control event stamp is invalid")]
     InvalidControlEventStamp,
     #[error("A/V control event is stale, replayed, or out of order")]
