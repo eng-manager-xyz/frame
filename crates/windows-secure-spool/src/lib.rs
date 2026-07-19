@@ -162,6 +162,58 @@ mod windows {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    pub(super) enum PublishStage {
+        EncodeDestination,
+        OpenSource,
+        ValidateSource,
+        OpenDestinationDirectory,
+        ValidateDestinationDirectory,
+        EncodeRename,
+        FlushBeforeRename,
+        Rename,
+        FlushAfterRename,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum PublishDiagnostic {
+        AlreadyExists,
+        Failed {
+            stage: PublishStage,
+            win32_status: Option<u32>,
+        },
+    }
+
+    impl PublishDiagnostic {
+        const fn invariant(stage: PublishStage) -> Self {
+            Self::Failed {
+                stage,
+                win32_status: None,
+            }
+        }
+
+        fn last_error(stage: PublishStage) -> Self {
+            // SAFETY: callers invoke this immediately after the failing Win32
+            // call and before any other FFI boundary can replace last-error.
+            Self::status(stage, unsafe { GetLastError() })
+        }
+
+        const fn status(stage: PublishStage, win32_status: u32) -> Self {
+            Self::Failed {
+                stage,
+                win32_status: Some(win32_status),
+            }
+        }
+
+        const fn from_acl(stage: PublishStage, diagnostic: PrivateAclDiagnostic) -> Self {
+            Self::Failed {
+                stage,
+                win32_status: diagnostic.win32_status,
+            }
+        }
+    }
+
     pub fn credential_load(
         service: &str,
         account: &str,
@@ -381,40 +433,66 @@ mod windows {
     }
 
     pub fn publish_file(source: &Path, destination: &Path) -> Result<(), WindowsPublishError> {
-        let leaf = destination_leaf(destination)?;
-        let parent = destination.parent().ok_or(WindowsPublishError::Failed)?;
+        match publish_file_inner(source, destination) {
+            Ok(()) => Ok(()),
+            Err(PublishDiagnostic::AlreadyExists) => Err(WindowsPublishError::AlreadyExists),
+            Err(PublishDiagnostic::Failed { .. }) => Err(WindowsPublishError::Failed),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnose_publish_file(
+        source: &Path,
+        destination: &Path,
+    ) -> Result<(), PublishDiagnostic> {
+        publish_file_inner(source, destination)
+    }
+
+    fn publish_file_inner(source: &Path, destination: &Path) -> Result<(), PublishDiagnostic> {
+        let leaf = destination_leaf(destination)
+            .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeDestination))?;
+        let parent = destination.parent().ok_or(PublishDiagnostic::invariant(
+            PublishStage::EncodeDestination,
+        ))?;
         let source = open_path(
             source,
             GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_WRITE_THROUGH,
         )
-        .map_err(|_| WindowsPublishError::Failed)?;
-        validate_handle(&source, ExpectedObject::File).map_err(|_| WindowsPublishError::Failed)?;
+        .map_err(|error| PublishDiagnostic::from_acl(PublishStage::OpenSource, error))?;
+        validate_handle(&source, ExpectedObject::File)
+            .map_err(|error| PublishDiagnostic::from_acl(PublishStage::ValidateSource, error))?;
         let destination_directory = open_path(
             parent,
             FILE_ADD_FILE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         )
-        .map_err(|_| WindowsPublishError::Failed)?;
-        validate_handle(&destination_directory, ExpectedObject::Directory)
-            .map_err(|_| WindowsPublishError::Failed)?;
+        .map_err(|error| {
+            PublishDiagnostic::from_acl(PublishStage::OpenDestinationDirectory, error)
+        })?;
+        validate_handle(&destination_directory, ExpectedObject::Directory).map_err(|error| {
+            PublishDiagnostic::from_acl(PublishStage::ValidateDestinationDirectory, error)
+        })?;
         let leaf = leaf.encode_wide().collect::<Vec<_>>();
         let name_bytes = leaf
             .len()
             .checked_mul(mem::size_of::<u16>())
             .and_then(|value| u32::try_from(value).ok())
-            .ok_or(WindowsPublishError::Failed)?;
+            .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
         let information_bytes = mem::size_of::<FILE_RENAME_INFO>()
-            .checked_add(usize::try_from(name_bytes).map_err(|_| WindowsPublishError::Failed)?)
-            .ok_or(WindowsPublishError::Failed)?;
-        let information_size =
-            u32::try_from(information_bytes).map_err(|_| WindowsPublishError::Failed)?;
+            .checked_add(
+                usize::try_from(name_bytes)
+                    .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeRename))?,
+            )
+            .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
+        let information_size = u32::try_from(information_bytes)
+            .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
         let words = information_bytes
             .checked_add(mem::size_of::<usize>() - 1)
             .map(|bytes| bytes / mem::size_of::<usize>())
-            .ok_or(WindowsPublishError::Failed)?;
+            .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
         let mut information = vec![0_usize; words];
         let rename = information.as_mut_ptr().cast::<FILE_RENAME_INFO>();
         // SAFETY: `information` is pointer-aligned and sized through the final
@@ -435,7 +513,9 @@ mod windows {
         // The writer synced before entering this boundary. Flush the exact
         // source handle once more before changing its directory entry.
         if unsafe { FlushFileBuffers(source.0) } == 0 {
-            return Err(WindowsPublishError::Failed);
+            return Err(PublishDiagnostic::last_error(
+                PublishStage::FlushBeforeRename,
+            ));
         }
         // SAFETY: the variable-sized FILE_RENAME_INFO buffer is initialized as
         // described above. FileRenameInfo with ReplaceIfExists=false performs
@@ -446,15 +526,17 @@ mod windows {
         {
             // SAFETY: this reads the error from the immediately preceding call.
             return match unsafe { GetLastError() } {
-                ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => Err(WindowsPublishError::AlreadyExists),
-                _ => Err(WindowsPublishError::Failed),
+                ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => Err(PublishDiagnostic::AlreadyExists),
+                status => Err(PublishDiagnostic::status(PublishStage::Rename, status)),
             };
         }
         // Flush through the same handle after its no-replace rename. Windows
         // exposes no unprivileged, documented directory-fsync primitive, so
         // power-loss behavior remains a protected platform evidence gate.
         if unsafe { FlushFileBuffers(source.0) } == 0 {
-            return Err(WindowsPublishError::Failed);
+            return Err(PublishDiagnostic::last_error(
+                PublishStage::FlushAfterRename,
+            ));
         }
         Ok(())
     }
@@ -763,7 +845,7 @@ pub use windows::{
 };
 
 #[cfg(all(test, windows))]
-use windows::diagnose_private_permissions;
+use windows::{diagnose_private_permissions, diagnose_publish_file};
 
 #[cfg(test)]
 mod tests {
@@ -816,7 +898,8 @@ mod windows_tests {
     };
 
     use super::{
-        WindowsPublishError, create_private_file, diagnose_private_permissions, publish_file,
+        WindowsPublishError, create_private_file, diagnose_private_permissions,
+        diagnose_publish_file, publish_file,
     };
 
     struct TestDirectory(PathBuf);
@@ -855,7 +938,7 @@ mod windows_tests {
             .expect("write source");
         file.sync_all().expect("sync source");
 
-        publish_file(&source, &destination).expect("publish");
+        diagnose_publish_file(&source, &destination).expect("publish");
         assert!(!source.exists());
         assert_eq!(
             fs::read(&destination).expect("published bytes"),
