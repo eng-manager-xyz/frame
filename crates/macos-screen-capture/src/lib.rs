@@ -177,7 +177,7 @@ pub struct MacOsCaptureDiagnostics {
     pub unexpected_native_stops: u64,
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum MacOsCaptureError {
     #[error("the capture session secret must contain entropy")]
     InvalidSessionSecret,
@@ -211,6 +211,12 @@ pub enum MacOsCaptureError {
     NotRunning,
     #[error("ScreenCaptureKit shareable content is unavailable")]
     ShareableContentUnavailable,
+    #[error("another bounded ScreenCaptureKit operation still owns native-call capacity")]
+    NativeOperationCapacityUnavailable,
+    #[error("the bounded ScreenCaptureKit operation worker could not be started")]
+    NativeOperationWorkerUnavailable,
+    #[error("the ScreenCaptureKit operation did not complete before the native-call deadline")]
+    NativeOperationTimedOut,
     #[error("the selected display is no longer shareable")]
     TargetNoLongerAvailable,
     #[error("the current process identifier cannot be represented by ScreenCaptureKit")]
@@ -223,10 +229,18 @@ pub enum MacOsCaptureError {
     OutputHandlerRegistrationFailed,
     #[error("ScreenCaptureKit could not start capture")]
     CaptureStartFailed,
+    #[error("capture start failed and ScreenCaptureKit delegate teardown was not confirmed")]
+    CaptureStartTeardownUnconfirmed,
     #[error("ScreenCaptureKit reported an unexpected stream stop")]
     UnexpectedStreamStop,
     #[error("ScreenCaptureKit could not stop capture")]
     CaptureStopFailed,
+    #[error("capture teardown remains unconfirmed and the source cannot be reused")]
+    CaptureTeardownUnconfirmed,
+    #[error("ScreenCaptureKit output-handler release could not be confirmed")]
+    OutputHandlerRemovalFailed,
+    #[error("the ScreenCaptureKit delegate did not quiesce before the teardown deadline")]
+    DelegateQuiescenceUnconfirmed,
     #[error("the native callback queue disconnected")]
     CallbackQueueDisconnected,
     #[error("the sample does not contain an image buffer")]
@@ -258,6 +272,71 @@ pub enum MacOsCaptureError {
     SequenceExhausted,
     #[error("the frame-media catalog contract rejected native display data")]
     MediaCatalogRejected,
+}
+
+/// Failure while stopping one ScreenCaptureKit stream and draining its bounded
+/// callback tail.
+///
+/// [`Self::CallbackQuiescenceUnconfirmed`] proves that ScreenCaptureKit
+/// accepted the native stop but not that its output handler is quiescent. Only
+/// [`Self::CaptureFailedAfterTeardown`] and [`Self::TailProcessingFailed`]
+/// prove complete source teardown; callers may then release session authority
+/// after also confirming downstream teardown, even though the capture failure
+/// makes the recording artifact unusable.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum MacOsCaptureStopError {
+    #[error("ScreenCaptureKit native stop was not confirmed: {0}")]
+    NativeStopUnconfirmed(#[source] MacOsCaptureError),
+    #[error("ScreenCaptureKit stopped but callback quiescence was not confirmed: {0}")]
+    CallbackQuiescenceUnconfirmed(#[source] MacOsCaptureError),
+    #[error("ScreenCaptureKit capture failed before its teardown completed: {0}")]
+    CaptureFailedAfterTeardown(#[source] MacOsCaptureError),
+    #[error("ScreenCaptureKit stopped but callback-tail processing failed: {0}")]
+    TailProcessingFailed(#[source] MacOsCaptureError),
+}
+
+impl MacOsCaptureStopError {
+    /// Whether `SCStream::stop_capture()` returned successfully before this
+    /// failure occurred.
+    #[must_use]
+    pub const fn native_stop_confirmed(&self) -> bool {
+        match self {
+            Self::NativeStopUnconfirmed(_) => false,
+            Self::CallbackQuiescenceUnconfirmed(_)
+            | Self::CaptureFailedAfterTeardown(_)
+            | Self::TailProcessingFailed(_) => true,
+        }
+    }
+
+    /// Whether native stop and the final stream-context/delegate drop proof
+    /// completed before this failure occurred.
+    #[must_use]
+    pub const fn capture_teardown_confirmed(&self) -> bool {
+        match self {
+            Self::NativeStopUnconfirmed(_) | Self::CallbackQuiescenceUnconfirmed(_) => false,
+            Self::CaptureFailedAfterTeardown(_) | Self::TailProcessingFailed(_) => true,
+        }
+    }
+
+    #[must_use]
+    pub const fn capture_error(&self) -> &MacOsCaptureError {
+        match self {
+            Self::NativeStopUnconfirmed(error)
+            | Self::CallbackQuiescenceUnconfirmed(error)
+            | Self::CaptureFailedAfterTeardown(error)
+            | Self::TailProcessingFailed(error) => error,
+        }
+    }
+
+    #[must_use]
+    pub fn into_capture_error(self) -> MacOsCaptureError {
+        match self {
+            Self::NativeStopUnconfirmed(error)
+            | Self::CallbackQuiescenceUnconfirmed(error)
+            | Self::CaptureFailedAfterTeardown(error)
+            | Self::TailProcessingFailed(error) => error,
+        }
+    }
 }
 
 fn bgra_frame_bytes(width: u32, height: u32) -> Result<usize, MacOsCaptureError> {
@@ -534,6 +613,37 @@ mod tests {
         assert_eq!(
             MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata),
             Err(MacOsCaptureError::UnsupportedCursorMode)
+        );
+    }
+
+    #[test]
+    fn stop_failures_distinguish_native_callback_and_tail_authority() {
+        let native =
+            MacOsCaptureStopError::NativeStopUnconfirmed(MacOsCaptureError::CaptureStopFailed);
+        let callbacks = MacOsCaptureStopError::CallbackQuiescenceUnconfirmed(
+            MacOsCaptureError::OutputHandlerRemovalFailed,
+        );
+        let capture = MacOsCaptureStopError::CaptureFailedAfterTeardown(
+            MacOsCaptureError::UnexpectedStreamStop,
+        );
+        let tail =
+            MacOsCaptureStopError::TailProcessingFailed(MacOsCaptureError::InvalidSampleBuffer);
+
+        assert!(!native.native_stop_confirmed());
+        assert!(!native.capture_teardown_confirmed());
+        assert_eq!(
+            native.capture_error(),
+            &MacOsCaptureError::CaptureStopFailed
+        );
+        assert!(callbacks.native_stop_confirmed());
+        assert!(!callbacks.capture_teardown_confirmed());
+        assert!(capture.native_stop_confirmed());
+        assert!(capture.capture_teardown_confirmed());
+        assert!(tail.native_stop_confirmed());
+        assert!(tail.capture_teardown_confirmed());
+        assert_eq!(
+            tail.capture_error(),
+            &MacOsCaptureError::InvalidSampleBuffer
         );
     }
 

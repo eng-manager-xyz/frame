@@ -1373,6 +1373,7 @@ dependencies = [
 name = "frame-macos-screen-capture"
 version = "0.1.0"
 dependencies = [
+ "apple-cf",
  "core-graphics",
  "frame-media",
  "ring",

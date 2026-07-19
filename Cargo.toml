@@ -38,6 +38,7 @@ publish = false
 [workspace.dependencies]
 aes = { version = "0.8.4", default-features = false, features = ["zeroize"] }
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc", "zeroize"] }
+apple-cf = "=0.9.3"
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8.9"

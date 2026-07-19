@@ -1235,28 +1235,32 @@ impl fmt::Debug for CursorImageDescriptor {
     }
 }
 
-/// An owned cursor-image update. The payload can be a copied pixel buffer or a
-/// native lease and follows the same release-on-drop rule as a screen frame.
+/// An owned cursor-image update backed by an exact CPU allocation. Dropping it
+/// releases that allocation under the same rule as a screen frame.
 pub struct ScreenCursorImage<T> {
     stream: ScreenStreamStamp,
     descriptor: CursorImageDescriptor,
     payload: T,
 }
 
-impl<T> ScreenCursorImage<T> {
-    #[must_use]
-    pub const fn new(
+impl<T: ScreenFramePayload> ScreenCursorImage<T> {
+    pub fn new(
         stream: ScreenStreamStamp,
         descriptor: CursorImageDescriptor,
         payload: T,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ScreenCaptureError> {
+        if payload.exact_retained_bytes() != Some(descriptor.retained_bytes()) {
+            return Err(ScreenCaptureError::CursorPayloadAccountingMismatch);
+        }
+        Ok(Self {
             stream,
             descriptor,
             payload,
-        }
+        })
     }
+}
 
+impl<T> ScreenCursorImage<T> {
     #[must_use]
     pub const fn stream(&self) -> ScreenStreamStamp {
         self.stream
@@ -1319,7 +1323,13 @@ impl<T> BoundedCursorImageCache<T> {
         }
     }
 
-    fn apply(&mut self, image: ScreenCursorImage<T>) -> Result<(), ScreenCaptureError> {
+    fn apply(&mut self, image: ScreenCursorImage<T>) -> Result<(), ScreenCaptureError>
+    where
+        T: ScreenFramePayload,
+    {
+        if image.payload.exact_retained_bytes() != Some(image.descriptor.retained_bytes()) {
+            return Err(ScreenCaptureError::CursorPayloadAccountingMismatch);
+        }
         if image.stream.capture_epoch != self.capture_epoch {
             return Err(ScreenCaptureError::CaptureEpochMismatch);
         }
@@ -2114,9 +2124,9 @@ impl ScreenCaptureRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppSrcBufferLifetime {
-    /// The bridge retains the native frame lease until GStreamer releases the
-    /// corresponding buffer; adapters may use this for supported zero-copy
-    /// memory without promising that every platform can do so.
+    /// The bridge retains the exact CPU allocation until GStreamer releases
+    /// the corresponding buffer. Native GPU/DMA memory needs a future bounded
+    /// payload contract and is not negotiated by this provider-neutral slice.
     OwnedUntilDownstreamRelease,
 }
 
@@ -2248,6 +2258,13 @@ pub fn negotiate_screen_capture(
         return Err(ScreenCaptureError::UnsupportedCursorPolicy);
     }
     let mut supported_profile = false;
+    // The sealed payload contract currently authenticates complete owned CPU
+    // allocations only. Do not negotiate native-memory profiles until their
+    // lease size/lifetime can be represented without unsafe or caller-declared
+    // sidecar accounting.
+    if output.memory != FrameMemory::Cpu {
+        return Err(ScreenCaptureError::UnsupportedFrameSpec);
+    }
     for profile in spec.frame_profiles.iter().copied() {
         supported_profile |= profile.supports(output)?;
     }
@@ -2294,8 +2311,8 @@ pub fn negotiate_screen_capture(
     })
 }
 
-/// A native frame lease plus normalized timing and cursor metadata. The
-/// payload is never included in `Debug`; dropping a frame releases the lease.
+/// Normalized frame timing, identity, allocation size, and cursor metadata.
+/// The separately owned CPU payload is never included in `Debug`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenFrameEnvelope {
     pub stream: ScreenStreamStamp,
@@ -2304,6 +2321,60 @@ pub struct ScreenFrameEnvelope {
     pub spec: VideoFrameSpec,
     pub retained_bytes: u64,
     pub cursor: Option<CursorFrameMetadata>,
+}
+
+pub(crate) mod screen_payload_seal {
+    pub trait Sealed {}
+}
+
+/// Owned frame storage whose complete retained allocation is visible to the
+/// capture queue's accounting.
+///
+/// The trait is sealed: platform sources may use an exact-capacity `Vec<u8>`
+/// or `Box<[u8]>`, but cannot hide sidecar allocations behind a declared byte
+/// count. A vector with spare capacity is rejected because that capacity is
+/// retained for as long as the frame payload.
+///
+/// ```compile_fail
+/// use frame_media::ScreenFramePayload;
+///
+/// struct PayloadWithSidecar {
+///     pixels: Box<[u8]>,
+///     sidecar: Vec<u8>,
+/// }
+///
+/// impl AsRef<[u8]> for PayloadWithSidecar {
+///     fn as_ref(&self) -> &[u8] { &self.pixels }
+/// }
+///
+/// impl ScreenFramePayload for PayloadWithSidecar {
+///     fn exact_retained_bytes(&self) -> Option<u64> {
+///         u64::try_from(self.pixels.len()).ok()
+///     }
+/// }
+/// ```
+pub trait ScreenFramePayload: screen_payload_seal::Sealed + AsRef<[u8]> + Send + 'static {
+    #[doc(hidden)]
+    fn exact_retained_bytes(&self) -> Option<u64>;
+}
+
+impl screen_payload_seal::Sealed for Vec<u8> {}
+
+impl ScreenFramePayload for Vec<u8> {
+    fn exact_retained_bytes(&self) -> Option<u64> {
+        if self.capacity() != self.len() {
+            return None;
+        }
+        u64::try_from(self.len()).ok()
+    }
+}
+
+impl screen_payload_seal::Sealed for Box<[u8]> {}
+
+impl ScreenFramePayload for Box<[u8]> {
+    fn exact_retained_bytes(&self) -> Option<u64> {
+        u64::try_from(self.len()).ok()
+    }
 }
 
 pub struct ScreenFrame<T> {
@@ -2316,7 +2387,7 @@ pub struct ScreenFrame<T> {
     payload: T,
 }
 
-impl<T> ScreenFrame<T> {
+impl<T: ScreenFramePayload> ScreenFrame<T> {
     pub fn new(envelope: ScreenFrameEnvelope, payload: T) -> Result<Self, ScreenCaptureError> {
         let ScreenFrameEnvelope {
             stream,
@@ -2328,6 +2399,9 @@ impl<T> ScreenFrame<T> {
         } = envelope;
         spec.validate()
             .map_err(|error| ScreenCaptureError::InvalidVideoFrameSpec(Box::new(error)))?;
+        if spec.memory != FrameMemory::Cpu {
+            return Err(ScreenCaptureError::FramePayloadMemoryMismatch);
+        }
         if sequence == 0
             || retained_bytes == 0
             || timestamp.duration_ns == 0
@@ -2337,6 +2411,9 @@ impl<T> ScreenFrame<T> {
                 .is_none()
         {
             return Err(ScreenCaptureError::InvalidFrameEnvelope);
+        }
+        if payload.exact_retained_bytes() != Some(retained_bytes) {
+            return Err(ScreenCaptureError::FramePayloadAccountingMismatch);
         }
         if let Some(cursor) = cursor
             && cursor.visible
@@ -2354,7 +2431,9 @@ impl<T> ScreenFrame<T> {
             payload,
         })
     }
+}
 
+impl<T> ScreenFrame<T> {
     #[must_use]
     pub const fn stream(&self) -> ScreenStreamStamp {
         self.stream
@@ -2388,6 +2467,10 @@ impl<T> ScreenFrame<T> {
     #[must_use]
     pub fn into_payload(self) -> T {
         self.payload
+    }
+
+    pub(crate) fn force_discontinuity(&mut self) {
+        self.timestamp.discontinuity = true;
     }
 }
 
@@ -2445,8 +2528,14 @@ pub enum ScreenQueuePopOutcome<T> {
     Empty,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScreenFrameAdmission {
+    pub retained_bytes: u64,
+    pub duration_ns: u64,
+}
+
 /// Single-owner, non-blocking queue between a native capture callback and the
-/// appsrc owner thread. Both frame count and retained native memory are bounded.
+/// appsrc owner thread. Both frame count and retained CPU allocation are bounded.
 struct BoundedScreenFrameQueue<T> {
     policy: ScreenCaptureQueuePolicy,
     expected_spec: VideoFrameSpec,
@@ -2504,7 +2593,17 @@ impl<T> BoundedScreenFrameQueue<T> {
         &mut self,
         frame: ScreenFrame<T>,
         now_ns: u64,
-    ) -> Result<ScreenQueuePushOutcome, ScreenCaptureError> {
+    ) -> Result<ScreenQueuePushOutcome, ScreenCaptureError>
+    where
+        T: ScreenFramePayload,
+    {
+        // Re-authenticate allocation accounting at the queue boundary. This
+        // is intentionally independent of `ScreenFrame::new`: the retained
+        // lease changes authority here and queue bounds must not trust only a
+        // caller-supplied envelope.
+        if frame.payload.exact_retained_bytes() != Some(frame.retained_bytes) {
+            return Err(ScreenCaptureError::FramePayloadAccountingMismatch);
+        }
         if frame.stream.capture_epoch != self.capture_epoch {
             return Err(ScreenCaptureError::CaptureEpochMismatch);
         }
@@ -2602,6 +2701,18 @@ impl<T> BoundedScreenFrameQueue<T> {
             .ok_or(ScreenCaptureError::QueueAccountingCorrupt)?;
         self.refresh_diagnostics();
         Ok(ScreenQueuePopOutcome::Frame(queued.frame))
+    }
+
+    fn peek_admission(
+        &mut self,
+        now_ns: u64,
+    ) -> Result<Option<ScreenFrameAdmission>, ScreenCaptureError> {
+        self.observe_clock(now_ns)?;
+        self.expire(now_ns)?;
+        Ok(self.frames.front().map(|queued| ScreenFrameAdmission {
+            retained_bytes: queued.frame.retained_bytes,
+            duration_ns: queued.frame.timestamp.duration_ns,
+        }))
     }
 
     fn record_cancellation(&mut self) {
@@ -3184,8 +3295,8 @@ struct ScreenPermissionObservationEnvelope {
 /// portal, and explicitly approved X11 implementations. Calls are synchronous
 /// but must cooperate with the supplied cancellation/deadline budget.
 pub trait ScreenCaptureSource {
-    type FramePayload: Send + 'static;
-    type CursorImagePayload: Send + 'static;
+    type FramePayload: ScreenFramePayload;
+    type CursorImagePayload: ScreenFramePayload;
 
     /// Pure identity metadata used to construct the pre-negotiation binding.
     /// This getter must not call a platform API.
@@ -4092,6 +4203,18 @@ impl ScreenCaptureSession {
             Some(pending) => Some(pending.kind),
             None => None,
         }
+    }
+
+    fn pending_stop_matches(
+        &self,
+        operation_id: ScreenOperationId,
+        stream: ScreenStreamStamp,
+    ) -> bool {
+        self.pending_operation.is_some_and(|pending| {
+            pending.kind == ScreenOperationKind::Stop
+                && pending.operation_id == operation_id
+                && pending.stream == stream
+        })
     }
 
     #[must_use]
@@ -5252,10 +5375,252 @@ pub struct ScreenIngressDrainReport {
     pub cursor: ScreenCursorCacheDrain,
 }
 
+/// Private proof of the exact logical ingress incarnation that owned a
+/// transition. The capture epoch and active stream are intentionally included:
+/// a transition minted after a flush must not authorize a graph for the
+/// retired segment, even when both segments share one native source binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScreenIngressOwner {
+    source_session_binding: ScreenSourceSessionBinding,
+    session_id: ScreenSessionId,
+    source_instance: ScreenSourceInstanceId,
+    capture_epoch: CaptureEpoch,
+    active_stream: Option<ScreenStreamStamp>,
+}
+
+impl ScreenIngressOwner {
+    #[must_use]
+    pub(crate) const fn active_stream(self) -> Option<ScreenStreamStamp> {
+        self.active_stream
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ScreenIngressTransition {
     pub transition: ScreenSessionTransition,
     pub drain: Option<ScreenIngressDrainReport>,
+    owner: ScreenIngressOwner,
+}
+
+impl ScreenIngressTransition {
+    #[must_use]
+    pub(crate) const fn owner(&self) -> ScreenIngressOwner {
+        self.owner
+    }
+}
+
+/// One exact graceful-stop request for a live recording segment.
+///
+/// Only [`ScreenCaptureIngress::request_graceful_stop`] can mint this value.
+/// It exposes only the action mutably so the caller can execute the one-shot
+/// native `Stop` without altering the authenticated transition or drain.
+#[derive(Debug)]
+pub struct ScreenGracefulStop {
+    owner: ScreenIngressOwner,
+    seal_epoch: CaptureEpoch,
+    seal_revision: u64,
+    expected_stream: ScreenStreamStamp,
+    transition: ScreenIngressTransition,
+}
+
+impl ScreenGracefulStop {
+    #[must_use]
+    pub const fn transition(&self) -> &ScreenIngressTransition {
+        &self.transition
+    }
+
+    #[must_use]
+    pub const fn action_mut(&mut self) -> &mut ScreenSessionAction {
+        &mut self.transition.transition.action
+    }
+
+    fn expected_operation_id(&self) -> Option<ScreenOperationId> {
+        match self.transition.transition.action.source_command() {
+            ScreenSourceCommand::Stop {
+                operation_id,
+                stream,
+            } if stream == self.expected_stream => Some(operation_id),
+            ScreenSourceCommand::None
+            | ScreenSourceCommand::Start { .. }
+            | ScreenSourceCommand::Reconfigure { .. }
+            | ScreenSourceCommand::Stop { .. } => None,
+        }
+    }
+}
+
+/// Failure while correlating a one-shot graceful-Stop proof.
+///
+/// `Rejected` means no session or ingress mutation occurred and returns the
+/// exact proof so the caller can submit the correct acknowledgement or failure.
+/// `Transition` means correlation succeeded but the authenticated state
+/// transition itself failed; the old proof is no longer returned as reusable
+/// authority.
+#[derive(Debug)]
+pub enum ScreenGracefulProofError<Proof> {
+    Rejected {
+        proof: Box<Proof>,
+        error: ScreenCaptureError,
+    },
+    Transition(ScreenCaptureError),
+}
+
+impl<Proof> ScreenGracefulProofError<Proof> {
+    fn rejected(proof: Proof, error: ScreenCaptureError) -> Self {
+        Self::Rejected {
+            proof: Box::new(proof),
+            error,
+        }
+    }
+
+    /// Returns the rejected proof and correlation error when no mutation
+    /// occurred. A transition failure deliberately has no reusable proof.
+    #[must_use]
+    pub fn into_rejected(self) -> Option<(Proof, ScreenCaptureError)> {
+        match self {
+            Self::Rejected { proof, error } => Some((*proof, error)),
+            Self::Transition(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn capture_error(&self) -> &ScreenCaptureError {
+        match self {
+            Self::Rejected { error, .. } | Self::Transition(error) => error,
+        }
+    }
+}
+
+impl<Proof> fmt::Display for ScreenGracefulProofError<Proof> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected { error, .. } => {
+                write!(formatter, "graceful Stop correlation was rejected: {error}")
+            }
+            Self::Transition(error) => {
+                write!(formatter, "graceful Stop transition failed: {error}")
+            }
+        }
+    }
+}
+
+impl<Proof: fmt::Debug> std::error::Error for ScreenGracefulProofError<Proof> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.capture_error())
+    }
+}
+
+/// Result of rebinding one failed native Stop attempt.
+///
+/// `Retrying` preserves publication authority in the exact seal epoch.
+/// `AbortOnly` retains the newly issued Stop action when a suspension or other
+/// epoch handoff invalidated that authority while the failing call was in
+/// flight.
+#[derive(Debug)]
+pub enum ScreenGracefulStopRetryOutcome {
+    Retrying(ScreenGracefulStop),
+    AbortOnly(ScreenGracefulStopAbort),
+}
+
+/// Opaque authority for finishing native teardown after publication became
+/// impossible. It can be retried and acknowledged, but can never be converted
+/// into [`ScreenGracefulStopCompletion`].
+#[derive(Debug)]
+pub struct ScreenGracefulStopAbort {
+    owner: ScreenIngressOwner,
+    seal_epoch: CaptureEpoch,
+    seal_revision: u64,
+    expected_stream: ScreenStreamStamp,
+    transition: ScreenIngressTransition,
+}
+
+impl ScreenGracefulStopAbort {
+    #[must_use]
+    pub const fn transition(&self) -> &ScreenIngressTransition {
+        &self.transition
+    }
+
+    #[must_use]
+    pub const fn action_mut(&mut self) -> &mut ScreenSessionAction {
+        &mut self.transition.transition.action
+    }
+
+    fn expected_operation_id(&self) -> Option<ScreenOperationId> {
+        match self.transition.transition.action.source_command() {
+            ScreenSourceCommand::Stop {
+                operation_id,
+                stream,
+            } if stream == self.expected_stream => Some(operation_id),
+            ScreenSourceCommand::None
+            | ScreenSourceCommand::Start { .. }
+            | ScreenSourceCommand::Reconfigure { .. }
+            | ScreenSourceCommand::Stop { .. } => None,
+        }
+    }
+}
+
+/// Proof that the exact native `Stop` requested for a recording segment was
+/// acknowledged and applied to its owning capture session.
+///
+/// The private fields make this a non-forgeable finish authority. Cancellation,
+/// suspension, and source-failure transitions cannot construct it.
+#[derive(Debug)]
+pub struct ScreenGracefulStopCompletion {
+    owner: ScreenIngressOwner,
+    stopped_stream: ScreenStreamStamp,
+    transition: ScreenIngressTransition,
+}
+
+impl ScreenGracefulStopCompletion {
+    #[must_use]
+    pub const fn transition(&self) -> &ScreenIngressTransition {
+        &self.transition
+    }
+
+    #[must_use]
+    pub(crate) const fn owner(&self) -> ScreenIngressOwner {
+        self.owner
+    }
+
+    #[must_use]
+    pub(crate) const fn stopped_stream(&self) -> ScreenStreamStamp {
+        self.stopped_stream
+    }
+}
+
+/// Result of consuming a native Stop acknowledgement after graceful
+/// publication lineage had already changed.
+#[derive(Debug)]
+pub struct ScreenGracefulStopAbortCompletion {
+    seal_epoch: CaptureEpoch,
+    stopped_stream: ScreenStreamStamp,
+    transition: Option<Box<ScreenIngressTransition>>,
+}
+
+impl ScreenGracefulStopAbortCompletion {
+    /// A transition is present when the acknowledgement still matched the
+    /// session's current Stop operation and was therefore applied to settle
+    /// native teardown. A stale, already-replaced Stop acknowledgement is
+    /// still consumed as teardown evidence but cannot mutate session state.
+    #[must_use]
+    pub fn transition(&self) -> Option<&ScreenIngressTransition> {
+        self.transition.as_deref()
+    }
+
+    #[must_use]
+    pub const fn seal_epoch(&self) -> CaptureEpoch {
+        self.seal_epoch
+    }
+
+    #[must_use]
+    pub const fn stopped_stream(&self) -> ScreenStreamStamp {
+        self.stopped_stream
+    }
+}
+
+#[derive(Debug)]
+pub enum ScreenGracefulStopCompletionOutcome {
+    Completed(Box<ScreenGracefulStopCompletion>),
+    AbortOnly(ScreenGracefulStopAbortCompletion),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -5303,6 +5668,7 @@ pub struct ScreenCaptureIngress<FramePayload, CursorImagePayload> {
     target: ScreenTargetBinding,
     capture_epoch: CaptureEpoch,
     active_stream: Option<ScreenStreamStamp>,
+    transition_revision: u64,
     cursor_policy: CursorPolicy,
     queue: BoundedScreenFrameQueue<FramePayload>,
     cursor_cache: BoundedCursorImageCache<CursorImagePayload>,
@@ -5327,7 +5693,9 @@ impl<FramePayload, CursorImagePayload> fmt::Debug
     }
 }
 
-impl<FramePayload, CursorImagePayload> ScreenCaptureIngress<FramePayload, CursorImagePayload> {
+impl<FramePayload: ScreenFramePayload, CursorImagePayload: ScreenFramePayload>
+    ScreenCaptureIngress<FramePayload, CursorImagePayload>
+{
     pub fn new(session: &ScreenCaptureSession) -> Result<Self, ScreenCaptureError> {
         let target = session.target.binding();
         let capture_epoch = session.capture_epoch;
@@ -5338,6 +5706,7 @@ impl<FramePayload, CursorImagePayload> ScreenCaptureIngress<FramePayload, Cursor
             target,
             capture_epoch,
             active_stream: None,
+            transition_revision: 0,
             cursor_policy: session.negotiated.request.cursor(),
             queue: BoundedScreenFrameQueue::new(
                 session.negotiated.request.queue(),
@@ -5367,6 +5736,33 @@ impl<FramePayload, CursorImagePayload> ScreenCaptureIngress<FramePayload, Cursor
     #[must_use]
     pub fn cursor_descriptor(&self) -> Option<CursorImageDescriptor> {
         self.cursor_cache.descriptor()
+    }
+
+    const fn current_owner(&self) -> ScreenIngressOwner {
+        ScreenIngressOwner {
+            source_session_binding: self.source_session_binding,
+            session_id: self.session_id,
+            source_instance: self.source_instance,
+            capture_epoch: self.capture_epoch,
+            active_stream: self.active_stream,
+        }
+    }
+
+    /// Returns the opaque owner of one currently capturing segment. Both the
+    /// session and ingress must agree on the active stream before a recording
+    /// graph may bind to it.
+    pub(crate) fn recording_owner(
+        &self,
+        session: &ScreenCaptureSession,
+    ) -> Result<ScreenIngressOwner, ScreenCaptureError> {
+        self.validate_session_identity(session)?;
+        if session.phase() != ScreenCapturePhase::Capturing
+            || self.active_stream.is_none()
+            || session.active_stream() != self.active_stream
+        {
+            return Err(ScreenCaptureError::UnexpectedSourceData);
+        }
+        Ok(self.current_owner())
     }
 
     /// Applies an authentic epoch handoff. Replaying a handoff is rejected
@@ -5465,9 +5861,22 @@ impl<FramePayload, CursorImagePayload> ScreenCaptureIngress<FramePayload, Cursor
         event: ScreenSessionEvent,
     ) -> Result<ScreenIngressTransition, ScreenCaptureError> {
         self.validate_session_identity(session)?;
+        let transition_revision = self
+            .transition_revision
+            .checked_add(1)
+            .ok_or(ScreenCaptureError::IngressTransitionSequenceExhausted)?;
+        let owner = self.current_owner();
         let transition = session.apply(event)?;
+        // Advance before applying the action: even an unexpected downstream
+        // action failure must invalidate a previously minted publication
+        // lineage after the session itself changed.
+        self.transition_revision = transition_revision;
         let drain = self.apply_action(&transition.action)?;
-        Ok(ScreenIngressTransition { transition, drain })
+        Ok(ScreenIngressTransition {
+            transition,
+            drain,
+            owner,
+        })
     }
 
     /// Applies a freely constructible local/user intent. Source observations
@@ -5489,6 +5898,354 @@ impl<FramePayload, CursorImagePayload> ScreenCaptureIngress<FramePayload, Cursor
             }
             ScreenSessionIntent::Cancel => self.cancel_session(session),
         }
+    }
+
+    /// Starts the only capture-session transition that may eventually seal a
+    /// recording artifact. The upstream frame queue must already be empty;
+    /// otherwise the epoch flush would silently discard frames that never
+    /// reached the recording graph.
+    pub fn request_graceful_stop(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+    ) -> Result<ScreenGracefulStop, ScreenCaptureError> {
+        let owner = self.recording_owner(session)?;
+        let queue = self.queue.diagnostics();
+        if queue.queued_frames != 0 || queue.queued_bytes != 0 {
+            return Err(ScreenCaptureError::GracefulStopRequiresDrainedIngress);
+        }
+        let expected_stream = owner
+            .active_stream()
+            .ok_or(ScreenCaptureError::UnexpectedSourceData)?;
+        let transition = self.apply_internal_event(session, ScreenSessionEvent::StopRequested)?;
+        Ok(ScreenGracefulStop {
+            owner,
+            seal_epoch: self.capture_epoch,
+            seal_revision: self.transition_revision,
+            expected_stream,
+            transition,
+        })
+    }
+
+    fn preflight_graceful_transition(
+        &self,
+        session: &ScreenCaptureSession,
+        issues_retry_operation: bool,
+    ) -> Result<(), ScreenCaptureError> {
+        self.transition_revision
+            .checked_add(1)
+            .ok_or(ScreenCaptureError::IngressTransitionSequenceExhausted)?;
+        if issues_retry_operation {
+            session
+                .next_operation_sequence
+                .checked_add(1)
+                .ok_or(ScreenCaptureError::OperationSequenceExhausted)?;
+        }
+        Ok(())
+    }
+
+    /// Applies the acknowledgement produced by executing the exact native
+    /// `Stop` action inside `stop`. Only this path can mint recording finish
+    /// authority.
+    pub fn complete_graceful_stop(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+        stop: ScreenGracefulStop,
+        acknowledgement: ScreenOperationAck,
+    ) -> Result<ScreenGracefulStopCompletionOutcome, ScreenGracefulProofError<ScreenGracefulStop>>
+    {
+        if let Err(error) = self.validate_session_identity(session) {
+            return Err(ScreenGracefulProofError::rejected(stop, error));
+        }
+        let Some(expected_operation_id) = stop.expected_operation_id() else {
+            return Err(ScreenGracefulProofError::rejected(
+                stop,
+                ScreenCaptureError::InvalidSessionTransition,
+            ));
+        };
+        if self.source_session_binding != stop.owner.source_session_binding
+            || self.session_id != stop.owner.session_id
+            || self.source_instance != stop.owner.source_instance
+            || acknowledgement.kind() != ScreenOperationKind::Stop
+            || acknowledgement.operation_id() != expected_operation_id
+            || acknowledgement.stream() != stop.expected_stream
+        {
+            return Err(ScreenGracefulProofError::rejected(
+                stop,
+                ScreenCaptureError::MismatchedOperationAck,
+            ));
+        }
+        let pending_matches =
+            session.pending_stop_matches(expected_operation_id, stop.expected_stream);
+        if pending_matches && let Err(error) = self.preflight_graceful_transition(session, false) {
+            return Err(ScreenGracefulProofError::rejected(stop, error));
+        }
+        let publication_lineage_valid = self.capture_epoch == stop.seal_epoch
+            && session.capture_epoch == stop.seal_epoch
+            && self.transition_revision == stop.seal_revision
+            && session.phase() == ScreenCapturePhase::Stopping
+            && pending_matches;
+        if !publication_lineage_valid {
+            let transition = if pending_matches {
+                let revision_before = self.transition_revision;
+                match self.complete_operation(session, acknowledgement) {
+                    Ok(transition) => Some(Box::new(transition)),
+                    Err(error)
+                        if self.transition_revision == revision_before
+                            && session.pending_stop_matches(
+                                expected_operation_id,
+                                stop.expected_stream,
+                            ) =>
+                    {
+                        return Err(ScreenGracefulProofError::rejected(stop, error));
+                    }
+                    Err(error) => return Err(ScreenGracefulProofError::Transition(error)),
+                }
+            } else {
+                None
+            };
+            return Ok(ScreenGracefulStopCompletionOutcome::AbortOnly(
+                ScreenGracefulStopAbortCompletion {
+                    seal_epoch: stop.seal_epoch,
+                    stopped_stream: stop.expected_stream,
+                    transition,
+                },
+            ));
+        }
+        let revision_before = self.transition_revision;
+        let transition = match self.complete_operation(session, acknowledgement) {
+            Ok(transition) => transition,
+            Err(error)
+                if self.transition_revision == revision_before
+                    && session
+                        .pending_stop_matches(expected_operation_id, stop.expected_stream) =>
+            {
+                return Err(ScreenGracefulProofError::rejected(stop, error));
+            }
+            Err(error) => return Err(ScreenGracefulProofError::Transition(error)),
+        };
+        if session.phase() != ScreenCapturePhase::Stopped
+            || session.pending_operation_kind().is_some()
+            || session.active_stream().is_some()
+            || transition.transition.to != ScreenCapturePhase::Stopped
+        {
+            return Ok(ScreenGracefulStopCompletionOutcome::AbortOnly(
+                ScreenGracefulStopAbortCompletion {
+                    seal_epoch: stop.seal_epoch,
+                    stopped_stream: stop.expected_stream,
+                    transition: Some(Box::new(transition)),
+                },
+            ));
+        }
+        Ok(ScreenGracefulStopCompletionOutcome::Completed(Box::new(
+            ScreenGracefulStopCompletion {
+                owner: stop.owner,
+                stopped_stream: stop.expected_stream,
+                transition,
+            },
+        )))
+    }
+
+    /// Rebinds a graceful-stop proof to the exact retry action produced after
+    /// its current native `Stop` attempt failed.
+    ///
+    /// The owner, retired recording stream, and already-drained ingress remain
+    /// immutable. Only the one-shot operation id and authenticated action are
+    /// replaced. Calling the generic failure API instead would strand the
+    /// original finish proof on a consumed operation id.
+    pub fn retry_graceful_stop(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+        stop: ScreenGracefulStop,
+        failure: ScreenSourceFailureEnvelope,
+    ) -> Result<ScreenGracefulStopRetryOutcome, ScreenGracefulProofError<ScreenGracefulStop>> {
+        if let Err(error) = self.validate_session_identity(session) {
+            return Err(ScreenGracefulProofError::rejected(stop, error));
+        }
+        let Some(expected_operation_id) = stop.expected_operation_id() else {
+            return Err(ScreenGracefulProofError::rejected(
+                stop,
+                ScreenCaptureError::InvalidSessionTransition,
+            ));
+        };
+        let pending_matches =
+            session.pending_stop_matches(expected_operation_id, stop.expected_stream);
+        if stop.owner.source_session_binding != self.source_session_binding
+            || stop.owner.session_id != self.session_id
+            || stop.owner.source_instance != self.source_instance
+            || stop.owner.active_stream() != Some(stop.expected_stream)
+            || failure.owner != self.source_session_binding
+            || failure.operation_id() != Some(expected_operation_id)
+            || failure.stream() != Some(stop.expected_stream)
+            || !pending_matches
+        {
+            return Err(ScreenGracefulProofError::rejected(
+                stop,
+                ScreenCaptureError::StaleSourceFailure,
+            ));
+        }
+
+        if let Err(error) = self.preflight_graceful_transition(session, true) {
+            return Err(ScreenGracefulProofError::rejected(stop, error));
+        }
+
+        let revision_before = self.transition_revision;
+        let transition = match self.apply_operation_failure(session, failure) {
+            Ok(transition) => transition,
+            Err(error)
+                if self.transition_revision == revision_before
+                    && session
+                        .pending_stop_matches(expected_operation_id, stop.expected_stream) =>
+            {
+                return Err(ScreenGracefulProofError::rejected(stop, error));
+            }
+            Err(error) => return Err(ScreenGracefulProofError::Transition(error)),
+        };
+        let retry_stop_matches = matches!(
+            transition.transition.action.source_command(),
+            ScreenSourceCommand::Stop { stream, .. } if stream == stop.expected_stream
+        );
+        let retry_owner = transition.owner();
+        let retry_identity_valid = retry_owner.source_session_binding
+            == self.source_session_binding
+            && retry_owner.session_id == self.session_id
+            && retry_owner.source_instance == self.source_instance
+            && retry_owner.capture_epoch == self.capture_epoch
+            && retry_owner.active_stream().is_none()
+            && transition.drain.is_none();
+        if retry_identity_valid
+            && retry_stop_matches
+            && self.capture_epoch == stop.seal_epoch
+            && stop.seal_revision.checked_add(1) == Some(self.transition_revision)
+            && transition.transition.to == ScreenCapturePhase::Stopping
+        {
+            return Ok(ScreenGracefulStopRetryOutcome::Retrying(
+                ScreenGracefulStop {
+                    seal_revision: self.transition_revision,
+                    transition,
+                    ..stop
+                },
+            ));
+        }
+        Ok(ScreenGracefulStopRetryOutcome::AbortOnly(
+            ScreenGracefulStopAbort {
+                owner: stop.owner,
+                seal_epoch: stop.seal_epoch,
+                seal_revision: stop.seal_revision,
+                expected_stream: stop.expected_stream,
+                transition,
+            },
+        ))
+    }
+
+    /// Rebinds an abort-only Stop after an exact failure. This keeps the new
+    /// one-shot action owned by the returned proof even while the session is
+    /// suspended or terminal.
+    pub fn retry_graceful_abort(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+        abort: ScreenGracefulStopAbort,
+        failure: ScreenSourceFailureEnvelope,
+    ) -> Result<ScreenGracefulStopAbort, ScreenGracefulProofError<ScreenGracefulStopAbort>> {
+        if let Err(error) = self.validate_session_identity(session) {
+            return Err(ScreenGracefulProofError::rejected(abort, error));
+        }
+        let Some(expected_operation_id) = abort.expected_operation_id() else {
+            return Err(ScreenGracefulProofError::rejected(
+                abort,
+                ScreenCaptureError::InvalidSessionTransition,
+            ));
+        };
+        let pending_matches =
+            session.pending_stop_matches(expected_operation_id, abort.expected_stream);
+        if abort.owner.source_session_binding != self.source_session_binding
+            || abort.owner.session_id != self.session_id
+            || abort.owner.source_instance != self.source_instance
+            || self.transition_revision < abort.seal_revision
+            || failure.owner != self.source_session_binding
+            || failure.operation_id() != Some(expected_operation_id)
+            || failure.stream() != Some(abort.expected_stream)
+            || !pending_matches
+        {
+            return Err(ScreenGracefulProofError::rejected(
+                abort,
+                ScreenCaptureError::StaleSourceFailure,
+            ));
+        }
+        if let Err(error) = self.preflight_graceful_transition(session, true) {
+            return Err(ScreenGracefulProofError::rejected(abort, error));
+        }
+        let revision_before = self.transition_revision;
+        let transition = match self.apply_operation_failure(session, failure) {
+            Ok(transition) => transition,
+            Err(error)
+                if self.transition_revision == revision_before
+                    && session
+                        .pending_stop_matches(expected_operation_id, abort.expected_stream) =>
+            {
+                return Err(ScreenGracefulProofError::rejected(abort, error));
+            }
+            Err(error) => return Err(ScreenGracefulProofError::Transition(error)),
+        };
+        Ok(ScreenGracefulStopAbort {
+            seal_revision: self.transition_revision,
+            transition,
+            ..abort
+        })
+    }
+
+    /// Applies the exact current abort-only Stop acknowledgement. The result
+    /// deliberately carries no artifact publication authority.
+    pub fn complete_graceful_abort(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+        abort: ScreenGracefulStopAbort,
+        acknowledgement: ScreenOperationAck,
+    ) -> Result<ScreenGracefulStopAbortCompletion, ScreenGracefulProofError<ScreenGracefulStopAbort>>
+    {
+        if let Err(error) = self.validate_session_identity(session) {
+            return Err(ScreenGracefulProofError::rejected(abort, error));
+        }
+        let Some(expected_operation_id) = abort.expected_operation_id() else {
+            return Err(ScreenGracefulProofError::rejected(
+                abort,
+                ScreenCaptureError::InvalidSessionTransition,
+            ));
+        };
+        let pending_matches =
+            session.pending_stop_matches(expected_operation_id, abort.expected_stream);
+        if abort.owner.source_session_binding != self.source_session_binding
+            || abort.owner.session_id != self.session_id
+            || abort.owner.source_instance != self.source_instance
+            || acknowledgement.kind() != ScreenOperationKind::Stop
+            || acknowledgement.operation_id() != expected_operation_id
+            || acknowledgement.stream() != abort.expected_stream
+            || !pending_matches
+        {
+            return Err(ScreenGracefulProofError::rejected(
+                abort,
+                ScreenCaptureError::MismatchedOperationAck,
+            ));
+        }
+        if let Err(error) = self.preflight_graceful_transition(session, false) {
+            return Err(ScreenGracefulProofError::rejected(abort, error));
+        }
+        let revision_before = self.transition_revision;
+        let transition = match self.complete_operation(session, acknowledgement) {
+            Ok(transition) => transition,
+            Err(error)
+                if self.transition_revision == revision_before
+                    && session
+                        .pending_stop_matches(expected_operation_id, abort.expected_stream) =>
+            {
+                return Err(ScreenGracefulProofError::rejected(abort, error));
+            }
+            Err(error) => return Err(ScreenGracefulProofError::Transition(error)),
+        };
+        Ok(ScreenGracefulStopAbortCompletion {
+            seal_epoch: abort.seal_epoch,
+            stopped_stream: abort.expected_stream,
+            transition: Some(Box::new(transition)),
+        })
     }
 
     /// Applies the unforgeable acknowledgement returned by one exact
@@ -5812,6 +6569,15 @@ impl<FramePayload, CursorImagePayload> ScreenCaptureIngress<FramePayload, Cursor
             ScreenQueuePopOutcome::Empty => Ok(ScreenIngressPopOutcome::Empty),
         }
     }
+
+    pub(crate) fn peek_next_frame(
+        &mut self,
+        session: &ScreenCaptureSession,
+        now_ns: u64,
+    ) -> Result<Option<ScreenFrameAdmission>, ScreenCaptureError> {
+        self.validate_session_identity(session)?;
+        self.queue.peek_admission(now_ns)
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -5872,6 +6638,8 @@ pub enum ScreenCaptureError {
     InvalidCursorMetadata,
     #[error("cursor image descriptor is invalid")]
     InvalidCursorImage,
+    #[error("cursor image payload allocation does not match its declared retained bytes")]
+    CursorPayloadAccountingMismatch,
     #[error("visible cursor metadata omitted its required image revision")]
     MissingCursorImageRevision,
     #[error("cursor metadata references an image that is not cached")]
@@ -5928,6 +6696,10 @@ pub enum ScreenCaptureError {
     ProtectedContentSignalUnavailable,
     #[error("screen frame envelope is invalid")]
     InvalidFrameEnvelope,
+    #[error("screen frame payload allocation does not match its declared retained bytes")]
+    FramePayloadAccountingMismatch,
+    #[error("owned CPU frame payload cannot claim a native-memory frame type")]
+    FramePayloadMemoryMismatch,
     #[error("screen frame specification changed without renegotiation")]
     FrameSpecChangedWithoutNegotiation,
     #[error("screen frame belongs to another capture epoch")]
@@ -5944,12 +6716,16 @@ pub enum ScreenCaptureError {
     QueueClockMovedBackwards,
     #[error("screen frame queue accounting is inconsistent")]
     QueueAccountingCorrupt,
+    #[error("screen capture ingress must be drained before graceful stop")]
+    GracefulStopRequiresDrainedIngress,
     #[error("screen capture operation timeout is invalid")]
     InvalidOperationTimeout,
     #[error("screen operation sequence is exhausted")]
     OperationSequenceExhausted,
     #[error("screen stream sequence is exhausted")]
     StreamSequenceExhausted,
+    #[error("screen ingress transition sequence is exhausted")]
+    IngressTransitionSequenceExhausted,
     #[error("another screen operation is already pending")]
     OperationAlreadyPending,
     #[error("screen operation acknowledgement does not match the pending operation")]

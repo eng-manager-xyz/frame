@@ -2,12 +2,13 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use frame_media::*;
 
-type TestIngress = ScreenCaptureIngress<Vec<u8>, Vec<u8>>;
+type TestIngress = ScreenCaptureIngress<Box<[u8]>, Box<[u8]>>;
+type TestSourceEvent = ScreenSourceEvent<Box<[u8]>, Box<[u8]>>;
 
 fn source_instance(marker: u8) -> ScreenSourceInstanceId {
     ScreenSourceInstanceId::new([marker; 16]).expect("source instance")
@@ -253,7 +254,7 @@ struct DummySource {
     capabilities: ScreenSourceCapabilities,
     catalog: ScreenTargetSnapshot,
     pending_topology: RefCell<Option<(ScreenSourceCapabilities, ScreenTargetSnapshot)>>,
-    pending_events: RefCell<VecDeque<ScreenSourceEvent<Vec<u8>, Vec<u8>>>>,
+    pending_events: RefCell<VecDeque<TestSourceEvent>>,
     preflight_observation: RefCell<Option<ScreenPermissionObservation>>,
     session_binding: Option<ScreenSourceSessionBinding>,
     native_streams: RefCell<SharedNativeStreams>,
@@ -368,7 +369,7 @@ impl DummySource {
         self.preflight_observation.replace(Some(observation));
     }
 
-    fn queue_event(&self, event: ScreenSourceEvent<Vec<u8>, Vec<u8>>) {
+    fn queue_event(&self, event: TestSourceEvent) {
         self.pending_events.borrow_mut().push_back(event);
     }
 
@@ -447,7 +448,7 @@ impl DummySource {
         pts_ns: u64,
         retained_bytes: u64,
         cursor: Option<CursorFrameMetadata>,
-    ) -> ScreenFrame<Vec<u8>> {
+    ) -> ScreenFrame<Box<[u8]>> {
         ScreenFrame::new(
             ScreenFrameEnvelope {
                 stream,
@@ -457,7 +458,7 @@ impl DummySource {
                 retained_bytes,
                 cursor,
             },
-            vec![0; usize::try_from(retained_bytes.min(16)).expect("payload length")],
+            vec![0; usize::try_from(retained_bytes).expect("payload length")].into_boxed_slice(),
         )
         .expect("frame")
     }
@@ -468,7 +469,7 @@ impl DummySource {
         pts_ns: u64,
         retained_bytes: u64,
         cursor: Option<CursorFrameMetadata>,
-    ) -> ScreenFrame<Vec<u8>> {
+    ) -> ScreenFrame<Box<[u8]>> {
         self.frame_for(
             self.active_stream.expect("active source stream"),
             sequence,
@@ -478,22 +479,49 @@ impl DummySource {
         )
     }
 
+    fn recording_frame(&self, sequence: u64, pts_ns: u64) -> ScreenFrame<Box<[u8]>> {
+        let spec = output_spec();
+        let retained_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+        ScreenFrame::new(
+            ScreenFrameEnvelope {
+                stream: self.active_stream.expect("active source stream"),
+                sequence,
+                timestamp: FrameTimestamp::new(pts_ns, spec.nominal_frame_duration_ns)
+                    .expect("recording timestamp"),
+                spec,
+                retained_bytes,
+                cursor: None,
+            },
+            vec![
+                u8::try_from(sequence).unwrap_or(u8::MAX);
+                usize::try_from(retained_bytes).expect("bounded recording payload")
+            ]
+            .into_boxed_slice(),
+        )
+        .expect("recording frame")
+    }
+
     fn cursor_image_for(
         &self,
         stream: ScreenStreamStamp,
         revision: u64,
-    ) -> ScreenCursorImage<Vec<u8>> {
-        ScreenCursorImage::new(stream, cursor_descriptor(revision), vec![0; 64])
+    ) -> ScreenCursorImage<Box<[u8]>> {
+        ScreenCursorImage::new(
+            stream,
+            cursor_descriptor(revision),
+            vec![0; 64].into_boxed_slice(),
+        )
+        .expect("exact cursor payload")
     }
 
-    fn cursor_image(&self, revision: u64) -> ScreenCursorImage<Vec<u8>> {
+    fn cursor_image(&self, revision: u64) -> ScreenCursorImage<Box<[u8]>> {
         self.cursor_image_for(self.active_stream.expect("active source stream"), revision)
     }
 }
 
 impl ScreenCaptureSource for DummySource {
-    type FramePayload = Vec<u8>;
-    type CursorImagePayload = Vec<u8>;
+    type FramePayload = Box<[u8]>;
+    type CursorImagePayload = Box<[u8]>;
 
     fn source_instance(&self) -> ScreenSourceInstanceId {
         self.capabilities.source_instance()
@@ -649,7 +677,7 @@ trait TestSourceEventIngress {
         &mut self,
         session: &mut ScreenCaptureSession,
         source: &mut BoundScreenCaptureSource<DummySource>,
-        event: ScreenSourceEvent<Vec<u8>, Vec<u8>>,
+        event: TestSourceEvent,
         now_ns: u64,
         cancellation: &CancellationToken,
     ) -> Result<ScreenIngressOutcome, ScreenCaptureError>;
@@ -660,7 +688,7 @@ impl TestSourceEventIngress for TestIngress {
         &mut self,
         session: &mut ScreenCaptureSession,
         source: &mut BoundScreenCaptureSource<DummySource>,
-        event: ScreenSourceEvent<Vec<u8>, Vec<u8>>,
+        event: TestSourceEvent,
         now_ns: u64,
         cancellation: &CancellationToken,
     ) -> Result<ScreenIngressOutcome, ScreenCaptureError> {
@@ -685,7 +713,7 @@ struct Harness {
 impl Harness {
     fn apply_source_transition(
         &mut self,
-        event: ScreenSourceEvent<Vec<u8>, Vec<u8>>,
+        event: TestSourceEvent,
     ) -> Result<ScreenIngressTransition, ScreenCaptureError> {
         let outcome = self.ingress.handle_source_event(
             &mut self.session,
@@ -1025,7 +1053,7 @@ fn region_snapshot_requires_the_canonical_containing_display_transform() {
 }
 
 #[test]
-fn exact_negotiation_preserves_nonblocking_appsrc_and_native_lease_lifetime() {
+fn exact_negotiation_preserves_nonblocking_appsrc_and_cpu_allocation_lifetime() {
     let (_, _, negotiated) = initial_contract(
         cursor_policy(CursorCaptureMode::Metadata, true, true),
         default_queue(),
@@ -3066,6 +3094,47 @@ fn capability_profiles_are_exact_tuples_not_an_invented_cross_product() {
 }
 
 #[test]
+fn provider_neutral_negotiation_rejects_platform_native_memory() {
+    let source = source_instance(1);
+    let selected = display_target(source, 1, 1);
+    let catalog = ScreenTargetSnapshot::new(source, 1, vec![selected.clone()]).expect("catalog");
+    let native_memory = match ScreenCapturePlatform::current() {
+        ScreenCapturePlatform::MacOs => FrameMemory::CoreVideo,
+        ScreenCapturePlatform::Windows => FrameMemory::Direct3D11,
+        ScreenCapturePlatform::Linux => FrameMemory::DmaBuf,
+        ScreenCapturePlatform::Unsupported => panic!("desktop platform required"),
+    };
+    let mut spec = capability_spec(source, 1, 1);
+    spec.frame_profiles = vec![ScreenFrameProfile {
+        pixel_format: PixelFormat::Bgra8,
+        color_space: ColorSpace::Srgb,
+        memory: native_memory,
+        max_width: 3_840,
+        max_height: 2_160,
+        max_frames_per_second: 120,
+    }];
+    let capabilities = ScreenSourceCapabilities::new(spec).expect("platform-native capability");
+    let request = ScreenCaptureRequest::new(ScreenCaptureRequestSpec {
+        target: selected,
+        output: VideoFrameSpec {
+            memory: native_memory,
+            ..output_spec()
+        },
+        cursor: cursor_policy(CursorCaptureMode::EmbeddedInFrame, false, false),
+        excluded_windows: vec![],
+        queue: default_queue(),
+        recovery: TargetRecoveryPolicy::FailClosed,
+        protected_content: ProtectedContentPolicy::SuspendUntilClear,
+    })
+    .expect("well-formed native-memory request");
+
+    assert_eq!(
+        negotiate_screen_capture(&capabilities, &catalog, request),
+        Err(ScreenCaptureError::UnsupportedFrameSpec)
+    );
+}
+
+#[test]
 fn operation_budget_is_cooperatively_cancelled_and_bounded() {
     let cancellation = CancellationToken::new();
     assert!(ScreenOperationBudget::new(&cancellation, Duration::from_secs(31)).is_err());
@@ -3410,4 +3479,955 @@ fn diagnostics_and_debug_output_remain_low_cardinality_and_redacted() {
     );
     assert!(rendered.contains("<redacted>"));
     assert!(!rendered.contains("window title"));
+}
+
+fn foreign_stop_failure_and_ack(
+    session_marker: u8,
+) -> (ScreenSourceFailureEnvelope, ScreenOperationAck) {
+    let mut foreign = capturing_harness(session_marker);
+    let mut stop = foreign
+        .ingress
+        .request_graceful_stop(&mut foreign.session)
+        .expect("foreign graceful Stop");
+    foreign.source.fail_next_operation();
+    let failure = match execute(&foreign.session, stop.action_mut(), &mut foreign.source) {
+        Err(ScreenOperationExecutionError::Source(failure)) => failure,
+        other => panic!("expected foreign Stop failure, got {other:?}"),
+    };
+    let retained_failure = failure.clone();
+    let mut stop = match foreign
+        .ingress
+        .retry_graceful_stop(&mut foreign.session, stop, failure)
+        .expect("foreign Stop retry")
+    {
+        ScreenGracefulStopRetryOutcome::Retrying(stop) => stop,
+        ScreenGracefulStopRetryOutcome::AbortOnly(_) => {
+            panic!("unchanged foreign lineage must remain publishable")
+        }
+    };
+    let acknowledgement = execute(&foreign.session, stop.action_mut(), &mut foreign.source)
+        .expect("foreign retry execution")
+        .expect("foreign retry acknowledgement");
+    (retained_failure, acknowledgement)
+}
+
+#[test]
+fn bounded_capture_pump_writes_playable_media_and_seals_on_graceful_stop() {
+    let spec = output_spec();
+    let frame_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+    let mut harness = ready_harness_with(
+        cursor_policy(CursorCaptureMode::Metadata, true, true),
+        queue_policy(
+            8,
+            frame_bytes * 8,
+            1_000_000_000,
+            CaptureQueueOverflow::DropOldest,
+        ),
+        TargetRecoveryPolicy::FailClosed,
+        ProtectedContentPolicy::SuspendUntilClear,
+        1,
+    );
+    start_and_ack(&mut harness);
+
+    for index in 0_u64..3 {
+        let frame = harness
+            .source
+            .recording_frame(index + 1, index * spec.nominal_frame_duration_ns);
+        assert!(matches!(
+            harness
+                .ingress
+                .handle_source_event(
+                    &mut harness.session,
+                    &mut harness.source,
+                    ScreenSourceEvent::Frame(frame),
+                    index * spec.nominal_frame_duration_ns,
+                    &CancellationToken::new(),
+                )
+                .expect("capture ingress"),
+            ScreenIngressOutcome::Frame(ScreenQueuePushOutcome::Accepted)
+        ));
+    }
+
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("pumped.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("capture pump");
+    let drained = pump
+        .drain_available(
+            &mut harness.session,
+            3 * spec.nominal_frame_duration_ns,
+            &CancellationToken::new(),
+        )
+        .expect("bounded pump drain");
+    let ScreenPumpOutcome::Drained(report) = drained else {
+        panic!("active pump must not cancel");
+    };
+    assert_eq!(report.popped_frames, 3);
+    assert_eq!(report.submitted_bytes, frame_bytes * 3);
+    assert_eq!(report.total_submitted_frames, 3);
+
+    let drained = pump
+        .drain_available(
+            &mut harness.session,
+            3 * spec.nominal_frame_duration_ns,
+            &CancellationToken::new(),
+        )
+        .expect("empty follow-up drain");
+    let ScreenPumpOutcome::Drained(report) = drained else {
+        panic!("active pump must not cancel");
+    };
+    assert_eq!(report.popped_frames, 0);
+    assert_eq!(report.total_submitted_frames, 3);
+
+    let mut stop = pump
+        .request_graceful_stop(&mut harness.session)
+        .expect("graceful stop request");
+    let acknowledgement = execute(&harness.session, stop.action_mut(), &mut harness.source)
+        .expect("native stop execution")
+        .expect("native stop acknowledgement");
+    let completion = pump
+        .complete_graceful_stop(&mut harness.session, stop, acknowledgement)
+        .expect("graceful stop completion");
+    let ScreenGracefulStopCompletionOutcome::Completed(completion) = completion else {
+        panic!("unchanged graceful lineage must publish");
+    };
+    assert_eq!(
+        completion.transition().transition.to,
+        ScreenCapturePhase::Stopped
+    );
+    let artifact = pump
+        .finish(*completion, &CancellationToken::new())
+        .expect("verified pumped artifact");
+    assert_eq!(artifact.path, output);
+    assert_eq!(artifact.submitted_frames, 3);
+    assert_eq!(artifact.encoded_frames, 3);
+}
+
+#[test]
+fn graceful_stop_retry_updates_the_opaque_finish_authority() {
+    let spec = output_spec();
+    let frame_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+    let mut harness = ready_harness_with(
+        cursor_policy(CursorCaptureMode::EmbeddedInFrame, false, false),
+        queue_policy(
+            8,
+            frame_bytes * 8,
+            1_000_000_000,
+            CaptureQueueOverflow::DropOldest,
+        ),
+        TargetRecoveryPolicy::FailClosed,
+        ProtectedContentPolicy::SuspendUntilClear,
+        1,
+    );
+    start_and_ack(&mut harness);
+    let frame = harness.source.recording_frame(1, 0);
+    harness
+        .ingress
+        .handle_source_event(
+            &mut harness.session,
+            &mut harness.source,
+            ScreenSourceEvent::Frame(frame),
+            0,
+            &CancellationToken::new(),
+        )
+        .expect("one recording frame");
+
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("retried-graceful-stop.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("capture pump");
+    let drained = pump
+        .drain_available(
+            &mut harness.session,
+            spec.nominal_frame_duration_ns,
+            &CancellationToken::new(),
+        )
+        .expect("recording drain");
+    assert!(matches!(
+        drained,
+        ScreenPumpOutcome::Drained(ScreenPumpReport {
+            popped_frames: 1,
+            ..
+        })
+    ));
+
+    let mut stop = pump
+        .request_graceful_stop(&mut harness.session)
+        .expect("graceful stop request");
+    let first_operation = match stop.transition().transition.action.source_command() {
+        ScreenSourceCommand::Stop { operation_id, .. } => operation_id,
+        command => panic!("expected initial Stop, got {command:?}"),
+    };
+    harness.source.fail_next_operation();
+    let failure = match execute(&harness.session, stop.action_mut(), &mut harness.source) {
+        Err(ScreenOperationExecutionError::Source(failure)) => failure,
+        other => panic!("expected first Stop failure, got {other:?}"),
+    };
+    stop = match pump
+        .retry_graceful_stop(&mut harness.session, stop, failure)
+        .expect("proof-bound Stop retry")
+    {
+        ScreenGracefulStopRetryOutcome::Retrying(stop) => stop,
+        ScreenGracefulStopRetryOutcome::AbortOnly(_) => {
+            panic!("unchanged Stop lineage must remain publishable")
+        }
+    };
+    let retry_operation = match stop.transition().transition.action.source_command() {
+        ScreenSourceCommand::Stop { operation_id, .. } => operation_id,
+        command => panic!("expected retry Stop, got {command:?}"),
+    };
+    assert_ne!(retry_operation, first_operation);
+
+    let acknowledgement = execute(&harness.session, stop.action_mut(), &mut harness.source)
+        .expect("retry native Stop execution")
+        .expect("retry native Stop acknowledgement");
+    let completion = pump
+        .complete_graceful_stop(&mut harness.session, stop, acknowledgement)
+        .expect("retried graceful stop completion");
+    let ScreenGracefulStopCompletionOutcome::Completed(completion) = completion else {
+        panic!("exact Stop retry must preserve publication authority");
+    };
+    let artifact = pump
+        .finish(*completion, &CancellationToken::new())
+        .expect("verified artifact after retried Stop");
+    assert_eq!(artifact.submitted_frames, 1);
+    assert_eq!(artifact.encoded_frames, 1);
+}
+
+#[test]
+fn rejected_stop_correlations_return_the_proof_for_the_correct_result() {
+    let mut harness = capturing_harness(1);
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("rejected-stop-correlation.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("exclusive pump");
+    let mut stop = pump
+        .request_graceful_stop(&mut harness.session)
+        .expect("graceful Stop request");
+    harness.source.fail_next_operation();
+    let correct_failure = match execute(&harness.session, stop.action_mut(), &mut harness.source) {
+        Err(ScreenOperationExecutionError::Source(failure)) => failure,
+        other => panic!("expected exact Stop failure, got {other:?}"),
+    };
+    let (foreign_failure, foreign_acknowledgement) = foreign_stop_failure_and_ack(2);
+
+    let error = pump
+        .retry_graceful_stop(&mut harness.session, stop, foreign_failure)
+        .expect_err("foreign failure must not consume Stop authority");
+    let ScreenPumpError::GracefulStopProof(error) = error else {
+        panic!("wrong failure must return a typed Stop-proof rejection");
+    };
+    let (stop, cause) = (*error)
+        .into_rejected()
+        .expect("pre-mutation rejection returns Stop proof");
+    assert_eq!(cause, ScreenCaptureError::StaleSourceFailure);
+    let mut stop = match pump
+        .retry_graceful_stop(&mut harness.session, stop, correct_failure)
+        .expect("returned proof accepts exact failure")
+    {
+        ScreenGracefulStopRetryOutcome::Retrying(stop) => stop,
+        ScreenGracefulStopRetryOutcome::AbortOnly(_) => {
+            panic!("unchanged lineage remains publishable")
+        }
+    };
+    let correct_acknowledgement = execute(&harness.session, stop.action_mut(), &mut harness.source)
+        .expect("retry Stop execution")
+        .expect("retry Stop acknowledgement");
+
+    let error = pump
+        .complete_graceful_stop(&mut harness.session, stop, foreign_acknowledgement)
+        .expect_err("foreign acknowledgement must not consume Stop authority");
+    let ScreenPumpError::GracefulStopProof(error) = error else {
+        panic!("wrong acknowledgement must return a typed Stop-proof rejection");
+    };
+    let (stop, cause) = (*error)
+        .into_rejected()
+        .expect("pre-mutation rejection returns Stop proof");
+    assert_eq!(cause, ScreenCaptureError::MismatchedOperationAck);
+    assert!(matches!(
+        pump.complete_graceful_stop(&mut harness.session, stop, correct_acknowledgement)
+            .expect("returned proof accepts exact acknowledgement"),
+        ScreenGracefulStopCompletionOutcome::Completed(_)
+    ));
+    pump.abort().expect("confirmed graph teardown");
+    assert!(!output.exists());
+}
+
+#[test]
+fn cancelled_capture_pump_preserves_the_mandatory_native_stop_transition() {
+    let spec = output_spec();
+    let frame_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+    let mut harness = ready_harness_with(
+        cursor_policy(CursorCaptureMode::Metadata, true, true),
+        queue_policy(
+            8,
+            frame_bytes * 8,
+            1_000_000_000,
+            CaptureQueueOverflow::DropOldest,
+        ),
+        TargetRecoveryPolicy::FailClosed,
+        ProtectedContentPolicy::SuspendUntilClear,
+        1,
+    );
+    start_and_ack(&mut harness);
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("cancelled-pump.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("capture pump");
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let outcome = pump
+        .drain_available(&mut harness.session, 0, &cancellation)
+        .expect("cancelled pump preserves transition");
+    let ScreenPumpOutcome::Cancelled { mut transition, .. } = outcome else {
+        panic!("cancelled lifetime must retire the pump");
+    };
+    assert!(matches!(
+        transition.transition.action.source_command(),
+        ScreenSourceCommand::Stop { .. }
+    ));
+    assert_eq!(transition.transition.to, ScreenCapturePhase::Cancelled);
+    assert_eq!(harness.session.phase(), ScreenCapturePhase::Cancelled);
+    let acknowledgement = execute(
+        &harness.session,
+        &mut transition.transition.action,
+        &mut harness.source,
+    )
+    .expect("mandatory cancellation stop execution")
+    .expect("mandatory cancellation stop acknowledgement");
+    pump.complete_abort_operation(&mut harness.session, acknowledgement)
+        .expect("cancellation stop completion");
+    assert_eq!(harness.session.phase(), ScreenCapturePhase::Cancelled);
+    let repeated = pump
+        .cancel_session(&mut harness.session)
+        .expect("repeated cancellation remains idempotent after graph abort");
+    assert_eq!(repeated.transition.to, ScreenCapturePhase::Cancelled);
+    assert_eq!(
+        repeated.transition.action.source_command(),
+        ScreenSourceCommand::None
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn capture_queue_loss_is_bounded_and_marks_the_first_surviving_buffer_discontinuous() {
+    let spec = output_spec();
+    let frame_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+    let mut harness = ready_harness_with(
+        cursor_policy(CursorCaptureMode::Metadata, true, true),
+        queue_policy(
+            2,
+            frame_bytes * 2,
+            1_000_000_000,
+            CaptureQueueOverflow::DropOldest,
+        ),
+        TargetRecoveryPolicy::FailClosed,
+        ProtectedContentPolicy::SuspendUntilClear,
+        1,
+    );
+    start_and_ack(&mut harness);
+    for index in 0_u64..3 {
+        let frame = harness
+            .source
+            .recording_frame(index + 1, index * spec.nominal_frame_duration_ns);
+        harness
+            .ingress
+            .handle_source_event(
+                &mut harness.session,
+                &mut harness.source,
+                ScreenSourceEvent::Frame(frame),
+                index * spec.nominal_frame_duration_ns,
+                &CancellationToken::new(),
+            )
+            .expect("bounded capture ingress");
+    }
+    assert_eq!(harness.ingress.queue_diagnostics().dropped_oldest, 1);
+
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("loss.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("capture pump");
+    let outcome = pump
+        .drain_available(
+            &mut harness.session,
+            3 * spec.nominal_frame_duration_ns,
+            &CancellationToken::new(),
+        )
+        .expect("bounded loss drain");
+    let ScreenPumpOutcome::Drained(report) = outcome else {
+        panic!("active pump must not cancel");
+    };
+    assert_eq!(report.popped_frames, 2);
+    assert_eq!(report.queue.dropped_oldest, 1);
+    assert_eq!(report.submitted_discontinuities, 1);
+    assert!(report.reached_iteration_bound);
+    pump.abort().expect("confirmed loss-fixture teardown");
+    assert!(!output.exists());
+}
+
+#[test]
+fn graceful_stop_rejects_an_upstream_backlog_without_retiring_it() {
+    let mut harness = capturing_harness(1);
+    let frame = harness.source.frame(1, 0, 100, None);
+    harness
+        .ingress
+        .handle_source_event(
+            &mut harness.session,
+            &mut harness.source,
+            ScreenSourceEvent::Frame(frame),
+            0,
+            &CancellationToken::new(),
+        )
+        .expect("queued frame");
+
+    assert!(matches!(
+        harness.ingress.request_graceful_stop(&mut harness.session),
+        Err(ScreenCaptureError::GracefulStopRequiresDrainedIngress)
+    ));
+    assert_eq!(harness.session.phase(), ScreenCapturePhase::Capturing);
+    assert_eq!(harness.ingress.queue_diagnostics().queued_frames, 1);
+}
+
+#[test]
+fn pump_drain_respects_downstream_capacity_across_backlog_calls() {
+    let spec = output_spec();
+    let frame_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+    let mut harness = ready_harness_with(
+        cursor_policy(CursorCaptureMode::EmbeddedInFrame, false, false),
+        queue_policy(
+            16,
+            frame_bytes * 16,
+            10_000_000_000,
+            CaptureQueueOverflow::DropOldest,
+        ),
+        TargetRecoveryPolicy::FailClosed,
+        ProtectedContentPolicy::SuspendUntilClear,
+        1,
+    );
+    start_and_ack(&mut harness);
+    for index in 0_u64..12 {
+        let frame = harness
+            .source
+            .recording_frame(index + 1, index * spec.nominal_frame_duration_ns);
+        harness
+            .ingress
+            .handle_source_event(
+                &mut harness.session,
+                &mut harness.source,
+                ScreenSourceEvent::Frame(frame),
+                index * spec.nominal_frame_duration_ns,
+                &CancellationToken::new(),
+            )
+            .expect("bounded backlog ingress");
+    }
+
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("bounded-backlog.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("capture pump");
+
+    let first = pump
+        .drain_available(
+            &mut harness.session,
+            12 * spec.nominal_frame_duration_ns,
+            &CancellationToken::new(),
+        )
+        .expect("first bounded drain");
+    let ScreenPumpOutcome::Drained(first) = first else {
+        panic!("active pump must not cancel");
+    };
+    assert_eq!(first.popped_frames, 8);
+    assert_eq!(first.total_submitted_frames, 8);
+    assert_eq!(first.queue.queued_frames, 4);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut later_popped = 0_u16;
+    let mut final_total = first.total_submitted_frames;
+    let mut queue_drained = false;
+    for _ in 0..200 {
+        assert!(Instant::now() < deadline, "bounded appsrc drain timed out");
+        let next = pump
+            .drain_available(
+                &mut harness.session,
+                12 * spec.nominal_frame_duration_ns,
+                &CancellationToken::new(),
+            )
+            .expect("subsequent bounded drain");
+        let ScreenPumpOutcome::Drained(next) = next else {
+            panic!("active pump must not cancel");
+        };
+        later_popped = later_popped.saturating_add(next.popped_frames);
+        final_total = next.total_submitted_frames;
+        if next.queue.queued_frames == 0 {
+            queue_drained = true;
+            break;
+        }
+        if next.popped_frames == 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(queue_drained, "bounded retry count exhausted");
+    assert_eq!(later_popped, 4);
+    assert_eq!(final_total, 12);
+
+    let mut stop = pump
+        .request_graceful_stop(&mut harness.session)
+        .expect("drained graceful stop");
+    let acknowledgement = execute(&harness.session, stop.action_mut(), &mut harness.source)
+        .expect("native stop execution")
+        .expect("native stop acknowledgement");
+    let completion = pump
+        .complete_graceful_stop(&mut harness.session, stop, acknowledgement)
+        .expect("graceful stop completion");
+    let ScreenGracefulStopCompletionOutcome::Completed(completion) = completion else {
+        panic!("unchanged graceful lineage must publish");
+    };
+    let artifact = pump
+        .finish(*completion, &CancellationToken::new())
+        .expect("complete bounded artifact");
+    assert_eq!(artifact.submitted_frames, 12);
+    assert_eq!(artifact.encoded_frames, 12);
+}
+
+#[test]
+fn frame_and_cursor_admission_reject_hidden_or_misdeclared_allocation() {
+    let harness = capturing_harness(1);
+    let stream = harness.source.active_stream.expect("active stream");
+    let mut spare = Vec::with_capacity(101);
+    spare.resize(100, 0);
+    assert!(spare.capacity() > spare.len());
+    assert!(matches!(
+        ScreenFrame::new(
+            ScreenFrameEnvelope {
+                stream,
+                sequence: 1,
+                timestamp: FrameTimestamp::new(0, 1).expect("timestamp"),
+                spec: output_spec(),
+                retained_bytes: 100,
+                cursor: None,
+            },
+            spare,
+        ),
+        Err(ScreenCaptureError::FramePayloadAccountingMismatch)
+    ));
+
+    assert!(matches!(
+        ScreenCursorImage::new(stream, cursor_descriptor(1), vec![0; 63].into_boxed_slice(),),
+        Err(ScreenCaptureError::CursorPayloadAccountingMismatch)
+    ));
+}
+
+#[test]
+fn sealed_cpu_payload_cannot_claim_native_frame_memory() {
+    let harness = capturing_harness(1);
+    let stream = harness.source.active_stream.expect("active stream");
+    assert!(matches!(
+        ScreenFrame::new(
+            ScreenFrameEnvelope {
+                stream,
+                sequence: 1,
+                timestamp: FrameTimestamp::new(0, 1).expect("timestamp"),
+                spec: VideoFrameSpec {
+                    memory: FrameMemory::CoreVideo,
+                    ..output_spec()
+                },
+                retained_bytes: 100,
+                cursor: None,
+            },
+            vec![0; 100].into_boxed_slice(),
+        ),
+        Err(ScreenCaptureError::FramePayloadMemoryMismatch)
+    ));
+}
+
+#[test]
+fn pump_peeks_actual_duration_and_leaves_an_over_time_frame_upstream() {
+    let spec = output_spec();
+    let frame_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+    let mut harness = ready_harness_with(
+        cursor_policy(CursorCaptureMode::EmbeddedInFrame, false, false),
+        queue_policy(
+            8,
+            frame_bytes * 8,
+            1_000_000_000,
+            CaptureQueueOverflow::DropOldest,
+        ),
+        TargetRecoveryPolicy::FailClosed,
+        ProtectedContentPolicy::SuspendUntilClear,
+        1,
+    );
+    start_and_ack(&mut harness);
+    let plan = harness.session.negotiated().ingress();
+    let recording_spec = ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan");
+    let duration_ns = recording_spec.ingress_max_time_ns() + 1;
+    let frame = ScreenFrame::new(
+        ScreenFrameEnvelope {
+            stream: harness.source.active_stream.expect("active stream"),
+            sequence: 1,
+            timestamp: FrameTimestamp::new(0, duration_ns).expect("bounded timestamp"),
+            spec,
+            retained_bytes: frame_bytes,
+            cursor: None,
+        },
+        vec![0; usize::try_from(frame_bytes).expect("frame bytes")].into_boxed_slice(),
+    )
+    .expect("allocation-authenticated frame");
+    harness
+        .ingress
+        .handle_source_event(
+            &mut harness.session,
+            &mut harness.source,
+            ScreenSourceEvent::Frame(frame),
+            0,
+            &CancellationToken::new(),
+        )
+        .expect("queued long-duration frame");
+
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("over-time-upstream.webm");
+    let recording = ScreenRecording::start(&output, recording_spec).expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("exclusive pump");
+    let ScreenPumpOutcome::Drained(report) = pump
+        .drain_available(&mut harness.session, 0, &CancellationToken::new())
+        .expect("capacity observation must not terminalize")
+    else {
+        panic!("active pump must not cancel");
+    };
+    assert_eq!(report.popped_frames, 0);
+    assert_eq!(report.queue.queued_frames, 1);
+    pump.abort().expect("confirmed graph teardown");
+    assert_eq!(harness.ingress.queue_diagnostics().queued_frames, 1);
+    assert!(!output.exists());
+}
+
+#[test]
+fn terminal_graph_failure_retires_capture_and_preserves_exact_stop() {
+    let mut harness = capturing_harness(1);
+    let invalid_for_recording = harness.source.frame(1, 0, 100, None);
+    harness
+        .ingress
+        .handle_source_event(
+            &mut harness.session,
+            &mut harness.source,
+            ScreenSourceEvent::Frame(invalid_for_recording),
+            0,
+            &CancellationToken::new(),
+        )
+        .expect("capture queue accepts its exact allocation");
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("terminal-no-artifact.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("exclusive pump");
+
+    let error = pump
+        .drain_available(&mut harness.session, 0, &CancellationToken::new())
+        .expect_err("invalid recording frame must terminalize");
+    let ScreenPumpError::Terminal(mut failure) = error else {
+        panic!("terminal failure must retain retirement evidence");
+    };
+    assert!(matches!(
+        *failure.operation,
+        ScreenRecordingError::InvalidFrame
+    ));
+    assert!(matches!(
+        failure.teardown,
+        ScreenPumpTeardownStatus::Confirmed
+    ));
+    assert_eq!(
+        failure.transition.transition.to,
+        ScreenCapturePhase::Cancelled
+    );
+    assert_eq!(
+        failure
+            .transition
+            .drain
+            .expect("terminal queue drain")
+            .queue
+            .frames,
+        1
+    );
+    assert!(matches!(
+        failure.transition.transition.action.source_command(),
+        ScreenSourceCommand::Stop { .. }
+    ));
+    let acknowledgement = execute(
+        &harness.session,
+        &mut failure.transition.transition.action,
+        &mut harness.source,
+    )
+    .expect("terminal native Stop")
+    .expect("terminal Stop acknowledgement");
+    pump.complete_abort_operation(&mut harness.session, acknowledgement)
+        .expect("terminal Stop completion");
+    assert_eq!(harness.session.phase(), ScreenCapturePhase::Cancelled);
+    drop(pump);
+    assert_eq!(harness.ingress.queue_diagnostics().queued_frames, 0);
+    assert!(!output.exists());
+}
+
+#[test]
+fn failed_graceful_stop_while_suspended_returns_retryable_abort_authority() {
+    let mut harness = capturing_harness(1);
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("suspended-stop-abort.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("exclusive pump");
+    let mut stop = pump
+        .request_graceful_stop(&mut harness.session)
+        .expect("graceful Stop request");
+
+    harness
+        .source
+        .queue_event(ScreenSourceEvent::ProtectedContentDetected(control_stamp(
+            source_instance(1),
+            3,
+        )));
+    let poll_cancellation = CancellationToken::new();
+    let budget = ScreenOperationBudget::new(&poll_cancellation, Duration::from_secs(1))
+        .expect("poll budget");
+    assert!(matches!(
+        pump.poll_source(
+            &mut harness.session,
+            &mut harness.source,
+            &budget,
+            0,
+            &CancellationToken::new(),
+        )
+        .expect("protected-content race"),
+        Some(ScreenIngressOutcome::Session(_))
+    ));
+    assert_eq!(
+        harness.session.phase(),
+        ScreenCapturePhase::Suspended(ScreenSuspensionReason::ProtectedContent)
+    );
+
+    harness.source.fail_next_operation();
+    let failure = match execute(&harness.session, stop.action_mut(), &mut harness.source) {
+        Err(ScreenOperationExecutionError::Source(failure)) => failure,
+        other => panic!("expected suspended Stop failure, got {other:?}"),
+    };
+    let mut abort = match pump
+        .retry_graceful_stop(&mut harness.session, stop, failure)
+        .expect("lineage-aware retry")
+    {
+        ScreenGracefulStopRetryOutcome::AbortOnly(abort) => abort,
+        ScreenGracefulStopRetryOutcome::Retrying(_) => {
+            panic!("suspension epoch must invalidate publication")
+        }
+    };
+    let first_retry = abort.transition().transition.action.source_command();
+    harness.source.fail_next_operation();
+    let failure = match execute(&harness.session, abort.action_mut(), &mut harness.source) {
+        Err(ScreenOperationExecutionError::Source(failure)) => failure,
+        other => panic!("expected abort-only Stop failure, got {other:?}"),
+    };
+    let (foreign_failure, foreign_acknowledgement) = foreign_stop_failure_and_ack(2);
+    let error = pump
+        .retry_graceful_abort(&mut harness.session, abort, foreign_failure)
+        .expect_err("foreign failure must not consume abort authority");
+    let ScreenPumpError::GracefulAbortProof(error) = error else {
+        panic!("wrong failure must return a typed abort-proof rejection");
+    };
+    let (mut abort, cause) = (*error)
+        .into_rejected()
+        .expect("pre-mutation rejection returns abort proof");
+    assert_eq!(cause, ScreenCaptureError::StaleSourceFailure);
+    abort = pump
+        .retry_graceful_abort(&mut harness.session, abort, failure)
+        .expect("returned abort proof accepts exact failure");
+    assert_ne!(
+        abort.transition().transition.action.source_command(),
+        first_retry
+    );
+    let acknowledgement = execute(&harness.session, abort.action_mut(), &mut harness.source)
+        .expect("abort-only Stop execution")
+        .expect("abort-only Stop acknowledgement");
+    let error = pump
+        .complete_graceful_abort(&mut harness.session, abort, foreign_acknowledgement)
+        .expect_err("foreign acknowledgement must not consume abort authority");
+    let ScreenPumpError::GracefulAbortProof(error) = error else {
+        panic!("wrong acknowledgement must return a typed abort-proof rejection");
+    };
+    let (abort, cause) = (*error)
+        .into_rejected()
+        .expect("pre-mutation rejection returns abort proof");
+    assert_eq!(cause, ScreenCaptureError::MismatchedOperationAck);
+    let completion = pump
+        .complete_graceful_abort(&mut harness.session, abort, acknowledgement)
+        .expect("returned abort proof accepts exact acknowledgement");
+    assert!(completion.transition().is_some());
+    assert_eq!(
+        harness.session.phase(),
+        ScreenCapturePhase::Suspended(ScreenSuspensionReason::ProtectedContent)
+    );
+    drop(pump);
+    assert!(!output.exists());
+}
+
+#[test]
+fn suspend_clear_then_old_stop_ack_is_consumed_without_publication() {
+    let mut harness = capturing_harness(1);
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("old-stop-no-publish.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("exclusive pump");
+    let mut stop = pump
+        .request_graceful_stop(&mut harness.session)
+        .expect("graceful Stop request");
+    let old_ack = execute(&harness.session, stop.action_mut(), &mut harness.source)
+        .expect("old native Stop execution")
+        .expect("held old Stop acknowledgement");
+
+    let poll_cancellation = CancellationToken::new();
+    let budget = ScreenOperationBudget::new(&poll_cancellation, Duration::from_secs(1))
+        .expect("poll budget");
+    for event in [
+        ScreenSourceEvent::ProtectedContentDetected(control_stamp(source_instance(1), 3)),
+        ScreenSourceEvent::ProtectedContentCleared(control_stamp(source_instance(1), 4)),
+    ] {
+        harness.source.queue_event(event);
+        pump.poll_source(
+            &mut harness.session,
+            &mut harness.source,
+            &budget,
+            0,
+            &CancellationToken::new(),
+        )
+        .expect("lineage-changing source event");
+    }
+
+    let outcome = pump
+        .complete_graceful_stop(&mut harness.session, stop, old_ack)
+        .expect("old acknowledgement is consumed for teardown");
+    let ScreenGracefulStopCompletionOutcome::AbortOnly(completion) = outcome else {
+        panic!("changed seal epoch must not mint publication authority");
+    };
+    assert_eq!(
+        completion
+            .transition()
+            .expect("current Stop ack applied")
+            .transition
+            .to,
+        ScreenCapturePhase::Stopped
+    );
+    assert_eq!(harness.session.phase(), ScreenCapturePhase::Stopped);
+    drop(pump);
+    assert!(!output.exists());
+}
+
+#[test]
+fn pump_constructor_rejects_invalid_plans_and_preused_graphs() {
+    let mut harness = capturing_harness(1);
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let plan = harness.session.negotiated().ingress();
+    let spec = ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan");
+
+    let invalid_output = directory.path().join("invalid-plan.webm");
+    let recording = ScreenRecording::start(&invalid_output, spec).expect("recording graph");
+    let mut invalid = plan;
+    invalid.block = true;
+    assert!(matches!(
+        ScreenRecordingPump::new(recording, invalid, &harness.session, &mut harness.ingress),
+        Err(ScreenPumpError::InvalidPlan)
+    ));
+    assert!(!invalid_output.exists());
+
+    let preused_output = directory.path().join("preused.webm");
+    let mut recording = ScreenRecording::start(&preused_output, spec).expect("recording graph");
+    recording
+        .push_screen_frame(harness.source.recording_frame(1, 0))
+        .expect("preuse recording graph");
+    assert!(matches!(
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress),
+        Err(ScreenPumpError::InvalidPlan)
+    ));
+    assert!(!preused_output.exists());
+
+    let eos_output = directory.path().join("zero-frame-eos.webm");
+    let mut recording = ScreenRecording::start(&eos_output, spec).expect("recording graph");
+    recording.end_of_stream().expect("zero-frame EOS");
+    assert_eq!(recording.submitted_frames(), 0);
+    assert!(matches!(
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress),
+        Err(ScreenPumpError::InvalidPlan)
+    ));
+    assert!(!eos_output.exists());
+
+    let failed_output = directory.path().join("zero-frame-failed.webm");
+    let mut recording = ScreenRecording::start(&failed_output, spec).expect("recording graph");
+    assert!(matches!(
+        recording.push_screen_frame(harness.source.frame(2, 0, 100, None)),
+        Err(ScreenRecordingError::InvalidFrame)
+    ));
+    assert_eq!(recording.submitted_frames(), 0);
+    assert!(matches!(
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress),
+        Err(ScreenPumpError::InvalidPlan)
+    ));
+    assert!(!failed_output.exists());
 }

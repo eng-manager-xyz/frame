@@ -20,7 +20,8 @@ use std::{
 };
 
 use frame_macos_screen_capture::{
-    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError, MacOsScreenCaptureSource,
+    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError, MacOsCaptureStopError,
+    MacOsScreenCaptureSource,
 };
 use frame_media::{
     BgraScreenFrame, CancellationToken, ColorSpace, CursorCaptureMode, DisplayGeometryTransform,
@@ -48,6 +49,7 @@ use crate::{
 
 const TOKEN_RANDOM_BYTES: usize = 16;
 const WORKER_CONTROL_CAPACITY: usize = 1;
+const WORKER_START_CAPACITY: usize = 1;
 const WORKER_IDLE_POLL: Duration = Duration::from_millis(2);
 const MAX_TOKEN_ATTEMPTS: usize = 8;
 const FILE_IO_BUFFER_BYTES: usize = 64 * 1_024;
@@ -697,12 +699,20 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             CaptureLifecycle::Ready(session) => session,
             CaptureLifecycle::Recording(active) => {
                 self.capture = CaptureLifecycle::Recording(active);
-                drop(recording);
+                let _ = abort_unowned_recording(
+                    recording,
+                    NativeDesktopBackendError::Busy,
+                    "capture authority changed before native start",
+                );
                 self.cleanup_recording_output(&output);
                 return Err(NativeDesktopBackendError::Busy);
             }
             CaptureLifecycle::Poisoned => {
-                drop(recording);
+                let _ = abort_unowned_recording(
+                    recording,
+                    NativeDesktopBackendError::Unavailable,
+                    "capture backend became poisoned before native start",
+                );
                 self.cleanup_recording_output(&output);
                 return Err(NativeDesktopBackendError::Unavailable);
             }
@@ -713,28 +723,69 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             observed_topology_generation,
         } = *session;
         if let Err(error) = source.start(capture_config) {
-            self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
-                source,
-                observed_topology_generation,
-            }));
-            drop(recording);
+            let primary_error = map_capture_error(error);
+            let recorder_teardown_confirmed =
+                abort_unowned_recording(recording, primary_error, "native capture start failed");
+            if capture_start_resources_reusable(error, recorder_teardown_confirmed) {
+                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                    source,
+                    observed_topology_generation,
+                }));
+            } else {
+                self.capture = CaptureLifecycle::Poisoned;
+            }
             self.cleanup_recording_output(&output);
-            return Err(map_capture_error(error));
+            return Err(primary_error);
         }
 
         let (control, receiver) = sync_channel(WORKER_CONTROL_CAPACITY);
+        // Keep both native authorities on this thread until worker creation is
+        // confirmed. A failed startup send returns the tuple for explicit
+        // teardown instead of hiding graph failure in Drop.
+        let (worker_start, worker_start_receiver) = sync_channel(WORKER_START_CAPACITY);
         let worker = thread::Builder::new()
             .name("frame-macos-screen-recorder".into())
-            .spawn(move || run_capture_worker(source, recording, receiver, diagnostic_baseline));
+            .spawn(move || {
+                let Ok((source, recording, diagnostic_baseline)) = worker_start_receiver.recv()
+                else {
+                    return WorkerCompletion {
+                        outcome: WorkerOutcome::Failed {
+                            error: NativeDesktopBackendError::Internal,
+                            teardown_confirmed: false,
+                        },
+                    };
+                };
+                run_capture_worker(source, recording, receiver, diagnostic_baseline)
+            });
         let worker = match worker {
             Ok(worker) => worker,
             Err(_) => {
+                let _ = teardown_unowned_started_recording(
+                    &mut source,
+                    recording,
+                    NativeDesktopBackendError::Internal,
+                    "native recording worker spawn failed",
+                );
                 let _ = self.advance_catalog_generation();
                 self.capture = CaptureLifecycle::Poisoned;
                 self.cleanup_recording_output(&output);
                 return Err(NativeDesktopBackendError::Internal);
             }
         };
+        if let Err(error) = worker_start.send((source, recording, diagnostic_baseline)) {
+            let (mut source, recording, _) = error.0;
+            let _ = worker.join();
+            let _ = teardown_unowned_started_recording(
+                &mut source,
+                recording,
+                NativeDesktopBackendError::Internal,
+                "native recording worker startup handoff failed",
+            );
+            let _ = self.advance_catalog_generation();
+            self.capture = CaptureLifecycle::Poisoned;
+            self.cleanup_recording_output(&output);
+            return Err(NativeDesktopBackendError::Internal);
+        }
         self.capture = CaptureLifecycle::Recording(ActiveRecording {
             token: recording_token.clone(),
             control,
@@ -788,14 +839,10 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         };
         self.cleanup_recording_output(&output);
         self.artifact = None;
-        let backend_ready = self.retire_session(teardown_confirmed);
+        let _ = self.retire_session(teardown_confirmed);
         Ok(Some(NativeRecordingTerminalFailure {
             recording_token: token,
-            error: if backend_ready {
-                error
-            } else {
-                NativeDesktopBackendError::Unavailable
-            },
+            error,
             teardown_confirmed,
         }))
     }
@@ -807,7 +854,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         let (recording_token, output, completion) =
             self.take_worker(&request.recording_token, WorkerControl::Stop)?;
         let teardown_confirmed = completion.outcome.teardown_confirmed();
-        let mut outcome = match completion.outcome {
+        let outcome = match completion.outcome {
             WorkerOutcome::Finished(artifact) => {
                 let sealed = self
                     .publish_recording_artifact(&output, &artifact)
@@ -844,10 +891,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                 })
             }
         };
-        let backend_ready = self.retire_session(teardown_confirmed);
-        if !backend_ready && let NativeRecordingStopOutcome::Failed(failure) = &mut outcome {
-            failure.error = NativeDesktopBackendError::Unavailable;
-        }
+        let _ = self.retire_session(teardown_confirmed);
         Ok(outcome)
     }
 
@@ -859,7 +903,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             self.take_worker(&request.recording_token, WorkerControl::Cancel)?;
         let teardown_confirmed = completion.outcome.teardown_confirmed();
         self.cleanup_recording_output(&output);
-        let mut outcome = match completion.outcome {
+        let outcome = match completion.outcome {
             WorkerOutcome::Cancelled => NativeRecordingCancelOutcome::Cancelled { recording_token },
             WorkerOutcome::Finished(_) => {
                 NativeRecordingCancelOutcome::Failed(NativeRecordingTerminalFailure {
@@ -877,10 +921,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                 teardown_confirmed,
             }),
         };
-        let backend_ready = self.retire_session(teardown_confirmed);
-        if !backend_ready && let NativeRecordingCancelOutcome::Failed(failure) = &mut outcome {
-            failure.error = NativeDesktopBackendError::Unavailable;
-        }
+        let _ = self.retire_session(teardown_confirmed);
         self.artifact = None;
         Ok(outcome)
     }
@@ -1074,34 +1115,27 @@ fn finish_worker_recording(
         Ok(tail) => tail,
         Err(error) => {
             eprintln!("Frame native capture worker could not stop ScreenCaptureKit: {error}");
-            return WorkerOutcome::Failed {
-                error: map_capture_error(error),
-                teardown_confirmed: false,
-            };
+            let (error, capture_teardown_confirmed) = map_capture_stop_error(error);
+            return fail_worker_after_capture_stop(recording, error, capture_teardown_confirmed);
         }
     };
     for frame in tail {
         if let Err(error) = push_capture_frame(&mut recording, frame) {
             eprintln!("Frame native capture worker rejected a trailing capture frame: {error}");
-            return WorkerOutcome::Failed {
-                error: map_recording_error(error),
-                teardown_confirmed: true,
-            };
+            return fail_worker_after_capture_stop(recording, map_recording_error(error), true);
         }
     }
     if diagnostics_failed(diagnostic_baseline, source.diagnostics()) {
         eprintln!("Frame native capture worker observed terminal capture diagnostics");
-        return WorkerOutcome::Failed {
-            error: NativeDesktopBackendError::Internal,
-            teardown_confirmed: true,
-        };
+        return fail_worker_after_capture_stop(
+            recording,
+            NativeDesktopBackendError::Internal,
+            true,
+        );
     }
     if let Err(error) = recording.end_of_stream() {
         eprintln!("Frame native capture worker could not send recorder EOS: {error}");
-        return WorkerOutcome::Failed {
-            error: map_recording_error(error),
-            teardown_confirmed: true,
-        };
+        return fail_worker_after_capture_stop(recording, map_recording_error(error), true);
     }
     match recording.finish(&CancellationToken::new()) {
         Ok(artifact) => WorkerOutcome::Finished(artifact),
@@ -1109,12 +1143,39 @@ fn finish_worker_recording(
             eprintln!(
                 "Frame native capture worker could not finalize and verify the WebM recording: {error}"
             );
+            let teardown_confirmed = recording_finish_teardown_confirmed(&error);
             WorkerOutcome::Failed {
                 error: map_recording_error(error),
-                teardown_confirmed: true,
+                teardown_confirmed,
             }
         }
     }
+}
+
+fn fail_worker_after_capture_stop(
+    recording: ScreenRecording,
+    primary_error: NativeDesktopBackendError,
+    capture_teardown_confirmed: bool,
+) -> WorkerOutcome {
+    let recording_teardown_confirmed = match recording.abort() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("Frame native capture worker could not abort the recorder graph: {error}");
+            false
+        }
+    };
+    WorkerOutcome::Failed {
+        error: primary_error,
+        teardown_confirmed: capture_teardown_confirmed && recording_teardown_confirmed,
+    }
+}
+
+const fn recording_finish_teardown_confirmed(error: &ScreenRecordingError) -> bool {
+    !matches!(
+        error,
+        ScreenRecordingError::TeardownUnconfirmed(_)
+            | ScreenRecordingError::OperationAndTeardown { .. }
+    )
 }
 
 fn push_capture_frame(
@@ -1133,11 +1194,14 @@ fn cancel_worker_recording(
     recording: ScreenRecording,
     diagnostic_baseline: MacOsCaptureDiagnostics,
 ) -> WorkerOutcome {
-    let stopped = source.stop();
-    drop(recording);
+    let stopped = source.stop_and_drain_frames().map(drop);
+    let recording_stopped = recording.abort();
     if let Err(error) = stopped {
+        return capture_stop_failure_outcome(error, recording_stopped.is_ok());
+    }
+    if let Err(error) = recording_stopped {
         return WorkerOutcome::Failed {
-            error: map_capture_error(error),
+            error: map_recording_error(error),
             teardown_confirmed: false,
         };
     }
@@ -1157,23 +1221,14 @@ fn fail_worker_recording(
     diagnostic_baseline: MacOsCaptureDiagnostics,
     primary_error: NativeDesktopBackendError,
 ) -> WorkerOutcome {
-    let stopped = source.stop();
-    drop(recording);
-    if let Err(error) = stopped {
-        return WorkerOutcome::Failed {
-            error: map_capture_error(error),
-            teardown_confirmed: false,
-        };
+    let stopped = source.stop_and_drain_frames().map(drop);
+    let recording_stopped = recording.abort();
+    if let Err(error) = diagnostic_delta(diagnostic_baseline, source.diagnostics()) {
+        eprintln!(
+            "Frame native capture worker diagnostics failed while preserving primary error {primary_error}: {error}"
+        );
     }
-    let error = if diagnostic_delta(diagnostic_baseline, source.diagnostics()).is_err() {
-        NativeDesktopBackendError::Internal
-    } else {
-        primary_error
-    };
-    WorkerOutcome::Failed {
-        error,
-        teardown_confirmed: true,
-    }
+    failed_worker_teardown_outcome(primary_error, stopped, recording_stopped)
 }
 
 fn diagnostic_delta(
@@ -1528,6 +1583,106 @@ fn map_capture_error(error: MacOsCaptureError) -> NativeDesktopBackendError {
     }
 }
 
+const fn capture_source_reusable_after_start_error(error: MacOsCaptureError) -> bool {
+    !matches!(
+        error,
+        MacOsCaptureError::CaptureStartTeardownUnconfirmed
+            | MacOsCaptureError::CaptureTeardownUnconfirmed
+    )
+}
+
+const fn capture_start_resources_reusable(
+    capture_error: MacOsCaptureError,
+    recorder_teardown_confirmed: bool,
+) -> bool {
+    capture_source_reusable_after_start_error(capture_error) && recorder_teardown_confirmed
+}
+
+fn abort_unowned_recording(
+    recording: ScreenRecording,
+    primary_error: NativeDesktopBackendError,
+    context: &str,
+) -> bool {
+    match recording.abort() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "Frame recorder teardown failed after {context} while preserving primary error {primary_error}: {error}"
+            );
+            false
+        }
+    }
+}
+
+fn teardown_unowned_started_recording(
+    source: &mut MacOsScreenCaptureSource,
+    recording: ScreenRecording,
+    primary_error: NativeDesktopBackendError,
+    context: &str,
+) -> bool {
+    let capture_teardown_confirmed = match source.stop_and_drain_frames() {
+        Ok(_) => true,
+        Err(error) => {
+            let teardown_confirmed = error.capture_teardown_confirmed();
+            eprintln!(
+                "Frame capture teardown failed after {context} while preserving primary error {primary_error}: {error}"
+            );
+            teardown_confirmed
+        }
+    };
+    let recorder_teardown_confirmed = abort_unowned_recording(recording, primary_error, context);
+    capture_teardown_confirmed && recorder_teardown_confirmed
+}
+
+fn map_capture_stop_error(error: MacOsCaptureStopError) -> (NativeDesktopBackendError, bool) {
+    let teardown_confirmed = error.capture_teardown_confirmed();
+    (
+        map_capture_error(error.into_capture_error()),
+        teardown_confirmed,
+    )
+}
+
+fn failed_worker_teardown_outcome(
+    primary_error: NativeDesktopBackendError,
+    capture_stopped: Result<(), MacOsCaptureStopError>,
+    recording_stopped: Result<(), ScreenRecordingError>,
+) -> WorkerOutcome {
+    let capture_teardown_confirmed = match capture_stopped {
+        Ok(()) => true,
+        Err(error) => {
+            let teardown_confirmed = error.capture_teardown_confirmed();
+            eprintln!(
+                "Frame native capture teardown failed while preserving primary error {primary_error}: {error}"
+            );
+            teardown_confirmed
+        }
+    };
+    let recording_teardown_confirmed = match recording_stopped {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "Frame recorder teardown failed while preserving primary error {primary_error}: {error}"
+            );
+            false
+        }
+    };
+    WorkerOutcome::Failed {
+        error: primary_error,
+        teardown_confirmed: capture_teardown_confirmed && recording_teardown_confirmed,
+    }
+}
+
+fn capture_stop_failure_outcome(
+    error: MacOsCaptureStopError,
+    recording_teardown_confirmed: bool,
+) -> WorkerOutcome {
+    let (error, capture_teardown_confirmed) = map_capture_stop_error(error);
+    WorkerOutcome::Failed {
+        error,
+        teardown_confirmed: capture_teardown_confirmed && recording_teardown_confirmed,
+    }
+}
+
 fn map_recording_error(error: ScreenRecordingError) -> NativeDesktopBackendError {
     match error {
         ScreenRecordingError::Cancelled => NativeDesktopBackendError::Cancelled,
@@ -1547,12 +1702,15 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::symlink;
+    use std::time::Instant;
 
     use crate::{PathPolicy, RootAccess};
 
     use super::*;
 
     const EXPORT_FIXTURE_BYTES: &[u8] = b"verified editable WebM fixture";
+    const WORKER_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+    const WORKER_COMPLETION_POLL: Duration = Duration::from_millis(1);
 
     fn sha256_bytes(bytes: &[u8]) -> String {
         let mut digest = Sha256Context::new(&SHA256);
@@ -1560,7 +1718,193 @@ mod tests {
         encode_hex(digest.finish().as_ref())
     }
 
+    fn wait_for_terminal_failure(
+        backend: &mut MacOsNativeDesktopBackend,
+        request: &NativeRecordingControlRequest,
+        context: &str,
+    ) -> NativeRecordingTerminalFailure {
+        let deadline = Instant::now()
+            .checked_add(WORKER_COMPLETION_TIMEOUT)
+            .expect("bounded test deadline");
+        loop {
+            if let Some(failure) = backend
+                .poll_recording_terminal_failure(request)
+                .expect(context)
+            {
+                return failure;
+            }
+            let now = Instant::now();
+            assert!(now < deadline, "{context} timed out");
+            thread::park_timeout(
+                WORKER_COMPLETION_POLL.min(deadline.saturating_duration_since(now)),
+            );
+        }
+    }
+
     fn assert_send<T: Send>() {}
+
+    #[test]
+    fn finish_error_classification_preserves_teardown_authority() {
+        let teardown_only =
+            ScreenRecordingError::TeardownUnconfirmed(Box::new(ScreenRecordingError::Pipeline));
+        let operation_and_teardown = ScreenRecordingError::OperationAndTeardown {
+            operation: Box::new(ScreenRecordingError::Timeout),
+            teardown: Box::new(ScreenRecordingError::Pipeline),
+        };
+
+        assert!(!recording_finish_teardown_confirmed(&teardown_only));
+        assert!(!recording_finish_teardown_confirmed(
+            &operation_and_teardown,
+        ));
+        assert!(recording_finish_teardown_confirmed(
+            &ScreenRecordingError::InvalidOutput,
+        ));
+    }
+
+    #[test]
+    fn capture_stop_error_classification_preserves_full_teardown_authority() {
+        let native = capture_stop_failure_outcome(
+            MacOsCaptureStopError::NativeStopUnconfirmed(MacOsCaptureError::CaptureStopFailed),
+            true,
+        );
+        let tail_without_recorder = capture_stop_failure_outcome(
+            MacOsCaptureStopError::TailProcessingFailed(MacOsCaptureError::InvalidSampleBuffer),
+            false,
+        );
+        let callbacks_with_recorder = capture_stop_failure_outcome(
+            MacOsCaptureStopError::CallbackQuiescenceUnconfirmed(
+                MacOsCaptureError::OutputHandlerRemovalFailed,
+            ),
+            true,
+        );
+        let capture_with_recorder = capture_stop_failure_outcome(
+            MacOsCaptureStopError::CaptureFailedAfterTeardown(
+                MacOsCaptureError::UnexpectedStreamStop,
+            ),
+            true,
+        );
+        let tail_with_recorder = capture_stop_failure_outcome(
+            MacOsCaptureStopError::TailProcessingFailed(MacOsCaptureError::InvalidSampleBuffer),
+            true,
+        );
+
+        for outcome in [native, callbacks_with_recorder, tail_without_recorder] {
+            assert!(matches!(
+                outcome,
+                WorkerOutcome::Failed {
+                    error: NativeDesktopBackendError::Internal,
+                    teardown_confirmed: false,
+                }
+            ));
+        }
+        assert!(matches!(
+            capture_with_recorder,
+            WorkerOutcome::Failed {
+                error: NativeDesktopBackendError::Internal,
+                teardown_confirmed: true,
+            }
+        ));
+        assert!(matches!(
+            tail_with_recorder,
+            WorkerOutcome::Failed {
+                error: NativeDesktopBackendError::Internal,
+                teardown_confirmed: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn capture_start_reuse_requires_both_capture_and_recorder_teardown() {
+        assert!(!capture_source_reusable_after_start_error(
+            MacOsCaptureError::CaptureStartTeardownUnconfirmed,
+        ));
+        assert!(!capture_source_reusable_after_start_error(
+            MacOsCaptureError::CaptureTeardownUnconfirmed,
+        ));
+        assert!(capture_source_reusable_after_start_error(
+            MacOsCaptureError::PermissionDenied,
+        ));
+        assert!(capture_start_resources_reusable(
+            MacOsCaptureError::PermissionDenied,
+            true,
+        ));
+        assert!(!capture_start_resources_reusable(
+            MacOsCaptureError::PermissionDenied,
+            false,
+        ));
+        assert!(!capture_start_resources_reusable(
+            MacOsCaptureError::CaptureStartTeardownUnconfirmed,
+            true,
+        ));
+    }
+
+    #[test]
+    fn worker_failure_preserves_primary_error_across_teardown_matrix() {
+        let primary_error = NativeDesktopBackendError::TargetUnavailable;
+        let outcomes = [
+            failed_worker_teardown_outcome(primary_error, Ok(()), Ok(())),
+            failed_worker_teardown_outcome(
+                primary_error,
+                Err(MacOsCaptureStopError::NativeStopUnconfirmed(
+                    MacOsCaptureError::CaptureStopFailed,
+                )),
+                Ok(()),
+            ),
+            failed_worker_teardown_outcome(
+                primary_error,
+                Err(MacOsCaptureStopError::CallbackQuiescenceUnconfirmed(
+                    MacOsCaptureError::OutputHandlerRemovalFailed,
+                )),
+                Ok(()),
+            ),
+            failed_worker_teardown_outcome(
+                primary_error,
+                Err(MacOsCaptureStopError::TailProcessingFailed(
+                    MacOsCaptureError::InvalidSampleBuffer,
+                )),
+                Ok(()),
+            ),
+            failed_worker_teardown_outcome(
+                primary_error,
+                Err(MacOsCaptureStopError::CaptureFailedAfterTeardown(
+                    MacOsCaptureError::UnexpectedStreamStop,
+                )),
+                Ok(()),
+            ),
+            failed_worker_teardown_outcome(
+                primary_error,
+                Ok(()),
+                Err(ScreenRecordingError::Pipeline),
+            ),
+            failed_worker_teardown_outcome(
+                primary_error,
+                Err(MacOsCaptureStopError::TailProcessingFailed(
+                    MacOsCaptureError::InvalidSampleBuffer,
+                )),
+                Err(ScreenRecordingError::Pipeline),
+            ),
+            failed_worker_teardown_outcome(
+                primary_error,
+                Err(MacOsCaptureStopError::NativeStopUnconfirmed(
+                    MacOsCaptureError::CaptureStopFailed,
+                )),
+                Err(ScreenRecordingError::Pipeline),
+            ),
+        ];
+        let expected_teardown = [true, false, false, true, true, false, false, false];
+
+        for (outcome, expected_teardown) in outcomes.into_iter().zip(expected_teardown) {
+            let WorkerOutcome::Failed {
+                error,
+                teardown_confirmed,
+            } = outcome
+            else {
+                panic!("worker failure teardown must remain failed");
+            };
+            assert_eq!(error, primary_error);
+            assert_eq!(teardown_confirmed, expected_teardown);
+        }
+    }
 
     fn test_rooted_directory() -> RootedDir {
         RootedDir::bind("/private/tmp").expect("test root should bind without symlinks")
@@ -1594,6 +1938,32 @@ mod tests {
             final_relative,
             identity,
         }
+    }
+
+    fn install_failed_worker(
+        backend: &mut MacOsNativeDesktopBackend,
+        label: &str,
+        error: NativeDesktopBackendError,
+    ) -> NativeRecordingControlRequest {
+        let output = create_pending_output(backend, label, b"unconfirmed worker output");
+        let recording_token = format!("recording-{label}");
+        let (control, receiver) = sync_channel(WORKER_CONTROL_CAPACITY);
+        let worker = thread::spawn(move || {
+            let _ = receiver.recv();
+            WorkerCompletion {
+                outcome: WorkerOutcome::Failed {
+                    error,
+                    teardown_confirmed: false,
+                },
+            }
+        });
+        backend.capture = CaptureLifecycle::Recording(ActiveRecording {
+            token: recording_token.clone(),
+            control,
+            worker,
+            output,
+        });
+        NativeRecordingControlRequest { recording_token }
     }
 
     struct ExportFixture {
@@ -1946,17 +2316,8 @@ mod tests {
             .try_send(WorkerControl::Cancel)
             .expect("release worker fixture");
 
-        let failure = (0..1_000).find_map(|_| {
-            let result = fixture
-                .backend
-                .poll_recording_terminal_failure(&request)
-                .expect("bounded worker poll");
-            if result.is_none() {
-                thread::yield_now();
-            }
-            result
-        });
-        let failure = failure.expect("terminal worker becomes observable");
+        let failure =
+            wait_for_terminal_failure(&mut fixture.backend, &request, "bounded worker poll");
         assert_eq!(failure.recording_token, "recording-poll-token");
         assert_eq!(failure.error, NativeDesktopBackendError::Filesystem);
         assert!(failure.teardown_confirmed);
@@ -1964,6 +2325,68 @@ mod tests {
         assert!(matches!(
             fixture.backend.capture,
             CaptureLifecycle::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn unconfirmed_retirement_preserves_primary_errors_across_terminal_controls() {
+        let mut polled = ExportFixture::new("worker-poll-unconfirmed");
+        let request = install_failed_worker(
+            &mut polled.backend,
+            "poll-unconfirmed",
+            NativeDesktopBackendError::Filesystem,
+        );
+        let CaptureLifecycle::Recording(active) = &polled.backend.capture else {
+            panic!("poll fixture must own the active worker");
+        };
+        active
+            .control
+            .try_send(WorkerControl::Cancel)
+            .expect("release poll worker fixture");
+        let failure =
+            wait_for_terminal_failure(&mut polled.backend, &request, "poll failed worker");
+        assert_eq!(failure.error, NativeDesktopBackendError::Filesystem);
+        assert!(!failure.teardown_confirmed);
+        assert!(matches!(polled.backend.capture, CaptureLifecycle::Poisoned));
+
+        let mut stopped = ExportFixture::new("worker-stop-unconfirmed");
+        let request = install_failed_worker(
+            &mut stopped.backend,
+            "stop-unconfirmed",
+            NativeDesktopBackendError::TargetUnavailable,
+        );
+        let outcome = stopped
+            .backend
+            .stop_recording(&request)
+            .expect("stop failed worker");
+        let NativeRecordingStopOutcome::Failed(failure) = outcome else {
+            panic!("unconfirmed worker stop must fail");
+        };
+        assert_eq!(failure.error, NativeDesktopBackendError::TargetUnavailable);
+        assert!(!failure.teardown_confirmed);
+        assert!(matches!(
+            stopped.backend.capture,
+            CaptureLifecycle::Poisoned
+        ));
+
+        let mut cancelled = ExportFixture::new("worker-cancel-unconfirmed");
+        let request = install_failed_worker(
+            &mut cancelled.backend,
+            "cancel-unconfirmed",
+            NativeDesktopBackendError::Internal,
+        );
+        let outcome = cancelled
+            .backend
+            .cancel_recording(&request)
+            .expect("cancel failed worker");
+        let NativeRecordingCancelOutcome::Failed(failure) = outcome else {
+            panic!("unconfirmed worker cancellation must fail");
+        };
+        assert_eq!(failure.error, NativeDesktopBackendError::Internal);
+        assert!(!failure.teardown_confirmed);
+        assert!(matches!(
+            cancelled.backend.capture,
+            CaptureLifecycle::Poisoned
         ));
     }
 

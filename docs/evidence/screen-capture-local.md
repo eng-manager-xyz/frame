@@ -14,13 +14,16 @@ acceptance criteria also require window/region behavior, cursor and lifecycle
 parity, protected-content semantics, representative hardware, performance,
 cross-platform coverage, and an issue-04 parity recording.
 
-The provider-neutral tests below still compile a dummy
-`ScreenCaptureSource` using only the exported API. Their simulated frames,
-permission events, geometry, cursor, recovery, copy-budget, and exclusion
-results remain invalid as physical or parity evidence. The production macOS
-desktop does not implement that complete provider-neutral contract: it uses a
-smaller ScreenCaptureKit source to feed the owned GStreamer recorder directly.
-That deliberate composition must not be generalized into issue-24 closure.
+The provider-neutral tests below still compile a dummy `ScreenCaptureSource`
+using only the exported API. Their simulated frames, permission events,
+geometry, cursor, recovery, copy-budget, and exclusion results remain invalid
+as physical or parity evidence. The production macOS desktop does not
+implement that complete provider-neutral contract: it uses a smaller
+ScreenCaptureKit source to feed the owned GStreamer recorder directly. A
+provider-neutral `ScreenRecordingPump` now validates the negotiated appsrc
+plan and drains the bounded capture ingress into that same real graph, but the
+macOS adapter is not yet connected to it. That deliberate boundary must not be
+generalized into issue-24 closure.
 
 The focused contract gates cover:
 
@@ -39,8 +42,23 @@ The focused contract gates cover:
   inspection, exact supported frame-profile tuples without cross-product
   inference, and exact rejection of unsupported cursor, exclusion, recovery,
   protected-content, appsrc, memory, format, size, and rate semantics;
-- a timestamp-preserving, non-blocking appsrc ingress plan with owned native
-  frame leases;
+- a timestamp-preserving, non-blocking, CPU-copy-only appsrc ingress plan with
+  exact owned allocations; sealed exact-allocation frame and cursor payloads
+  checked at construction and queue/cache admission; rejection when a CPU
+  payload claims a native-memory frame type; an exact
+  session/ingress/stream-bound recording pump that exclusively borrows
+  ingress, with the smaller upstream/appsrc iteration limit, pre-pop
+  actual-byte/duration downstream-capacity checks, cumulative submission
+  accounting, and multi-drain backlog coverage; opaque graceful-Stop
+  request/completion proofs that require an empty upstream queue and an
+  unchanged exact seal epoch/transition revision plus native Stop
+  acknowledgement before artifact finalization; rejected pre-mutation
+  Stop/abort correlations that return their exact one-shot proof for the
+  correct result; rejection of zero-frame EOS/failed graphs during pump
+  construction; compile-fail duplicate-pump/completion-reuse proofs; and
+  cancellation, terminal graph failure, suspended Stop retry, and stale
+  old-ack tests proving those paths preserve Stop/teardown evidence and cannot
+  publish a partial segment;
 - a mandatory ingress that alone owns the cursor policy, cursor cache, frame
   queue, active stream, and epoch; exact source/target/session/stream rejection;
   pre-ack and delayed-data rejection; cursor policy enforcement; frame-count,
@@ -114,6 +132,25 @@ facts, not hardware results:
 - worker health is polled once per second while Recording, and the first slice
   fails closed at four hours, 2 GB, or a 512 MB filesystem reserve.
 
+Repository-local pump tests additionally establish that the negotiated
+CPU/BGRA/sRGB plan configures explicit appsrc colorimetry and timing, payload
+ownership transfers into a GStreamer buffer until its final reference is
+released, exact frame/cursor allocation is authenticated before retention,
+one drain is bounded by the negotiated queue frame count, an over-time frame
+remains upstream, sequence loss becomes `DISCONT`, graceful retirement retains
+the graph for EOS and
+verified finish, and cancellation confirms Null while preserving the exact
+native Stop transition. The exclusive pump borrow prevents a competing pop or
+second graph. Opaque publication, retry, and abort proofs retain their actions;
+an epoch race or terminal graph failure can only abort and reports whether
+teardown was confirmed.
+
+The shared source contract still cannot represent ScreenCaptureKit's bounded
+post-stop frame tail, and its exact protected-content-event requirement cannot
+truthfully be advertised from ambiguous `Blank`/`Suspended` statuses. The
+production direct path therefore remains authoritative until those contracts,
+the ticket-gated macOS wrapper, and its runner are completed.
+
 These facts do not prove that ScreenCaptureKit returned a display or frame on a
 real machine, that the permission prompt behaved correctly, that Frame windows
 were absent from recorded pixels, that a written WebM was viewed or decoded in
@@ -123,6 +160,8 @@ supported hardware.
 Reproduce the focused tests and lint gate with:
 
 ```sh
+export GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+
 cargo test --locked -p frame-media --test screen_capture_contract
 cargo test --locked -p frame-media --doc
 cargo clippy --locked -p frame-media --all-targets -- -D warnings
@@ -131,16 +170,12 @@ rustfmt --edition 2024 --check \
   crates/media/src/capture.rs \
   crates/media/src/screen_capture.rs \
   crates/media/tests/screen_capture_contract.rs
-GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
-  scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media --all-targets
+scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media --all-targets
 
 # macOS source and desktop composition checks.
-GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
-  cargo test --locked -p frame-macos-screen-capture --all-targets
-GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
-  cargo test --locked -p frame-media --test screen_recording_contract
-GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
-  cargo test --locked -p frame-desktop-core \
+cargo test --locked -p frame-macos-screen-capture --all-targets
+cargo test --locked -p frame-media --test screen_recording_contract
+cargo test --locked -p frame-desktop-core \
   --features tauri-app,macos-native --all-targets
 
 # Production-mode macOS composition smoke; this does not start capture.
@@ -153,6 +188,12 @@ python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_displa
 The complete media test suite remains the integration gate because this module
 reuses the existing frame timing, cancellation, runtime capability, and video
 format contracts.
+
+The provider-neutral path currently rejects CoreVideo, D3D11, and DMA-BUF
+requests even when a platform capability profile describes them. Native-memory
+zero-copy requires a future safe, bounded lease/accounting contract; the
+present evidence proves only exact CPU allocation ownership after any adapter
+copy.
 
 For a physical local recording and artifact probe, follow
 [`docs/operations/macos-display-recording-local.md`](../operations/macos-display-recording-local.md).
@@ -170,7 +211,7 @@ or Studio contracts.
 | Cursor image/position/click parity and clipping | pending | pending | pending |
 | Frame UI/window exclusion recording | pending | pending | pending |
 | Unplug, close/minimize, hotplug, sleep/wake, protected content | pending | pending | pending |
-| Zero-/bounded-copy buffer lifetime and latency/CPU/GPU/memory measurements | pending | pending | pending |
+| Native-memory zero-copy lifetime and latency/CPU/GPU/memory measurements | pending | pending | pending |
 | Cap-baseline and issue-04 fixture parity | pending | pending | pending |
 
 No pending row in this table may be inferred from a unit test or an

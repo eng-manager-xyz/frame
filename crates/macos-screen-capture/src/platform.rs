@@ -1,12 +1,15 @@
 use std::{
     collections::BTreeMap,
+    mem,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{Receiver, TryRecvError, TrySendError, sync_channel},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
+    time::Duration,
 };
 
+use apple_cf::dispatch_queue::{DispatchQoS, DispatchQueue, dispatch_async_and_wait};
 use core_graphics::{access::ScreenCaptureAccess, display::CGDisplay};
 use frame_media::{
     DisplayGeometryTransform, DpiScale, LogicalRect, PermissionPreflight, PhysicalRect, Rotation,
@@ -18,22 +21,29 @@ use screencapturekit::{
     cm::{CMSampleBuffer, CMSampleBufferExt, CMSampleBufferSCExt, CMTime, SCFrameStatus},
     cv::CVPixelBufferLockFlags,
     prelude::{
-        ErrorHandler, PixelFormat as NativePixelFormat, SCContentFilter, SCShareableContent,
-        SCStream, SCStreamConfiguration, SCStreamOutputType,
+        PixelFormat as NativePixelFormat, SCContentFilter, SCError, SCShareableContent, SCStream,
+        SCStreamConfiguration, SCStreamDelegateTrait, SCStreamOutputType,
     },
 };
 use zeroize::Zeroizing;
 
 use crate::{
     CALLBACK_QUEUE_CAPACITY, MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError,
-    MacOsCaptureFrame, RawMediaTime, copy_bgra_rows,
+    MacOsCaptureFrame, MacOsCaptureStopError, RawMediaTime, copy_bgra_rows,
 };
 
 mod frame_assembly;
+mod native_call;
 
 use frame_assembly::FrameAssembler;
+use native_call::{
+    BoundedNativeCall, NativeCallLaunchError, PendingNativeCall, run_bounded_native_call,
+};
 
 const TARGET_TOKEN_DOMAIN: &[u8] = b"frame/macos-display-token/v1\0";
+const CALLBACK_QUEUE_LABEL: &str = "xyz.eng-manager.frame.screen-capture";
+const DELEGATE_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(1);
+const NATIVE_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEOMETRY_INTEGER_TOLERANCE: f64 = 0.000_001;
 const SRGB_COLOR_SPACE_NAME: &str = "kCGColorSpaceSRGB";
 
@@ -74,11 +84,145 @@ fn increment(counter: &AtomicU64) {
     });
 }
 
+fn deliver_callback_sample<T>(sender: &SyncSender<T>, sample: T, diagnostics: &DiagnosticCounters) {
+    match sender.try_send(sample) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => increment(&diagnostics.dropped_callback_frames),
+        Err(TrySendError::Disconnected(_)) => {
+            increment(&diagnostics.callback_frames_after_stop);
+        }
+    }
+}
+
 struct ActiveCapture {
-    stream: SCStream,
+    stream: Option<SCStream>,
+    _pending_native_call: Option<PendingNativeCall>,
+    callback_queue: DispatchQueue,
+    output_handler_id: Option<usize>,
     receiver: Receiver<CMSampleBuffer>,
+    delegate_dropped: Receiver<()>,
     unexpected_stop: Arc<AtomicBool>,
     frames: FrameAssembler,
+}
+
+struct DetachedCaptureTail {
+    samples: Vec<CMSampleBuffer>,
+    output_handler_registered: bool,
+}
+
+struct CaptureDelegate {
+    unexpected_stop: Arc<AtomicBool>,
+    dropped: SyncSender<()>,
+}
+
+impl SCStreamDelegateTrait for CaptureDelegate {
+    fn did_stop_with_error(&self, _error: SCError) {
+        // The callback owns no session diagnostics. The serial worker records
+        // the event only after observing it, so a failed start cannot mutate a
+        // later session's diagnostic baseline.
+        self.unexpected_stop.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for CaptureDelegate {
+    fn drop(&mut self) {
+        // Capacity one is sufficient because this delegate is dropped once.
+        // A full channel already contains the required proof signal.
+        let _ = self.dropped.try_send(());
+    }
+}
+
+enum NativeCaptureLifecycle<Active> {
+    Ready,
+    Running(Active),
+    StopUnconfirmed {
+        active: Active,
+        error: MacOsCaptureStopError,
+    },
+    NativeOperationUnconfirmed {
+        _pending: PendingNativeCall,
+        error: MacOsCaptureStopError,
+    },
+}
+
+impl<Active> NativeCaptureLifecycle<Active> {
+    fn retain_unconfirmed(self, error: MacOsCaptureStopError) -> Self {
+        match self {
+            Self::Running(active) => Self::StopUnconfirmed { active, error },
+            other => other,
+        }
+    }
+
+    fn take_for_stop(self) -> Result<Option<Active>, (Self, MacOsCaptureStopError)> {
+        match self {
+            Self::Ready => Ok(None),
+            Self::Running(active) => Ok(Some(active)),
+            Self::StopUnconfirmed { active, error } => {
+                let retained = Self::StopUnconfirmed { active, error };
+                Err((retained, error))
+            }
+            Self::NativeOperationUnconfirmed {
+                _pending: pending,
+                error,
+            } => {
+                let retained = Self::NativeOperationUnconfirmed {
+                    _pending: pending,
+                    error,
+                };
+                Err((retained, error))
+            }
+        }
+    }
+}
+
+enum StreamNativeCall<R> {
+    Completed(R),
+    NotStarted(NativeCallLaunchError),
+    Unconfirmed,
+}
+
+const fn map_native_call_launch_error(error: NativeCallLaunchError) -> MacOsCaptureError {
+    match error {
+        NativeCallLaunchError::CapacityUnavailable => {
+            MacOsCaptureError::NativeOperationCapacityUnavailable
+        }
+        NativeCallLaunchError::WorkerUnavailable => {
+            MacOsCaptureError::NativeOperationWorkerUnavailable
+        }
+    }
+}
+
+fn run_stream_native_call<R, F>(active: &mut ActiveCapture, operation: F) -> StreamNativeCall<R>
+where
+    R: Send + 'static,
+    F: FnOnce(&mut SCStream) -> R + Send + 'static,
+{
+    let Some(stream) = active.stream.take() else {
+        return StreamNativeCall::Unconfirmed;
+    };
+    match run_bounded_native_call(stream, NATIVE_CALL_TIMEOUT, move |mut stream| {
+        let result = operation(&mut stream);
+        (stream, result)
+    }) {
+        BoundedNativeCall::Completed {
+            owner: stream,
+            result,
+        } => {
+            active.stream = Some(stream);
+            StreamNativeCall::Completed(result)
+        }
+        BoundedNativeCall::NotStarted {
+            owner: stream,
+            error,
+        } => {
+            active.stream = Some(stream);
+            StreamNativeCall::NotStarted(error)
+        }
+        BoundedNativeCall::Unconfirmed(pending) => {
+            active._pending_native_call = Some(pending);
+            StreamNativeCall::Unconfirmed
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +258,7 @@ pub struct MacOsScreenCaptureSource {
     permission_requested: bool,
     permission_was_granted: bool,
     diagnostics: Arc<DiagnosticCounters>,
-    active: Option<ActiveCapture>,
+    capture: NativeCaptureLifecycle<ActiveCapture>,
 }
 
 impl MacOsScreenCaptureSource {
@@ -134,7 +278,7 @@ impl MacOsScreenCaptureSource {
             permission_requested: false,
             permission_was_granted: false,
             diagnostics: Arc::new(DiagnosticCounters::default()),
-            active: None,
+            capture: NativeCaptureLifecycle::Ready,
         })
     }
 
@@ -173,8 +317,13 @@ impl MacOsScreenCaptureSource {
     /// Core Graphics enumeration is intentionally used here so callers can
     /// present a display catalog before ScreenCaptureKit permission is granted.
     pub fn enumerate_displays(&mut self) -> Result<ScreenTargetSnapshot, MacOsCaptureError> {
-        if self.active.is_some() {
-            return Err(MacOsCaptureError::AlreadyRunning);
+        match &self.capture {
+            NativeCaptureLifecycle::Ready => {}
+            NativeCaptureLifecycle::Running(_) => return Err(MacOsCaptureError::AlreadyRunning),
+            NativeCaptureLifecycle::StopUnconfirmed { .. }
+            | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => {
+                return Err(MacOsCaptureError::CaptureTeardownUnconfirmed);
+            }
         }
         let records = active_display_records()?;
         if self.catalog_records.as_ref() != Some(&records) {
@@ -210,8 +359,13 @@ impl MacOsScreenCaptureSource {
     }
 
     pub fn start(&mut self, config: MacOsCaptureConfig) -> Result<(), MacOsCaptureError> {
-        if self.active.is_some() {
-            return Err(MacOsCaptureError::AlreadyRunning);
+        match &self.capture {
+            NativeCaptureLifecycle::Ready => {}
+            NativeCaptureLifecycle::Running(_) => return Err(MacOsCaptureError::AlreadyRunning),
+            NativeCaptureLifecycle::StopUnconfirmed { .. }
+            | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => {
+                return Err(MacOsCaptureError::CaptureTeardownUnconfirmed);
+            }
         }
         if config.target().source_instance() != self.source_instance {
             return Err(MacOsCaptureError::StaleOrForeignTarget);
@@ -226,8 +380,30 @@ impl MacOsScreenCaptureSource {
         }
         self.permission_was_granted = true;
 
-        let content = SCShareableContent::get()
-            .map_err(|_| MacOsCaptureError::ShareableContentUnavailable)?;
+        let content = match run_bounded_native_call((), NATIVE_CALL_TIMEOUT, |owner| {
+            (owner, SCShareableContent::get().ok())
+        }) {
+            BoundedNativeCall::Completed {
+                result: Some(content),
+                ..
+            } => content,
+            BoundedNativeCall::Completed { result: None, .. } => {
+                return Err(MacOsCaptureError::ShareableContentUnavailable);
+            }
+            BoundedNativeCall::NotStarted { error, .. } => {
+                return Err(map_native_call_launch_error(error));
+            }
+            BoundedNativeCall::Unconfirmed(pending) => {
+                let error = MacOsCaptureStopError::NativeStopUnconfirmed(
+                    MacOsCaptureError::NativeOperationTimedOut,
+                );
+                self.capture = NativeCaptureLifecycle::NativeOperationUnconfirmed {
+                    _pending: pending,
+                    error,
+                };
+                return Err(MacOsCaptureError::CaptureStartTeardownUnconfirmed);
+            }
+        };
         let display = content
             .displays()
             .into_iter()
@@ -263,90 +439,148 @@ impl MacOsScreenCaptureSource {
             );
 
         let (sender, receiver) = sync_channel(CALLBACK_QUEUE_CAPACITY);
+        let (delegate_dropped_sender, delegate_dropped) = sync_channel(1);
         let unexpected_stop = Arc::new(AtomicBool::new(false));
-        let delegate_stop = Arc::clone(&unexpected_stop);
-        let delegate_diagnostics = Arc::clone(&self.diagnostics);
-        let delegate = ErrorHandler::new(move |_error| {
-            delegate_stop.store(true, Ordering::Release);
-            increment(&delegate_diagnostics.unexpected_native_stops);
-        });
-        let mut stream = SCStream::new_with_delegate(&filter, &configuration, delegate);
+        let delegate = CaptureDelegate {
+            unexpected_stop: Arc::clone(&unexpected_stop),
+            dropped: delegate_dropped_sender,
+        };
+        let stream = SCStream::new_with_delegate(&filter, &configuration, delegate);
+        let callback_queue = DispatchQueue::new(CALLBACK_QUEUE_LABEL, DispatchQoS::UserInteractive);
         let callback_diagnostics = Arc::clone(&self.diagnostics);
-        if stream
-            .add_output_handler(
+        let mut active = ActiveCapture {
+            stream: Some(stream),
+            _pending_native_call: None,
+            callback_queue,
+            output_handler_id: None,
+            receiver,
+            delegate_dropped,
+            unexpected_stop,
+            frames: FrameAssembler::new(config.target(), output),
+        };
+        let output_handler_id = active.stream.as_mut().and_then(|stream| {
+            stream.add_output_handler_with_queue(
                 move |sample, output_type| {
                     if output_type != SCStreamOutputType::Screen {
                         increment(&callback_diagnostics.invalid_samples);
                         return;
                     }
-                    match sender.try_send(sample) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_)) => {
-                            increment(&callback_diagnostics.dropped_callback_frames);
-                        }
-                        Err(TrySendError::Disconnected(_)) => {
-                            increment(&callback_diagnostics.callback_frames_after_stop);
-                        }
-                    }
+                    deliver_callback_sample(&sender, sample, &callback_diagnostics);
                 },
                 SCStreamOutputType::Screen,
+                Some(&active.callback_queue),
             )
-            .is_none()
-        {
-            return Err(MacOsCaptureError::OutputHandlerRegistrationFailed);
-        }
-        stream
-            .start_capture()
-            .map_err(|_| MacOsCaptureError::CaptureStartFailed)?;
-        self.active = Some(ActiveCapture {
-            stream,
-            receiver,
-            unexpected_stop,
-            frames: FrameAssembler::new(config.target(), output),
         });
+        let Some(output_handler_id) = output_handler_id else {
+            return self
+                .fail_capture_start(active, MacOsCaptureError::OutputHandlerRegistrationFailed);
+        };
+        active.output_handler_id = Some(output_handler_id);
+        match run_stream_native_call(&mut active, |stream| stream.start_capture().is_ok()) {
+            StreamNativeCall::Completed(true) => {}
+            StreamNativeCall::Completed(false) => {
+                return self.fail_capture_start(active, MacOsCaptureError::CaptureStartFailed);
+            }
+            StreamNativeCall::NotStarted(error) => {
+                return self.fail_capture_start(active, map_native_call_launch_error(error));
+            }
+            StreamNativeCall::Unconfirmed => {
+                let error = MacOsCaptureStopError::NativeStopUnconfirmed(
+                    MacOsCaptureError::NativeOperationTimedOut,
+                );
+                self.capture = NativeCaptureLifecycle::StopUnconfirmed { active, error };
+                return Err(MacOsCaptureError::CaptureStartTeardownUnconfirmed);
+            }
+        }
+        self.capture = NativeCaptureLifecycle::Running(active);
         Ok(())
+    }
+
+    fn fail_capture_start(
+        &mut self,
+        mut active: ActiveCapture,
+        start_error: MacOsCaptureError,
+    ) -> Result<(), MacOsCaptureError> {
+        match detach_capture_bridge(&mut active) {
+            Ok(_) => Err(start_error),
+            Err(teardown_error) => {
+                self.capture = NativeCaptureLifecycle::StopUnconfirmed {
+                    active,
+                    error: MacOsCaptureStopError::CallbackQuiescenceUnconfirmed(teardown_error),
+                };
+                Err(MacOsCaptureError::CaptureStartTeardownUnconfirmed)
+            }
+        }
+    }
+
+    fn retain_unconfirmed_stop(&mut self, error: MacOsCaptureStopError) {
+        let capture = mem::replace(&mut self.capture, NativeCaptureLifecycle::Ready);
+        self.capture = capture.retain_unconfirmed(error);
     }
 
     /// Drain at most the three callback-queued samples and return one frame.
     /// Pixel locking and row copies happen here, never in the native callback.
     pub fn poll_frame(&mut self) -> Result<Option<MacOsCaptureFrame>, MacOsCaptureError> {
-        if self.active.is_none() {
-            return Err(MacOsCaptureError::NotRunning);
+        match &self.capture {
+            NativeCaptureLifecycle::Ready => return Err(MacOsCaptureError::NotRunning),
+            NativeCaptureLifecycle::StopUnconfirmed { .. }
+            | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => {
+                return Err(MacOsCaptureError::CaptureTeardownUnconfirmed);
+            }
+            NativeCaptureLifecycle::Running(_) => {}
         }
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|active| active.unexpected_stop.load(Ordering::Acquire))
-        {
-            self.active.take();
+
+        let unexpected_stop = match &self.capture {
+            NativeCaptureLifecycle::Running(active) => {
+                observe_unexpected_stop(&active.unexpected_stop, &self.diagnostics)
+            }
+            NativeCaptureLifecycle::Ready
+            | NativeCaptureLifecycle::StopUnconfirmed { .. }
+            | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => false,
+        };
+        if unexpected_stop {
+            self.retain_unconfirmed_stop(MacOsCaptureStopError::NativeStopUnconfirmed(
+                MacOsCaptureError::UnexpectedStreamStop,
+            ));
             return Err(MacOsCaptureError::UnexpectedStreamStop);
         }
 
         for _ in 0..CALLBACK_QUEUE_CAPACITY {
-            let sample = match self
-                .active
-                .as_ref()
-                .ok_or(MacOsCaptureError::NotRunning)?
-                .receiver
-                .try_recv()
-            {
+            let received = match &self.capture {
+                NativeCaptureLifecycle::Running(active) => active.receiver.try_recv(),
+                NativeCaptureLifecycle::Ready
+                | NativeCaptureLifecycle::StopUnconfirmed { .. }
+                | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => {
+                    return Err(MacOsCaptureError::CaptureTeardownUnconfirmed);
+                }
+            };
+            let sample = match received {
                 Ok(sample) => sample,
                 Err(TryRecvError::Empty) => return Ok(None),
                 Err(TryRecvError::Disconnected) => {
-                    self.active.take();
+                    self.retain_unconfirmed_stop(MacOsCaptureStopError::NativeStopUnconfirmed(
+                        MacOsCaptureError::CallbackQueueDisconnected,
+                    ));
                     return Err(MacOsCaptureError::CallbackQueueDisconnected);
                 }
             };
-            let processed = process_sample(
-                self.active.as_mut().ok_or(MacOsCaptureError::NotRunning)?,
-                &sample,
-                &self.diagnostics,
-            );
+            let processed = match &mut self.capture {
+                NativeCaptureLifecycle::Running(active) => {
+                    process_sample(active, &sample, &self.diagnostics)
+                }
+                NativeCaptureLifecycle::Ready
+                | NativeCaptureLifecycle::StopUnconfirmed { .. }
+                | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => {
+                    return Err(MacOsCaptureError::CaptureTeardownUnconfirmed);
+                }
+            };
             match processed {
                 Ok(ProcessedSample::Frame(frame)) => return Ok(Some(frame)),
                 Ok(ProcessedSample::Ignored) => continue,
                 Ok(ProcessedSample::Terminal) => {
-                    self.active.take();
+                    self.retain_unconfirmed_stop(MacOsCaptureStopError::NativeStopUnconfirmed(
+                        MacOsCaptureError::UnexpectedStreamStop,
+                    ));
                     return Err(MacOsCaptureError::UnexpectedStreamStop);
                 }
                 Err(error) => {
@@ -365,34 +599,83 @@ impl MacOsScreenCaptureSource {
     /// sending encoder EOS; otherwise the artifact can truncate a static
     /// trailing interval. Calling this repeatedly is safe and returns an empty
     /// tail after the first call.
-    pub fn stop_and_drain_frames(&mut self) -> Result<Vec<MacOsCaptureFrame>, MacOsCaptureError> {
-        let Some(mut active) = self.active.take() else {
-            return Ok(Vec::new());
+    pub fn stop_and_drain_frames(
+        &mut self,
+    ) -> Result<Vec<MacOsCaptureFrame>, MacOsCaptureStopError> {
+        let capture = mem::replace(&mut self.capture, NativeCaptureLifecycle::Ready);
+        let mut active = match capture.take_for_stop() {
+            Ok(None) => return Ok(Vec::new()),
+            Ok(Some(active)) => active,
+            Err((capture, error)) => {
+                self.capture = capture;
+                return Err(error);
+            }
         };
-        if active.unexpected_stop.load(Ordering::Acquire) {
-            return Err(MacOsCaptureError::UnexpectedStreamStop);
+        if observe_unexpected_stop(&active.unexpected_stop, &self.diagnostics) {
+            let error = MacOsCaptureStopError::NativeStopUnconfirmed(
+                MacOsCaptureError::UnexpectedStreamStop,
+            );
+            self.capture = NativeCaptureLifecycle::StopUnconfirmed { active, error };
+            return Err(error);
         }
-        active
-            .stream
-            .stop_capture()
-            .map_err(|_| MacOsCaptureError::CaptureStopFailed)?;
-
-        let mut tail = Vec::with_capacity(CALLBACK_QUEUE_CAPACITY);
-        for _ in 0..CALLBACK_QUEUE_CAPACITY {
-            let sample = match active.receiver.try_recv() {
-                Ok(sample) => sample,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+        match run_stream_native_call(&mut active, |stream| stream.stop_capture().is_ok()) {
+            StreamNativeCall::Completed(true) => {}
+            StreamNativeCall::Completed(false) => {
+                let error = MacOsCaptureStopError::NativeStopUnconfirmed(
+                    MacOsCaptureError::CaptureStopFailed,
+                );
+                self.capture = NativeCaptureLifecycle::StopUnconfirmed { active, error };
+                return Err(error);
+            }
+            StreamNativeCall::NotStarted(launch_error) => {
+                let error = MacOsCaptureStopError::NativeStopUnconfirmed(
+                    map_native_call_launch_error(launch_error),
+                );
+                self.capture = NativeCaptureLifecycle::StopUnconfirmed { active, error };
+                return Err(error);
+            }
+            StreamNativeCall::Unconfirmed => {
+                let error = MacOsCaptureStopError::NativeStopUnconfirmed(
+                    MacOsCaptureError::NativeOperationTimedOut,
+                );
+                self.capture = NativeCaptureLifecycle::StopUnconfirmed { active, error };
+                return Err(error);
+            }
+        }
+        let detached = match detach_capture_bridge(&mut active) {
+            Ok(detached) => detached,
+            Err(error) => {
+                let error = MacOsCaptureStopError::CallbackQuiescenceUnconfirmed(error);
+                self.capture = NativeCaptureLifecycle::StopUnconfirmed { active, error };
+                return Err(error);
+            }
+        };
+        let post_teardown_error =
+            if observe_unexpected_stop(&active.unexpected_stop, &self.diagnostics) {
+                Some(MacOsCaptureError::UnexpectedStreamStop)
+            } else if !detached.output_handler_registered {
+                Some(MacOsCaptureError::OutputHandlerRemovalFailed)
+            } else {
+                None
             };
+        if let Some(error) = post_teardown_error {
+            self.capture = NativeCaptureLifecycle::Ready;
+            return Err(MacOsCaptureStopError::CaptureFailedAfterTeardown(error));
+        }
+        let mut tail = Vec::with_capacity(detached.samples.len());
+        for sample in detached.samples {
             match process_sample(&mut active, &sample, &self.diagnostics) {
                 Ok(ProcessedSample::Frame(frame)) => tail.push(frame),
                 Ok(ProcessedSample::Ignored) => {}
                 Ok(ProcessedSample::Terminal) => break,
                 Err(error) => {
                     increment(&self.diagnostics.invalid_samples);
-                    return Err(error);
+                    self.capture = NativeCaptureLifecycle::Ready;
+                    return Err(MacOsCaptureStopError::TailProcessingFailed(error));
                 }
             }
         }
+        self.capture = NativeCaptureLifecycle::Ready;
         Ok(tail)
     }
 
@@ -400,12 +683,19 @@ impl MacOsScreenCaptureSource {
     ///
     /// Recording finalizers should use [`Self::stop_and_drain_frames`] instead.
     pub fn stop(&mut self) -> Result<(), MacOsCaptureError> {
-        self.stop_and_drain_frames().map(drop)
+        self.stop_and_drain_frames()
+            .map(drop)
+            .map_err(MacOsCaptureStopError::into_capture_error)
     }
 
     #[must_use]
     pub const fn is_running(&self) -> bool {
-        self.active.is_some()
+        match &self.capture {
+            NativeCaptureLifecycle::Ready => false,
+            NativeCaptureLifecycle::Running(_)
+            | NativeCaptureLifecycle::StopUnconfirmed { .. }
+            | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => true,
+        }
     }
 
     #[must_use]
@@ -417,6 +707,67 @@ impl MacOsScreenCaptureSource {
 impl Drop for MacOsScreenCaptureSource {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+fn observe_unexpected_stop(unexpected_stop: &AtomicBool, diagnostics: &DiagnosticCounters) -> bool {
+    let unexpected_stop = unexpected_stop.swap(false, Ordering::AcqRel);
+    if unexpected_stop {
+        increment(&diagnostics.unexpected_native_stops);
+    }
+    unexpected_stop
+}
+
+fn detach_capture_bridge(
+    active: &mut ActiveCapture,
+) -> Result<DetachedCaptureTail, MacOsCaptureError> {
+    // Keep the Rust handler installed while releasing SCStream. The pinned
+    // bridge retains StreamContext for both its output object and every
+    // in-flight callback, so CaptureDelegate::drop cannot signal until a sample
+    // queued after this first fence has run through the handler. The final
+    // fence and disconnected bounded channel independently confirm the tail is
+    // complete before it is processed.
+    dispatch_async_and_wait(&active.callback_queue, || {});
+    let output_handler_registered = active.output_handler_id.take().is_some();
+    let Some(stream) = active.stream.take() else {
+        return Err(MacOsCaptureError::DelegateQuiescenceUnconfirmed);
+    };
+    drop(stream);
+    await_delegate_quiescence(&active.delegate_dropped, DELEGATE_QUIESCENCE_TIMEOUT)?;
+    dispatch_async_and_wait(&active.callback_queue, || {});
+    let samples = drain_quiescent_callback_tail(&active.receiver)?;
+    Ok(DetachedCaptureTail {
+        samples,
+        output_handler_registered,
+    })
+}
+
+fn drain_quiescent_callback_tail<T>(receiver: &Receiver<T>) -> Result<Vec<T>, MacOsCaptureError> {
+    let mut tail = Vec::with_capacity(CALLBACK_QUEUE_CAPACITY);
+    for _ in 0..CALLBACK_QUEUE_CAPACITY {
+        match receiver.try_recv() {
+            Ok(sample) => tail.push(sample),
+            Err(TryRecvError::Disconnected) => return Ok(tail),
+            Err(TryRecvError::Empty) => {
+                return Err(MacOsCaptureError::OutputHandlerRemovalFailed);
+            }
+        }
+    }
+    match receiver.try_recv() {
+        Err(TryRecvError::Disconnected) => Ok(tail),
+        Ok(_) | Err(TryRecvError::Empty) => Err(MacOsCaptureError::OutputHandlerRemovalFailed),
+    }
+}
+
+fn await_delegate_quiescence(
+    delegate_dropped: &Receiver<()>,
+    timeout: Duration,
+) -> Result<(), MacOsCaptureError> {
+    match delegate_dropped.recv_timeout(timeout) {
+        Ok(()) => Ok(()),
+        Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+            Err(MacOsCaptureError::DelegateQuiescenceUnconfirmed)
+        }
     }
 }
 
@@ -661,6 +1012,7 @@ fn raw_media_time(value: CMTime) -> RawMediaTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apple_cf::dispatch_queue::dispatch_async;
 
     #[test]
     fn target_tokens_are_stable_within_one_session_and_change_across_sessions() {
@@ -727,6 +1079,138 @@ mod tests {
         let mut source = MacOsScreenCaptureSource::new(source_id, [8; 32]).expect("adapter");
         assert_eq!(source.stop(), Ok(()));
         assert_eq!(source.stop(), Ok(()));
+    }
+
+    #[test]
+    fn unconfirmed_stop_state_rejects_every_repeated_stop_attempt() {
+        let stop_error =
+            MacOsCaptureStopError::NativeStopUnconfirmed(MacOsCaptureError::CaptureStopFailed);
+        let mut capture = NativeCaptureLifecycle::Running(7_u8).retain_unconfirmed(stop_error);
+
+        for _ in 0..2 {
+            let (retained, observed) = capture
+                .take_for_stop()
+                .expect_err("unconfirmed teardown cannot become an idempotent stop");
+            assert_eq!(observed, stop_error);
+            capture = retained;
+        }
+        let NativeCaptureLifecycle::StopUnconfirmed {
+            active,
+            error: retained,
+        } = capture
+        else {
+            panic!("unconfirmed stop state must retain native authority");
+        };
+        assert_eq!(active, 7);
+        assert_eq!(retained, stop_error);
+    }
+
+    #[test]
+    fn callback_queue_fences_expose_late_delivery_and_diagnostics() {
+        let queue = DispatchQueue::new(
+            "xyz.eng-manager.frame.screen-capture.test",
+            DispatchQoS::UserInteractive,
+        );
+        let diagnostics = Arc::new(DiagnosticCounters::default());
+        let (sender, receiver) = sync_channel(CALLBACK_QUEUE_CAPACITY);
+        let dispatch_sample = |sample| {
+            let sender = sender.clone();
+            let diagnostics = Arc::clone(&diagnostics);
+            dispatch_async(&queue, move || {
+                deliver_callback_sample(&sender, sample, &diagnostics);
+            });
+        };
+
+        dispatch_sample(1_u8);
+        dispatch_async_and_wait(&queue, || {});
+        dispatch_sample(2_u8);
+        dispatch_async_and_wait(&queue, || {});
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), vec![1, 2]);
+
+        drop(receiver);
+        dispatch_sample(3_u8);
+        dispatch_async_and_wait(&queue, || {});
+        let diagnostics = diagnostics.snapshot();
+        assert_eq!(diagnostics.callback_frames_after_stop, 1);
+        assert_eq!(diagnostics.dropped_callback_frames, 0);
+    }
+
+    #[test]
+    fn callback_queued_between_first_fence_and_teardown_is_in_the_tail() {
+        let queue = DispatchQueue::new(
+            "xyz.eng-manager.frame.screen-capture.tail-race-test",
+            DispatchQoS::UserInteractive,
+        );
+        let diagnostics = Arc::new(DiagnosticCounters::default());
+        let (sender, receiver) = sync_channel(CALLBACK_QUEUE_CAPACITY);
+        let dispatch_sample = |sample| {
+            let sender = sender.clone();
+            let diagnostics = Arc::clone(&diagnostics);
+            dispatch_async(&queue, move || {
+                deliver_callback_sample(&sender, sample, &diagnostics);
+            });
+        };
+
+        dispatch_sample(1_u8);
+        dispatch_async_and_wait(&queue, || {});
+        dispatch_sample(2_u8);
+
+        // Releasing the stream can drop the registered sender, but the queued
+        // callback retains its bridge/context authority until it runs.
+        drop(sender);
+        dispatch_async_and_wait(&queue, || {});
+
+        assert_eq!(drain_quiescent_callback_tail(&receiver), Ok(vec![1, 2]));
+        assert_eq!(diagnostics.snapshot().dropped_callback_frames, 0);
+    }
+
+    #[test]
+    fn callback_tail_requires_output_sender_release() {
+        let (sender, receiver) = sync_channel::<u8>(CALLBACK_QUEUE_CAPACITY);
+        assert_eq!(
+            drain_quiescent_callback_tail(&receiver),
+            Err(MacOsCaptureError::OutputHandlerRemovalFailed)
+        );
+        drop(sender);
+        assert_eq!(drain_quiescent_callback_tail(&receiver), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn delegate_drop_proves_quiescence_and_defers_diagnostics_to_the_worker() {
+        let diagnostics = DiagnosticCounters::default();
+        let unexpected_stop = Arc::new(AtomicBool::new(false));
+        let (dropped, delegate_dropped) = sync_channel(1);
+        let delegate = CaptureDelegate {
+            unexpected_stop: Arc::clone(&unexpected_stop),
+            dropped,
+        };
+
+        delegate.did_stop_with_error(SCError::StreamError("test stop".to_owned()));
+        assert!(unexpected_stop.load(Ordering::Acquire));
+        assert_eq!(diagnostics.snapshot().unexpected_native_stops, 0);
+
+        drop(delegate);
+        assert_eq!(
+            await_delegate_quiescence(&delegate_dropped, Duration::ZERO),
+            Ok(())
+        );
+        assert!(observe_unexpected_stop(&unexpected_stop, &diagnostics));
+        assert!(!observe_unexpected_stop(&unexpected_stop, &diagnostics));
+        assert_eq!(diagnostics.snapshot().unexpected_native_stops, 1);
+    }
+
+    #[test]
+    fn delegate_quiescence_wait_fails_closed_at_its_bound() {
+        let (dropped, delegate_dropped) = sync_channel(1);
+        assert_eq!(
+            await_delegate_quiescence(&delegate_dropped, Duration::ZERO),
+            Err(MacOsCaptureError::DelegateQuiescenceUnconfirmed)
+        );
+        drop(dropped);
+        assert_eq!(
+            await_delegate_quiescence(&delegate_dropped, Duration::ZERO),
+            Err(MacOsCaptureError::DelegateQuiescenceUnconfirmed)
+        );
     }
 
     #[test]

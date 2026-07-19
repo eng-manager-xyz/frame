@@ -128,6 +128,124 @@ fn owned_appsrc_graph_records_and_exports_playable_webm() {
 }
 
 #[test]
+fn discontinuity_rebases_rolled_back_pts_to_a_continuous_output_timeline() {
+    const LONG_RUNNING_PTS_NS: u64 = 3 * 60 * 60 * 1_000_000_000;
+
+    let directory = tempfile::tempdir().expect("private temporary directory");
+    let output = directory.path().join("rebased-discontinuity.webm");
+    let mut recording =
+        ScreenRecording::start(&output, recording_spec()).expect("start owned appsrc graph");
+
+    recording
+        .push_frame(
+            BgraScreenFrame::new(
+                1,
+                FrameTimestamp::new(LONG_RUNNING_PTS_NS, FRAME_DURATION_NS)
+                    .expect("long-running timestamp"),
+                synthetic_bgra(0),
+            )
+            .expect("first frame"),
+        )
+        .expect("submit first frame");
+    let status = recording
+        .push_frame(
+            BgraScreenFrame::new(
+                2,
+                FrameTimestamp {
+                    pts_ns: 0,
+                    duration_ns: FRAME_DURATION_NS,
+                    discontinuity: true,
+                },
+                synthetic_bgra(1),
+            )
+            .expect("rolled-back discontinuity frame"),
+        )
+        .expect("discontinuity permits a rebased timestamp");
+    assert_eq!(status.submitted_frames, 2);
+    assert_eq!(recording.submitted_frames(), 2);
+    recording
+        .push_frame(
+            BgraScreenFrame::new(
+                3,
+                FrameTimestamp::new(FRAME_DURATION_NS, FRAME_DURATION_NS)
+                    .expect("next raw segment timestamp"),
+                synthetic_bgra(2),
+            )
+            .expect("post-discontinuity frame"),
+        )
+        .expect("submit post-discontinuity frame");
+
+    recording.end_of_stream().expect("appsrc EOS");
+    let artifact = recording
+        .finish(&CancellationToken::new())
+        .expect("verified continuous recording");
+    assert_eq!(artifact.submitted_frames, 3);
+    assert_eq!(artifact.encoded_frames, 3);
+    assert_eq!(artifact.first_pts_ns, LONG_RUNNING_PTS_NS);
+    assert!(artifact.encoded_duration_ns.abs_diff(3 * FRAME_DURATION_NS) <= 2_000_000);
+}
+
+#[test]
+fn discontinuity_does_not_relax_sequence_order_or_unmarked_pts_rollback() {
+    let directory = tempfile::tempdir().expect("private temporary directory");
+    let output = directory.path().join("unmarked-rollback.webm");
+    let mut recording =
+        ScreenRecording::start(&output, recording_spec()).expect("start owned appsrc graph");
+    recording
+        .push_frame(
+            BgraScreenFrame::new(
+                1,
+                FrameTimestamp::new(0, FRAME_DURATION_NS).expect("first timestamp"),
+                synthetic_bgra(0),
+            )
+            .expect("first frame"),
+        )
+        .expect("submit first frame");
+    assert!(matches!(
+        recording.push_frame(
+            BgraScreenFrame::new(
+                2,
+                FrameTimestamp::new(0, FRAME_DURATION_NS).expect("rolled-back timestamp"),
+                synthetic_bgra(1),
+            )
+            .expect("rolled-back frame")
+        ),
+        Err(ScreenRecordingError::NonMonotonicFrame)
+    ));
+    recording.abort().expect("confirmed Null teardown");
+
+    let output = directory.path().join("duplicate-sequence.webm");
+    let mut recording =
+        ScreenRecording::start(&output, recording_spec()).expect("start owned appsrc graph");
+    recording
+        .push_frame(
+            BgraScreenFrame::new(
+                7,
+                FrameTimestamp::new(0, FRAME_DURATION_NS).expect("first timestamp"),
+                synthetic_bgra(0),
+            )
+            .expect("first frame"),
+        )
+        .expect("submit first frame");
+    assert!(matches!(
+        recording.push_frame(
+            BgraScreenFrame::new(
+                7,
+                FrameTimestamp {
+                    pts_ns: 0,
+                    duration_ns: FRAME_DURATION_NS,
+                    discontinuity: true,
+                },
+                synthetic_bgra(1),
+            )
+            .expect("duplicate-sequence discontinuity frame")
+        ),
+        Err(ScreenRecordingError::NonMonotonicFrame)
+    ));
+    recording.abort().expect("confirmed Null teardown");
+}
+
+#[test]
 fn cancelled_finish_removes_partial_output() {
     let directory = tempfile::tempdir().expect("private temporary directory");
     let output = directory.path().join("cancelled.webm");
@@ -149,6 +267,20 @@ fn cancelled_finish_removes_partial_output() {
     assert!(matches!(
         recording.finish(&cancellation),
         Err(ScreenRecordingError::Cancelled)
+    ));
+    assert!(!output.exists());
+}
+
+#[test]
+fn zero_frame_finish_confirms_teardown_and_removes_partial_output() {
+    let directory = tempfile::tempdir().expect("private temporary directory");
+    let output = directory.path().join("zero-frame.webm");
+    let mut recording =
+        ScreenRecording::start(&output, recording_spec()).expect("start owned appsrc graph");
+    recording.end_of_stream().expect("zero-frame EOS");
+    assert!(matches!(
+        recording.finish(&CancellationToken::new()),
+        Err(ScreenRecordingError::InvalidLifecycle)
     ));
     assert!(!output.exists());
 }
