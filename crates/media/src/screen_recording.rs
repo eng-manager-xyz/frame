@@ -585,6 +585,24 @@ impl ScreenRecording {
         self.submitted_frames
     }
 
+    /// Returns the current bounded appsrc occupancy without waiting for the
+    /// encoder. A single owner can use this snapshot to defer its next drain
+    /// attempt instead of submitting a frame that would terminalize on
+    /// backpressure.
+    #[must_use]
+    pub fn ingress_status(&self) -> ScreenRecordingIngressStatus {
+        let ingress = self.ingress_levels();
+        ScreenRecordingIngressStatus {
+            submitted_frames: self.submitted_frames,
+            queued_frames: ingress.frames,
+            queued_bytes: ingress.bytes,
+            queued_time_ns: ingress.time_ns,
+            at_capacity: ingress.frames >= self.spec.ingress_max_frames
+                || ingress.bytes >= SCREEN_RECORDING_QUEUE_BYTES
+                || ingress.time_ns >= self.spec.ingress_max_time_ns,
+        }
+    }
+
     /// True only before this live graph has accepted input, observed a
     /// terminal bus failure, or begun EOS. Pump construction uses the full
     /// predicate so a zero-frame but already-terminal graph cannot be claimed
