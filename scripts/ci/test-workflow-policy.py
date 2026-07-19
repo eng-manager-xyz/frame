@@ -99,6 +99,24 @@ def main() -> int:
             ),
             (
                 production,
+                "  group: ${{ github.event_name == 'pull_request' && format('frame-production-preflight-pr-{0}', github.event.pull_request.number) || 'frame-production-release' }}",
+                "  group: frame-production-release",
+                "pull request preflight shares protected release concurrency",
+            ),
+            (
+                production,
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+                "  cancel-in-progress: false",
+                "stale same-PR production builds accumulate",
+            ),
+            (
+                production,
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+                "  cancel-in-progress: true",
+                "main or provider production release can be cancelled",
+            ),
+            (
+                production,
                 "  production-gate:\n    name: production-gate\n    if: ${{ always() }}",
                 "  production-gate:\n    name: production-gate\n    if: ${{ success() }}",
                 "skippable sentinel",

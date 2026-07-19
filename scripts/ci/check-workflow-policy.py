@@ -316,8 +316,14 @@ def main() -> int:
         errors,
     )
     require("paths:" not in production and "paths-ignore:" not in production, "production-gate.yml: sentinel may not have path filters", errors)
-    require("concurrency:" in production and "cancel-in-progress: false" in production,
-            "production-gate.yml: production changes must serialize without cancellation", errors)
+    require(
+        "group: ${{ github.event_name == 'pull_request' && format('frame-production-preflight-pr-{0}', github.event.pull_request.number) || 'frame-production-release' }}"
+        in production
+        and "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+        in production,
+        "production-gate.yml: stale same-PR builds must cancel without making main or provider releases cancellable",
+        errors,
+    )
     require("environment: production" in production, "production-gate.yml: provider mutation must use the production environment", errors)
     require("secrets.CLOUDFLARE_API_TOKEN" in production and "secrets.CLOUDFLARE_ACCOUNT_ID" in production,
             "production-gate.yml: provider credentials must be explicit environment secrets", errors)

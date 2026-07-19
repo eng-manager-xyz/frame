@@ -43,8 +43,10 @@ expand-first migrations, deploys the prebuilt Worker, and smokes the canonical
 API; an irrelevant SHA performs the same compatibility smoke and records why
 no Worker deploy occurred. The independent `provider-release-gate` uses
 `always()` and fails the manual run unless both the build gate and protected job
-succeed. Production concurrency is serialized and is never cancelled
-mid-migration.
+succeed. Each pull request number has its own preflight concurrency group, and
+a newer SHA cancels only the stale `Production gate` run for that pull request.
+Main pushes and explicit provider dispatches share the serialized production
+release group and are never cancelled mid-build or mid-migration.
 
 Render sees that same commit's checks. A web/shared-impacting SHA triggers one
 checks-pass build; a correctly filtered SHA triggers none. The secret-free
@@ -62,7 +64,8 @@ destructive migration. A failure in either lane leaves the other compatible
 release live and fails the corresponding release or canonical-smoke check.
 
 Build retries create a new, attributable run against the same immutable SHA;
-provider retries require another explicit dispatch from `main`. Never hide a
+on a pull request, a newer SHA supersedes only that pull request's stale build.
+Provider retries require another explicit dispatch from `main`. Never hide a
 first failure with `continue-on-error`, a neutral conclusion, or a renamed
 check. The release record joins Worker version, Render deploy/commit, contract
 major, migration level, portfolio consumer SHA when present, outcome, and
