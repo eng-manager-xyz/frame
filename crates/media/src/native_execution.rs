@@ -1709,16 +1709,25 @@ mod tests {
             .mixed_audio_sink()
             .and_then(|sink| sink.downcast::<gst_app::AppSink>().ok())
             .expect("mixed audio appsink");
-        let sample = sink
-            .try_pull_sample(gst::ClockTime::ZERO)
-            .expect("one mixed audio sample");
-        let output = sample
-            .buffer()
-            .expect("sample buffer")
-            .map_readable()
-            .expect("readable mixed output");
-        assert_eq!(output.as_slice(), expected);
-        assert!(sink.try_pull_sample(gst::ClockTime::ZERO).is_none());
+        let mut sample_count = 0_u32;
+        let mut real_buffer_count = 0_u32;
+        while let Some(sample) = sink.try_pull_sample(gst::ClockTime::ZERO) {
+            sample_count = sample_count.checked_add(1).expect("bounded sample count");
+            assert!(sample_count <= MIXED_AUDIO_SINK_MAX_BUFFERS);
+
+            let buffer = sample.buffer().expect("sample buffer");
+            if buffer.flags().contains(gst::BufferFlags::GAP) {
+                continue;
+            }
+
+            real_buffer_count = real_buffer_count
+                .checked_add(1)
+                .expect("bounded real buffer count");
+            assert_eq!(real_buffer_count, 1, "only one source buffer was pushed");
+            let output = buffer.map_readable().expect("readable mixed output");
+            assert_eq!(output.as_slice(), expected);
+        }
+        assert_eq!(real_buffer_count, 1, "the real source buffer must survive");
         graph.confirm_null().expect("confirmed Null");
     }
 
