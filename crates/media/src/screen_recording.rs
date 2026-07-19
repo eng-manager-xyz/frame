@@ -561,24 +561,6 @@ impl ScreenRecording {
         self.spec
     }
 
-    /// Returns the current bounded appsrc occupancy without waiting for the
-    /// encoder. A single owner can use this snapshot to defer its next drain
-    /// attempt instead of submitting a frame that would terminalize on
-    /// backpressure.
-    #[must_use]
-    pub fn ingress_status(&self) -> ScreenRecordingIngressStatus {
-        let ingress = self.ingress_levels();
-        ScreenRecordingIngressStatus {
-            submitted_frames: self.submitted_frames,
-            queued_frames: ingress.frames,
-            queued_bytes: ingress.bytes,
-            queued_time_ns: ingress.time_ns,
-            at_capacity: ingress.frames >= self.spec.ingress_max_frames
-                || ingress.bytes >= SCREEN_RECORDING_QUEUE_BYTES
-                || ingress.time_ns >= self.spec.ingress_max_time_ns,
-        }
-    }
-
     /// Number of frames accepted by this graph since it started.
     #[must_use]
     pub const fn submitted_frames(&self) -> u64 {
