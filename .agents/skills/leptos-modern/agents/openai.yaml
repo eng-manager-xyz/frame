@@ -1,0 +1,4 @@
+interface:
+  display_name: "Leptos Modern"
+  short_description: "Use current Leptos APIs and migrate legacy code"
+  default_prompt: "Use $leptos-modern to write or migrate Leptos code with the repository-pinned modern API surface."
