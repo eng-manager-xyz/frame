@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 use frame_media::{
     DisplayGeometryTransform, LogicalRect, MAX_SCREEN_TARGETS, ScreenSourceInstanceId,
@@ -7,52 +7,9 @@ use frame_media::{
 };
 use ring::hmac;
 
-use crate::MacOsCaptureError;
+use crate::{MacOsCaptureError, MacOsRegionSelection};
 
 const TARGET_TOKEN_DOMAIN: &[u8] = b"frame/macos-capture-target/v2\0";
-
-/// One user-selected region, bound to an opaque display identity from a prior
-/// catalog. Native display handles never cross the adapter boundary.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct MacOsRegionSelection {
-    display: ScreenTargetBinding,
-    logical_bounds: LogicalRect,
-}
-
-impl MacOsRegionSelection {
-    pub fn new(
-        display: ScreenTargetBinding,
-        logical_bounds: LogicalRect,
-    ) -> Result<Self, MacOsCaptureError> {
-        if display.id().kind() != ScreenTargetKind::Display {
-            return Err(MacOsCaptureError::RegionRequiresDisplayTarget);
-        }
-        Ok(Self {
-            display,
-            logical_bounds,
-        })
-    }
-
-    #[must_use]
-    pub const fn display(self) -> ScreenTargetBinding {
-        self.display
-    }
-
-    #[must_use]
-    pub const fn logical_bounds(self) -> LogicalRect {
-        self.logical_bounds
-    }
-}
-
-impl fmt::Debug for MacOsRegionSelection {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("MacOsRegionSelection")
-            .field("display", &self.display)
-            .field("logical_bounds", &"<redacted>")
-            .finish()
-    }
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeDisplayRecord {

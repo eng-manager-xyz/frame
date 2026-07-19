@@ -9,14 +9,13 @@
 use std::fmt;
 
 use frame_media::{
-    CaptureError, ColorSpace, CursorCaptureMode, FrameMemory, FrameTimestamp, PixelFormat,
-    ScreenTargetBinding, VideoFrameSpec,
+    CaptureError, ColorSpace, CursorCaptureMode, FrameMemory, FrameTimestamp, LogicalRect,
+    PixelFormat, ScreenTargetBinding, ScreenTargetKind, VideoFrameSpec,
 };
 use thiserror::Error;
 
+#[cfg(any(target_os = "macos", test))]
 mod target_catalog;
-
-pub use target_catalog::MacOsRegionSelection;
 
 #[cfg(target_os = "macos")]
 mod platform;
@@ -36,6 +35,49 @@ const MIN_FRAME_DURATION_NS: u64 = 1_000_000;
 const MAX_FRAME_DURATION_NS: u64 = 1_000_000_000;
 #[cfg(any(target_os = "macos", test))]
 const TIMESTAMP_GAP_DISCONTINUITY_NS: u64 = 2_000_000_000;
+
+/// One user-selected region, bound to an opaque display identity from a prior
+/// catalog. Native display handles never cross the adapter boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MacOsRegionSelection {
+    display: ScreenTargetBinding,
+    logical_bounds: LogicalRect,
+}
+
+impl MacOsRegionSelection {
+    pub fn new(
+        display: ScreenTargetBinding,
+        logical_bounds: LogicalRect,
+    ) -> Result<Self, MacOsCaptureError> {
+        if display.id().kind() != ScreenTargetKind::Display {
+            return Err(MacOsCaptureError::RegionRequiresDisplayTarget);
+        }
+        Ok(Self {
+            display,
+            logical_bounds,
+        })
+    }
+
+    #[must_use]
+    pub const fn display(self) -> ScreenTargetBinding {
+        self.display
+    }
+
+    #[must_use]
+    pub const fn logical_bounds(self) -> LogicalRect {
+        self.logical_bounds
+    }
+}
+
+impl fmt::Debug for MacOsRegionSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacOsRegionSelection")
+            .field("display", &self.display)
+            .field("logical_bounds", &"<redacted>")
+            .finish()
+    }
+}
 
 /// Why this crate does not implement [`frame_media::ScreenCaptureSource`].
 ///
