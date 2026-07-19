@@ -1673,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn native_av_graph_stage_one_preserves_one_real_buffer_before_serialized_eos() {
+    fn native_av_graph_source_stage_preserves_one_real_buffer_before_serialized_eos() {
         let mut graph =
             NativeAvGstreamerGraph::build(&native_av_stage_one_spec()).expect("native A/V graph");
         graph.start_playing().expect("Playing state");
@@ -1681,6 +1681,23 @@ mod tests {
             .source_appsrc(AvSourceClass::SystemAudio)
             .expect("system audio appsrc");
         assert_eq!(appsrc.max_buffers(), 1);
+
+        let observed_source_payloads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_by_probe = std::sync::Arc::clone(&observed_source_payloads);
+        let source_pad = appsrc.static_pad("src").expect("appsrc source pad");
+        let source_probe = source_pad
+            .add_probe(gst::PadProbeType::BUFFER, move |_, information| {
+                if let Some(gst::PadProbeData::Buffer(buffer)) = information.data.as_ref()
+                    && let Ok(payload) = buffer.map_readable()
+                {
+                    observed_by_probe
+                        .lock()
+                        .expect("source probe lock")
+                        .push(payload.as_slice().to_vec());
+                }
+                gst::PadProbeReturn::Ok
+            })
+            .expect("source buffer probe");
 
         // Use a non-silent valid stereo F32LE payload. GstAggregator versions
         // differ on whether the mixed output retains GAP when another mixer
@@ -1718,7 +1735,7 @@ mod tests {
             .and_then(|sink| sink.downcast::<gst_app::AppSink>().ok())
             .expect("mixed audio appsink");
         let mut sample_count = 0_u32;
-        let mut real_buffer_count = 0_u32;
+        let mut mixed_source_payload_count = 0_u32;
         while let Some(sample) = sink.try_pull_sample(gst::ClockTime::ZERO) {
             sample_count = sample_count.checked_add(1).expect("bounded sample count");
             assert!(sample_count <= MIXED_AUDIO_SINK_MAX_BUFFERS);
@@ -1726,15 +1743,23 @@ mod tests {
             let buffer = sample.buffer().expect("sample buffer");
             let output = buffer.map_readable().expect("readable mixed output");
             if output.as_slice() == expected {
-                real_buffer_count = real_buffer_count
+                mixed_source_payload_count = mixed_source_payload_count
                     .checked_add(1)
-                    .expect("bounded real buffer count");
-                assert_eq!(real_buffer_count, 1, "only one source buffer was pushed");
+                    .expect("bounded mixed source payload count");
+                assert_eq!(
+                    mixed_source_payload_count, 1,
+                    "only one source buffer was pushed"
+                );
             } else {
                 assert!(buffer.flags().contains(gst::BufferFlags::GAP));
             }
         }
-        assert_eq!(real_buffer_count, 1, "the real source buffer must survive");
+        source_pad.remove_probe(source_probe);
+        assert_eq!(
+            *observed_source_payloads.lock().expect("source probe lock"),
+            vec![expected],
+            "serialized EOS must not overtake the accepted source buffer"
+        );
         graph.confirm_null().expect("confirmed Null");
     }
 
