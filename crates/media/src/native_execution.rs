@@ -35,6 +35,10 @@ pub const MAX_AV_GRAPH_BUS_MESSAGES: u16 = 256;
 const DEFAULT_NATIVE_DEADLINE: Duration = Duration::from_secs(120);
 const MAX_NATIVE_SEGMENTS: usize = 100_000;
 const MAX_PREVIEW_BYTES: usize = 1920 * 1080 * 4;
+// Preview preroll performs real demuxing and decoding. Keep it bounded, while
+// allowing a saturated production host (or the parallel GStreamer CI suite)
+// enough time to schedule the asynchronous state transition.
+const STUDIO_PREVIEW_STATE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(30);
 
 #[derive(Debug, Error)]
 pub enum NativeExecutionError {
@@ -1064,7 +1068,7 @@ pub fn decode_studio_preview_frame(
     pipeline
         .set_state(gst::State::Paused)
         .map_err(|_| NativeExecutionError::Pipeline)?;
-    let (transition, current, _) = pipeline.state(gst::ClockTime::from_seconds(10));
+    let (transition, current, _) = pipeline.state(STUDIO_PREVIEW_STATE_TIMEOUT);
     if transition.is_err() || current != gst::State::Paused {
         let _ = pipeline.set_state(gst::State::Null);
         return Err(NativeExecutionError::Pipeline);
