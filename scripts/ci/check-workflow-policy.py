@@ -113,6 +113,30 @@ def main() -> int:
     )
     require("pull_request:" in quality and "push:" in quality, "quality-gates.yml: must run for pull requests and main pushes", errors)
     require("${{ secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
+    require(
+        "group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+        in quality
+        and "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+        in quality,
+        "quality-gates.yml: stale same-PR checks may cancel, but landed-main and manual runs must be unique and noncancellable",
+        errors,
+    )
+    require(
+        re.search(
+            r"^defaults:\n  run:\n(?:    #.*\n)*    shell: bash$",
+            quality,
+            re.MULTILINE,
+        )
+        is not None,
+        "quality-gates.yml: every hosted OS must fail immediately after a native command exits nonzero",
+        errors,
+    )
+    quality_shells = re.findall(r"^\s+shell:\s*([^\s#]+)", quality, re.MULTILINE)
+    require(
+        bool(quality_shells) and all(shell == "bash" for shell in quality_shells),
+        "quality-gates.yml: step-level shell overrides must preserve fail-fast bash semantics",
+        errors,
+    )
     require("check-parity-evidence.py" in quality,
             "quality-gates.yml: the fast parity evidence lane must be required", errors)
     require("check-secrets.py" in quality and "cargo deny check" in quality,
@@ -308,10 +332,22 @@ def main() -> int:
             "quality-gates.yml: quality-gate must be an always-present final result", errors)
 
     production = texts.get("production-gate.yml", "")
-    require("push:\n    branches: [main]" in production, "production-gate.yml: must run directly on every main push", errors)
+    require(
+        "pull_request:" in production
+        and "push:\n    branches: [main]" in production
+        and "workflow_dispatch:" in production,
+        "production-gate.yml: the same unprivileged build path must run on pull requests and every main push, with release remaining explicit",
+        errors,
+    )
     require("paths:" not in production and "paths-ignore:" not in production, "production-gate.yml: sentinel may not have path filters", errors)
-    require("concurrency:" in production and "cancel-in-progress: false" in production,
-            "production-gate.yml: production changes must serialize without cancellation", errors)
+    require(
+        "group: ${{ github.event_name == 'pull_request' && format('frame-production-preflight-pr-{0}', github.event.pull_request.number) || 'frame-production-release' }}"
+        in production
+        and "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+        in production,
+        "production-gate.yml: stale same-PR builds must cancel without making main or provider releases cancellable",
+        errors,
+    )
     require("environment: production" in production, "production-gate.yml: provider mutation must use the production environment", errors)
     require("secrets.CLOUDFLARE_API_TOKEN" in production and "secrets.CLOUDFLARE_ACCOUNT_ID" in production,
             "production-gate.yml: provider credentials must be explicit environment secrets", errors)
@@ -333,13 +369,33 @@ def main() -> int:
     require("actions/download-artifact@" in production and "verify-release-bundle.sh" in production,
             "production-gate.yml: provider job must consume and verify the built artifact", errors)
     production_untrusted = production.split("\n  provider_release:\n", maxsplit=1)[0]
-    production_provider = production.split("\n  provider_release:\n", maxsplit=1)[-1]
+    production_after_provider = production.split("\n  provider_release:\n", maxsplit=1)[-1]
+    production_provider = production_after_provider.split(
+        "\n  production-gate:\n", maxsplit=1
+    )[0]
+    production_build_gate = production.split(
+        "\n  production-gate:\n", maxsplit=1
+    )[-1].split("\n  provider-release-gate:\n", maxsplit=1)[0]
+    provider_release_gate = production.split(
+        "\n  provider-release-gate:\n", maxsplit=1
+    )[-1]
+    require(
+        "if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}"
+        in production_provider
+        and "needs: [evaluate, preflight, build_release, production-gate]"
+        in production_provider,
+        "production-gate.yml: protected provider access must require an explicit main-branch dispatch",
+        errors,
+    )
     require('--outdir "${GITHUB_WORKSPACE}/target/wrangler-release"' in production_untrusted,
             "production-gate.yml: Wrangler output must use the workspace-absolute release directory", errors)
     require('--outdir "${GITHUB_WORKSPACE}/target/wrangler-ci"' in quality,
             "quality-gates.yml: Wrangler output must use the workspace-absolute CI directory", errors)
     require("${{ secrets." not in production_untrusted,
             "production-gate.yml: secrets may appear only in the protected provider job", errors)
+    require("${{ secrets." not in production_build_gate
+            and "${{ secrets." not in provider_release_gate,
+            "production-gate.yml: build and release sentinels must remain secret-free", errors)
     require("target/provider-worker/wrangler-release/shim.js --no-bundle" in production_provider,
             "production-gate.yml: protected deploy must upload the verified Worker artifact", errors)
     require("cargo install worker-build" not in production_provider,
@@ -368,19 +424,55 @@ def main() -> int:
     release_pre_marker = "--phase release-pre"
     expand_apply_marker = "d1 migrations apply frame --remote"
     deploy_marker = "npx --yes wrangler@4.111.0 deploy \\\n"
-    if all(marker in production_provider for marker in (release_pre_marker, expand_apply_marker, deploy_marker)):
+    protected_parity_marker = "check-parity-evidence.py --require-full"
+    if all(
+        marker in production_provider
+        for marker in (
+            protected_parity_marker,
+            release_pre_marker,
+            expand_apply_marker,
+            deploy_marker,
+        )
+    ):
         require(
-            production_provider.index(release_pre_marker)
+            production_provider.index(protected_parity_marker)
+            < production_provider.index(release_pre_marker)
             < production_provider.index(expand_apply_marker)
             < production_provider.index(deploy_marker),
-            "production-gate.yml: read-only D1 and rollback authority must pass before any provider mutation",
+            "production-gate.yml: protected parity plus read-only D1 and rollback authority must pass before any provider mutation",
             errors,
         )
     require(re.search(r"^  production-gate:\n(?:.|\n)*?if:\s*\$\{\{\s*always\(\)\s*\}\}", production, re.MULTILINE) is not None,
             "production-gate.yml: production-gate must always resolve to success or failure", errors)
+    require(
+        "needs: [evaluate, preflight, build_release]" in production_build_gate
+        and "provider_release" not in production_build_gate
+        and "PROVIDER_RESULT" not in production_build_gate
+        and 'test "${EVALUATE_RESULT}" = success' in production_build_gate
+        and 'test "${PREFLIGHT_RESULT}" = success' in production_build_gate
+        and 'test "${BUILD_RESULT}" = success' in production_build_gate,
+        "production-gate.yml: the required production-gate must resolve only the identical PR/main build path",
+        errors,
+    )
+    require(
+        "name: provider-release-gate" in provider_release_gate
+        and "if: ${{ always() && github.event_name == 'workflow_dispatch' }}"
+        in provider_release_gate
+        and "needs: [production-gate, provider_release]" in provider_release_gate
+        and 'test "${GITHUB_REF}" = refs/heads/main' in provider_release_gate
+        and 'test "${BUILD_GATE_RESULT}" = success' in provider_release_gate
+        and 'test "${PROVIDER_RESULT}" = success' in provider_release_gate,
+        "production-gate.yml: explicit manual provider release must have an independent fail-closed sentinel",
+        errors,
+    )
     require("workflow_run:" not in production, "production-gate.yml: delayed workflow_run sentinels are forbidden", errors)
-    require("check-parity-evidence.py --require-full" in production_untrusted,
-            "production-gate.yml: protected parity records must block provider mutation", errors)
+    require(
+        "python3 scripts/ci/check-parity-evidence.py\n" in production_untrusted
+        and "check-parity-evidence.py --require-full" not in production_untrusted
+        and "check-parity-evidence.py --require-full" in production_provider,
+        "production-gate.yml: PR/main preflight must validate local parity while protected parity blocks only provider access",
+        errors,
+    )
     require("check-secrets.py" in production_untrusted and "cargo deny check" in production_untrusted,
             "production-gate.yml: release preflight must enforce secret and dependency policy", errors)
     require("generate-cyclonedx.py" in production_untrusted and "hermetic-journey.py" in production_untrusted,
@@ -409,6 +501,22 @@ def main() -> int:
             and "r2-storage-conformance.py" in production_untrusted
             and "r2-storage-conformance-production-preflight.json" in production_untrusted,
             "production-gate.yml: media-input and compiled R2 contract proofs must block provider mutation", errors)
+    for workflow_name, workflow_text in (
+        ("quality-gates.yml", quality),
+        ("production-gate.yml", production_untrusted),
+    ):
+        worker_prebuild = workflow_step(
+            workflow_text, "Prebuild the local Worker before bounded readiness probes"
+        )
+        require(
+            bool(worker_prebuild)
+            and "timeout-minutes: 10" in worker_prebuild
+            and "worker-build --release apps/control-plane" in worker_prebuild
+            and workflow_text.index("worker-build --release apps/control-plane")
+            < workflow_text.index("r2-storage-conformance.py"),
+            f"{workflow_name}: the Worker must be built before bounded local binding readiness probes",
+            errors,
+        )
     require("release-join-conformance.py --self-test" in production_untrusted,
             "production-gate.yml: release-join semantics must block provider mutation", errors)
     require("package-release.sh" in production and "verify-release-bundle.sh" in production,

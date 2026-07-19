@@ -515,6 +515,23 @@ impl ScreenRecording {
         self.spec
     }
 
+    /// Returns the current bounded appsrc occupancy without waiting for the
+    /// encoder. A single owner can use this snapshot to defer its next drain
+    /// attempt instead of submitting a frame that would terminalize on
+    /// backpressure.
+    #[must_use]
+    pub fn ingress_status(&self) -> ScreenRecordingIngressStatus {
+        let ingress = self.ingress_levels();
+        ScreenRecordingIngressStatus {
+            submitted_frames: self.submitted_frames,
+            queued_frames: ingress.frames,
+            queued_bytes: ingress.bytes,
+            queued_time_ns: ingress.time_ns,
+            at_capacity: ingress.frames >= self.spec.ingress_max_frames
+                || ingress.bytes >= SCREEN_RECORDING_QUEUE_BYTES
+                || ingress.time_ns >= self.spec.ingress_max_time_ns,
+        }
+    }
     /// Submits one frame without waiting for downstream encoding.
     ///
     /// No queue leaks. If this frame would cross any appsrc ceiling, the call
@@ -587,16 +604,7 @@ impl ScreenRecording {
         self.first_pts_ns.get_or_insert(timestamp.pts_ns);
         self.last_sequence = Some(sequence);
         self.last_end_pts_ns = Some(timestamp.end_ns());
-        let ingress = self.ingress_levels();
-        Ok(ScreenRecordingIngressStatus {
-            submitted_frames: self.submitted_frames,
-            queued_frames: ingress.frames,
-            queued_bytes: ingress.bytes,
-            queued_time_ns: ingress.time_ns,
-            at_capacity: ingress.frames >= self.spec.ingress_max_frames
-                || ingress.bytes >= SCREEN_RECORDING_QUEUE_BYTES
-                || ingress.time_ns >= self.spec.ingress_max_time_ns,
-        })
+        Ok(self.ingress_status())
     }
 
     /// Pushes a normalized screen-capture frame without copying its BGRA body.

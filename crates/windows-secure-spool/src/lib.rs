@@ -1,4 +1,4 @@
-//! Audited Win32 boundary for the encrypted Instant spool.
+//! Audited Windows boundary for the encrypted Instant spool.
 //!
 //! This crate is intentionally tiny: it owns the pointer-level calls needed
 //! for Credential Manager, protected file ACLs, reparse-point detection, and
@@ -75,34 +75,38 @@ mod windows {
         ptr, slice,
     };
 
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FileRenameInformation,
+        NtSetInformationFile,
+    };
     use windows_sys::Win32::{
         Foundation::{
-            CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_INSUFFICIENT_BUFFER,
-            ERROR_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
-            HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ,
+            GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+            STATUS_OBJECT_NAME_COLLISION,
         },
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
+                GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
             },
             Credentials::{
                 CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree,
                 CredReadW, CredWriteW,
             },
-            DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
-            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-            TOKEN_QUERY, TOKEN_USER, TokenUser,
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+            GetTokenInformation, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+            SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         Storage::FileSystem::{
-            CREATE_NEW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
-            FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
-            FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileRenameInfo,
-            FlushFileBuffers, GetFileInformationByHandleEx, OPEN_EXISTING, SYNCHRONIZE,
-            SetFileInformationByHandle, WRITE_DAC,
+            CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+            FileAttributeTagInfo, FlushFileBuffers, GetFileInformationByHandleEx, OPEN_EXISTING,
+            READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
         },
+        System::IO::IO_STATUS_BLOCK,
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
     use zeroize::{Zeroize, Zeroizing};
@@ -114,6 +118,104 @@ mod windows {
         File,
         Directory,
         FileOrDirectory,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    pub(super) enum PrivateAclStage {
+        EncodePath,
+        OpenPath,
+        QueryAttributes,
+        OpenProcessToken,
+        SizeTokenUser,
+        ReadTokenUser,
+        EncodeSid,
+        ParseSecurityDescriptor,
+        ReadDacl,
+        SetDacl,
+        VerifyDacl,
+        Invariant,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    pub(super) struct PrivateAclDiagnostic {
+        stage: PrivateAclStage,
+        win32_status: Option<u32>,
+    }
+
+    impl PrivateAclDiagnostic {
+        const fn invariant(stage: PrivateAclStage) -> Self {
+            Self {
+                stage,
+                win32_status: None,
+            }
+        }
+
+        fn last_error(stage: PrivateAclStage) -> Self {
+            // SAFETY: callers invoke this immediately after the failing Win32
+            // call and before any other FFI boundary can replace last-error.
+            Self::status(stage, unsafe { GetLastError() })
+        }
+
+        const fn status(stage: PrivateAclStage, win32_status: u32) -> Self {
+            Self {
+                stage,
+                win32_status: Some(win32_status),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    pub(super) enum PublishStage {
+        EncodeDestination,
+        OpenSource,
+        ValidateSource,
+        OpenDestinationDirectory,
+        ValidateDestinationDirectory,
+        EncodeRename,
+        FlushBeforeRename,
+        Rename,
+        FlushAfterRename,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum PublishDiagnostic {
+        AlreadyExists,
+        Failed {
+            stage: PublishStage,
+            platform_status: Option<u32>,
+        },
+    }
+
+    impl PublishDiagnostic {
+        const fn invariant(stage: PublishStage) -> Self {
+            Self::Failed {
+                stage,
+                platform_status: None,
+            }
+        }
+
+        fn last_error(stage: PublishStage) -> Self {
+            // SAFETY: callers invoke this immediately after the failing Win32
+            // call and before any other FFI boundary can replace last-error.
+            Self::status(stage, unsafe { GetLastError() })
+        }
+
+        const fn status(stage: PublishStage, platform_status: u32) -> Self {
+            Self::Failed {
+                stage,
+                platform_status: Some(platform_status),
+            }
+        }
+
+        const fn from_acl(stage: PublishStage, diagnostic: PrivateAclDiagnostic) -> Self {
+            Self::Failed {
+                stage,
+                platform_status: diagnostic.win32_status,
+            }
+        }
     }
 
     pub fn credential_load(
@@ -199,9 +301,10 @@ mod windows {
     }
 
     pub fn create_private_file(path: &Path) -> Result<fs::File, WindowsSecureSpoolError> {
-        let user_sid = current_user_sid()?;
+        let user_sid = current_user_sid().map_err(|_| WindowsSecureSpoolError)?;
         let descriptor =
-            security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))?;
+            security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))
+                .map_err(|_| WindowsSecureSpoolError)?;
         let path = path_wide(path)?;
         let security_attributes = SECURITY_ATTRIBUTES {
             nLength: u32::try_from(mem::size_of::<SECURITY_ATTRIBUTES>())
@@ -224,22 +327,31 @@ mod windows {
             )
         };
         let handle = Handle::new(raw)?;
-        validate_handle(&handle, ExpectedObject::File)?;
+        validate_handle(&handle, ExpectedObject::File).map_err(|_| WindowsSecureSpoolError)?;
         Ok(handle.into_file())
     }
 
     pub fn enforce_private_permissions(path: &Path) -> Result<(), WindowsSecureSpoolError> {
+        enforce_private_permissions_inner(path).map_err(|_| WindowsSecureSpoolError)
+    }
+
+    fn enforce_private_permissions_inner(path: &Path) -> Result<(), PrivateAclDiagnostic> {
         let handle = open_path(
             path,
-            WRITE_DAC | FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            WRITE_DAC | READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         )?;
         validate_handle(&handle, ExpectedObject::FileOrDirectory)?;
         apply_private_dacl(&handle)
     }
 
-    fn apply_private_dacl(handle: &Handle) -> Result<(), WindowsSecureSpoolError> {
+    #[cfg(test)]
+    pub(super) fn diagnose_private_permissions(path: &Path) -> Result<(), PrivateAclDiagnostic> {
+        enforce_private_permissions_inner(path)
+    }
+
+    fn apply_private_dacl(handle: &Handle) -> Result<(), PrivateAclDiagnostic> {
         let user_sid = current_user_sid()?;
         let descriptor =
             security_descriptor(&format!("D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)"))?;
@@ -258,11 +370,11 @@ mod windows {
             || dacl_present == 0
             || dacl.is_null()
         {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::ReadDacl));
         }
         // SAFETY: the DACL is owned by the live descriptor and the handle pins
         // the already-validated object. The API retains neither value.
-        if unsafe {
+        let status = unsafe {
             SetSecurityInfo(
                 handle.0,
                 SE_FILE_OBJECT,
@@ -272,55 +384,126 @@ mod windows {
                 dacl,
                 ptr::null_mut(),
             )
-        } != ERROR_SUCCESS
-        {
-            return Err(WindowsSecureSpoolError);
+        };
+        if status != ERROR_SUCCESS {
+            return Err(PrivateAclDiagnostic::status(
+                PrivateAclStage::SetDacl,
+                status,
+            ));
+        }
+        verify_private_dacl(handle)
+    }
+
+    fn verify_private_dacl(handle: &Handle) -> Result<(), PrivateAclDiagnostic> {
+        let mut dacl = ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: every out pointer is valid, the handle stays live, and the
+        // returned descriptor is immediately guarded with LocalFree ownership.
+        let status = unsafe {
+            GetSecurityInfo(
+                handle.0,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut dacl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(PrivateAclDiagnostic::status(
+                PrivateAclStage::VerifyDacl,
+                status,
+            ));
+        }
+        if descriptor.is_null() || dacl.is_null() {
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::VerifyDacl));
+        }
+        let descriptor = LocalAllocation(descriptor);
+        let mut control = 0_u16;
+        let mut revision = 0_u32;
+        // SAFETY: the descriptor allocation is live and both scalar out
+        // pointers are valid for the synchronous control query.
+        if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::VerifyDacl,
+            ));
+        }
+        if control & SE_DACL_PROTECTED == 0 {
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::VerifyDacl));
         }
         Ok(())
     }
 
     pub fn publish_file(source: &Path, destination: &Path) -> Result<(), WindowsPublishError> {
-        let leaf = destination_leaf(destination)?;
-        let parent = destination.parent().ok_or(WindowsPublishError::Failed)?;
+        match publish_file_inner(source, destination) {
+            Ok(()) => Ok(()),
+            Err(PublishDiagnostic::AlreadyExists) => Err(WindowsPublishError::AlreadyExists),
+            Err(PublishDiagnostic::Failed { .. }) => Err(WindowsPublishError::Failed),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnose_publish_file(
+        source: &Path,
+        destination: &Path,
+    ) -> Result<(), PublishDiagnostic> {
+        publish_file_inner(source, destination)
+    }
+
+    fn publish_file_inner(source: &Path, destination: &Path) -> Result<(), PublishDiagnostic> {
+        let leaf = destination_leaf(destination)
+            .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeDestination))?;
+        let parent = destination.parent().ok_or(PublishDiagnostic::invariant(
+            PublishStage::EncodeDestination,
+        ))?;
         let source = open_path(
             source,
             GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_WRITE_THROUGH,
         )
-        .map_err(|_| WindowsPublishError::Failed)?;
-        validate_handle(&source, ExpectedObject::File).map_err(|_| WindowsPublishError::Failed)?;
+        .map_err(|error| PublishDiagnostic::from_acl(PublishStage::OpenSource, error))?;
+        validate_handle(&source, ExpectedObject::File)
+            .map_err(|error| PublishDiagnostic::from_acl(PublishStage::ValidateSource, error))?;
         let destination_directory = open_path(
             parent,
-            FILE_ADD_FILE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         )
-        .map_err(|_| WindowsPublishError::Failed)?;
-        validate_handle(&destination_directory, ExpectedObject::Directory)
-            .map_err(|_| WindowsPublishError::Failed)?;
+        .map_err(|error| {
+            PublishDiagnostic::from_acl(PublishStage::OpenDestinationDirectory, error)
+        })?;
+        validate_handle(&destination_directory, ExpectedObject::Directory).map_err(|error| {
+            PublishDiagnostic::from_acl(PublishStage::ValidateDestinationDirectory, error)
+        })?;
         let leaf = leaf.encode_wide().collect::<Vec<_>>();
         let name_bytes = leaf
             .len()
             .checked_mul(mem::size_of::<u16>())
             .and_then(|value| u32::try_from(value).ok())
-            .ok_or(WindowsPublishError::Failed)?;
-        let information_bytes = mem::size_of::<FILE_RENAME_INFO>()
-            .checked_add(usize::try_from(name_bytes).map_err(|_| WindowsPublishError::Failed)?)
-            .ok_or(WindowsPublishError::Failed)?;
-        let information_size =
-            u32::try_from(information_bytes).map_err(|_| WindowsPublishError::Failed)?;
+            .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
+        let information_bytes = mem::size_of::<FILE_RENAME_INFORMATION>()
+            .checked_add(
+                usize::try_from(name_bytes)
+                    .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeRename))?,
+            )
+            .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
+        let information_size = u32::try_from(information_bytes)
+            .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
         let words = information_bytes
             .checked_add(mem::size_of::<usize>() - 1)
             .map(|bytes| bytes / mem::size_of::<usize>())
-            .ok_or(WindowsPublishError::Failed)?;
+            .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
         let mut information = vec![0_usize; words];
-        let rename = information.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        let rename = information.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
         // SAFETY: `information` is pointer-aligned and sized through the final
         // UTF-16 code unit. The relative leaf has no separator or stream colon;
         // the destination directory and source file remain pinned by handles.
         unsafe {
-            ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFO_0 {
+            ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFORMATION_0 {
                 ReplaceIfExists: false,
             });
             ptr::addr_of_mut!((*rename).RootDirectory).write(destination_directory.0);
@@ -334,26 +517,39 @@ mod windows {
         // The writer synced before entering this boundary. Flush the exact
         // source handle once more before changing its directory entry.
         if unsafe { FlushFileBuffers(source.0) } == 0 {
-            return Err(WindowsPublishError::Failed);
+            return Err(PublishDiagnostic::last_error(
+                PublishStage::FlushBeforeRename,
+            ));
         }
-        // SAFETY: the variable-sized FILE_RENAME_INFO buffer is initialized as
-        // described above. FileRenameInfo with ReplaceIfExists=false performs
-        // the collision check and rename as one filesystem operation.
-        if unsafe {
-            SetFileInformationByHandle(source.0, FileRenameInfo, rename.cast(), information_size)
-        } == 0
-        {
-            // SAFETY: this reads the error from the immediately preceding call.
-            return match unsafe { GetLastError() } {
-                ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => Err(WindowsPublishError::AlreadyExists),
-                _ => Err(WindowsPublishError::Failed),
-            };
+        let mut io_status = IO_STATUS_BLOCK::default();
+        // SAFETY: the variable-sized FILE_RENAME_INFORMATION buffer is fully
+        // initialized, both handles remain live, and this synchronous source
+        // handle makes the returned NTSTATUS authoritative for the operation.
+        let status = unsafe {
+            NtSetInformationFile(
+                source.0,
+                &mut io_status,
+                rename.cast(),
+                information_size,
+                FileRenameInformation,
+            )
+        };
+        if status == STATUS_OBJECT_NAME_COLLISION {
+            return Err(PublishDiagnostic::AlreadyExists);
+        }
+        if status < 0 {
+            return Err(PublishDiagnostic::status(
+                PublishStage::Rename,
+                u32::from_ne_bytes(status.to_ne_bytes()),
+            ));
         }
         // Flush through the same handle after its no-replace rename. Windows
         // exposes no unprivileged, documented directory-fsync primitive, so
         // power-loss behavior remains a protected platform evidence gate.
         if unsafe { FlushFileBuffers(source.0) } == 0 {
-            return Err(WindowsPublishError::Failed);
+            return Err(PublishDiagnostic::last_error(
+                PublishStage::FlushAfterRename,
+            ));
         }
         Ok(())
     }
@@ -363,12 +559,13 @@ mod windows {
         access: u32,
         share: u32,
         flags: u32,
-    ) -> Result<Handle, WindowsSecureSpoolError> {
-        let path = path_wide(path)?;
+    ) -> Result<Handle, PrivateAclDiagnostic> {
+        let path = path_wide(path)
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::EncodePath))?;
         // SAFETY: the path is live and NUL-terminated. OPEN_EXISTING plus
         // OPEN_REPARSE_POINT returns a handle to the named final object rather
         // than following a final-component reparse point.
-        Handle::new(unsafe {
+        let raw = unsafe {
             CreateFileW(
                 path.as_ptr(),
                 access,
@@ -378,14 +575,21 @@ mod windows {
                 flags,
                 ptr::null_mut(),
             )
-        })
+        };
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+            Err(PrivateAclDiagnostic::last_error(PrivateAclStage::OpenPath))
+        } else {
+            Ok(Handle(raw))
+        }
     }
 
     fn validate_handle(
         handle: &Handle,
         expected: ExpectedObject,
-    ) -> Result<(), WindowsSecureSpoolError> {
+    ) -> Result<(), PrivateAclDiagnostic> {
         let mut information = FILE_ATTRIBUTE_TAG_INFO::default();
+        let information_size = u32::try_from(mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))?;
         // SAFETY: the output points to a correctly sized live structure and the
         // handle remains owned for the call.
         if unsafe {
@@ -393,18 +597,27 @@ mod windows {
                 handle.0,
                 FileAttributeTagInfo,
                 ptr::addr_of_mut!(information).cast(),
-                u32::try_from(mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
-                    .map_err(|_| WindowsSecureSpoolError)?,
+                information_size,
             )
         } == 0
-            || information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::QueryAttributes,
+            ));
+        }
+        if information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::QueryAttributes,
+            ));
         }
         let is_directory = information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
         match expected {
-            ExpectedObject::File if is_directory => Err(WindowsSecureSpoolError),
-            ExpectedObject::Directory if !is_directory => Err(WindowsSecureSpoolError),
+            ExpectedObject::File if is_directory => {
+                Err(PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))
+            }
+            ExpectedObject::Directory if !is_directory => {
+                Err(PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))
+            }
             _ => Ok(()),
         }
     }
@@ -445,12 +658,19 @@ mod windows {
         Ok(wide)
     }
 
-    fn current_user_sid() -> Result<String, WindowsSecureSpoolError> {
+    fn current_user_sid() -> Result<String, PrivateAclDiagnostic> {
         let mut token: HANDLE = ptr::null_mut();
         // SAFETY: token is a valid out pointer and the process pseudo-handle
         // remains valid for this call.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::OpenProcessToken,
+            ));
+        }
+        if token.is_null() || token == INVALID_HANDLE_VALUE {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::OpenProcessToken,
+            ));
         }
         let token = Handle(token);
         let mut required = 0_u32;
@@ -458,25 +678,35 @@ mod windows {
         let sizing_result =
             unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut required) };
         // SAFETY: this reads the error from the immediately preceding sizing
-        // call, which must fail specifically because the buffer was absent.
-        if sizing_result != 0
-            || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
-            || required < mem::size_of::<TOKEN_USER>() as u32
-            || required > 64 * 1024
-        {
-            return Err(WindowsSecureSpoolError);
+        // call before any other Win32 boundary can replace it.
+        let sizing_status = unsafe { GetLastError() };
+        if sizing_result != 0 {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::SizeTokenUser,
+            ));
+        }
+        if sizing_status != ERROR_INSUFFICIENT_BUFFER {
+            return Err(PrivateAclDiagnostic::status(
+                PrivateAclStage::SizeTokenUser,
+                sizing_status,
+            ));
+        }
+        if required < mem::size_of::<TOKEN_USER>() as u32 || required > 64 * 1024 {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::SizeTokenUser,
+            ));
         }
         let words = usize::try_from(required)
             .ok()
             .and_then(|bytes| bytes.checked_add(mem::size_of::<usize>() - 1))
             .map(|bytes| bytes / mem::size_of::<usize>())
-            .ok_or(WindowsSecureSpoolError)?;
+            .ok_or(PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))?;
         let mut buffer = vec![0_usize; words];
         let buffer_bytes = u32::try_from(buffer.len() * mem::size_of::<usize>())
-            .map_err(|_| WindowsSecureSpoolError)?;
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::Invariant))?;
         // SAFETY: the aligned buffer is writable for `buffer_bytes`; success
         // initializes TOKEN_USER and its SID within the allocation.
-        if unsafe {
+        let read_result = unsafe {
             GetTokenInformation(
                 token.0,
                 TokenUser,
@@ -484,11 +714,16 @@ mod windows {
                 buffer_bytes,
                 &mut required,
             )
-        } == 0
-            || required < mem::size_of::<TOKEN_USER>() as u32
-            || required > buffer_bytes
-        {
-            return Err(WindowsSecureSpoolError);
+        };
+        if read_result == 0 {
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::ReadTokenUser,
+            ));
+        }
+        if required < mem::size_of::<TOKEN_USER>() as u32 || required > buffer_bytes {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::ReadTokenUser,
+            ));
         }
         // SAFETY: the successful call initialized TOKEN_USER at the aligned
         // start of the still-live buffer.
@@ -496,24 +731,25 @@ mod windows {
         let mut encoded = ptr::null_mut();
         // SAFETY: the SID stays live in `buffer`; the returned allocation is
         // immediately guarded and later released with LocalFree.
-        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut encoded) } == 0
-            || encoded.is_null()
-        {
-            return Err(WindowsSecureSpoolError);
+        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut encoded) } == 0 {
+            return Err(PrivateAclDiagnostic::last_error(PrivateAclStage::EncodeSid));
+        }
+        if encoded.is_null() {
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid));
         }
         let encoded = LocalAllocation(encoded.cast());
         let length = (0..512)
             // SAFETY: the API returns a NUL-terminated SID string whose
             // documented representation is well below this hard bound.
             .find(|offset| unsafe { *encoded.0.cast::<u16>().add(*offset) } == 0)
-            .ok_or(WindowsSecureSpoolError)?;
+            .ok_or(PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid))?;
         // SAFETY: `length` is bounded by the first NUL in the live allocation.
         let sid = String::from_utf16(unsafe { slice::from_raw_parts(encoded.0.cast(), length) })
-            .map_err(|_| WindowsSecureSpoolError)?;
+            .map_err(|_| PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid))?;
         if valid_sid_string(&sid) {
             Ok(sid)
         } else {
-            Err(WindowsSecureSpoolError)
+            Err(PrivateAclDiagnostic::invariant(PrivateAclStage::EncodeSid))
         }
     }
 
@@ -527,8 +763,10 @@ mod windows {
             })
     }
 
-    fn security_descriptor(value: &str) -> Result<LocalAllocation, WindowsSecureSpoolError> {
-        let encoded = wide_string(value, 1_024)?;
+    fn security_descriptor(value: &str) -> Result<LocalAllocation, PrivateAclDiagnostic> {
+        let encoded = wide_string(value, 1_024).map_err(|_| {
+            PrivateAclDiagnostic::invariant(PrivateAclStage::ParseSecurityDescriptor)
+        })?;
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
         // SAFETY: input is NUL-terminated and `descriptor` is a valid out
         // pointer. Windows allocates the result with LocalAlloc.
@@ -540,9 +778,15 @@ mod windows {
                 ptr::null_mut(),
             )
         } == 0
-            || descriptor.is_null()
         {
-            return Err(WindowsSecureSpoolError);
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::ParseSecurityDescriptor,
+            ));
+        }
+        if descriptor.is_null() {
+            return Err(PrivateAclDiagnostic::invariant(
+                PrivateAclStage::ParseSecurityDescriptor,
+            ));
         }
         Ok(LocalAllocation(descriptor))
     }
@@ -613,6 +857,9 @@ pub use windows::{
     enforce_private_permissions, metadata_is_indirect, publish_file,
 };
 
+#[cfg(all(test, windows))]
+use windows::{diagnose_private_permissions, diagnose_publish_file};
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -629,7 +876,6 @@ mod tests {
             "target",
             "root/..",
             "root/name:stream",
-            "root/name\\child",
             "root/name child",
             "root/é.spool",
         ] {
@@ -639,6 +885,19 @@ mod tests {
                 "{invalid}"
             );
         }
+        // Backslash is an invalid Unix leaf byte but a Windows path separator.
+        // `destination_leaf` validates the component selected by `Path`, so the
+        // platform parser—not a string heuristic—owns this distinction.
+        #[cfg(not(windows))]
+        assert_eq!(
+            destination_leaf(Path::new("root/name\\child")),
+            Err(WindowsPublishError::Failed)
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            destination_leaf(Path::new("root/name\\child")).expect("nested Windows path"),
+            "child"
+        );
     }
 }
 
@@ -652,7 +911,8 @@ mod windows_tests {
     };
 
     use super::{
-        WindowsPublishError, create_private_file, enforce_private_permissions, publish_file,
+        WindowsPublishError, create_private_file, diagnose_private_permissions,
+        diagnose_publish_file, publish_file,
     };
 
     struct TestDirectory(PathBuf);
@@ -666,7 +926,7 @@ mod windows_tests {
             let path = std::env::temp_dir()
                 .join(format!("frame-secure-spool-{}-{nonce}", std::process::id()));
             fs::create_dir(&path).expect("test directory");
-            enforce_private_permissions(&path).expect("private test directory");
+            diagnose_private_permissions(&path).expect("private test directory");
             Self(path)
         }
 
@@ -691,7 +951,7 @@ mod windows_tests {
             .expect("write source");
         file.sync_all().expect("sync source");
 
-        publish_file(&source, &destination).expect("publish");
+        diagnose_publish_file(&source, &destination).expect("publish");
         assert!(!source.exists());
         assert_eq!(
             fs::read(&destination).expect("published bytes"),
@@ -708,5 +968,18 @@ mod windows_tests {
             Err(WindowsPublishError::AlreadyExists)
         );
         assert!(Path::new(&second_source).exists());
+    }
+
+    #[test]
+    fn handle_relative_publication_pins_a_cross_directory_destination() {
+        let source_directory = TestDirectory::new();
+        let destination_directory = TestDirectory::new();
+        let source = source_directory.join("segment.tmp");
+        let destination = destination_directory.join("segment.spool");
+        drop(create_private_file(&source).expect("private source"));
+
+        diagnose_publish_file(&source, &destination).expect("cross-directory publish");
+        assert!(!source.exists());
+        assert!(destination.exists());
     }
 }

@@ -1,3 +1,8 @@
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
+
 use frame_media::{
     BgraScreenFrame, CancellationToken, ColorSpace, FrameMemory, FrameTimestamp, PixelFormat,
     ScreenRecording, ScreenRecordingError, ScreenRecordingSpec, VideoFrameSpec,
@@ -7,6 +12,18 @@ use frame_media::{
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 180;
 const FRAME_DURATION_NS: u64 = 33_333_333;
+const INGRESS_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn wait_for_ingress_capacity(recording: &ScreenRecording) {
+    let deadline = Instant::now() + INGRESS_DRAIN_TIMEOUT;
+    while recording.ingress_status().at_capacity {
+        assert!(
+            Instant::now() < deadline,
+            "bounded appsrc queue did not drain before the test deadline"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
 
 fn recording_spec() -> ScreenRecordingSpec {
     ScreenRecordingSpec::new(VideoFrameSpec {
@@ -63,6 +80,7 @@ fn owned_appsrc_graph_records_and_exports_playable_webm() {
         assert!(status.queued_frames <= recording.spec().ingress_max_frames());
         assert!(status.queued_bytes <= recording.spec().ingress_max_bytes());
         assert!(status.queued_time_ns <= recording.spec().ingress_max_time_ns());
+        wait_for_ingress_capacity(&recording);
     }
 
     recording.end_of_stream().expect("appsrc EOS");

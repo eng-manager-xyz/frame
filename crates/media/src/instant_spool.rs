@@ -1607,9 +1607,15 @@ mod tests {
             .write(true)
             .open(&path)
             .expect("open tamper");
-        file.seek(SeekFrom::Start(HEADER_BYTES + FRAME_HEADER_BYTES + 2))
-            .expect("seek");
-        file.write_all(&[0xff]).expect("tamper");
+        let tamper_offset = HEADER_BYTES + FRAME_HEADER_BYTES + 2;
+        file.seek(SeekFrom::Start(tamper_offset)).expect("seek");
+        let mut ciphertext_byte = [0_u8; 1];
+        file.read_exact(&mut ciphertext_byte)
+            .expect("read ciphertext");
+        ciphertext_byte[0] ^= 0x01;
+        file.seek(SeekFrom::Start(tamper_offset))
+            .expect("rewind tamper");
+        file.write_all(&ciphertext_byte).expect("tamper");
         file.sync_all().expect("sync tamper");
         let tampered =
             FilesystemEncryptedSpool::new(directory.path(), policy(), keys).expect("tamper port");

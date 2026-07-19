@@ -11,15 +11,17 @@ zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
+  "Wdk_Storage_FileSystem",
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Security_Credentials",
   "Win32_Storage_FileSystem",
+  "Win32_System_IO",
   "Win32_System_Threading",
 ] }
 
-# This package is the workspace's deliberately narrow Win32 FFI boundary.
+# This package is the workspace's deliberately narrow Windows FFI boundary.
 # Every other package inherits the workspace-wide unsafe-code prohibition.
 [lints.rust]
 unsafe_code = "allow"

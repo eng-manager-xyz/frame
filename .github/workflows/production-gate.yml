@@ -1,6 +1,7 @@
 name: Production gate
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -9,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: frame-production-release
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('frame-production-preflight-pr-{0}', github.event.pull_request.number) || 'frame-production-release' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,7 +35,7 @@ jobs:
       - name: Classify the release without filtering the sentinel
         id: change_plan
         env:
-          BEFORE_SHA: ${{ github.event.before || '0000000000000000000000000000000000000000' }}
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '0000000000000000000000000000000000000000' }}
         run: scripts/ci/release-change-plan.sh "${BEFORE_SHA}" "${GITHUB_SHA}"
 
   preflight:
@@ -61,6 +62,9 @@ jobs:
         run: cargo install trunk --version 0.21.14 --locked
       - name: Install the pinned Worker packager for compiled R2 conformance
         run: cargo install worker-build --version 0.8.5 --locked
+      - name: Prebuild the local Worker before bounded readiness probes
+        timeout-minutes: 10
+        run: worker-build --release apps/control-plane
       - name: Install GStreamer build and runtime libraries
         run: |
           sudo apt-get update
@@ -109,7 +113,7 @@ jobs:
           python3 -I scripts/ci/r2-storage-conformance.py \
             --evidence target/evidence/r2-storage-conformance-production-preflight.json
           python3 -I scripts/ci/release-join-conformance.py --self-test
-          python3 scripts/ci/check-parity-evidence.py --require-full
+          python3 scripts/ci/check-parity-evidence.py
           python3 scripts/ci/check-secrets.py
           python3 scripts/ci/generate-cyclonedx.py --self-test
           python3 -I scripts/ci/hermetic-journey.py --timeout 20
@@ -207,7 +211,8 @@ jobs:
 
   provider_release:
     name: Protected Worker deploy or compatibility verify
-    needs: [evaluate, preflight, build_release]
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    needs: [evaluate, preflight, build_release, production-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production
@@ -240,6 +245,8 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: scripts/ci/verify-release-bundle.sh target/downloaded-release
+      - name: Require protected release parity before provider access
+        run: python3 scripts/ci/check-parity-evidence.py --require-full
       - name: Validate protected provider credentials without logging them
         run: |
           test -n "${CLOUDFLARE_API_TOKEN}"
@@ -528,18 +535,32 @@ jobs:
   production-gate:
     name: production-gate
     if: ${{ always() }}
-    needs: [evaluate, preflight, build_release, provider_release]
+    needs: [evaluate, preflight, build_release]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Resolve every release phase to a binary result
+      - name: Resolve the event-identical build path to a binary result
         env:
           EVALUATE_RESULT: ${{ needs.evaluate.result }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           BUILD_RESULT: ${{ needs.build_release.result }}
-          PROVIDER_RESULT: ${{ needs.provider_release.result }}
         run: |
           test "${EVALUATE_RESULT}" = success
           test "${PREFLIGHT_RESULT}" = success
           test "${BUILD_RESULT}" = success
+
+  provider-release-gate:
+    name: provider-release-gate
+    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+    needs: [production-gate, provider_release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Resolve the explicit protected release to a binary result
+        env:
+          BUILD_GATE_RESULT: ${{ needs.production-gate.result }}
+          PROVIDER_RESULT: ${{ needs.provider_release.result }}
+        run: |
+          test "${GITHUB_REF}" = refs/heads/main
+          test "${BUILD_GATE_RESULT}" = success
           test "${PROVIDER_RESULT}" = success
