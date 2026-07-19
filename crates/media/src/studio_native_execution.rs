@@ -27,8 +27,8 @@ use same_file::Handle;
 use uuid::Uuid;
 
 use crate::native_execution::{
-    create_private_directory, require_codec_approval, set_null, sha256_file_with_budget,
-    sync_directory,
+    acquire_studio_native_execution_slot, create_private_directory, require_codec_approval,
+    set_null, sha256_file_with_budget, sync_directory,
 };
 use crate::{
     BackgroundStyle, CancellationToken, CanonicalEditPlan, ExactDuration, LayoutPreset,
@@ -123,6 +123,7 @@ pub fn render_studio_export_with_edits(
     profile: NativeStudioExportProfile,
     cancellation: &CancellationToken,
 ) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
+    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
     if profile == NativeStudioExportProfile::DistributionMasterMp4 {
         require_codec_approval()?;
     }

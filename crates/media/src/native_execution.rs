@@ -11,6 +11,8 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, OnceLock, TryLockError},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -39,6 +41,8 @@ const MAX_PREVIEW_BYTES: usize = 1920 * 1080 * 4;
 // allowing a saturated production host (or the parallel GStreamer CI suite)
 // enough time to schedule the asynchronous state transition.
 const STUDIO_PREVIEW_STATE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(30);
+const STUDIO_NATIVE_EXECUTION_SLOT_TIMEOUT: Duration = Duration::from_secs(30);
+static STUDIO_NATIVE_EXECUTION_SLOT: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Error)]
 pub enum NativeExecutionError {
@@ -862,6 +866,7 @@ pub fn record_synthetic_studio_tracks(
     if duration.is_zero() || duration > Duration::from_secs(300) {
         return Err(NativeExecutionError::ResourceLimit);
     }
+    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
     create_private_directory(directory)?;
     let frames = duration_frames(
         InstantVideoCaps {
@@ -1028,6 +1033,10 @@ pub fn decode_studio_preview_frame(
     if cancellation.is_cancelled() {
         return Err(NativeExecutionError::Cancelled);
     }
+    // Bound native Studio execution inside this process. Multiple Studio
+    // pipelines can otherwise starve one another's asynchronous state change
+    // under load even though each source decodes correctly in isolation.
+    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
     let canonical = fs::canonicalize(source).map_err(|_| NativeExecutionError::Filesystem)?;
     if !canonical.is_file() {
         return Err(NativeExecutionError::InvalidOutput);
@@ -1148,6 +1157,26 @@ pub fn decode_studio_preview_frame(
     result
 }
 
+pub(crate) fn acquire_studio_native_execution_slot(
+    cancellation: &CancellationToken,
+) -> Result<MutexGuard<'static, ()>, NativeExecutionError> {
+    let slot = STUDIO_NATIVE_EXECUTION_SLOT.get_or_init(|| Mutex::new(()));
+    let deadline = Instant::now() + STUDIO_NATIVE_EXECUTION_SLOT_TIMEOUT;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(NativeExecutionError::Cancelled);
+        }
+        match slot.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(_)) => return Err(NativeExecutionError::Pipeline),
+            Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                return Err(NativeExecutionError::Timeout);
+            }
+            Err(TryLockError::WouldBlock) => thread::sleep(BUS_POLL),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeStudioExportProfile {
     EditableWebM,
@@ -1171,6 +1200,7 @@ pub fn render_studio_export(
     profile: NativeStudioExportProfile,
     cancellation: &CancellationToken,
 ) -> Result<NativeStudioExportArtifact, NativeExecutionError> {
+    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
     if profile == NativeStudioExportProfile::DistributionMasterMp4 {
         require_codec_approval()?;
     }
