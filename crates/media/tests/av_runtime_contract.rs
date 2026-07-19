@@ -145,9 +145,12 @@ struct FakeState {
     binding: Option<AvOwnerBinding>,
     events: VecDeque<NativeAvEvent>,
     terminal: Option<AvTerminalId>,
+    reconciled_terminals: Vec<AvTerminalId>,
     native_release_count: usize,
     reconciliations: usize,
+    native_authority_live: bool,
     fail_stop_after_release_once: bool,
+    panic_terminal_execute_once: bool,
     calibration_stamp_override: Option<AvSourceStamp>,
 }
 
@@ -231,6 +234,7 @@ impl NativeAvBridge for FakeBridge {
         let mut state = self.state.lock().expect("fake state");
         assert_eq!(state.binding, Some(ticket.owner()));
         state.reconciliations += 1;
+        state.reconciled_terminals.push(ticket.terminal_id());
         Ok(if state.terminal == Some(ticket.terminal_id()) {
             AvTerminalPostcondition::Applied {
                 terminal_id: ticket.terminal_id(),
@@ -249,8 +253,14 @@ impl NativeAvBridge for FakeBridge {
         let terminal = ticket.terminal_id();
         if matches!(request, AvNativeRequest::Stop | AvNativeRequest::Cancel) {
             let mut state = self.state.lock().expect("fake state");
+            if state.panic_terminal_execute_once {
+                state.panic_terminal_execute_once = false;
+                drop(state);
+                panic!("hostile native terminal panic");
+            }
             state.terminal = terminal;
             state.native_release_count += 1;
+            state.native_authority_live = false;
             if matches!(request, AvNativeRequest::Stop) && state.fail_stop_after_release_once {
                 state.fail_stop_after_release_once = false;
                 return Err(NativeAvFailure {
@@ -258,6 +268,8 @@ impl NativeAvBridge for FakeBridge {
                     retryable: true,
                 });
             }
+        } else if matches!(request, AvNativeRequest::Start(_)) {
+            self.state.lock().expect("fake state").native_authority_live = true;
         }
         Ok(ticket.acknowledge(matches!(
             request,
@@ -422,6 +434,12 @@ fn wait_for_release_count(released: &AtomicUsize, expected: usize) {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(released.load(Ordering::SeqCst), expected);
+}
+
+fn assert_pipeline_null(pipeline: &gst::Pipeline) {
+    let (transition, current, _) = pipeline.state(gst::ClockTime::from_seconds(5));
+    assert!(transition.is_ok());
+    assert_eq!(current, gst::State::Null);
 }
 
 #[test]
@@ -1748,4 +1766,137 @@ fn lost_stop_ack_reconciles_the_stable_stop_without_double_release() {
     let state = state.lock().expect("fake state");
     assert_eq!(state.native_release_count, 1);
     assert_eq!(state.reconciliations, 2);
+}
+
+#[test]
+fn dropping_a_running_runtime_quiesces_native_authority_and_confirms_null() {
+    let (source, session, state, live_catalog) = started_session(50);
+    let graph = NativeAvGstreamerGraph::build(&graph_spec(&live_catalog)).expect("native graph");
+    let pipeline = graph.pipeline().clone();
+    let runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+    assert_eq!(runtime.state(), NativeAvRuntimeState::Playing);
+    assert!(state.lock().expect("fake state").native_authority_live);
+
+    drop(runtime);
+
+    let state = state.lock().expect("fake state");
+    assert!(!state.native_authority_live);
+    assert_eq!(state.native_release_count, 1);
+    assert_eq!(state.reconciliations, 1);
+    assert!(state.terminal.is_some());
+    drop(state);
+    assert_pipeline_null(&pipeline);
+}
+
+#[test]
+fn dropping_an_eos_requested_runtime_does_not_double_release_native_authority() {
+    let (source, session, state, live_catalog) = started_session(51);
+    let graph = NativeAvGstreamerGraph::build(&graph_spec(&live_catalog)).expect("native graph");
+    let pipeline = graph.pipeline().clone();
+    let mut runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+    runtime
+        .request_stop(MonotonicTimeNs::new(200_000_000))
+        .expect("bounded stop request");
+    assert_eq!(runtime.state(), NativeAvRuntimeState::EosRequested);
+
+    drop(runtime);
+
+    let state = state.lock().expect("fake state");
+    assert!(!state.native_authority_live);
+    assert_eq!(state.native_release_count, 1);
+    assert_eq!(state.reconciliations, 1);
+    assert!(state.terminal.is_some());
+    drop(state);
+    assert_pipeline_null(&pipeline);
+}
+
+#[test]
+fn hostile_drop_never_unwinds_and_leaves_unconfirmed_native_authority_sticky() {
+    let (source, session, state, live_catalog) = started_session(52);
+    let graph = NativeAvGstreamerGraph::build(&graph_spec(&live_catalog)).expect("native graph");
+    let pipeline = graph.pipeline().clone();
+    let runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+    state
+        .lock()
+        .expect("fake state")
+        .panic_terminal_execute_once = true;
+
+    let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(runtime)));
+    assert!(dropped.is_ok(), "runtime Drop must contain adapter panics");
+
+    let state = state.lock().expect("fake state");
+    assert!(state.native_authority_live);
+    assert_eq!(state.native_release_count, 0);
+    assert_eq!(state.reconciliations, 1);
+    assert!(state.terminal.is_none());
+    drop(state);
+    assert_pipeline_null(&pipeline);
+}
+
+#[test]
+fn explicit_quiesce_retries_the_same_sticky_terminal_after_an_unconfirmed_attempt() {
+    let (source, session, state, live_catalog) = started_session(53);
+    let graph = NativeAvGstreamerGraph::build(&graph_spec(&live_catalog)).expect("native graph");
+    let mut runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+    state
+        .lock()
+        .expect("fake state")
+        .panic_terminal_execute_once = true;
+
+    let first = runtime.quiesce().expect("contained hostile quiesce");
+    assert_eq!(
+        first,
+        NativeAvTermination {
+            outcome: NativeAvRuntimeOutcome::Failed(NativeAvRuntimeFailure::CaptureContract),
+            source_teardown: NativeAvSourceTeardown::ContractFailed,
+            graph_teardown: NativeAvGraphTeardown::NullReached,
+        }
+    );
+    assert_eq!(runtime.state(), NativeAvRuntimeState::Failed);
+    assert_eq!(runtime.session().state(), AvSessionState::Stopping);
+
+    let second = runtime.quiesce().expect("same terminal retry");
+    assert_eq!(
+        second,
+        NativeAvTermination {
+            outcome: NativeAvRuntimeOutcome::Cancelled,
+            source_teardown: NativeAvSourceTeardown::Confirmed,
+            graph_teardown: NativeAvGraphTeardown::NullReached,
+        }
+    );
+    assert_eq!(runtime.state(), NativeAvRuntimeState::NullConfirmed);
+    let state = state.lock().expect("fake state");
+    assert!(!state.native_authority_live);
+    assert_eq!(state.native_release_count, 1);
+    assert_eq!(state.reconciliations, 2);
+    assert_eq!(state.reconciled_terminals.len(), 2);
+    assert_eq!(state.reconciled_terminals[0], state.reconciled_terminals[1]);
 }

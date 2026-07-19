@@ -9,6 +9,7 @@
 
 use std::{
     collections::BTreeMap,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -412,7 +413,7 @@ impl AvLocalAppSrcAdapter for NativeAvAppSrc {
     }
 }
 
-pub struct NativeAvRuntime<B> {
+pub struct NativeAvRuntime<B: NativeAvBridge> {
     source: BoundNativeAvBridge<B>,
     session: AvCaptureSession,
     graph: NativeAvGstreamerGraph,
@@ -425,7 +426,7 @@ pub struct NativeAvRuntime<B> {
     eos_deadline_ns: Option<u64>,
 }
 
-impl<B> std::fmt::Debug for NativeAvRuntime<B> {
+impl<B: NativeAvBridge> std::fmt::Debug for NativeAvRuntime<B> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NativeAvRuntime")
@@ -658,14 +659,42 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
     }
 
     pub fn cancel(&mut self) -> Result<NativeAvTermination, NativeAvRuntimeError> {
+        self.quiesce()
+    }
+
+    /// Makes one bounded best-effort attempt to quiesce native authority and
+    /// confirm that the GStreamer graph reached `Null`.
+    ///
+    /// Unlike an ordinary product outcome, this cleanup operation may be
+    /// retried after a prior failed teardown. A failed native attempt leaves
+    /// the session's terminal request and unconfirmed stamps intact so a later
+    /// call can reconcile the same authority rather than minting a new stop.
+    /// The native adapter must honor the timeout carried by its operation
+    /// ticket; safe Rust cannot preempt an adapter that violates that contract.
+    pub fn quiesce(&mut self) -> Result<NativeAvTermination, NativeAvRuntimeError> {
         if !matches!(
             self.state,
-            NativeAvRuntimeState::Playing | NativeAvRuntimeState::EosRequested
+            NativeAvRuntimeState::Playing
+                | NativeAvRuntimeState::EosRequested
+                | NativeAvRuntimeState::Failed
         ) {
             return Err(NativeAvRuntimeError::InvalidTransition);
         }
-        let source_teardown = self.quiesce_native();
-        let graph_teardown = confirm_graph_null(&mut self.graph);
+        Ok(self.quiesce_once())
+    }
+
+    fn quiesce_once(&mut self) -> NativeAvTermination {
+        // Drop must never unwind because a native adapter or GStreamer wrapper
+        // violated its no-panic contract. Each owner is isolated so a source
+        // panic cannot prevent the independent graph from being driven to
+        // Null. The resulting unconfirmed source authority stays sticky in the
+        // session and is never reported as a successful cancellation.
+        let source_teardown = catch_unwind(AssertUnwindSafe(|| self.quiesce_native()))
+            .unwrap_or(NativeAvSourceTeardown::ContractFailed);
+        let graph_teardown = catch_unwind(AssertUnwindSafe(|| confirm_graph_null(&mut self.graph)))
+            .unwrap_or(NativeAvGraphTeardown::NullFailed(
+                NativeAvGraphFailure::NullNotReached,
+            ));
         self.eos_deadline_ns = None;
         let outcome = if source_teardown == NativeAvSourceTeardown::Confirmed
             && graph_teardown == NativeAvGraphTeardown::NullReached
@@ -675,18 +704,23 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         } else {
             self.state = NativeAvRuntimeState::Failed;
             NativeAvRuntimeOutcome::Failed(match source_teardown {
-                NativeAvSourceTeardown::Confirmed => {
-                    NativeAvRuntimeFailure::Graph(NativeAvGraphFailure::NullNotReached)
-                }
+                NativeAvSourceTeardown::Confirmed => match graph_teardown {
+                    NativeAvGraphTeardown::NullReached => {
+                        NativeAvRuntimeFailure::Graph(NativeAvGraphFailure::NullNotReached)
+                    }
+                    NativeAvGraphTeardown::NullFailed(failure) => {
+                        NativeAvRuntimeFailure::Graph(failure)
+                    }
+                },
                 NativeAvSourceTeardown::NativeFailed(code) => NativeAvRuntimeFailure::Native(code),
                 NativeAvSourceTeardown::ContractFailed => NativeAvRuntimeFailure::CaptureContract,
             })
         };
-        Ok(NativeAvTermination {
+        NativeAvTermination {
             outcome,
             source_teardown,
             graph_teardown,
-        })
+        }
     }
 
     fn poll_native_events(
@@ -1040,6 +1074,17 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
                 Ok(failure) => NativeAvSourceTeardown::NativeFailed(failure.code),
                 Err(_) => NativeAvSourceTeardown::ContractFailed,
             },
+        }
+    }
+}
+
+impl<B: NativeAvBridge> Drop for NativeAvRuntime<B> {
+    fn drop(&mut self) {
+        if matches!(
+            self.state,
+            NativeAvRuntimeState::Playing | NativeAvRuntimeState::EosRequested
+        ) {
+            let _ = self.quiesce_once();
         }
     }
 }

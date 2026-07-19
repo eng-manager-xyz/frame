@@ -14,6 +14,7 @@ tauri-app = ["dep:tauri"]
 macos-native = [
     "tauri-app",
     "dep:frame-media",
+    "dep:frame-macos-av-capture",
     "dep:frame-macos-screen-capture",
     "dep:rustix",
 ]
@@ -42,6 +43,7 @@ zeroize.workspace = true
 tauri = { version = "=2.11.5", optional = true , features = [] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+frame-macos-av-capture = { path = "../../crates/macos-av-capture", optional = true }
 frame-macos-screen-capture = { path = "../../crates/macos-screen-capture", optional = true }
 rustix = { workspace = true, optional = true }
 

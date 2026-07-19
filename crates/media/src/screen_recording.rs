@@ -7,6 +7,7 @@
 //! the recording; only [`ScreenRecording::finish`] verifies every encoded
 //! frame and atomically commits an output.
 
+mod av;
 mod output;
 mod pump;
 
@@ -35,6 +36,10 @@ use output::{
 };
 
 pub use crate::ScreenFramePayload as ScreenRecordingPayload;
+pub use av::{
+    F32StereoAudioChunk, ScreenAudioRecording, ScreenAudioRecordingArtifact,
+    ScreenAudioRecordingIngressStatus, SystemAudioRecordingSpec,
+};
 pub use pump::{
     ScreenPumpCancellationTeardown, ScreenPumpError, ScreenPumpOutcome, ScreenPumpReport,
     ScreenPumpRetirementFailure, ScreenPumpTeardownStatus, ScreenPumpTerminalFailure,
@@ -556,6 +561,12 @@ impl ScreenRecording {
         self.spec
     }
 
+    /// Number of frames accepted by this graph since it started.
+    #[must_use]
+    pub const fn submitted_frames(&self) -> u64 {
+        self.submitted_frames
+    }
+
     /// Returns the current bounded appsrc occupancy without waiting for the
     /// encoder. A single owner can use this snapshot to defer its next drain
     /// attempt instead of submitting a frame that would terminalize on
@@ -572,12 +583,6 @@ impl ScreenRecording {
                 || ingress.bytes >= SCREEN_RECORDING_QUEUE_BYTES
                 || ingress.time_ns >= self.spec.ingress_max_time_ns,
         }
-    }
-
-    /// Number of frames accepted by this graph since it started.
-    #[must_use]
-    pub const fn submitted_frames(&self) -> u64 {
-        self.submitted_frames
     }
 
     /// True only before this live graph has accepted input, observed a

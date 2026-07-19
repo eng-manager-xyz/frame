@@ -17,6 +17,8 @@ mod runtime;
 mod screen_capture;
 mod screen_recording;
 mod studio;
+mod studio_edit_executor;
+mod studio_native_execution;
 mod supervisor;
 
 use std::path::Path;
@@ -38,6 +40,8 @@ pub use runtime::*;
 pub use screen_capture::*;
 pub use screen_recording::*;
 pub use studio::*;
+pub use studio_edit_executor::*;
+pub use studio_native_execution::*;
 pub use supervisor::*;
 
 /// Records the existing fixed-profile synthetic VP8/WebM smoke fixture.

@@ -17,16 +17,22 @@ but still needs a reviewed representative legacy-project corpus.
 The remaining tests exercise contracts, synthetic GStreamer sources,
 filesystem components, and a reference renderer, not a production Studio
 service. The `macos-native` release composition now pumps one selected full
-display into a separate VP8/WebM recorder, but it does not supply microphone,
-system-audio, or camera tracks and is not connected to the Studio multitrack
-graph, journal, project, edit plan, or recovery stores. Its artifact-backed
-Editable WebM copy/publication is not an edit-aware Studio export. The playable
-preview and export helpers each consume a single source path and do not execute
-the canonical edit plan; the MP4 helper has no audio branch. The reference
-renderer writes a checksum-bound bundle rather than the requested playable
-edit-aware export. Therefore these paths cannot satisfy Studio native
-recording, recovery, edit-aware preview/export, Cloudflare distribution-master,
-decoded-golden, long-project, or hardware-fallback/cancellation checkboxes.
+display plus optional exact 48 kHz stereo system audio into a separate
+VP8/Opus WebM recorder, but it does not supply microphone or camera tracks and
+is not connected to the Studio multitrack graph, journal, project, edit plan,
+or recovery stores. Its artifact-backed Editable WebM copy/publication
+is not an edit-aware Studio export. A new narrow native adapter does execute
+the shared canonical plan for a clock-aligned screen original plus optional
+microphone/system-audio originals: preview maps an
+edited output point before real decode, and export applies trim/delete/rational
+speed plus audio gaps/gain/mute to a playable VP8/Opus WebM. It is not wired to
+the desktop or `StudioRenderCoordinator`, does not assemble arbitrary
+asset-offset ranges, and fails closed for camera, cursor, background,
+camera-only, and side-by-side composition. The reference renderer still writes
+a checksum-bound bundle rather than dispatching that native adapter. Therefore
+these paths cannot yet satisfy the complete Studio native recording/recovery,
+edit-aware compositor, Cloudflare distribution-master, decoded-golden,
+long-project, or hardware-fallback/cancellation checkboxes.
 
 ## Executed locally
 
@@ -39,15 +45,29 @@ The external contract suite exercises:
   hashes, pinned flattened single-segment and multiple-segment forms, known
   default fields, unsupported-effect and newer-version reporting, normalized
   paths, symlink/traversal/missing-file rejection, and an asset-bound copy plan;
-- four isolated screen/camera/microphone/system-audio graph branches and
-  rejection of flattened/duplicate tracks, plus a filesystem recording-session
-  adapter that seals four independent pre-encoded temporary originals and
-  reopens a crash state containing both partial and already-sealed tracks;
+- one required screen graph branch plus independently optional camera,
+  microphone, and system-audio branches, with rejection of missing-screen,
+  flattened, or duplicate tracks; the filesystem recording-session adapter
+  seals only enabled VP8/Opus WebM originals and reopens a crash state containing
+  both partial and already-sealed tracks;
 - a native-execution test helper that uses GStreamer to record four
-  independently playable synthetic screen/camera/microphone/system-audio
-  originals on one pipeline clock, validates nontrivial immutable outputs,
+  independently playable synthetic VP8/Opus WebM
+  screen/camera/microphone/system-audio originals on one pipeline clock,
+  validates nontrivial immutable outputs,
   decodes a bounded RGB preview frame at a requested position, and tears down
   every graph to `Null`;
+- one bounded `StudioEditExecutor` used by both native preview lookup and
+  export batching. It partitions optional-track gaps without reinterpreting the
+  saved edit spec, maps edited output time to exact source time, preserves the
+  plan digest and composition/audio state, rejects overflow and excess windows,
+  and does not advance its export cursor after cancellation;
+- a synthetic native edit execution that combines the isolated screen and
+  system-audio originals, applies trim/delete/2× speed and per-window audio gain
+  through accurate, shared-sequence GStreamer segments, waits for every aligned
+  source branch rather than the first aggregate message, bounds any closing
+  screen-frame hold to one second, emits a playable VP8/Opus WebM whose measured
+  duration is within 100 ms of the exact plan, decodes the result, and removes
+  pre-cancelled or failed outputs;
 - a separately composed macOS display-only desktop source and recording graph
   whose source-level checks cover permission preflight, opaque display
   selection, bounded frame ingress, stop/cancel, and artifact-bound Editable
@@ -93,12 +113,13 @@ The external contract suite exercises:
   renderer and journal; and
 - hard buffer/byte/time ceilings on every media queue.
 
-The native execution test also decodes and re-encodes a playable WebM export,
-decodes that output again, and, behind the explicit codec-decision gate, emits
-an MP4 distribution master that a second GStreamer demux/parser graph consumes
-to EOS. These executable synthetic media artifacts prove factory availability
-and basic single-source encode/decode behavior, not the Studio recording or
-edit-aware renderer paths.
+The native execution tests also retain the basic single-source WebM path and,
+behind the explicit codec-decision gate, emit an MP4 that a second GStreamer
+demux/parser graph consumes to EOS. The edit-aware WebM path proves canonical
+temporal/audio execution for aligned synthetic originals, bounded cancellation,
+and a playable output duration. It does not prove camera/cursor/background
+composition, Cloudflare profile geometry/color compliance, arbitrary persisted
+asset assembly, perceptual parity, or coordinator/desktop integration.
 
 The production-mode desktop composition can be built and its adapter-truth
 bootstrap smoked on macOS with:
@@ -127,7 +148,7 @@ cargo test -p frame-media --test studio_mode_contract
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
 GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media \
-  native_execution::tests::studio_tracks_preview_and_webm_export_are_real_and_playable
+  studio_ -- --nocapture
 ```
 
 These commands exercise the provider-neutral Studio contract and synthetic
@@ -153,7 +174,10 @@ cargo clippy --locked -p frame-media --all-targets -- -D warnings
 
 RUSTDOCFLAGS=-Dwarnings cargo doc -p frame-media --no-deps
 
-rustfmt --edition 2024 --check crates/media/src/studio.rs crates/media/tests/studio_mode_contract.rs
+rustfmt --edition 2024 --check crates/media/src/studio.rs \
+  crates/media/src/studio_edit_executor.rs \
+  crates/media/src/studio_native_execution.rs \
+  crates/media/tests/studio_mode_contract.rs
 
 python3 scripts/ci/check-secrets.py
 ```
@@ -172,10 +196,11 @@ not a historical Cap project and its media-named files are not encoded samples.
 The contract suite uses deterministic fake native ports alongside production
 filesystem durability components. Its reference renderer writes a canonical
 checksum-bound bundle, while the separate native execution helpers supply
-synthetic tracks and single-source preview, WebM, and gated video-only MP4
-evidence. The display-only desktop recorder is connected to the release shell
-but not to those multitrack helpers or the Studio coordinator. Timeline goldens
-remain mathematical and are not claimed as decoded or perceptual-diff evidence.
+synthetic tracks, edited preview mapping, aligned A/V WebM, single-source WebM,
+and gated MP4 evidence. The display-only desktop recorder is connected to the
+release shell but not to those multitrack helpers or the Studio coordinator.
+Most timeline goldens remain mathematical; the decoded edited artifact adds a
+duration/playability check, not a perceptual frame or reference-audio diff.
 The JSON keys and non-fragmented `.mp4`/`.ogg` paths were checked against
 `crates/project/src/meta.rs`, `crates/project/src/configuration.rs`, and
 `crates/recording/src/studio_recording.rs` at the pinned revision.
@@ -193,7 +218,7 @@ corresponding repository-local production paths exist:
   within approved tolerances;
 - physical-device native capture plus content-level playback/seek/mux/export
   comparison on every supported release OS;
-- H.264, HEVC, AAC, VP9, Opus, FFV1, and FLAC availability/licensing results on
+- H.264, HEVC, AAC, VP8, Opus, FFV1, and FLAC availability/licensing results on
   every supported release OS and hardware family;
 - hardware encoder failure and software fallback on representative machines;
 - physical power-loss testing at every recording, asset-commit, edit-save, and

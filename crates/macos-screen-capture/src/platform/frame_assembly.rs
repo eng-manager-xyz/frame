@@ -86,6 +86,7 @@ impl FrameAssembler {
             frame: MacOsCaptureFrame {
                 target: self.target,
                 sequence,
+                source_pts_ns: normalized.source_pts_ns,
                 timestamp: normalized.timestamp,
                 spec: self.spec,
                 pixels,

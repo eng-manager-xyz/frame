@@ -46,26 +46,27 @@ the WebView observes `Unavailable`, `DeterministicFake`, or
 `dispatch_native_json` only while that same runtime snapshot names
 `NativeMacOs`; the portable shell continues through the non-native dispatcher.
 
-The native macOS implementation is deliberately display-only. It performs
+The native macOS implementation is deliberately display-target-only. It performs
 GStreamer factory preflight before backend construction, uses ScreenCaptureKit
 permission preflight/request, enumerates bounded privacy-safe display summaries,
 records one selected full display as BGRA/sRGB video with embedded cursor and
-whole-Frame-application exclusion. ScreenCaptureKit `Idle` callbacks repeat the
-last valid Complete frame at the nominal cadence, including the bounded stop
-tail, so unchanged display time remains in the media timeline. The recorder
-writes and verifies through a preopened descriptor, publishes the sealed inode
-with a rooted no-replace rename, retains its SHA-256, and copies exports through
-rooted descriptors while checking that digest. Media, recordings, export, and
-private export-staging directories stay pinned for the backend lifetime; their
-visible identities are revalidated around publication so a rename or real-directory
-replacement fails closed instead of producing a false path. Export keeps its
-staging descriptor through the cross-root rename and rehashes the published inode.
-A bounded health poll reconciles
+whole-Frame-application exclusion, and can optionally mux exact 48 kHz stereo
+system audio while excluding Frame's own process audio. ScreenCaptureKit `Idle`
+callbacks repeat the last valid Complete frame at the nominal cadence, including
+the bounded stop tail, so unchanged display time remains in the media timeline.
+The recorder writes and verifies through a preopened descriptor, publishes the
+sealed inode with a rooted no-replace rename, retains its SHA-256, and copies
+exports through rooted descriptors while checking that digest. Media,
+recordings, export, and private export-staging directories stay pinned for the
+backend lifetime; their visible identities are revalidated around publication
+so a rename or real-directory replacement fails closed instead of producing a
+false path. Export keeps its staging descriptor through the cross-root rename
+and rehashes the published inode. A bounded health poll reconciles
 terminal worker failures without leaving the UI in Recording. The first slice
 is capped at four hours, 2 GB, and a 512 MB filesystem reserve. It
-rejects microphone, system audio, camera, window, region, pause/resume, and MP4
-paths. Its export is artifact-backed single-source WebM, not the canonical
-Studio edit plan or a multitrack/distribution-master render.
+rejects microphone, camera, window, region, pause/resume, and MP4 paths. Its
+export is artifact-backed screen-plus-optional-system-audio WebM, not the
+canonical Studio edit plan or a multitrack/distribution-master render.
 
 ## Window ownership
 

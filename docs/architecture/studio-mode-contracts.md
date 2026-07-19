@@ -6,9 +6,11 @@ separate gates.
 
 ## Durable documents
 
-Studio persists v1 project, asset, and edit documents plus v2 operation
-journals. Journal v2 adds the immutable renderer fence and structured terminal
-render receipt. Each uses a canonical bounded binary envelope:
+Studio persists v1 project and edit documents, v2 asset documents, and v2
+operation journals. Asset v2 adds an explicit container, codec, raw-caps, and
+encoder-timebase descriptor. Journal v2 adds the immutable renderer fence and
+structured terminal render receipt. Each uses a canonical bounded binary
+envelope:
 
 ```
 FRST | kind:u8 | schema:u16 | payload_len:u32 | canonical payload | sha256:32
@@ -25,16 +27,21 @@ same bytes and digest.
 This is a purpose-built persistence codec, not Serde. Serde JSON is used only by
 the read-only legacy Cap adapter. Schema 0 is never silently decoded as schema
 1, and a v1 journal is not guessed as v2. The v1 project decoder returns
-`LegacyImportRequired` for schema 0;
-callers must use the separate read-only `.cap` directory adapter. Newer v1
-schemas are reported without partial interpretation.
+`LegacyImportRequired` for schema 0; callers must use the separate read-only
+`.cap` directory adapter. Asset v1 is migrated explicitly to asset v2 with
+`UnspecifiedLegacyV1` encoding metadata. That marker is persisted on re-save
+and requires a bounded media probe before a native decoder may consume the
+asset. Native consumers must reject the marker until `with_probed_encoding`
+supplies an exact replacement descriptor; no codec or container is inferred
+from its filename. Newer schemas are reported without partial interpretation.
 
 Project, asset, worker, operation, and export identities are caller-minted
 128-bit CSPRNG values. Zero values are reserved. Debug output redacts identities,
 checksums, and source names. Asset records retain their original checksum, byte
-length, start, duration, track role, and exact native ticks-per-second timebase.
-Original assets can only be `DurableOriginal`; a `Temporary` asset is legal only
-inside the recording/recovery boundary.
+length, start, duration, track role, container, codec, exact raw source caps,
+and encoder ticks-per-second timebase. Original assets can only be
+`DurableOriginal`; a `Temporary` asset is legal only inside the
+recording/recovery boundary.
 
 ## Legacy Cap compatibility
 
@@ -73,14 +80,15 @@ not establish product parity.
 ## Recording graph and original assets
 
 The recording graph is a structured adapter contract, not a string pipeline.
-It requires exactly four isolated branches:
+It requires one screen branch. Camera, microphone, and system audio are each
+independently optional, with at most one isolated branch per track:
 
-| Track | Native source family | Recording codec | Temporary container |
-| --- | --- | --- | --- |
-| screen | screen bridge | VP9 | Matroska |
-| camera | camera bridge | VP9 | Matroska |
-| microphone | microphone bridge | Opus or FLAC | Matroska |
-| system audio | system-audio bridge | Opus or FLAC | Matroska |
+| Track | Presence | Native source family | Recording codec | Temporary container |
+| --- | --- | --- | --- | --- |
+| screen | required | screen bridge | VP8 | WebM |
+| camera | optional | camera bridge | VP8 | WebM |
+| microphone | optional | microphone bridge | Opus | WebM |
+| system audio | optional | system-audio bridge | Opus | WebM |
 
 Every branch has a unique opaque asset ID, unique temporary name, exact
 timebase, common monotonic clock identity, and a queue bounded by buffers, bytes,
@@ -88,10 +96,17 @@ and time. Queue declarations must be nonzero and may not exceed 512 buffers,
 256 MiB, or five seconds; adapter-provided larger values fail closed. A flattened
 recording cannot satisfy the graph validator.
 
+Recording graph v2 persists the same encoding descriptor as the resulting
+asset. An in-flight v1 graph is reported as
+`UnsupportedRecordingGraphVersion(1)` and must be recovered by a compatible
+build; it is never relabeled as VP8/Opus because that would reinterpret retained
+partial bytes. This is separate from asset v1 migration, whose format is
+explicitly unknown rather than rewritten.
+
 `FilesystemStudioRecordingSession` is a non-test sink for this graph. Native
-bridges feed bounded pre-encoded chunks to four distinct files; finish syncs and
-seals each track independently into the temporary namespace. It does not
-substitute a flattened master. `FilesystemStudioOriginalStore` verifies bytes
+bridges feed bounded pre-encoded chunks to one file per enabled track; finish
+syncs and seals each track independently into the temporary namespace. It does
+not substitute a flattened master. `FilesystemStudioOriginalStore` verifies bytes
 while staging and committing, uses per-asset locks, same-filesystem rename,
 canonical sidecars, file and directory sync, and never overwrites an existing
 original. If power fails after the media rename but before the sidecar write, a
@@ -103,7 +118,7 @@ partials; it never treats an unwind as authorization to destroy captured media.
 `FilesystemStudioRecordingSession::recover` requires the exact original graph,
 rehashes every retained file under the per-track byte ceiling, reopens partials
 for append, and treats already-sealed temporary tracks as immutable. This also
-covers a crash in the middle of the four-track seal, where some tracks are
+covers a crash in the middle of an enabled-track seal, where some tracks are
 partials and others are already in the temporary namespace.
 
 Temporary media becomes an original only through a non-cloneable commit ticket
@@ -204,12 +219,42 @@ export, receipt, and recovery without fake ports. The bundle is not claimed to
 be a playable MP4/WebM/Matroska or a substitute for the native
 GStreamer/Skia/hardware-codec adapter and protected frame/audio evidence.
 
+`StudioEditExecutor` is the executable boundary shared by native preview and
+export. It validates the canonical plan once, partitions each span at camera and
+audio coverage-gap boundaries, and emits a bounded sequence of exact
+source/output windows. Each window carries the rational playback rate,
+composition style, optional-camera availability, and microphone/system-audio
+availability, gain, and mute state. Preview uses point lookup against those
+windows; export drains the identical windows in batches of at most 256.
+Cancellation is checked before compilation or cursor state advances, and the
+complete allocation ceiling is derived from the existing span and gap limits.
+
+The first native executor slice accepts one required clock-aligned screen
+original plus independently optional clock-aligned microphone and system-audio
+originals. It performs accurate per-window GStreamer segment seeks, converts
+those segments to one continuous output timeline, mixes Opus audio after
+applying canonical gaps/gain/mute, and writes a playable VP8/Opus WebM (or the
+explicitly licensed H.264/AAC MP4 path). It verifies the container and audio
+markers, hashes the complete output, removes partial output on every error, and
+rechecks recursively autoplugged factories against the trusted plugin root.
+Every aligned decoder receives one shared seek sequence number while paused and
+first-buffer blocked; execution advances only after a matching downstream
+`SegmentDone` from every declared source branch. Temporarily inactive mixer pads
+do not suppress a later window. A final decoded screen frame may be held only
+long enough to close the exact output timeline, with a hard one-second ceiling;
+a missing frame or larger closing gap fails the export instead of publishing a
+short artifact.
+Camera composition, transformed cursor metadata, nontransparent backgrounds,
+camera-only/side-by-side layouts, arbitrary asset-offset assembly, and wiring
+this adapter into `StudioRenderCoordinator` still fail closed or remain
+unimplemented; this slice is not the complete Studio service or editor UI.
+
 Approved profiles are exact:
 
 | Profile | Container/video/audio | Geometry/timing/color | Purpose |
 | --- | --- | --- | --- |
 | Distribution master | MP4 / H.264 / AAC-LC | 1920×1080, 30 fps, BT.709 limited, 48 kHz stereo | approved hosted-media input contract |
-| Native HQ WebM | WebM / VP9 / Opus | 2560×1440, 60 fps, BT.709 full, 48 kHz stereo | high-quality native sharing |
+| Native HQ WebM | WebM / VP8 / Opus | 2560×1440, 60 fps, BT.709 full, 48 kHz stereo | high-quality native sharing |
 | Native HQ HEVC | MP4 / HEVC / AAC-LC | 3840×2160, 60 fps, Display-P3, 48 kHz stereo | licensed native output |
 | Native archive | Matroska / FFV1 / FLAC | 3840×2160, 60 fps, BT.709 full, 48 kHz stereo | lossless archival output |
 

@@ -2,15 +2,16 @@
 
 The `macos-native` release composition is a real, narrow production path. It
 can capture one full display, preserve unchanged-screen time, write a VP8/WebM
-recording, seal it, and export a byte-identical Editable WebM. It is not the
-complete Studio product described by issue 27: microphone, system audio,
-camera, window/region capture, pause/resume, project journaling/recovery,
+recording, optionally mux exact 48 kHz stereo system audio as Opus, seal it,
+and export a byte-identical Editable WebM. It is not the complete Studio
+product described by issue 27: microphone, camera, window/region capture,
+pause/resume, project journaling/recovery,
 timeline edits, edit-aware rendering, MP4 distribution output, distribution
 signing, and notarization remain separate deliverables.
 
 ## Build the exact local application
 
-Prerequisites are macOS 12.3 or newer, Xcode command-line tools, the repository
+Prerequisites are macOS 13.0 or newer, Xcode command-line tools, the repository
 Rust toolchain, Trunk, Tauri CLI 2, and the GStreamer installation resolved by
 `pkg-config`. A stable Apple Development or Developer ID code-signing identity
 is required for a reliable ScreenCaptureKit test on current macOS releases.
@@ -70,7 +71,7 @@ In Frame:
 
 1. Select **Confirm permissions** and accept the macOS prompt.
 2. Select **Refresh displays**, then choose one of the opaque Display buttons.
-3. Select **Start recording**.
+3. Optionally enable system audio in Settings, then select **Start recording**.
 4. Leave the display unchanged for at least five seconds, change visible
    content once, then select **Stop**. The status must say the artifact was
    sealed; a failure or a UI that remains Recording is a failed test.
@@ -93,6 +94,15 @@ The recorder fails closed at four hours, 2,000,000,000 encoded bytes, or less
 than 512,000,000 available filesystem bytes. Callback, appsrc, GStreamer, and
 stop-tail queues are separately bounded.
 
+When system audio is requested, startup holds at most one video frame and one
+audio chunk for at most 80 ms. Their raw epoch-zero ScreenCaptureKit timestamps
+establish one shared origin, preserving the real startup offset before either
+item reaches GStreamer. Missing comparable video time or no initial audio chunk
+fails the A/V session; Frame never fabricates PCM. Disable system audio and
+retry to use the verified screen-only fallback. Native permission/start or
+required-factory availability failures that prove complete audio teardown also
+fall back to screen-only and report that mode in the UI.
+
 ## Verify the artifacts
 
 Use the two paths produced by the run:
@@ -105,8 +115,9 @@ shasum -a 256 \
   /absolute/path/to/Frame-export.webm
 ```
 
-Both probes must report a playable VP8 WebM video. The duration must cover the
-five-second unchanged interval within normal frame-timing tolerance, and the
+Both probes must report a playable VP8 WebM video; an A/V run must also report
+Opus stereo audio at 48 kHz. The duration must cover the five-second unchanged
+interval within normal frame-timing tolerance, and the
 two SHA-256 values must match because the current Editable WebM export is an
 integrity-checked copy of the sealed source.
 
@@ -116,6 +127,10 @@ The source-level and synthetic gates can be rerun with:
 GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked \
   -p frame-macos-screen-capture --all-targets
+
+GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
+  scripts/ci/gstreamer-sanitized-exec cargo test --locked \
+  -p frame-macos-av-capture --all-targets
 
 GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked \

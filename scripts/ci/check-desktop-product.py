@@ -51,6 +51,7 @@ def main() -> int:
     desktop_manifest = text("apps/desktop/Cargo.toml")
     native_contract = text("apps/desktop/src/native_backend.rs")
     macos_backend = text("apps/desktop/src/macos_native_backend.rs")
+    macos_av_worker = text("apps/desktop/src/macos_native_backend/av_worker.rs")
     rooted_io = text("apps/desktop/src/rooted_io.rs")
     gstreamer_bootstrap = text("apps/desktop/src/gstreamer_bootstrap.rs")
     macos_capture = text("crates/macos-screen-capture/src/lib.rs") + text(
@@ -105,7 +106,7 @@ def main() -> int:
             "pub fn preflight_instant_finalize",
             "pub fn disable_native_instant_finalize",
             "InstantUiProgressV1",
-            "Native capture currently supports display video only.",
+            "Native capture supports display video with optional system audio only.",
             "ExportProfile::EditableWebm",
             "NativeRecordingStopOutcome::Sealed",
             "NativeRecordingCancelOutcome::Cancelled",
@@ -140,6 +141,7 @@ def main() -> int:
             'tauri-app = ["dep:tauri"]',
             'macos-native = [',
             '"dep:frame-media"',
+            '"dep:frame-macos-av-capture"',
             '"dep:frame-macos-screen-capture"',
         ),
         "desktop feature boundary",
@@ -183,9 +185,28 @@ def main() -> int:
             "fn export_editable_webm(",
             "artifact.token == request.artifact_token",
             "artifact.revision == request.artifact_revision",
-            "Unsupported audio,",
+            "MacOsSystemAudioSource",
+            "ScreenAudioRecording::start_preopened(",
+            "system_audio_included",
         ),
-        "macOS display-only backend",
+        "macOS display and system-audio backend",
+    )
+    require(
+        macos_av_worker,
+        (
+            "STARTUP_CALIBRATION_TIMEOUT",
+            "calibrate_av_startup",
+            "SharedClockNormalizer",
+            "at most one item",
+            "poll_audio_first = !poll_audio_first",
+            "stop_and_drain_frames()",
+            "stop_and_drain_chunks()",
+            "all_av_teardown_confirmed(",
+            "recording.end_of_stream()",
+            "recording.finish(&CancellationToken::new())",
+            "Do not fabricate PCM",
+        ),
+        "macOS A/V ownership worker",
     )
     require(
         rooted_io,
@@ -288,7 +309,7 @@ def main() -> int:
             'instant_error_message',
             "RecorderAdapterState::NativeMacOsDisplay",
             "ExportProfile::EditableWebm",
-            "Native macOS capture currently records display video only.",
+            "Native macOS capture records the selected target and can optionally include system audio.",
             '<progress',
             '<meter',
         ),
@@ -364,7 +385,9 @@ def main() -> int:
             "Composition and adapter truth",
             "Window ownership",
             "NativeMacOsDisplay",
-            "display-only",
+            "display-target-only",
+            "can optionally mux exact 48 kHz stereo",
+            "system audio while excluding Frame's own process audio",
             "not a Studio project",
             "does not wire a usable previous-channel selector",
             "Production-mode build and smoke",
@@ -377,6 +400,7 @@ def main() -> int:
         (
             "portable `tauri-app` build deliberately selects `Unavailable`",
             "`NativeMacOsDisplay` is not the complete recorder",
+            "optionally includes exact 48 kHz stereo system audio",
             "--features tauri-app,custom-protocol,macos-native",
             "--expected-adapter unavailable",
             "--expected-adapter native_macos_display",
@@ -389,6 +413,7 @@ def main() -> int:
         (
             "does not reclassify any checkbox",
             "Native macOS display-only source evidence",
+            "optional exact 48 kHz stereo system audio",
             "source wired; physical run pending",
             "does not start capture",
             "--expected-adapter native_macos_display",
@@ -399,6 +424,7 @@ def main() -> int:
         studio_evidence,
         (
             "It does not classify the complete Studio product path as locally implemented.",
+            "optional exact 48 kHz stereo system audio",
             "not an edit-aware Studio export",
             "does not request capture permission",
             "not to those multitrack helpers or the Studio coordinator",
@@ -411,6 +437,7 @@ def main() -> int:
         (
             "Local deterministic evidence",
             "Native macOS display-only source evidence",
+            "Optional macOS system audio is the only native audio source currently supported",
             "Protected evidence still required",
             "publication journey; the native WebM path",
             "--expected-adapter native_macos_display",
@@ -421,6 +448,7 @@ def main() -> int:
         operations,
         (
             "Build modes and current boundary",
+            "optionally mux exact 48 kHz stereo system audio as Opus",
             "Crash and recovery",
             "`macos-native` has no durable journal or recovery-store composition.",
             "workflow and validator are not evidence that a physical run occurred",
@@ -447,6 +475,17 @@ def main() -> int:
                 "NotSelected",
                 "The release binary selects only `DesktopAdapterKind::Unavailable`",
                 "A release binary selects `Unavailable`",
+                "capture, microphone, system audio, camera",
+                "rejects microphone, system audio, camera",
+                "rejects audio, camera, window",
+                "does not supply microphone,\nsystem-audio, or camera tracks",
+                "all audio/camera inputs disabled",
+                "display-video source and WebM path. It continues to refuse unsupported audio,\ncamera",
+                "video-only VP8/WebM",
+                "not support window/region capture, microphone, system audio, camera",
+                "stop seals a single-source artifact",
+                "display-video source and WebM path",
+                "Windows, audio, camera",
             ),
             label,
         )

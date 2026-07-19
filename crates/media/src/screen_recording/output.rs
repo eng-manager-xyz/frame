@@ -42,9 +42,34 @@ pub(super) const VERIFICATION_FACTORIES: &[&str] =
 pub(super) const VERIFICATION_FACTORIES: &[&str] =
     &["filesrc", "matroskademux", "identity", "vp8dec", "fakesink"];
 
+#[cfg(unix)]
+pub(super) const AV_VERIFICATION_FACTORIES: &[&str] = &[
+    "fdsrc",
+    "matroskademux",
+    "identity",
+    "vp8dec",
+    "opusdec",
+    "fakesink",
+];
+
+#[cfg(not(unix))]
+pub(super) const AV_VERIFICATION_FACTORIES: &[&str] = &[
+    "filesrc",
+    "matroskademux",
+    "identity",
+    "vp8dec",
+    "opusdec",
+    "fakesink",
+];
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ExpectedVideo {
     pub frames: u64,
+    pub duration_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ExpectedAudio {
     pub duration_ns: u64,
 }
 
@@ -56,6 +81,16 @@ pub(super) struct VerifiedWebm {
     pub first_pts_ns: u64,
     pub end_pts_ns: u64,
     pub encoded_duration_ns: u64,
+}
+
+#[derive(Debug)]
+pub(super) struct VerifiedAvWebm {
+    pub bytes: u64,
+    pub sha256: String,
+    pub encoded_video_frames: u64,
+    pub decoded_audio_buffers: u64,
+    pub video_duration_ns: u64,
+    pub audio_duration_ns: u64,
 }
 
 /// Owns the only directory in which a recording/export writer may create data.
@@ -314,6 +349,16 @@ pub(super) fn preflight_verification() -> Result<(), ScreenRecordingError> {
     require_trusted(&pipeline)
 }
 
+pub(super) fn preflight_av_verification() -> Result<(), ScreenRecordingError> {
+    for name in AV_VERIFICATION_FACTORIES {
+        if gst::ElementFactory::find(name).is_none() {
+            return Err(ScreenRecordingError::MissingFactory);
+        }
+    }
+    let pipeline = build_av_verifier_pipeline()?;
+    require_trusted(&pipeline)
+}
+
 pub(super) fn verify_playable_webm(
     output: &Path,
     cancellation: &CancellationToken,
@@ -348,6 +393,88 @@ pub(super) fn verify_playable_webm_file(
     compute_hash: bool,
 ) -> Result<VerifiedWebm, ScreenRecordingError> {
     verify_playable_webm_file_with_path(file, None, cancellation, expected, compute_hash)
+}
+
+#[cfg(not(unix))]
+pub(super) fn verify_playable_av_webm(
+    output: &Path,
+    cancellation: &CancellationToken,
+    expected_video: ExpectedVideo,
+    expected_audio: ExpectedAudio,
+) -> Result<VerifiedAvWebm, ScreenRecordingError> {
+    let metadata = fs::symlink_metadata(output).map_err(ScreenRecordingError::Filesystem)?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() < MINIMUM_WEBM_BYTES
+    {
+        return Err(ScreenRecordingError::InvalidOutput);
+    }
+    let mut file = File::open(output).map_err(ScreenRecordingError::Filesystem)?;
+    let verified = verify_playable_av_webm_file_with_path(
+        &mut file,
+        Some(output),
+        cancellation,
+        expected_video,
+        expected_audio,
+    )?;
+    if verified.bytes != metadata.len() {
+        return Err(ScreenRecordingError::OutputOwnership);
+    }
+    Ok(verified)
+}
+
+pub(super) fn verify_playable_av_webm_file(
+    file: &mut File,
+    cancellation: &CancellationToken,
+    expected_video: ExpectedVideo,
+    expected_audio: ExpectedAudio,
+) -> Result<VerifiedAvWebm, ScreenRecordingError> {
+    verify_playable_av_webm_file_with_path(file, None, cancellation, expected_video, expected_audio)
+}
+
+fn verify_playable_av_webm_file_with_path(
+    file: &mut File,
+    path: Option<&Path>,
+    cancellation: &CancellationToken,
+    expected_video: ExpectedVideo,
+    expected_audio: ExpectedAudio,
+) -> Result<VerifiedAvWebm, ScreenRecordingError> {
+    let started = Instant::now();
+    check_budget(cancellation, started)?;
+    let metadata = file.metadata().map_err(ScreenRecordingError::Filesystem)?;
+    if !metadata.file_type().is_file() || metadata.len() < MINIMUM_WEBM_BYTES {
+        return Err(ScreenRecordingError::InvalidOutput);
+    }
+    verify_av_webm_markers(file, metadata.len(), cancellation, started)?;
+    let encoded = inspect_encoded_av(file, path, cancellation, started)?;
+    if encoded.video.frames != expected_video.frames
+        || encoded
+            .video
+            .duration_ns
+            .abs_diff(expected_video.duration_ns)
+            > TIMELINE_TOLERANCE_NS
+        || encoded
+            .audio
+            .duration_ns
+            .abs_diff(expected_audio.duration_ns)
+            > 25_000_000
+    {
+        return Err(ScreenRecordingError::FrameLoss);
+    }
+    let sha256 = sha256_file(file, cancellation, started)?;
+    check_budget(cancellation, started)?;
+    let final_metadata = file.metadata().map_err(ScreenRecordingError::Filesystem)?;
+    if !final_metadata.file_type().is_file() || final_metadata.len() != metadata.len() {
+        return Err(ScreenRecordingError::OutputOwnership);
+    }
+    Ok(VerifiedAvWebm {
+        bytes: metadata.len(),
+        sha256,
+        encoded_video_frames: encoded.video.frames,
+        decoded_audio_buffers: encoded.audio.frames,
+        video_duration_ns: encoded.video.duration_ns,
+        audio_duration_ns: encoded.audio.duration_ns,
+    })
 }
 
 fn verify_playable_webm_file_with_path(
@@ -411,6 +538,26 @@ fn verify_webm_markers(
     Ok(())
 }
 
+fn verify_av_webm_markers(
+    file: &mut File,
+    bytes: u64,
+    cancellation: &CancellationToken,
+    started: Instant,
+) -> Result<(), ScreenRecordingError> {
+    verify_webm_markers(file, bytes, cancellation, started)?;
+    let probe_len = usize::try_from(bytes.min(WEBM_PROBE_BYTES))
+        .map_err(|_| ScreenRecordingError::InvalidOutput)?;
+    let mut prefix = vec![0_u8; probe_len];
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.read_exact(&mut prefix))
+        .map_err(ScreenRecordingError::Filesystem)?;
+    check_budget(cancellation, started)?;
+    if !prefix.windows(6).any(|window| window == b"A_OPUS") {
+        return Err(ScreenRecordingError::InvalidOutput);
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct EncodedVideoProbe {
     frames: AtomicU64,
@@ -425,6 +572,12 @@ struct EncodedVideo {
     first_pts_ns: u64,
     end_pts_ns: u64,
     duration_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EncodedAv {
+    video: EncodedVideo,
+    audio: EncodedVideo,
 }
 
 fn inspect_encoded_video(
@@ -520,6 +673,113 @@ fn inspect_encoded_video(
     })
 }
 
+fn inspect_encoded_av(
+    file: &mut File,
+    _path: Option<&Path>,
+    cancellation: &CancellationToken,
+    started: Instant,
+) -> Result<EncodedAv, ScreenRecordingError> {
+    preflight_av_verification()?;
+    let pipeline = build_av_verifier_pipeline()?;
+    let source = pipeline
+        .by_name("screen_av_verify_source")
+        .ok_or(ScreenRecordingError::Pipeline)?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+
+        file.seek(SeekFrom::Start(0))
+            .map_err(ScreenRecordingError::Filesystem)?;
+        source.set_property("fd", file.as_raw_fd());
+    }
+    #[cfg(not(unix))]
+    source.set_property(
+        "location",
+        _path.ok_or(ScreenRecordingError::InvalidConfiguration)?,
+    );
+    require_trusted(&pipeline)?;
+    let video = install_timing_probe(&pipeline, "screen_av_verify_video")?;
+    let audio = install_timing_probe(&pipeline, "screen_av_verify_audio")?;
+
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|_| ScreenRecordingError::Pipeline)?;
+    let terminal = wait_for_verifier(&pipeline, cancellation, started);
+    let teardown = set_null(&pipeline);
+    terminal?;
+    teardown?;
+    require_trusted(&pipeline)?;
+
+    Ok(EncodedAv {
+        video: timing_probe_result(&video)?,
+        audio: timing_probe_result(&audio)?,
+    })
+}
+
+fn install_timing_probe(
+    pipeline: &gst::Pipeline,
+    element_name: &str,
+) -> Result<Arc<EncodedVideoProbe>, ScreenRecordingError> {
+    let element = pipeline
+        .by_name(element_name)
+        .ok_or(ScreenRecordingError::Pipeline)?;
+    let pad = element
+        .static_pad("src")
+        .ok_or(ScreenRecordingError::Pipeline)?;
+    let probe = Arc::new(EncodedVideoProbe {
+        first_pts_ns: AtomicU64::new(u64::MAX),
+        ..EncodedVideoProbe::default()
+    });
+    let callback_probe = Arc::clone(&probe);
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_, information| {
+        if let Some(gst::PadProbeData::Buffer(buffer)) = information.data.as_ref() {
+            let _ = callback_probe.frames.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |current| current.checked_add(1),
+            );
+            match (buffer.pts(), buffer.duration()) {
+                (Some(pts), Some(duration)) => {
+                    let pts_ns = pts.nseconds();
+                    let Some(end_ns) = pts_ns.checked_add(duration.nseconds()) else {
+                        callback_probe.invalid_timing.store(true, Ordering::Relaxed);
+                        return gst::PadProbeReturn::Ok;
+                    };
+                    callback_probe
+                        .first_pts_ns
+                        .fetch_min(pts_ns, Ordering::Relaxed);
+                    callback_probe
+                        .end_pts_ns
+                        .fetch_max(end_ns, Ordering::Relaxed);
+                }
+                _ => callback_probe.invalid_timing.store(true, Ordering::Relaxed),
+            }
+        }
+        gst::PadProbeReturn::Ok
+    })
+    .ok_or(ScreenRecordingError::Pipeline)?;
+    Ok(probe)
+}
+
+fn timing_probe_result(probe: &EncodedVideoProbe) -> Result<EncodedVideo, ScreenRecordingError> {
+    let frames = probe.frames.load(Ordering::Relaxed);
+    let first_pts_ns = probe.first_pts_ns.load(Ordering::Relaxed);
+    let end_pts_ns = probe.end_pts_ns.load(Ordering::Relaxed);
+    if frames == 0
+        || first_pts_ns == u64::MAX
+        || end_pts_ns <= first_pts_ns
+        || probe.invalid_timing.load(Ordering::Relaxed)
+    {
+        return Err(ScreenRecordingError::InvalidOutput);
+    }
+    Ok(EncodedVideo {
+        frames,
+        first_pts_ns,
+        end_pts_ns,
+        duration_ns: end_pts_ns - first_pts_ns,
+    })
+}
+
 fn build_verifier_pipeline() -> Result<gst::Pipeline, ScreenRecordingError> {
     #[cfg(unix)]
     let description = concat!(
@@ -530,6 +790,25 @@ fn build_verifier_pipeline() -> Result<gst::Pipeline, ScreenRecordingError> {
     let description = concat!(
         "filesrc name=screen_verify_source ! matroskademux ",
         "! identity name=screen_verify_counter ! vp8dec ! fakesink sync=false"
+    );
+    gst::parse::launch(description)
+        .map_err(|_| ScreenRecordingError::Pipeline)?
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| ScreenRecordingError::Pipeline)
+}
+
+fn build_av_verifier_pipeline() -> Result<gst::Pipeline, ScreenRecordingError> {
+    #[cfg(unix)]
+    let description = concat!(
+        "fdsrc name=screen_av_verify_source ! matroskademux name=demux ",
+        "demux. ! queue ! video/x-vp8 ! vp8dec ! identity name=screen_av_verify_video ! fakesink sync=false ",
+        "demux. ! queue ! audio/x-opus ! opusdec ! identity name=screen_av_verify_audio ! fakesink sync=false"
+    );
+    #[cfg(not(unix))]
+    let description = concat!(
+        "filesrc name=screen_av_verify_source ! matroskademux name=demux ",
+        "demux. ! queue ! video/x-vp8 ! vp8dec ! identity name=screen_av_verify_video ! fakesink sync=false ",
+        "demux. ! queue ! audio/x-opus ! opusdec ! identity name=screen_av_verify_audio ! fakesink sync=false"
     );
     gst::parse::launch(description)
         .map_err(|_| ScreenRecordingError::Pipeline)?
