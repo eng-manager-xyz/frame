@@ -9,9 +9,19 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    # GitHub's Windows PowerShell wrapper does not stop after a native process
+    # returns nonzero. Bash is installed on every hosted matrix image and is
+    # invoked with `-e -o pipefail`, so each command in a multi-command gate is
+    # authoritative instead of only the final command.
+    shell: bash
+
 concurrency:
-  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Supersede stale runs only for the same pull request. Every landed-main and
+  # manually dispatched run gets a unique group and must finish independently.
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always

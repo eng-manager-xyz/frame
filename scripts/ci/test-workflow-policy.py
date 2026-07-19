@@ -201,6 +201,24 @@ def main() -> int:
             ),
             (
                 quality,
+                "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+                "cancel-in-progress: true",
+                "cancelled landed-main build",
+            ),
+            (
+                quality,
+                "github.event.pull_request.number || github.run_id",
+                "github.event.pull_request.number || github.ref",
+                "ref-grouped landed-main build replacement",
+            ),
+            (
+                quality,
+                "    shell: bash\n",
+                "    shell: pwsh\n",
+                "Windows native-command failure masking",
+            ),
+            (
+                quality,
                 "auth-d1-conformance.py",
                 "auth-d1-advisory.py",
                 "missing auth D1 conformance",

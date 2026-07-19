@@ -113,6 +113,24 @@ def main() -> int:
     )
     require("pull_request:" in quality and "push:" in quality, "quality-gates.yml: must run for pull requests and main pushes", errors)
     require("${{ secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
+    require(
+        "group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+        in quality
+        and "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+        in quality,
+        "quality-gates.yml: stale same-PR checks may cancel, but landed-main and manual runs must be unique and noncancellable",
+        errors,
+    )
+    require(
+        re.search(
+            r"^defaults:\n  run:\n(?:    #.*\n)*    shell: bash$",
+            quality,
+            re.MULTILINE,
+        )
+        is not None,
+        "quality-gates.yml: every hosted OS must fail immediately after a native command exits nonzero",
+        errors,
+    )
     require("check-parity-evidence.py" in quality,
             "quality-gates.yml: the fast parity evidence lane must be required", errors)
     require("check-secrets.py" in quality and "cargo deny check" in quality,
