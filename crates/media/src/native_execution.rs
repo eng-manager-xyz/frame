@@ -1646,8 +1646,23 @@ mod tests {
                 gst::Format::Time
             );
         }
+        // GstAggregator versions may materialize the empty serialized audio
+        // interval as GAP|DROPPABLE buffers. Those carry no source payload and
+        // are distinct from the forbidden fake primer buffers.
+        let mixed_audio_sink = graph
+            .mixed_audio_sink()
+            .expect("mixed audio sink")
+            .downcast::<gst_app::AppSink>()
+            .expect("typed mixed audio appsink");
+        let mut gap_buffers = 0_u32;
+        while let Some(sample) = mixed_audio_sink.try_pull_sample(gst::ClockTime::ZERO) {
+            gap_buffers = gap_buffers.checked_add(1).expect("bounded gap count");
+            assert!(gap_buffers <= MIXED_AUDIO_SINK_MAX_BUFFERS);
+            let flags = sample.buffer().expect("gap buffer").flags();
+            assert!(flags.contains(gst::BufferFlags::GAP));
+            assert!(flags.contains(gst::BufferFlags::DROPPABLE));
+        }
         for sink in [
-            graph.mixed_audio_sink().expect("mixed audio sink"),
             graph.camera_record_sink().expect("camera record sink"),
             graph.camera_preview_sink().expect("camera preview sink"),
         ] {
