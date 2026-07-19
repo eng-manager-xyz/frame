@@ -18,11 +18,13 @@ use super::output::{
     ExpectedAudio, ExpectedVideo, OutputReservation, preflight_av_verification,
     verify_playable_av_webm_file,
 };
+#[cfg(unix)]
+use super::verify_preopened_file;
 use super::{
     BgraScreenFrame, MAX_SCREEN_RECORDING_DURATION_NS, RESOURCE_CHECK_INTERVAL, RecordingOutput,
     SCREEN_RECORDING_FINISH_TIMEOUT, SCREEN_RECORDING_QUEUE_BYTES, ScreenRecordingError,
     ScreenRecordingSpec, classify_terminal_and_teardown, enforce_output_bounds, require_trusted,
-    set_null, verify_preopened_file, wait_for_eos,
+    set_null, wait_for_eos,
 };
 use crate::{AudioFormat, AudioSampleFormat, CancellationToken, FrameTimestamp, prepare_runtime};
 
