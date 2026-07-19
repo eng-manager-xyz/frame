@@ -45,6 +45,82 @@ def workflow_step(job: str, name: str) -> str:
     return job.split(marker, maxsplit=1)[1].split("\n      - name:", maxsplit=1)[0]
 
 
+def yaml_top_level_block(text: str, key: str) -> str:
+    """Return a simple top-level YAML mapping block without normalizing expressions."""
+    lines = text.splitlines()
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if re.fullmatch(rf"{re.escape(key)}:\s*(?:#.*)?", line)
+        ),
+        None,
+    )
+    if start is None:
+        return ""
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line and not line[0].isspace() and not line.lstrip().startswith("#"):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def yaml_mapping_value(block: str, key: str, indent: int = 2) -> str | None:
+    match = re.search(
+        rf"^{re.escape(' ' * indent + key)}:\s*(.*?)\s*(?:#.*)?$",
+        block,
+        re.MULTILINE,
+    )
+    return match.group(1).strip() if match is not None else None
+
+
+def yaml_scalar(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1].strip()
+    return value.strip()
+
+
+def workflow_pushes_main(text: str) -> bool:
+    """Recognize main in inline or block-list push branch filters."""
+    trigger = yaml_top_level_block(text, "on")
+    if not trigger:
+        return False
+    push = re.search(r"^  push:\s*(.*?)\s*(?:#.*)?$", trigger, re.MULTILINE)
+    if push is None:
+        return False
+    push_tail = trigger[push.end() :]
+    sibling = re.search(r"^  [A-Za-z0-9_-]+:", push_tail, re.MULTILINE)
+    push_block = push_tail[: sibling.start()] if sibling is not None else push_tail
+    branches = yaml_mapping_value(push_block, "branches", indent=4)
+    if branches is None:
+        return True
+    normalized = yaml_scalar(branches) or ""
+    if normalized:
+        candidates = normalized.strip("[]").split(",")
+    else:
+        candidates = re.findall(r"^\s{6,}-\s*(.*?)\s*(?:#.*)?$", push_block, re.MULTILINE)
+    return any((yaml_scalar(candidate) or "") == "main" for candidate in candidates)
+
+
+def pull_request_only_cancellation(value: str | None) -> bool:
+    scalar = yaml_scalar(value)
+    if scalar == "false":
+        return True
+    if scalar is None:
+        return False
+    return (
+        re.fullmatch(
+            r"\$\{\{\s*github\.event_name\s*==\s*(['\"])pull_request\1\s*\}\}",
+            scalar,
+        )
+        is not None
+    )
+
+
 def main() -> int:
     errors: list[str] = []
     texts: dict[str, str] = {}
@@ -87,6 +163,34 @@ def main() -> int:
                 f"{path}: pipe-to-shell installers are forbidden", errors)
         require("continue-on-error: true" not in lowered, f"{path}: release checks may not be made advisory", errors)
 
+        concurrency = yaml_top_level_block(text, "concurrency")
+        concurrency_group = yaml_scalar(yaml_mapping_value(concurrency, "group"))
+        cancel_in_progress = yaml_mapping_value(concurrency, "cancel-in-progress")
+        concurrency_queue = yaml_scalar(yaml_mapping_value(concurrency, "queue"))
+        if (
+            concurrency
+            and yaml_scalar(cancel_in_progress) == "false"
+            and "github.run_id" not in (concurrency_group or "")
+        ):
+            require(
+                concurrency_queue == "max",
+                f"{path}: serialized workflows must retain every pending run",
+                errors,
+            )
+        if workflow_pushes_main(text) and concurrency:
+            if name != "production-gate.yml":
+                require(
+                    "github.event.pull_request.number" in (concurrency_group or "")
+                    and "github.run_id" in (concurrency_group or ""),
+                    f"{path}: each non-PR main run must have a unique concurrency group",
+                    errors,
+                )
+            require(
+                pull_request_only_cancellation(cancel_in_progress),
+                f"{path}: main-push concurrency may cancel superseded pull-request runs only",
+                errors,
+            )
+
         for action, reference in re.findall(r"^\s*-?\s*uses:\s*([^@\s]+)@([^\s#]+)", text, re.MULTILINE):
             if action.startswith("./"):
                 continue
@@ -113,11 +217,17 @@ def main() -> int:
     )
     require("pull_request:" in quality and "push:" in quality, "quality-gates.yml: must run for pull requests and main pushes", errors)
     require("${{ secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
+    quality_concurrency = yaml_top_level_block(quality, "concurrency")
+    quality_concurrency_group = yaml_scalar(
+        yaml_mapping_value(quality_concurrency, "group")
+    )
+    quality_cancel_in_progress = yaml_mapping_value(
+        quality_concurrency, "cancel-in-progress"
+    )
     require(
-        "group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
-        in quality
-        and "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
-        in quality,
+        quality_concurrency_group
+        == "quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+        and pull_request_only_cancellation(quality_cancel_in_progress),
         "quality-gates.yml: stale same-PR checks may cancel, but landed-main and manual runs must be unique and noncancellable",
         errors,
     )
@@ -172,8 +282,13 @@ def main() -> int:
             and "gstreamer-runtime-hostile-xdg-ci.json" in quality,
             "quality-gates.yml: trusted-root, package, hostile-env, and hostile-XDG media gates must be required", errors)
     media_job = quality.split("\n  media:\n", maxsplit=1)[-1].split(
-        "\n  portability:\n", maxsplit=1
+        "\n  macos_native_capture:\n", maxsplit=1
     )[0]
+    require(
+        "\n    env:\n      G_DEBUG: fatal-criticals\n" in media_job,
+        "quality-gates.yml: the required media job must fail on GLib/GStreamer criticals",
+        errors,
+    )
     runtime_step = workflow_step(media_job, "Verify the audited runtime and factory contract")
     require(
         bool(runtime_step)
@@ -204,6 +319,116 @@ def main() -> int:
         "cargo test --locked -p frame-desktop-core --features instant-finalize" in quality
         and "cargo clippy --locked -p frame-desktop-core --features instant-finalize --all-targets -- -D warnings" in quality,
         "quality-gates.yml: the optional native Instant-finalize adapter must be fully tested and linted in the GStreamer lane",
+        errors,
+    )
+    require(
+        quality.count("\n  macos_native_capture:\n") == 1,
+        "quality-gates.yml: exactly one macOS native-capture lane must be required",
+        errors,
+    )
+    macos_native_capture = quality.split(
+        "\n  macos_native_capture:\n", maxsplit=1
+    )[-1].split("\n  portability:\n", maxsplit=1)[0]
+    require(
+        re.search(r"^    needs: policy$", macos_native_capture, re.MULTILINE)
+        is not None
+        and re.search(
+            r"^    runs-on: macos-15$", macos_native_capture, re.MULTILINE
+        )
+        is not None,
+        "quality-gates.yml: macOS native capture must depend on policy and run on macos-15",
+        errors,
+    )
+    require(
+        "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
+        in macos_native_capture
+        and 'python-version: "3.14.5"' in macos_native_capture
+        and "rustup toolchain install 1.96.1 --profile minimal --component clippy --target wasm32-unknown-unknown"
+        in macos_native_capture
+        and "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
+        in macos_native_capture
+        and "cargo install trunk --version 0.21.14 --locked"
+        in macos_native_capture,
+        "quality-gates.yml: macOS native capture must use pinned Python, Rust/clippy, Trunk, and cache setup",
+        errors,
+    )
+    macos_gstreamer = workflow_step(
+        macos_native_capture, "Install Homebrew GStreamer"
+    )
+    require(
+        bool(macos_gstreamer)
+        and 'HOMEBREW_NO_AUTO_UPDATE: "1"' in macos_gstreamer
+        and "brew install gstreamer" in macos_gstreamer
+        and "pkg-config --variable=pluginsdir gstreamer-1.0" in macos_gstreamer
+        and 'echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"'
+        in macos_gstreamer,
+        "quality-gates.yml: macOS native capture must install Homebrew GStreamer without auto-update and export its exact plugin root",
+        errors,
+    )
+    macos_adapter_step = workflow_step(
+        macos_native_capture, "Test and lint both macOS capture adapters"
+    )
+    for command in (
+        "scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-macos-screen-capture -p frame-macos-av-capture",
+        "scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-macos-screen-capture -p frame-macos-av-capture --all-targets -- -D warnings",
+    ):
+        require(
+            macos_adapter_step.count(command) == 1,
+            f"quality-gates.yml: macOS adapter lane must run exactly once: {command}",
+            errors,
+        )
+    macos_desktop_step = workflow_step(
+        macos_native_capture, "Test and lint the native desktop boundary"
+    )
+    for command in (
+        "scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-desktop-core --features macos-native --all-targets",
+        "scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-desktop-core --features macos-native --all-targets -- -D warnings",
+    ):
+        require(
+            macos_desktop_step.count(command) == 1,
+            f"quality-gates.yml: native desktop lane must run exactly once: {command}",
+            errors,
+        )
+    macos_webview_step = workflow_step(
+        macos_native_capture, "Build and validate the production WebView bundle"
+    )
+    require(
+        macos_webview_step.count("python scripts/ci/build-desktop-ui.py") == 1
+        and macos_webview_step.count("python scripts/ci/check-desktop-bundle.py")
+        == 1,
+        "quality-gates.yml: native production desktop must build and validate its pinned WebView bundle",
+        errors,
+    )
+    macos_build_step = workflow_step(
+        macos_native_capture,
+        "Check and build the native production desktop executable",
+    )
+    for command in (
+        "scripts/ci/gstreamer-sanitized-exec cargo check --locked -p frame-desktop-core --features macos-native,custom-protocol --bin frame-desktop",
+        "scripts/ci/gstreamer-sanitized-exec cargo build --locked --release -p frame-desktop-core --features macos-native,custom-protocol --bin frame-desktop",
+    ):
+        require(
+            macos_build_step.count(command) == 1,
+            f"quality-gates.yml: native production desktop lane must run exactly once: {command}",
+            errors,
+        )
+    webview_marker = "      - name: Build and validate the production WebView bundle"
+    native_build_marker = (
+        "      - name: Check and build the native production desktop executable"
+    )
+    require(
+        webview_marker in macos_native_capture
+        and native_build_marker in macos_native_capture
+        and macos_native_capture.index(webview_marker)
+        < macos_native_capture.index(native_build_marker),
+        "quality-gates.yml: the closed WebView bundle must exist before the native production build",
+        errors,
+    )
+    require(
+        "DOCS_RS" not in macos_native_capture
+        and "FRAME_GSTREAMER_COMPILE_ONLY" not in macos_native_capture
+        and "git diff --exit-code -- Cargo.lock" in macos_native_capture,
+        "quality-gates.yml: native macOS builds must link real GStreamer and leave Cargo.lock unchanged",
         errors,
     )
     require("build-web-hydration.py" in quality
@@ -267,7 +492,8 @@ def main() -> int:
         bool(dependency_step)
         and "cargo tree --locked -p frame-desktop-core" in dependency_step
         and "--features tauri-app,custom-protocol --edges normal" in dependency_step
-        and "frame-media|frame-macos-screen-capture|gstreamer" in dependency_step,
+        and "frame-media|frame-macos-screen-capture|frame-macos-av-capture|gstreamer"
+        in dependency_step,
         "quality-gates.yml: the portable desktop dependency graph must reject native media crates",
         errors,
     )
@@ -298,7 +524,7 @@ def main() -> int:
         and "environment: desktop-macos-hardware" in hardware
         and re.search(
             r"^concurrency:\n  group: desktop-macos-hardware\n"
-            r"  cancel-in-progress: false$",
+            r"  cancel-in-progress: false\n  queue: max$",
             hardware,
             re.MULTILINE,
         ) is not None
@@ -330,6 +556,16 @@ def main() -> int:
             "FRAME-DEP-2026-01 has expired; remove or re-review the advisory exception", errors)
     require(re.search(r"^  quality-gate:\n(?:.|\n)*?if:\s*\$\{\{\s*always\(\)\s*\}\}", quality, re.MULTILINE) is not None,
             "quality-gates.yml: quality-gate must be an always-present final result", errors)
+    quality_gate = quality.split("\n  quality-gate:\n", maxsplit=1)[-1]
+    require(
+        "needs: [policy, native, contract_worker, media, macos_native_capture, portability, desktop_shell]"
+        in quality_gate
+        and "MACOS_NATIVE_CAPTURE_RESULT: ${{ needs.macos_native_capture.result }}"
+        in quality_gate
+        and 'test "${MACOS_NATIVE_CAPTURE_RESULT}" = success' in quality_gate,
+        "quality-gates.yml: quality-gate must explicitly require and resolve the macOS native-capture result",
+        errors,
+    )
 
     production = texts.get("production-gate.yml", "")
     require(
@@ -551,7 +787,8 @@ def main() -> int:
             "contract-migrations.yml: contract authority must be manual-only", errors)
     require("environment: production" in contract_workflow
             and "group: frame-production-release" in contract_workflow
-            and "cancel-in-progress: false" in contract_workflow,
+            and "cancel-in-progress: false" in contract_workflow
+            and "queue: max" in contract_workflow,
             "contract-migrations.yml: contract mutation must share protected serialized production authority", errors)
     require("secrets.CLOUDFLARE_API_TOKEN" in contract_workflow
             and "secrets.CLOUDFLARE_ACCOUNT_ID" in contract_workflow

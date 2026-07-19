@@ -82,6 +82,17 @@ A restart decodes and revalidates the complete DTO before resolution. Storage
 never turns a missing pinned ID or an unconfirmed changed default into a
 different selection.
 
+The macOS desktop crate also provides a descriptor-rooted
+`DurableAvSettingsStore`. One adapter-owned writer serializes compare-and-swap
+mutations into two fixed revision slots. A mutation writes and `fsync`s a
+private `0600` staging file, publishes it with a no-replace descriptor-relative
+rename, and `fsync`s the directory before returning the new revision. Reads are
+hard-capped at 4 KiB and reject symlinks, insecure modes, unknown fields,
+conflicting revisions, truncation, and oversized data. The installation secret
+used to derive host-local native IDs is a separate, zeroized, exact 32-byte
+`0600` value. This is crash-safe storage for one process-owned writer, not a
+cross-process lock.
+
 ## Exact pipeline graph
 
 The graph is a data specification rather than a parsed pipeline string. Every
@@ -106,6 +117,14 @@ moves either a byte body or a provider-owned opaque handle into
 the downstream buffer is consumed or dropped, and either path releases the
 lease exactly once.
 
+`NativeAvAppSrc` is the concrete CPU-byte implementation of that edge. It
+rejects opaque payloads, source/format mismatches, and non-Playing graphs before
+ownership transfer and returns the exact untouched input. Once
+`gst_app::AppSrc::push_buffer` is called, downstream failure consumes authority;
+the adapter never pretends the input can be recovered. The complete input is
+the GStreamer buffer's backing owner, so its native lease remains live until
+GStreamer releases the buffer.
+
 Selected GStreamer topology is exact:
 
 - microphone and system audio: `appsrc ! queue ! audioconvert ! audioresample
@@ -123,7 +142,59 @@ defaults to 128 buffers/8 MiB/two seconds; camera defaults to eight
 buffers/128 MiB/500 ms. The selected policy drops oldest or newest without
 blocking. Every accepted, rejected, expired, drained, or stale buffer releases
 its native lease exactly once. A format change is never accepted into the old
-queue.
+queue. The negotiated per-source buffer, byte, and age budget is authoritative
+for the complete ingress path and is partitioned exactly across the session
+queue, GStreamer `appsrc`'s internal queue, and the explicit downstream
+`queue`; the three live stages cannot silently multiply that budget. Both
+GStreamer stages expose bounded overload observations: `appsrc` reports
+conservative pre-push saturation, while the explicit queue reports an exact
+overrun signal. Newly observed pressure or overrun produces one stable,
+privacy-safe `IngressOverload` diagnostic and marks the next accepted source
+buffer discontinuous. Runtime-owned appsinks disable preroll waiting and
+post-EOS buffer draining because this foundation does not yet consume their
+bounded queues; their exact nonblocking properties are revalidated at attach.
+Stop queues EOS through each `appsrc` element rather than calling the direct
+end-of-stream shortcut. GstBaseSrc therefore serializes stream-start, the exact
+caps, a TIME segment, and EOS even when a source produced no buffers. Terminal
+EOS is accepted only when those sticky events still match the negotiated
+source contract; the empty path creates no sample and occupies no queue slot.
+
+`NativeAvRuntime` binds a recording-state session, exact negotiated graph, and
+native bridge. It installs one authenticated startup calibration per source
+epoch, moves the graph to `Playing`, polls bounded native events and bus
+messages, pushes at most the configured number of buffers, and coalesces only
+privacy-safe status/timing events. Attach and poll contract failures attempt
+native terminal reconciliation and confirm GStreamer `Null`; EOS completion is
+reported only after `Null`. The runtime owns a validated bounded EOS deadline,
+rejects a regressing caller clock, and rotates its first-polled source so a
+one-buffer poll budget cannot starve later sources. This runtime is currently a
+preview/execution foundation: it does not yet drain mixed-media appsinks, parse
+`level` messages into production meters, or authenticate a lossless native
+callback tail for a recording artifact.
+
+## Current macOS system-audio primitive
+
+`frame-macos-av-capture` supplies a target-gated, safe ScreenCaptureKit source
+for one privacy-safe system/application mix. It excludes Frame's own process
+audio, admits only exact 48 kHz stereo F32LE, accepts bounded interleaved or
+planar callbacks, and derives its sole opaque device ID from the installation
+secret without persisting a label or native identifier. Each callback is at
+most 100 ms/38,400 bytes. The nonblocking capacity-16 prequeue therefore holds
+at most 1.6 seconds/614,400 bytes; overflow drops newest and marks the next
+delivered chunk discontinuous.
+
+Shareable-content, start, and stop wrappers run behind five-second caller
+deadlines with a crate-wide one-operation lease. A late result retains that
+lease through owner/result destruction. Teardown uses two asynchronous
+capacity-one queue fences and a delegate proof, each with a one-second caller
+deadline, then requires callback-sender disconnection before returning the
+bounded tail. Timeout is sticky and never claims reuse or a complete tail.
+
+The source is deliberately narrower than `NativeAvBridge`: it does not claim
+hotplug/default/sleep-wake events, per-epoch bridge calibration, desktop IPC,
+or recording/mux integration. System audio therefore remains disabled in
+sealed release recordings until those contracts and a shared screen/audio
+clock are connected.
 
 ## Master clock and declared timeline
 

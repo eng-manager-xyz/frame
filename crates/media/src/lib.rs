@@ -5,6 +5,7 @@
 //! capture timing, recording recovery, executor routing, and conformance checks.
 
 mod av_capture;
+mod av_runtime;
 mod capture;
 mod conformance;
 mod instant;
@@ -25,6 +26,7 @@ use gstreamer as gst;
 use thiserror::Error;
 
 pub use av_capture::*;
+pub use av_runtime::*;
 pub use capture::*;
 pub use conformance::*;
 pub use instant::*;

@@ -39,6 +39,7 @@ permissions:
 concurrency:
   group: frame-cloudflare-account-${{ inputs.environment || github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   validate:

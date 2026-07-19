@@ -223,6 +223,23 @@ impl NativeAvBridge for FakeBridge {
         Ok(self.catalog.clone())
     }
 
+    fn startup_calibration(
+        &mut self,
+        ticket: AvSourceCallTicket<'_>,
+        stamp: AvSourceStamp,
+    ) -> Result<NativeAvCalibrationBatch, NativeAvFailure> {
+        assert_eq!(
+            self.state.lock().expect("fake state").binding,
+            Some(ticket.binding())
+        );
+        NativeAvCalibrationBatch::new(stamp, session_calibration_samples()).map_err(|_| {
+            NativeAvFailure {
+                code: NativeAvFailureCode::BackendFault,
+                retryable: false,
+            }
+        })
+    }
+
     fn reconcile_terminal(
         &mut self,
         ticket: AvTerminalReconcileTicket,
@@ -414,7 +431,7 @@ struct HoldingAppSrc {
 }
 
 impl AvLocalAppSrcAdapter for HoldingAppSrc {
-    fn push(&mut self, input: AvAppSrcInput) -> Result<(), Box<AvAppSrcInput>> {
+    fn push(&mut self, input: AvAppSrcInput) -> Result<(), AvAppSrcPushFailure> {
         self.inputs.push(input);
         Ok(())
     }
@@ -1765,8 +1782,16 @@ fn ingress_backpressure_is_bounded_nonblocking_and_releases_every_lease() {
         .copied()
         .find(|stamp| stamp.class() == AvSourceClass::Camera)
         .expect("camera stamp");
+    let queue_spec = session
+        .source_ingress_queue_spec(AvSourceClass::Camera)
+        .expect("camera session ingress partition");
+    const RETAINED_BYTES_PER_BUFFER: u64 = 20 * 1024 * 1024;
+    let queue_capacity = usize::from(queue_spec.max_buffers).min(
+        usize::try_from(queue_spec.max_bytes / RETAINED_BYTES_PER_BUFFER)
+            .expect("camera queue byte capacity fits usize"),
+    );
     let released = Arc::new(AtomicUsize::new(0));
-    let mut drops = 0;
+    let mut drops = 0_usize;
     for index in 0..9_u64 {
         let buffer = NativeAvBuffer::new(
             camera_stamp,
@@ -1777,7 +1802,7 @@ fn ingress_backpressure_is_bounded_nonblocking_and_releases_every_lease() {
                 175_000_000 + index * 33_000_000,
             ),
             camera_format(1_920, 1_080, 30),
-            opaque_lease(20 * 1024 * 1024, index, &released),
+            opaque_lease(RETAINED_BYTES_PER_BUFFER, index, &released),
         )
         .expect("buffer");
         handle
@@ -1793,8 +1818,9 @@ fn ingress_backpressure_is_bounded_nonblocking_and_releases_every_lease() {
             drops += 1;
         }
     }
-    assert_eq!(drops, 3);
-    assert_eq!(released.load(Ordering::SeqCst), 3);
+    let expected_drops = 9_usize - queue_capacity;
+    assert_eq!(drops, expected_drops);
+    assert_eq!(released.load(Ordering::SeqCst), expected_drops);
     let mut popped = 0;
     while let Some(buffer) = session
         .pop_buffer(AvSourceClass::Camera, MonotonicTimeNs::new(439_000_000))
@@ -1803,7 +1829,7 @@ fn ingress_backpressure_is_bounded_nonblocking_and_releases_every_lease() {
         popped += 1;
         buffer.release();
     }
-    assert_eq!(popped, 6);
+    assert_eq!(popped, queue_capacity);
     assert_eq!(released.load(Ordering::SeqCst), 9);
 }
 

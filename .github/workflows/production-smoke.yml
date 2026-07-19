@@ -28,6 +28,7 @@ permissions:
 concurrency:
   group: canonical-smoke-${{ inputs.environment || 'production' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   canonical-smoke:

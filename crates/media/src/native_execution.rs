@@ -16,16 +16,22 @@ use std::{
 
 use gst::prelude::*;
 use gstreamer as gst;
+use gstreamer_app as gst_app;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    AudioSampleFormat, AvPipelineGraphSpec, AvSourceClass, CancellationToken, ExactCapsSpec,
-    InstantAudioCaps, InstantPipelineRequest, InstantVideoCaps, PixelFormat,
-    pipeline_has_trusted_factory_provenance, prepare_runtime,
+    AudioSampleFormat, AvFormat, AvPipelineGraphSpec, AvQueueSpec, AvSourceClass,
+    CancellationToken, ExactCapsSpec, InstantAudioCaps, InstantPipelineRequest, InstantVideoCaps,
+    PixelFormat, pipeline_has_trusted_factory_provenance, prepare_runtime,
 };
 
 const BUS_POLL: Duration = Duration::from_millis(25);
+const AV_GRAPH_STATE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(5);
+const MIXED_AUDIO_SINK_MAX_BUFFERS: u32 = 128;
+const CAMERA_RECORD_SINK_MAX_BUFFERS: u32 = 8;
+const CAMERA_PREVIEW_SINK_MAX_BUFFERS: u32 = 2;
+pub const MAX_AV_GRAPH_BUS_MESSAGES: u16 = 256;
 const DEFAULT_NATIVE_DEADLINE: Duration = Duration::from_secs(120);
 const MAX_NATIVE_SEGMENTS: usize = 100_000;
 const MAX_PREVIEW_BYTES: usize = 1920 * 1080 * 4;
@@ -56,15 +62,53 @@ pub enum NativeExecutionError {
     CodecApprovalRequired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeAvGraphState {
+    Null,
+    Ready,
+    Playing,
+    EosRequested,
+    EosObserved,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeAvGraphFailure {
+    InvalidPollLimit,
+    StateChange,
+    BusUnavailable,
+    PipelineError,
+    EosRequest,
+    NullNotReached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeAvGraphTerminal {
+    EndOfStream,
+    Failed(NativeAvGraphFailure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeAvGraphPollReport {
+    pub messages_polled: u16,
+    pub limit_reached: bool,
+    pub terminal: Option<NativeAvGraphTerminal>,
+}
+
 /// A real A/V capture graph. Native bridges push master-corrected buffers into
 /// the named appsrc elements; mixed audio and camera branches terminate at
 /// bounded appsinks owned by the recording mode.
 pub struct NativeAvGstreamerGraph {
     pipeline: gst::Pipeline,
     source_names: Vec<(AvSourceClass, &'static str)>,
+    source_formats: Vec<(AvSourceClass, AvFormat)>,
+    source_caps: Vec<(AvSourceClass, gst::Caps)>,
+    source_ingress_budgets: Vec<(AvSourceClass, AvQueueSpec)>,
+    queue_names: Vec<(AvSourceClass, &'static str)>,
     mixed_audio_sink: Option<&'static str>,
     camera_record_sink: Option<&'static str>,
     camera_preview_sink: Option<&'static str>,
+    state: NativeAvGraphState,
 }
 
 impl std::fmt::Debug for NativeAvGstreamerGraph {
@@ -72,6 +116,7 @@ impl std::fmt::Debug for NativeAvGstreamerGraph {
         formatter
             .debug_struct("NativeAvGstreamerGraph")
             .field("sources", &self.source_names)
+            .field("state", &self.state)
             .field("mixed_audio", &self.mixed_audio_sink.is_some())
             .field("camera_record", &self.camera_record_sink.is_some())
             .field("camera_preview", &self.camera_preview_sink.is_some())
@@ -87,14 +132,29 @@ impl NativeAvGstreamerGraph {
         }
         let mut description = String::new();
         let mut source_names = Vec::with_capacity(spec.sources.len());
+        let mut source_formats = Vec::with_capacity(spec.sources.len());
+        let mut source_ingress_budgets = Vec::with_capacity(spec.sources.len());
+        let mut queue_names = Vec::with_capacity(spec.sources.len());
         let has_audio = spec.shared_audio_mixer.is_some();
+        let sources_have_audio = spec.sources.iter().any(|source| {
+            matches!(
+                (source.class, source.input_caps),
+                (
+                    AvSourceClass::Microphone | AvSourceClass::SystemAudio,
+                    ExactCapsSpec::Audio(_)
+                )
+            )
+        });
+        if has_audio != sources_have_audio {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
         if has_audio {
             description.push_str(concat!(
-                "audiomixer name=audio_mixer ignore-inactive-pads=true ",
+                "audiomixer name=audio_mixer ignore-inactive-pads=false ",
                 "! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 leaky=downstream ",
                 "! audioconvert ! audioresample ",
                 "! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2 ",
-                "! appsink name=mixed_audio_sink sync=false max-buffers=128 drop=true "
+                "! appsink name=mixed_audio_sink sync=false async=false wait-on-eos=false enable-last-sample=false max-buffers=128 drop=true "
             ));
         }
         for source in &spec.sources {
@@ -104,21 +164,39 @@ impl NativeAvGstreamerGraph {
                     ExactCapsSpec::Audio(input),
                     ExactCapsSpec::Audio(output),
                 ) => {
+                    let stages = source
+                        .queue
+                        .partition_ingress()
+                        .map_err(|_| NativeExecutionError::InvalidGraph)?;
                     let name = match class {
                         AvSourceClass::Microphone => "microphone_src",
                         AvSourceClass::SystemAudio => "system_audio_src",
                         AvSourceClass::Camera => unreachable!(),
                     };
+                    let queue_name = match class {
+                        AvSourceClass::Microphone => "microphone_ingress_queue",
+                        AvSourceClass::SystemAudio => "system_audio_ingress_queue",
+                        AvSourceClass::Camera => unreachable!(),
+                    };
                     source_names.push((class, name));
+                    source_formats.push((class, AvFormat::Audio(input.format)));
+                    source_ingress_budgets.push((class, source.queue));
+                    queue_names.push((class, queue_name));
                     let input_caps = audio_caps(input.format, input.interleaved);
                     let output_caps = audio_caps(output.format, output.interleaved);
                     description.push_str(&format!(
-                        "appsrc name={name} is-live=true do-timestamp=false block=false format=time caps=\"{input_caps}\" \
-                         ! queue max-size-buffers={} max-size-bytes={} max-size-time={} leaky=downstream \
+                        "appsrc name={name} is-live=true do-timestamp=false block=false format=time \
+                         max-buffers={} max-bytes={} max-time={} leaky-type=downstream caps=\"{input_caps}\" \
+                         ! queue name={queue_name} max-size-buffers={} max-size-bytes={} max-size-time={} leaky=downstream \
                          ! audioconvert ! audioresample ! capsfilter caps=\"{output_caps}\" \
                          ! volume name={name}_volume ! level name={name}_level interval=100000000 post-messages=true \
                          ! audio_mixer. ",
-                        source.queue.max_buffers, source.queue.max_bytes, source.queue.max_age_ns
+                        stages.appsrc.max_buffers,
+                        stages.appsrc.max_bytes,
+                        stages.appsrc.max_age_ns,
+                        stages.downstream.max_buffers,
+                        stages.downstream.max_bytes,
+                        stages.downstream.max_age_ns,
                     ));
                 }
                 (
@@ -126,21 +204,34 @@ impl NativeAvGstreamerGraph {
                     ExactCapsSpec::Camera(input),
                     ExactCapsSpec::Camera(output),
                 ) => {
+                    let stages = source
+                        .queue
+                        .partition_ingress()
+                        .map_err(|_| NativeExecutionError::InvalidGraph)?;
                     source_names.push((AvSourceClass::Camera, "camera_src"));
+                    source_formats.push((AvSourceClass::Camera, AvFormat::Camera(input.format)));
+                    source_ingress_budgets.push((AvSourceClass::Camera, source.queue));
+                    queue_names.push((AvSourceClass::Camera, "camera_ingress_queue"));
                     let input_caps = camera_caps(input.format);
                     let output_caps = camera_caps(output.format);
                     description.push_str(&format!(
-                        "appsrc name=camera_src is-live=true do-timestamp=false block=false format=time caps=\"{input_caps}\" \
-                         ! queue max-size-buffers={} max-size-bytes={} max-size-time={} leaky=downstream \
+                        "appsrc name=camera_src is-live=true do-timestamp=false block=false format=time \
+                         max-buffers={} max-bytes={} max-time={} leaky-type=downstream caps=\"{input_caps}\" \
+                         ! queue name=camera_ingress_queue max-size-buffers={} max-size-bytes={} max-size-time={} leaky=downstream \
                          ! videoconvert ! videoscale ! capsfilter caps=\"{output_caps}\" ! tee name=camera_tee \
                          camera_tee. ! queue max-size-buffers=8 max-size-bytes=134217728 max-size-time=500000000 leaky=downstream \
-                         ! appsink name=camera_record_sink sync=false max-buffers=8 drop=true ",
-                        source.queue.max_buffers, source.queue.max_bytes, source.queue.max_age_ns
+                         ! appsink name=camera_record_sink sync=false async=false wait-on-eos=false enable-last-sample=false max-buffers=8 drop=true ",
+                        stages.appsrc.max_buffers,
+                        stages.appsrc.max_bytes,
+                        stages.appsrc.max_age_ns,
+                        stages.downstream.max_buffers,
+                        stages.downstream.max_bytes,
+                        stages.downstream.max_age_ns,
                     ));
                     if spec.camera_preview_enabled {
                         description.push_str(concat!(
                             "camera_tee. ! queue max-size-buffers=2 max-size-bytes=33554432 max-size-time=200000000 leaky=downstream ",
-                            "! videoconvert ! appsink name=camera_preview_sink sync=false max-buffers=2 drop=true "
+                            "! videoconvert ! appsink name=camera_preview_sink sync=false async=false wait-on-eos=false enable-last-sample=false max-buffers=2 drop=true "
                         ));
                     }
                 }
@@ -149,14 +240,22 @@ impl NativeAvGstreamerGraph {
         }
         let pipeline = parse_pipeline(&description)?;
         require_trusted(&pipeline)?;
-        for (_, name) in &source_names {
-            if pipeline.by_name(name).is_none() {
-                return Err(NativeExecutionError::InvalidGraph);
-            }
+        let mut source_caps = Vec::with_capacity(source_names.len());
+        for (class, name) in &source_names {
+            let appsrc = pipeline
+                .by_name(name)
+                .and_then(|element| element.downcast::<gst_app::AppSrc>().ok())
+                .ok_or(NativeExecutionError::InvalidGraph)?;
+            let caps = appsrc.caps().ok_or(NativeExecutionError::InvalidGraph)?;
+            source_caps.push((*class, caps));
         }
         Ok(Self {
             pipeline,
             source_names,
+            source_formats,
+            source_caps,
+            source_ingress_budgets,
+            queue_names,
             mixed_audio_sink: has_audio.then_some("mixed_audio_sink"),
             camera_record_sink: spec
                 .sources
@@ -164,6 +263,7 @@ impl NativeAvGstreamerGraph {
                 .any(|source| source.class == AvSourceClass::Camera)
                 .then_some("camera_record_sink"),
             camera_preview_sink: spec.camera_preview_enabled.then_some("camera_preview_sink"),
+            state: NativeAvGraphState::Null,
         })
     }
 
@@ -177,6 +277,85 @@ impl NativeAvGstreamerGraph {
             .iter()
             .find(|(candidate, _)| *candidate == class)
             .and_then(|(_, name)| self.pipeline.by_name(name))
+    }
+
+    pub fn source_appsrc(&self, class: AvSourceClass) -> Option<gst_app::AppSrc> {
+        self.source(class)?.downcast::<gst_app::AppSrc>().ok()
+    }
+
+    #[must_use]
+    pub fn source_format(&self, class: AvSourceClass) -> Option<AvFormat> {
+        self.source_formats
+            .iter()
+            .find_map(|(candidate, format)| (*candidate == class).then_some(*format))
+    }
+
+    /// Returns the authoritative aggregate budget from which the session,
+    /// appsrc, and explicit queue stages were constructed.
+    #[must_use]
+    pub fn source_ingress_budget(&self, class: AvSourceClass) -> Option<AvQueueSpec> {
+        self.source_ingress_budgets
+            .iter()
+            .find_map(|(candidate, budget)| (*candidate == class).then_some(*budget))
+    }
+
+    /// Revalidates mutable properties required for startup liveness. Before
+    /// EOS is requested, the mixer must wait for every negotiated audio pad's
+    /// first buffer instead of treating an all-inactive mixer as terminal.
+    #[must_use]
+    pub fn live_contract_is_intact(&self) -> bool {
+        let source_caps_are_intact = self.source_caps.iter().all(|(class, expected)| {
+            self.source_appsrc(*class)
+                .and_then(|appsrc| appsrc.caps())
+                .is_some_and(|actual| actual == *expected)
+        });
+        if !source_caps_are_intact {
+            return false;
+        }
+        let sinks_are_nonblocking_at_eos = [
+            (self.mixed_audio_sink, MIXED_AUDIO_SINK_MAX_BUFFERS),
+            (self.camera_record_sink, CAMERA_RECORD_SINK_MAX_BUFFERS),
+            (self.camera_preview_sink, CAMERA_PREVIEW_SINK_MAX_BUFFERS),
+        ]
+        .into_iter()
+        .filter_map(|(name, max_buffers)| name.map(|name| (name, max_buffers)))
+        .all(|(name, max_buffers)| {
+            self.pipeline
+                .by_name(name)
+                .and_then(|sink| sink.downcast::<gst_app::AppSink>().ok())
+                .is_some_and(|sink| {
+                    !sink.property::<bool>("sync")
+                        && !sink.property::<bool>("async")
+                        && !sink.property::<bool>("enable-last-sample")
+                        && !sink.is_wait_on_eos()
+                        && sink.is_drop()
+                        && sink.max_buffers() == max_buffers
+                })
+        });
+        if !sinks_are_nonblocking_at_eos {
+            return false;
+        }
+        if self.mixed_audio_sink.is_none() {
+            return true;
+        }
+        self.pipeline.by_name("audio_mixer").is_some_and(|mixer| {
+            mixer.find_property("force-live").is_some()
+                && mixer.find_property("ignore-inactive-pads").is_some()
+                && !mixer.property::<bool>("force-live")
+                && !mixer.property::<bool>("ignore-inactive-pads")
+        })
+    }
+
+    pub fn source_queue(&self, class: AvSourceClass) -> Option<gst::Element> {
+        self.queue_names
+            .iter()
+            .find(|(candidate, _)| *candidate == class)
+            .and_then(|(_, name)| self.pipeline.by_name(name))
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> NativeAvGraphState {
+        self.state
     }
 
     pub fn mixed_audio_sink(&self) -> Option<gst::Element> {
@@ -194,15 +373,147 @@ impl NativeAvGstreamerGraph {
             .and_then(|name| self.pipeline.by_name(name))
     }
 
-    pub fn prepare(&self) -> Result<(), NativeExecutionError> {
+    pub fn prepare(&mut self) -> Result<(), NativeExecutionError> {
+        if self.state != NativeAvGraphState::Null {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
         self.pipeline
             .set_state(gst::State::Ready)
             .map_err(|_| NativeExecutionError::Pipeline)?;
+        self.state = NativeAvGraphState::Ready;
         Ok(())
     }
 
-    pub fn stop(&self) -> Result<(), NativeExecutionError> {
-        set_null(&self.pipeline)
+    pub fn start_playing(&mut self) -> Result<(), NativeAvGraphFailure> {
+        if !matches!(
+            self.state,
+            NativeAvGraphState::Null | NativeAvGraphState::Ready
+        ) {
+            return Err(NativeAvGraphFailure::StateChange);
+        }
+        if self.pipeline.set_state(gst::State::Playing).is_err() {
+            self.state = NativeAvGraphState::Failed;
+            return Err(NativeAvGraphFailure::StateChange);
+        }
+        let (transition, current, _) = self.pipeline.state(AV_GRAPH_STATE_TIMEOUT);
+        if transition.is_err() || current != gst::State::Playing {
+            self.state = NativeAvGraphState::Failed;
+            return Err(NativeAvGraphFailure::StateChange);
+        }
+        self.state = NativeAvGraphState::Playing;
+        Ok(())
+    }
+
+    pub fn request_eos(&mut self) -> Result<(), NativeAvGraphFailure> {
+        if self.state != NativeAvGraphState::Playing {
+            return Err(NativeAvGraphFailure::StateChange);
+        }
+        for (class, _) in &self.source_names {
+            // GstBaseSrc controlled shutdown must enter through appsrc's
+            // serialized event queue. That guarantees StreamStart, exact Caps,
+            // and a TIME Segment precede EOS even when no buffer was pushed;
+            // AppSrc::end_of_stream or direct pad events do not preserve this.
+            let failed = self
+                .source_appsrc(*class)
+                .is_none_or(|source| !source.send_event(gst::event::Eos::new()));
+            if failed {
+                self.state = NativeAvGraphState::Failed;
+                return Err(NativeAvGraphFailure::EosRequest);
+            }
+        }
+        self.state = NativeAvGraphState::EosRequested;
+        Ok(())
+    }
+
+    fn eos_stream_contract_is_intact(&self) -> bool {
+        self.source_caps.iter().all(|(class, expected_caps)| {
+            let Some(appsrc) = self.source_appsrc(*class) else {
+                return false;
+            };
+            let Some(pad) = appsrc.static_pad("src") else {
+                return false;
+            };
+            pad.sticky_event::<gst::event::StreamStart>(0).is_some()
+                && pad
+                    .sticky_event::<gst::event::Caps>(0)
+                    .is_some_and(|event| event.caps() == expected_caps.as_ref())
+                && pad
+                    .sticky_event::<gst::event::Segment>(0)
+                    .is_some_and(|event| event.segment().format() == gst::Format::Time)
+        })
+    }
+
+    pub fn poll_bus(
+        &mut self,
+        max_messages: u16,
+    ) -> Result<NativeAvGraphPollReport, NativeAvGraphFailure> {
+        if max_messages == 0 || max_messages > MAX_AV_GRAPH_BUS_MESSAGES {
+            return Err(NativeAvGraphFailure::InvalidPollLimit);
+        }
+        if !matches!(
+            self.state,
+            NativeAvGraphState::Playing | NativeAvGraphState::EosRequested
+        ) {
+            return Err(NativeAvGraphFailure::StateChange);
+        }
+        let Some(bus) = self.pipeline.bus() else {
+            self.state = NativeAvGraphState::Failed;
+            return Err(NativeAvGraphFailure::BusUnavailable);
+        };
+        let mut messages_polled = 0_u16;
+        let mut terminal = None;
+        while messages_polled < max_messages {
+            let Some(message) = bus.pop() else {
+                break;
+            };
+            messages_polled = messages_polled.saturating_add(1);
+            match message.view() {
+                gst::MessageView::Eos(_) => {
+                    if self.eos_stream_contract_is_intact() {
+                        self.state = NativeAvGraphState::EosObserved;
+                        terminal = Some(NativeAvGraphTerminal::EndOfStream);
+                    } else {
+                        self.state = NativeAvGraphState::Failed;
+                        terminal = Some(NativeAvGraphTerminal::Failed(
+                            NativeAvGraphFailure::PipelineError,
+                        ));
+                    }
+                    break;
+                }
+                gst::MessageView::Error(_) => {
+                    self.state = NativeAvGraphState::Failed;
+                    terminal = Some(NativeAvGraphTerminal::Failed(
+                        NativeAvGraphFailure::PipelineError,
+                    ));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        Ok(NativeAvGraphPollReport {
+            messages_polled,
+            limit_reached: messages_polled == max_messages,
+            terminal,
+        })
+    }
+
+    pub fn confirm_null(&mut self) -> Result<(), NativeAvGraphFailure> {
+        if self.pipeline.set_state(gst::State::Null).is_err() {
+            self.state = NativeAvGraphState::Failed;
+            return Err(NativeAvGraphFailure::StateChange);
+        }
+        let (transition, current, _) = self.pipeline.state(AV_GRAPH_STATE_TIMEOUT);
+        if transition.is_err() || current != gst::State::Null {
+            self.state = NativeAvGraphState::Failed;
+            return Err(NativeAvGraphFailure::NullNotReached);
+        }
+        self.state = NativeAvGraphState::Null;
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> Result<(), NativeExecutionError> {
+        self.confirm_null()
+            .map_err(|_| NativeExecutionError::Pipeline)
     }
 }
 
@@ -1198,17 +1509,258 @@ mod tests {
         }
     }
 
+    fn native_av_stage_one_spec() -> AvPipelineGraphSpec {
+        let mut spec = native_av_spec();
+        for source in &mut spec.sources {
+            source.queue.max_buffers = 3;
+        }
+        spec
+    }
+
     #[test]
     fn native_av_graph_builds_real_mixer_resampler_and_camera_paths() {
-        let graph = NativeAvGstreamerGraph::build(&native_av_spec()).expect("native A/V graph");
+        let mut graph = NativeAvGstreamerGraph::build(&native_av_spec()).expect("native A/V graph");
         assert!(graph.source(AvSourceClass::Microphone).is_some());
         assert!(graph.source(AvSourceClass::SystemAudio).is_some());
         assert!(graph.source(AvSourceClass::Camera).is_some());
         assert!(graph.mixed_audio_sink().is_some());
         assert!(graph.camera_record_sink().is_some());
         assert!(graph.camera_preview_sink().is_some());
+        assert!(graph.live_contract_is_intact());
+
+        for (sink, expected_max_buffers) in [
+            (
+                graph.mixed_audio_sink().expect("mixed audio sink"),
+                MIXED_AUDIO_SINK_MAX_BUFFERS,
+            ),
+            (
+                graph.camera_record_sink().expect("camera record sink"),
+                CAMERA_RECORD_SINK_MAX_BUFFERS,
+            ),
+            (
+                graph.camera_preview_sink().expect("camera preview sink"),
+                CAMERA_PREVIEW_SINK_MAX_BUFFERS,
+            ),
+        ] {
+            let sink = sink.downcast::<gst_app::AppSink>().expect("typed appsink");
+            assert!(!sink.is_wait_on_eos());
+            assert_eq!(sink.max_buffers(), expected_max_buffers);
+
+            sink.set_wait_on_eos(true);
+            assert!(!graph.live_contract_is_intact());
+            sink.set_wait_on_eos(false);
+            assert!(graph.live_contract_is_intact());
+
+            sink.set_max_buffers(expected_max_buffers + 1);
+            assert!(!graph.live_contract_is_intact());
+            sink.set_max_buffers(expected_max_buffers);
+            assert!(graph.live_contract_is_intact());
+
+            sink.set_property("sync", true);
+            assert!(!graph.live_contract_is_intact());
+            sink.set_property("sync", false);
+            assert!(graph.live_contract_is_intact());
+
+            sink.set_property("async", true);
+            assert!(!graph.live_contract_is_intact());
+            sink.set_property("async", false);
+            assert!(graph.live_contract_is_intact());
+
+            sink.set_drop(false);
+            assert!(!graph.live_contract_is_intact());
+            sink.set_drop(true);
+            assert!(graph.live_contract_is_intact());
+
+            sink.set_property("enable-last-sample", true);
+            assert!(!graph.live_contract_is_intact());
+            sink.set_property("enable-last-sample", false);
+            assert!(graph.live_contract_is_intact());
+        }
+
         graph.prepare().expect("prepare native A/V graph");
         graph.stop().expect("stop native A/V graph");
+    }
+
+    #[test]
+    fn native_av_graph_rejects_audio_sources_without_the_declared_shared_mixer() {
+        let mut spec = native_av_spec();
+        spec.shared_audio_mixer = None;
+
+        assert!(matches!(
+            NativeAvGstreamerGraph::build(&spec),
+            Err(NativeExecutionError::InvalidGraph)
+        ));
+    }
+
+    #[test]
+    fn native_av_graph_immediate_eos_uses_time_segments_without_payload_primers() {
+        let mut graph =
+            NativeAvGstreamerGraph::build(&native_av_stage_one_spec()).expect("native A/V graph");
+        graph.start_playing().expect("Playing state");
+        for class in [
+            AvSourceClass::Microphone,
+            AvSourceClass::SystemAudio,
+            AvSourceClass::Camera,
+        ] {
+            let appsrc = graph.source_appsrc(class).expect("typed appsrc");
+            assert_eq!(appsrc.max_buffers(), 1);
+            assert_eq!(appsrc.current_level_buffers(), 0);
+            assert!(
+                appsrc
+                    .static_pad("src")
+                    .expect("appsrc source pad")
+                    .sticky_event::<gst::event::Segment>(0)
+                    .is_none()
+            );
+        }
+
+        graph.request_eos().expect("empty-source EOS");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let terminal = loop {
+            let report = graph.poll_bus(32).expect("bounded bus poll");
+            if let Some(terminal) = report.terminal {
+                break Some(terminal);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(terminal, Some(NativeAvGraphTerminal::EndOfStream));
+
+        for class in [
+            AvSourceClass::Microphone,
+            AvSourceClass::SystemAudio,
+            AvSourceClass::Camera,
+        ] {
+            let appsrc = graph.source_appsrc(class).expect("typed appsrc");
+            assert_eq!(appsrc.current_level_buffers(), 0);
+            assert_eq!(
+                appsrc
+                    .static_pad("src")
+                    .expect("appsrc source pad")
+                    .sticky_event::<gst::event::Segment>(0)
+                    .expect("serialized empty-source segment")
+                    .segment()
+                    .format(),
+                gst::Format::Time
+            );
+        }
+        // GstAggregator versions may materialize the empty serialized audio
+        // interval as GAP buffers (some additionally mark them DROPPABLE).
+        // Those carry no source payload and are distinct from forbidden fake
+        // primer buffers.
+        let mixed_audio_sink = graph
+            .mixed_audio_sink()
+            .expect("mixed audio sink")
+            .downcast::<gst_app::AppSink>()
+            .expect("typed mixed audio appsink");
+        let mut gap_buffers = 0_u32;
+        while let Some(sample) = mixed_audio_sink.try_pull_sample(gst::ClockTime::ZERO) {
+            gap_buffers = gap_buffers.checked_add(1).expect("bounded gap count");
+            assert!(gap_buffers <= MIXED_AUDIO_SINK_MAX_BUFFERS);
+            let flags = sample.buffer().expect("gap buffer").flags();
+            assert!(flags.contains(gst::BufferFlags::GAP));
+        }
+        for sink in [
+            graph.camera_record_sink().expect("camera record sink"),
+            graph.camera_preview_sink().expect("camera preview sink"),
+        ] {
+            let sink = sink.downcast::<gst_app::AppSink>().expect("typed appsink");
+            assert!(sink.try_pull_sample(gst::ClockTime::ZERO).is_none());
+        }
+        graph.confirm_null().expect("confirmed Null");
+    }
+
+    #[test]
+    fn native_av_graph_source_stage_preserves_one_real_buffer_before_serialized_eos() {
+        let mut graph =
+            NativeAvGstreamerGraph::build(&native_av_stage_one_spec()).expect("native A/V graph");
+        graph.start_playing().expect("Playing state");
+        let appsrc = graph
+            .source_appsrc(AvSourceClass::SystemAudio)
+            .expect("system audio appsrc");
+        assert_eq!(appsrc.max_buffers(), 1);
+
+        let observed_source_payloads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_by_probe = std::sync::Arc::clone(&observed_source_payloads);
+        let source_pad = appsrc.static_pad("src").expect("appsrc source pad");
+        let source_probe = source_pad
+            .add_probe(gst::PadProbeType::BUFFER, move |_, information| {
+                if let Some(gst::PadProbeData::Buffer(buffer)) = information.data.as_ref()
+                    && let Ok(payload) = buffer.map_readable()
+                {
+                    observed_by_probe
+                        .lock()
+                        .expect("source probe lock")
+                        .push(payload.as_slice().to_vec());
+                }
+                gst::PadProbeReturn::Ok
+            })
+            .expect("source buffer probe");
+
+        // Use a non-silent valid stereo F32LE payload. GstAggregator versions
+        // differ on whether the mixed output retains GAP when another mixer
+        // pad reaches EOS without data, so flags alone cannot identify the
+        // source-backed sample.
+        let mut expected = Vec::with_capacity(8 * 480);
+        for _ in 0..480 {
+            expected.extend_from_slice(&0.25_f32.to_le_bytes());
+            expected.extend_from_slice(&(-0.25_f32).to_le_bytes());
+        }
+        let mut buffer = gst::Buffer::from_slice(expected.clone());
+        let buffer_ref = buffer.get_mut().expect("unique test buffer");
+        buffer_ref.set_pts(gst::ClockTime::ZERO);
+        buffer_ref.set_duration(gst::ClockTime::from_mseconds(10));
+        appsrc.push_buffer(buffer).expect("one real buffer");
+        assert!(appsrc.current_level_buffers() <= 1);
+
+        graph.request_eos().expect("serialized source EOS");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let terminal = loop {
+            let report = graph.poll_bus(32).expect("bounded bus poll");
+            if let Some(terminal) = report.terminal {
+                break Some(terminal);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(terminal, Some(NativeAvGraphTerminal::EndOfStream));
+        assert_eq!(appsrc.current_level_buffers(), 0);
+
+        let sink = graph
+            .mixed_audio_sink()
+            .and_then(|sink| sink.downcast::<gst_app::AppSink>().ok())
+            .expect("mixed audio appsink");
+        let mut sample_count = 0_u32;
+        let mut mixed_source_payload_count = 0_u32;
+        while let Some(sample) = sink.try_pull_sample(gst::ClockTime::ZERO) {
+            sample_count = sample_count.checked_add(1).expect("bounded sample count");
+            assert!(sample_count <= MIXED_AUDIO_SINK_MAX_BUFFERS);
+
+            let buffer = sample.buffer().expect("sample buffer");
+            let output = buffer.map_readable().expect("readable mixed output");
+            if output.as_slice() == expected {
+                mixed_source_payload_count = mixed_source_payload_count
+                    .checked_add(1)
+                    .expect("bounded mixed source payload count");
+                assert_eq!(
+                    mixed_source_payload_count, 1,
+                    "only one source buffer was pushed"
+                );
+            } else {
+                assert!(buffer.flags().contains(gst::BufferFlags::GAP));
+            }
+        }
+        source_pad.remove_probe(source_probe);
+        assert_eq!(
+            *observed_source_payloads.lock().expect("source probe lock"),
+            vec![expected],
+            "serialized EOS must not overtake the accepted source buffer"
+        );
+        graph.confirm_null().expect("confirmed Null");
     }
 
     #[test]

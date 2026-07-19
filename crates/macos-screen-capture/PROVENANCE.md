@@ -36,7 +36,11 @@ closure review removes `.tmp`.
 | Crate | Exact version | Registry license | Upstream |
 | --- | --- | --- | --- |
 | `screencapturekit` | `8.0.0` | MIT OR Apache-2.0 | <https://github.com/doom-fish/screencapturekit-rs> |
+| `apple-metal` | `0.6.0` | MIT OR Apache-2.0 | <https://github.com/doom-fish/apple-metal-rs> |
 | `core-graphics` | `0.25.0` | MIT OR Apache-2.0 | <https://github.com/servo/core-foundation-rs> |
 
-Both versions are exact workspace pins and resolve through crates.io. Cargo.lock
-records the complete transitive graph.
+All three versions are exact workspace pins and resolve through crates.io.
+`apple-metal` stays at the newest pre-sampler release because `0.6.1` and later
+compile the macOS 26-only `MTLSamplerDescriptor.lodBias` property even under an
+older SDK; Frame uses only the stable device interop that exists in `0.6.0`.
+Cargo.lock records the complete transitive graph.

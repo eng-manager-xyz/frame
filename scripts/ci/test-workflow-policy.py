@@ -84,6 +84,39 @@ def main() -> int:
         contract = fixture / ".github/workflows/contract-migrations.yml"
         package = fixture / "scripts/ci/package-release.sh"
         verify = fixture / "scripts/ci/verify-release-bundle.sh"
+
+        quality_original = quality.read_text(encoding="utf-8")
+        alternate_yaml = quality_original.replace(
+            "    branches: [main]",
+            "    branches:\n      - main",
+            1,
+        ).replace(
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            'cancel-in-progress: ${{github.event_name=="pull_request"}}',
+            1,
+        )
+        quality.write_text(alternate_yaml, encoding="utf-8")
+        alternate_baseline = run(fixture)
+        if alternate_baseline.returncode != 0:
+            print(
+                "workflow policy rejected equivalent block-list/spacing YAML",
+                file=sys.stderr,
+            )
+            print(alternate_baseline.stderr, file=sys.stderr)
+            return 1
+        quality.write_text(
+            alternate_yaml.replace("github.run_id", "github.ref", 1),
+            encoding="utf-8",
+        )
+        alternate_unsafe = run(fixture)
+        quality.write_text(quality_original, encoding="utf-8")
+        if alternate_unsafe.returncode == 0:
+            print(
+                "workflow policy accepted ref-grouped main runs in equivalent YAML",
+                file=sys.stderr,
+            )
+            return 1
+
         mutations = (
             (
                 production,
@@ -279,9 +312,51 @@ def main() -> int:
             ),
             (
                 quality,
-                "frame-media|frame-macos-screen-capture|gstreamer",
+                "frame-media|frame-macos-screen-capture|frame-macos-av-capture|gstreamer",
                 "frame-unrelated|frame-macos-unrelated|not-gstreamer",
                 "portable desktop native-media dependency rejection removed",
+            ),
+            (
+                quality,
+                "\n  macos_native_capture:\n",
+                "\n  macos_native_capture_disabled:\n",
+                "required macOS native-capture job removed",
+            ),
+            (
+                quality,
+                "cargo test --locked -p frame-macos-screen-capture -p frame-macos-av-capture",
+                "cargo test --locked -p frame-macos-screen-capture",
+                "native A/V capture crate omitted from macOS tests",
+            ),
+            (
+                quality,
+                "brew install gstreamer",
+                "brew install gst-plugins-base",
+                "incomplete macOS GStreamer installation",
+            ),
+            (
+                quality,
+                "python scripts/ci/build-desktop-ui.py",
+                "python scripts/ci/check-desktop-ui.py",
+                "native production desktop skips its WebView build",
+            ),
+            (
+                quality,
+                "scripts/ci/gstreamer-sanitized-exec cargo check --locked -p frame-desktop-core --features macos-native,custom-protocol --bin frame-desktop",
+                "scripts/ci/gstreamer-sanitized-exec cargo check --locked -p frame-desktop-core --features tauri-app,custom-protocol --bin frame-desktop",
+                "production desktop check omits native capture",
+            ),
+            (
+                quality,
+                "needs: [policy, native, contract_worker, media, macos_native_capture, portability, desktop_shell]",
+                "needs: [policy, native, contract_worker, media, portability, desktop_shell]",
+                "quality-gate omits macOS native-capture dependency",
+            ),
+            (
+                quality,
+                "MACOS_NATIVE_CAPTURE_RESULT: ${{ needs.macos_native_capture.result }}",
+                "MACOS_NATIVE_CAPTURE_RESULT: success",
+                "quality-gate does not consume the macOS native-capture result",
             ),
             (
                 quality,
@@ -360,6 +435,12 @@ def main() -> int:
                 "libgstreamer1.0-0 libgstreamer1.0-dev \\",
                 "'libgstreamer1.0*' \\",
                 "wildcard GStreamer package evidence",
+            ),
+            (
+                quality,
+                "      G_DEBUG: fatal-criticals",
+                "      G_DEBUG: gc-friendly",
+                "media job permits GLib/GStreamer criticals",
             ),
             (
                 change_plan,
@@ -521,7 +602,35 @@ def main() -> int:
                 print(f"workflow policy accepted {label}", file=sys.stderr)
                 return 1
 
-    print(f"workflow release-authority mutation suite rejected {len(mutations)} unsafe designs")
+        original = quality.read_text(encoding="utf-8")
+        fatal_env = "    env:\n      G_DEBUG: fatal-criticals\n"
+        relocated = original.replace(fatal_env, "", 1)
+        macos_start = relocated.index("\n  macos_native_capture:\n")
+        macos_steps = relocated.index("    steps:\n", macos_start)
+        relocated = relocated[:macos_steps] + fatal_env + relocated[macos_steps:]
+        quality.write_text(relocated, encoding="utf-8")
+        result = run(fixture)
+        quality.write_text(original, encoding="utf-8")
+        if result.returncode == 0:
+            print("workflow policy accepted media fatal-critical env relocated to macOS", file=sys.stderr)
+            return 1
+
+        step_marker = "      - name: Verify the audited runtime and factory contract\n"
+        step_start = original.index(step_marker)
+        step_end = original.index("\n      - name:", step_start + len(step_marker))
+        step = original[step_start:step_end]
+        relocated = original[:step_start] + original[step_end + 1 :]
+        macos_start = relocated.index("\n  macos_native_capture:\n")
+        macos_steps = relocated.index("    steps:\n", macos_start) + len("    steps:\n")
+        relocated = relocated[:macos_steps] + step + "\n" + relocated[macos_steps:]
+        quality.write_text(relocated, encoding="utf-8")
+        result = run(fixture)
+        quality.write_text(original, encoding="utf-8")
+        if result.returncode == 0:
+            print("workflow policy accepted a required media step relocated to macOS", file=sys.stderr)
+            return 1
+
+    print(f"workflow release-authority mutation suite rejected {len(mutations) + 3} unsafe designs")
     return 0
 
 
