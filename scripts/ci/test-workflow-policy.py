@@ -219,6 +219,12 @@ def main() -> int:
             ),
             (
                 quality,
+                "      - name: Validate workflow policy\n        run: |",
+                "      - name: Validate workflow policy\n        shell: pwsh\n        run: |",
+                "step-level Windows native-command failure masking",
+            ),
+            (
+                quality,
                 "auth-d1-conformance.py",
                 "auth-d1-advisory.py",
                 "missing auth D1 conformance",

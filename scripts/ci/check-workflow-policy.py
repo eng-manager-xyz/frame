@@ -131,6 +131,12 @@ def main() -> int:
         "quality-gates.yml: every hosted OS must fail immediately after a native command exits nonzero",
         errors,
     )
+    quality_shells = re.findall(r"^\s+shell:\s*([^\s#]+)", quality, re.MULTILINE)
+    require(
+        bool(quality_shells) and all(shell == "bash" for shell in quality_shells),
+        "quality-gates.yml: step-level shell overrides must preserve fail-fast bash semantics",
+        errors,
+    )
     require("check-parity-evidence.py" in quality,
             "quality-gates.yml: the fast parity evidence lane must be required", errors)
     require("check-secrets.py" in quality and "cargo deny check" in quality,
