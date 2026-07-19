@@ -232,7 +232,7 @@ mod windows {
         let handle = open_path(
             path,
             WRITE_DAC | FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         )?;
         validate_handle(&handle, ExpectedObject::FileOrDirectory)?;
@@ -629,7 +629,6 @@ mod tests {
             "target",
             "root/..",
             "root/name:stream",
-            "root/name\\child",
             "root/name child",
             "root/é.spool",
         ] {
@@ -639,6 +638,19 @@ mod tests {
                 "{invalid}"
             );
         }
+        // Backslash is an invalid Unix leaf byte but a Windows path separator.
+        // `destination_leaf` validates the component selected by `Path`, so the
+        // platform parser—not a string heuristic—owns this distinction.
+        #[cfg(not(windows))]
+        assert_eq!(
+            destination_leaf(Path::new("root/name\\child")),
+            Err(WindowsPublishError::Failed)
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            destination_leaf(Path::new("root/name\\child")).expect("nested Windows path"),
+            "child"
+        );
     }
 }
 
