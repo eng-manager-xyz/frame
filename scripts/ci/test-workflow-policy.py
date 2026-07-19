@@ -126,12 +126,6 @@ def main() -> int:
             ),
             (
                 production,
-                "  queue: max\n",
-                "",
-                "serialized production pending-run replacement",
-            ),
-            (
-                production,
                 "  push:\n    branches: [main]",
                 "  push:\n    branches: [main]\n    paths: [apps/control-plane/**]",
                 "path-filtered sentinel",

@@ -217,11 +217,17 @@ def main() -> int:
     )
     require("pull_request:" in quality and "push:" in quality, "quality-gates.yml: must run for pull requests and main pushes", errors)
     require("${{ secrets." not in quality, "quality-gates.yml: untrusted validation must be secret-free", errors)
+    quality_concurrency = yaml_top_level_block(quality, "concurrency")
+    quality_concurrency_group = yaml_scalar(
+        yaml_mapping_value(quality_concurrency, "group")
+    )
+    quality_cancel_in_progress = yaml_mapping_value(
+        quality_concurrency, "cancel-in-progress"
+    )
     require(
-        "group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
-        in quality
-        and "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
-        in quality,
+        quality_concurrency_group
+        == "quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+        and pull_request_only_cancellation(quality_cancel_in_progress),
         "quality-gates.yml: stale same-PR checks may cancel, but landed-main and manual runs must be unique and noncancellable",
         errors,
     )
