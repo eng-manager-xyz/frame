@@ -1,4 +1,4 @@
-//! Audited Win32 boundary for the encrypted Instant spool.
+//! Audited Windows boundary for the encrypted Instant spool.
 //!
 //! This crate is intentionally tiny: it owns the pointer-level calls needed
 //! for Credential Manager, protected file ACLs, reparse-point detection, and
@@ -75,11 +75,15 @@ mod windows {
         ptr, slice,
     };
 
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FileRenameInformation,
+        NtSetInformationFile,
+    };
     use windows_sys::Win32::{
         Foundation::{
-            CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_INSUFFICIENT_BUFFER,
-            ERROR_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
-            HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ,
+            GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+            STATUS_OBJECT_NAME_COLLISION,
         },
         Security::{
             Authorization::{
@@ -95,14 +99,14 @@ mod windows {
             SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         Storage::FileSystem::{
-            CREATE_NEW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
-            FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
-            FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileRenameInfo,
-            FlushFileBuffers, GetFileInformationByHandleEx, OPEN_EXISTING, READ_CONTROL,
-            SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
+            CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+            FileAttributeTagInfo, FlushFileBuffers, GetFileInformationByHandleEx, OPEN_EXISTING,
+            READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
         },
+        System::IO::IO_STATUS_BLOCK,
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
     use zeroize::{Zeroize, Zeroizing};
@@ -181,7 +185,7 @@ mod windows {
         AlreadyExists,
         Failed {
             stage: PublishStage,
-            win32_status: Option<u32>,
+            platform_status: Option<u32>,
         },
     }
 
@@ -189,7 +193,7 @@ mod windows {
         const fn invariant(stage: PublishStage) -> Self {
             Self::Failed {
                 stage,
-                win32_status: None,
+                platform_status: None,
             }
         }
 
@@ -199,17 +203,17 @@ mod windows {
             Self::status(stage, unsafe { GetLastError() })
         }
 
-        const fn status(stage: PublishStage, win32_status: u32) -> Self {
+        const fn status(stage: PublishStage, platform_status: u32) -> Self {
             Self::Failed {
                 stage,
-                win32_status: Some(win32_status),
+                platform_status: Some(platform_status),
             }
         }
 
         const fn from_acl(stage: PublishStage, diagnostic: PrivateAclDiagnostic) -> Self {
             Self::Failed {
                 stage,
-                win32_status: diagnostic.win32_status,
+                platform_status: diagnostic.win32_status,
             }
         }
     }
@@ -451,21 +455,9 @@ mod windows {
     fn publish_file_inner(source: &Path, destination: &Path) -> Result<(), PublishDiagnostic> {
         let leaf = destination_leaf(destination)
             .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeDestination))?;
-        let source_parent = source.parent().ok_or(PublishDiagnostic::invariant(
-            PublishStage::EncodeDestination,
-        ))?;
         let parent = destination.parent().ok_or(PublishDiagnostic::invariant(
             PublishStage::EncodeDestination,
         ))?;
-        // FileRenameInfo uses a null RootDirectory plus a simple leaf for an
-        // in-place rename. Keep this boundary deliberately narrower than a
-        // general move so the source handle—not a second absolute path
-        // resolution—anchors the destination directory.
-        if source_parent != parent {
-            return Err(PublishDiagnostic::invariant(
-                PublishStage::EncodeDestination,
-            ));
-        }
         let source = open_path(
             source,
             GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
@@ -477,7 +469,7 @@ mod windows {
             .map_err(|error| PublishDiagnostic::from_acl(PublishStage::ValidateSource, error))?;
         let destination_directory = open_path(
             parent,
-            FILE_ADD_FILE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         )
@@ -493,7 +485,7 @@ mod windows {
             .checked_mul(mem::size_of::<u16>())
             .and_then(|value| u32::try_from(value).ok())
             .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
-        let information_bytes = mem::size_of::<FILE_RENAME_INFO>()
+        let information_bytes = mem::size_of::<FILE_RENAME_INFORMATION>()
             .checked_add(
                 usize::try_from(name_bytes)
                     .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeRename))?,
@@ -506,16 +498,15 @@ mod windows {
             .map(|bytes| bytes / mem::size_of::<usize>())
             .ok_or(PublishDiagnostic::invariant(PublishStage::EncodeRename))?;
         let mut information = vec![0_usize; words];
-        let rename = information.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        let rename = information.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
         // SAFETY: `information` is pointer-aligned and sized through the final
-        // UTF-16 code unit. The simple leaf has no separator or stream colon;
-        // the validated destination directory and source file remain pinned by
-        // handles. A null RootDirectory is the documented same-directory form.
+        // UTF-16 code unit. The relative leaf has no separator or stream colon;
+        // the destination directory and source file remain pinned by handles.
         unsafe {
-            ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFO_0 {
+            ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFORMATION_0 {
                 ReplaceIfExists: false,
             });
-            ptr::addr_of_mut!((*rename).RootDirectory).write(ptr::null_mut());
+            ptr::addr_of_mut!((*rename).RootDirectory).write(destination_directory.0);
             ptr::addr_of_mut!((*rename).FileNameLength).write(name_bytes);
             ptr::copy_nonoverlapping(
                 leaf.as_ptr(),
@@ -530,19 +521,27 @@ mod windows {
                 PublishStage::FlushBeforeRename,
             ));
         }
-        // SAFETY: the variable-sized FILE_RENAME_INFO buffer is initialized as
-        // described above. FileRenameInfo with a null RootDirectory renames the
-        // source within its current directory; ReplaceIfExists=false performs
-        // the collision check and rename as one filesystem operation.
-        if unsafe {
-            SetFileInformationByHandle(source.0, FileRenameInfo, rename.cast(), information_size)
-        } == 0
-        {
-            // SAFETY: this reads the error from the immediately preceding call.
-            return match unsafe { GetLastError() } {
-                ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => Err(PublishDiagnostic::AlreadyExists),
-                status => Err(PublishDiagnostic::status(PublishStage::Rename, status)),
-            };
+        let mut io_status = IO_STATUS_BLOCK::default();
+        // SAFETY: the variable-sized FILE_RENAME_INFORMATION buffer is fully
+        // initialized, both handles remain live, and this synchronous source
+        // handle makes the returned NTSTATUS authoritative for the operation.
+        let status = unsafe {
+            NtSetInformationFile(
+                source.0,
+                &mut io_status,
+                rename.cast(),
+                information_size,
+                FileRenameInformation,
+            )
+        };
+        if status == STATUS_OBJECT_NAME_COLLISION {
+            return Err(PublishDiagnostic::AlreadyExists);
+        }
+        if status < 0 {
+            return Err(PublishDiagnostic::status(
+                PublishStage::Rename,
+                u32::from_ne_bytes(status.to_ne_bytes()),
+            ));
         }
         // Flush through the same handle after its no-replace rename. Windows
         // exposes no unprivileged, documented directory-fsync primitive, so
@@ -943,7 +942,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn private_creation_and_same_directory_no_replace_publication() {
+    fn private_creation_and_handle_relative_no_replace_publication() {
         let directory = TestDirectory::new();
         let source = directory.join("segment.tmp");
         let destination = directory.join("segment.spool");
@@ -972,18 +971,15 @@ mod windows_tests {
     }
 
     #[test]
-    fn publication_rejects_cross_directory_destination() {
+    fn handle_relative_publication_pins_a_cross_directory_destination() {
         let source_directory = TestDirectory::new();
         let destination_directory = TestDirectory::new();
         let source = source_directory.join("segment.tmp");
         let destination = destination_directory.join("segment.spool");
         drop(create_private_file(&source).expect("private source"));
 
-        assert_eq!(
-            publish_file(&source, &destination),
-            Err(WindowsPublishError::Failed)
-        );
-        assert!(source.exists());
-        assert!(!destination.exists());
+        diagnose_publish_file(&source, &destination).expect("cross-directory publish");
+        assert!(!source.exists());
+        assert!(destination.exists());
     }
 }
