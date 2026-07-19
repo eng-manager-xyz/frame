@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -835,7 +836,11 @@ def main() -> int:
         args.inject_private_cache_hit,
     )
     if args.ready_file is not None:
-        args.ready_file.write_text(f"{server.server_port}\n", encoding="ascii")
+        # The journey treats existence as publication. Write the complete port
+        # to a sibling first so readers can never observe an empty/partial file.
+        temporary_ready_file = args.ready_file.with_name(f".{args.ready_file.name}.tmp")
+        temporary_ready_file.write_text(f"{server.server_port}\n", encoding="ascii")
+        os.replace(temporary_ready_file, args.ready_file)
     try:
         server.serve_forever(poll_interval=0.1)
     finally:
