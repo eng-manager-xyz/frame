@@ -84,15 +84,15 @@ mod windows {
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
+                GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
             },
             Credentials::{
                 CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree,
                 CredReadW, CredWriteW,
             },
-            DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
-            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-            TOKEN_QUERY, TOKEN_USER, TokenUser,
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+            GetTokenInformation, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+            SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         Storage::FileSystem::{
             CREATE_NEW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
@@ -100,8 +100,8 @@ mod windows {
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
             FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileRenameInfo,
-            FlushFileBuffers, GetFileInformationByHandleEx, OPEN_EXISTING, SYNCHRONIZE,
-            SetFileInformationByHandle, WRITE_DAC,
+            FlushFileBuffers, GetFileInformationByHandleEx, OPEN_EXISTING, READ_CONTROL,
+            SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
         },
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
@@ -129,6 +129,7 @@ mod windows {
         ParseSecurityDescriptor,
         ReadDacl,
         SetDacl,
+        VerifyDacl,
         Invariant,
     }
 
@@ -281,7 +282,7 @@ mod windows {
     fn enforce_private_permissions_inner(path: &Path) -> Result<(), PrivateAclDiagnostic> {
         let handle = open_path(
             path,
-            WRITE_DAC | FILE_READ_ATTRIBUTES,
+            WRITE_DAC | READ_CONTROL | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         )?;
@@ -333,6 +334,48 @@ mod windows {
                 PrivateAclStage::SetDacl,
                 status,
             ));
+        }
+        verify_private_dacl(handle)
+    }
+
+    fn verify_private_dacl(handle: &Handle) -> Result<(), PrivateAclDiagnostic> {
+        let mut dacl = ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: every out pointer is valid, the handle stays live, and the
+        // returned descriptor is immediately guarded with LocalFree ownership.
+        let status = unsafe {
+            GetSecurityInfo(
+                handle.0,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut dacl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(PrivateAclDiagnostic::status(
+                PrivateAclStage::VerifyDacl,
+                status,
+            ));
+        }
+        if descriptor.is_null() || dacl.is_null() {
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::VerifyDacl));
+        }
+        let descriptor = LocalAllocation(descriptor);
+        let mut control = 0_u16;
+        let mut revision = 0_u32;
+        // SAFETY: the descriptor allocation is live and both scalar out
+        // pointers are valid for the synchronous control query.
+        if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+            return Err(PrivateAclDiagnostic::last_error(
+                PrivateAclStage::VerifyDacl,
+            ));
+        }
+        if control & SE_DACL_PROTECTED == 0 {
+            return Err(PrivateAclDiagnostic::invariant(PrivateAclStage::VerifyDacl));
         }
         Ok(())
     }
