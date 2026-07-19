@@ -451,9 +451,21 @@ mod windows {
     fn publish_file_inner(source: &Path, destination: &Path) -> Result<(), PublishDiagnostic> {
         let leaf = destination_leaf(destination)
             .map_err(|_| PublishDiagnostic::invariant(PublishStage::EncodeDestination))?;
+        let source_parent = source.parent().ok_or(PublishDiagnostic::invariant(
+            PublishStage::EncodeDestination,
+        ))?;
         let parent = destination.parent().ok_or(PublishDiagnostic::invariant(
             PublishStage::EncodeDestination,
         ))?;
+        // FileRenameInfo uses a null RootDirectory plus a simple leaf for an
+        // in-place rename. Keep this boundary deliberately narrower than a
+        // general move so the source handle—not a second absolute path
+        // resolution—anchors the destination directory.
+        if source_parent != parent {
+            return Err(PublishDiagnostic::invariant(
+                PublishStage::EncodeDestination,
+            ));
+        }
         let source = open_path(
             source,
             GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
@@ -496,13 +508,14 @@ mod windows {
         let mut information = vec![0_usize; words];
         let rename = information.as_mut_ptr().cast::<FILE_RENAME_INFO>();
         // SAFETY: `information` is pointer-aligned and sized through the final
-        // UTF-16 code unit. The relative leaf has no separator or stream colon;
-        // the destination directory and source file remain pinned by handles.
+        // UTF-16 code unit. The simple leaf has no separator or stream colon;
+        // the validated destination directory and source file remain pinned by
+        // handles. A null RootDirectory is the documented same-directory form.
         unsafe {
             ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFO_0 {
                 ReplaceIfExists: false,
             });
-            ptr::addr_of_mut!((*rename).RootDirectory).write(destination_directory.0);
+            ptr::addr_of_mut!((*rename).RootDirectory).write(ptr::null_mut());
             ptr::addr_of_mut!((*rename).FileNameLength).write(name_bytes);
             ptr::copy_nonoverlapping(
                 leaf.as_ptr(),
@@ -518,7 +531,8 @@ mod windows {
             ));
         }
         // SAFETY: the variable-sized FILE_RENAME_INFO buffer is initialized as
-        // described above. FileRenameInfo with ReplaceIfExists=false performs
+        // described above. FileRenameInfo with a null RootDirectory renames the
+        // source within its current directory; ReplaceIfExists=false performs
         // the collision check and rename as one filesystem operation.
         if unsafe {
             SetFileInformationByHandle(source.0, FileRenameInfo, rename.cast(), information_size)
@@ -929,7 +943,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn private_creation_and_handle_relative_no_replace_publication() {
+    fn private_creation_and_same_directory_no_replace_publication() {
         let directory = TestDirectory::new();
         let source = directory.join("segment.tmp");
         let destination = directory.join("segment.spool");
@@ -955,5 +969,21 @@ mod windows_tests {
             Err(WindowsPublishError::AlreadyExists)
         );
         assert!(Path::new(&second_source).exists());
+    }
+
+    #[test]
+    fn publication_rejects_cross_directory_destination() {
+        let source_directory = TestDirectory::new();
+        let destination_directory = TestDirectory::new();
+        let source = source_directory.join("segment.tmp");
+        let destination = destination_directory.join("segment.spool");
+        drop(create_private_file(&source).expect("private source"));
+
+        assert_eq!(
+            publish_file(&source, &destination),
+            Err(WindowsPublishError::Failed)
+        );
+        assert!(source.exists());
+        assert!(!destination.exists());
     }
 }
