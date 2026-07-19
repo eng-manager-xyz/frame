@@ -1682,7 +1682,15 @@ mod tests {
             .expect("system audio appsrc");
         assert_eq!(appsrc.max_buffers(), 1);
 
-        let expected = vec![0_u8; 8 * 480];
+        // Use a non-silent valid stereo F32LE payload. GstAggregator versions
+        // differ on whether the mixed output retains GAP when another mixer
+        // pad reaches EOS without data, so flags alone cannot identify the
+        // source-backed sample.
+        let mut expected = Vec::with_capacity(8 * 480);
+        for _ in 0..480 {
+            expected.extend_from_slice(&0.25_f32.to_le_bytes());
+            expected.extend_from_slice(&(-0.25_f32).to_le_bytes());
+        }
         let mut buffer = gst::Buffer::from_slice(expected.clone());
         let buffer_ref = buffer.get_mut().expect("unique test buffer");
         buffer_ref.set_pts(gst::ClockTime::ZERO);
@@ -1716,16 +1724,15 @@ mod tests {
             assert!(sample_count <= MIXED_AUDIO_SINK_MAX_BUFFERS);
 
             let buffer = sample.buffer().expect("sample buffer");
-            if buffer.flags().contains(gst::BufferFlags::GAP) {
-                continue;
-            }
-
-            real_buffer_count = real_buffer_count
-                .checked_add(1)
-                .expect("bounded real buffer count");
-            assert_eq!(real_buffer_count, 1, "only one source buffer was pushed");
             let output = buffer.map_readable().expect("readable mixed output");
-            assert_eq!(output.as_slice(), expected);
+            if output.as_slice() == expected {
+                real_buffer_count = real_buffer_count
+                    .checked_add(1)
+                    .expect("bounded real buffer count");
+                assert_eq!(real_buffer_count, 1, "only one source buffer was pushed");
+            } else {
+                assert!(buffer.flags().contains(gst::BufferFlags::GAP));
+            }
         }
         assert_eq!(real_buffer_count, 1, "the real source buffer must survive");
         graph.confirm_null().expect("confirmed Null");
