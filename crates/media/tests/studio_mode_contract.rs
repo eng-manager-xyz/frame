@@ -37,6 +37,31 @@ fn checksum(marker: u8) -> AssetChecksum {
     AssetChecksum::from_bytes([marker; 32]).expect("checksum")
 }
 
+fn recording_encoding(track: TrackKind) -> StudioAssetEncoding {
+    match track {
+        TrackKind::Screen | TrackKind::Camera => {
+            StudioAssetEncoding::recording_vp8_webm(StudioVideoRawCaps {
+                width: 1_280,
+                height: 720,
+                frame_rate: FrameRate {
+                    numerator: 30,
+                    denominator: 1,
+                },
+                pixel_format: PixelFormat::Bgra8,
+            })
+            .expect("VP8/WebM recording encoding")
+        }
+        TrackKind::Microphone | TrackKind::SystemAudio => {
+            StudioAssetEncoding::recording_opus_webm(StudioAudioRawCaps {
+                sample_rate: 48_000,
+                channels: 2,
+                sample_format: AudioSampleFormat::Float32,
+            })
+            .expect("Opus/WebM recording encoding")
+        }
+    }
+}
+
 fn asset(marker: u8, track: TrackKind) -> StudioAsset {
     asset_with_range(marker, track, 0, 10)
 }
@@ -51,12 +76,13 @@ fn asset_with_range(
         version: STUDIO_ASSET_VERSION,
         id: asset_id(marker),
         track,
-        source_name: StudioSourceName::new(format!("track-{marker}.mkv")).expect("name"),
+        source_name: StudioSourceName::new(format!("track-{marker}.webm")).expect("name"),
         byte_len: 4_096,
         start: seconds(start_seconds),
         duration: seconds(duration_seconds),
         checksum: checksum(marker),
         commit_state: AssetCommitState::DurableOriginal,
+        encoding: recording_encoding(track),
     }
 }
 
@@ -285,6 +311,97 @@ impl LegacyCapProjectPort for MemoryLegacyCapPort {
     fn read_snapshot(&mut self) -> Result<LegacyCapProjectSnapshot, StudioError> {
         Ok(self.snapshot.clone())
     }
+}
+
+fn legacy_v1_asset_payload(marker: u8, track: TrackKind) -> Vec<u8> {
+    let source_name = format!("track-{marker}.webm");
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1_u16.to_be_bytes());
+    payload.extend_from_slice(&[marker; 16]);
+    payload.push(match track {
+        TrackKind::Screen => 1,
+        TrackKind::Camera => 2,
+        TrackKind::Microphone => 3,
+        TrackKind::SystemAudio => 4,
+    });
+    payload.extend_from_slice(
+        &u16::try_from(source_name.len())
+            .expect("bounded source name")
+            .to_be_bytes(),
+    );
+    payload.extend_from_slice(source_name.as_bytes());
+    payload.extend_from_slice(&4_096_u64.to_be_bytes());
+    payload.extend_from_slice(&0_u64.to_be_bytes());
+    payload.extend_from_slice(&1_u32.to_be_bytes());
+    payload.extend_from_slice(&10_u64.to_be_bytes());
+    payload.extend_from_slice(&1_u32.to_be_bytes());
+    payload.extend_from_slice(&[marker; 32]);
+    payload.push(2);
+    payload
+}
+
+fn legacy_document(kind: u8, version: u16, payload: &[u8]) -> Vec<u8> {
+    let mut document = Vec::new();
+    document.extend_from_slice(b"FRST");
+    document.push(kind);
+    document.extend_from_slice(&version.to_be_bytes());
+    document.extend_from_slice(
+        &u32::try_from(payload.len())
+            .expect("bounded fixture payload")
+            .to_be_bytes(),
+    );
+    document.extend_from_slice(payload);
+    let digest = strong_sha256(&document).to_hex();
+    for pair in digest.as_bytes().chunks_exact(2) {
+        document.push(
+            u8::from_str_radix(std::str::from_utf8(pair).expect("hex pair"), 16)
+                .expect("digest byte"),
+        );
+    }
+    document
+}
+
+fn legacy_v1_project_document() -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&STUDIO_PROJECT_VERSION.to_be_bytes());
+    payload.extend_from_slice(&[1; 16]);
+    payload.extend_from_slice(&1_u64.to_be_bytes());
+    payload.push(4);
+    payload.extend_from_slice(&1_u16.to_be_bytes());
+    payload.extend_from_slice(&legacy_v1_asset_payload(2, TrackKind::Screen));
+    payload.extend_from_slice(&STUDIO_EDIT_VERSION.to_be_bytes());
+    payload.extend_from_slice(&1_u64.to_be_bytes());
+    payload.extend_from_slice(&0_u32.to_be_bytes());
+    legacy_document(1, STUDIO_PROJECT_VERSION, &payload)
+}
+
+#[test]
+fn v1_assets_migrate_to_an_explicit_unprobed_encoding() {
+    let legacy_asset = legacy_document(4, 1, &legacy_v1_asset_payload(2, TrackKind::Screen));
+    let migrated = StudioDocumentCodec::decode_asset(&legacy_asset).expect("migrate v1 asset");
+    assert_eq!(migrated.version, STUDIO_ASSET_VERSION);
+    assert_eq!(migrated.encoding, StudioAssetEncoding::UnspecifiedLegacyV1);
+    assert!(migrated.requires_encoding_probe());
+
+    let reencoded = StudioDocumentCodec::encode_asset(&migrated).expect("persist migration");
+    assert_eq!(&reencoded[5..7], &STUDIO_ASSET_VERSION.to_be_bytes());
+    assert_eq!(
+        StudioDocumentCodec::decode_asset(&reencoded).expect("decode migrated asset"),
+        migrated
+    );
+
+    let project = StudioDocumentCodec::decode_project(&legacy_v1_project_document())
+        .expect("migrate embedded v1 asset");
+    assert_eq!(
+        project.assets[0].encoding,
+        StudioAssetEncoding::UnspecifiedLegacyV1
+    );
+    assert!(project.assets[0].requires_encoding_probe());
+    let resolved = project.assets[0]
+        .with_probed_encoding(recording_encoding(TrackKind::Screen))
+        .expect("persist a probed replacement descriptor");
+    assert!(!resolved.requires_encoding_probe());
+    assert_eq!(resolved.checksum, project.assets[0].checksum);
 }
 
 #[test]
@@ -612,7 +729,7 @@ fn branch(marker: u8, track: TrackKind) -> IsolatedTrackBranch {
     IsolatedTrackBranch {
         track,
         asset_id: asset_id(marker),
-        temporary_name: StudioSourceName::new(format!("temp-{marker}.mkv")).expect("temp"),
+        temporary_name: StudioSourceName::new(format!("temp-{marker}.webm")).expect("temp"),
         source: match track {
             TrackKind::Screen => CaptureElementFamily::NativeScreenBridge,
             TrackKind::Camera => CaptureElementFamily::NativeCameraBridge,
@@ -620,16 +737,11 @@ fn branch(marker: u8, track: TrackKind) -> IsolatedTrackBranch {
             TrackKind::SystemAudio => CaptureElementFamily::NativeSystemAudioBridge,
         },
         encoder: match track {
-            TrackKind::Screen | TrackKind::Camera => CaptureElementFamily::Vp9Encoder,
-            TrackKind::Microphone | TrackKind::SystemAudio => CaptureElementFamily::FlacEncoder,
+            TrackKind::Screen | TrackKind::Camera => CaptureElementFamily::Vp8Encoder,
+            TrackKind::Microphone | TrackKind::SystemAudio => CaptureElementFamily::OpusEncoder,
         },
-        muxer: CaptureElementFamily::MatroskaMux,
-        time_base: match track {
-            TrackKind::Screen | TrackKind::Camera => TimeBase::new(90_000).expect("timebase"),
-            TrackKind::Microphone | TrackKind::SystemAudio => {
-                TimeBase::new(48_000).expect("timebase")
-            }
-        },
+        muxer: CaptureElementFamily::WebMMux,
+        encoding: recording_encoding(track),
         queue: BoundedMediaQueue {
             max_buffers: 64,
             max_bytes: 32 * 1024 * 1024,
@@ -639,7 +751,7 @@ fn branch(marker: u8, track: TrackKind) -> IsolatedTrackBranch {
 }
 
 #[test]
-fn recording_graph_preserves_four_isolated_originals() {
+fn recording_graph_requires_screen_and_accepts_each_optional_track() {
     let branches = vec![
         branch(1, TrackKind::Screen),
         branch(2, TrackKind::Camera),
@@ -648,6 +760,45 @@ fn recording_graph_preserves_four_isolated_originals() {
     ];
     StudioRecordingGraphSpec::new(project_id(1), operation_id(2), branches.clone())
         .expect("isolated graph");
+    for optional in [
+        None,
+        Some(TrackKind::Camera),
+        Some(TrackKind::Microphone),
+        Some(TrackKind::SystemAudio),
+    ] {
+        let mut enabled = vec![branch(10, TrackKind::Screen)];
+        if let Some(track) = optional {
+            enabled.push(branch(11, track));
+        }
+        StudioRecordingGraphSpec::new(project_id(1), operation_id(2), enabled)
+            .expect("screen plus independently optional track");
+    }
+    assert_eq!(
+        StudioRecordingGraphSpec::new(
+            project_id(1),
+            operation_id(2),
+            vec![branch(12, TrackKind::Microphone)],
+        ),
+        Err(StudioError::InvalidRecordingGraph)
+    );
+    assert_eq!(
+        StudioAssetEncoding::recording_vp8_webm(StudioVideoRawCaps {
+            width: 1_280,
+            height: 720,
+            frame_rate: FrameRate {
+                numerator: 30,
+                denominator: 1,
+            },
+            pixel_format: PixelFormat::Nv12,
+        }),
+        Err(StudioError::InvalidAssetEncoding)
+    );
+    let mut mismatched_codec = branch(13, TrackKind::Screen);
+    mismatched_codec.encoder = CaptureElementFamily::OpusEncoder;
+    assert_eq!(
+        StudioRecordingGraphSpec::new(project_id(1), operation_id(2), vec![mismatched_codec],),
+        Err(StudioError::InvalidRecordingGraph)
+    );
 
     let mut flattened = branches;
     flattened[3].track = TrackKind::Microphone;
@@ -658,14 +809,42 @@ fn recording_graph_preserves_four_isolated_originals() {
 }
 
 #[test]
-fn filesystem_recording_session_seals_four_independent_originals() {
+fn v1_recording_graphs_fail_with_an_explicit_version_boundary() {
+    let directory = tempfile::tempdir().expect("recording graph directory");
+    let store = FilesystemStudioOriginalStore::new(directory.path()).expect("original store");
+    let project_marker = 14_u8;
+    let clock_marker = 15_u8;
+    let project_directory = directory
+        .path()
+        .join(format!("{project_marker:02x}").repeat(16));
+    fs::create_dir_all(&project_directory).expect("project directory");
+    fs::write(
+        project_directory.join(format!(
+            "{}.studio-recording-graph",
+            format!("{clock_marker:02x}").repeat(16)
+        )),
+        legacy_document(6, 1, b"legacy graph identity"),
+    )
+    .expect("legacy graph fixture");
+    let graph = StudioRecordingGraphSpec::new(
+        project_id(project_marker),
+        operation_id(clock_marker),
+        vec![branch(16, TrackKind::Screen)],
+    )
+    .expect("current graph");
+    assert!(matches!(
+        FilesystemStudioRecordingSession::begin(&store, graph, 1_024),
+        Err(StudioError::UnsupportedRecordingGraphVersion(1))
+    ));
+}
+
+#[test]
+fn filesystem_recording_session_seals_only_enabled_independent_originals() {
     let directory = tempfile::tempdir().expect("recording directory");
     let mut store = FilesystemStudioOriginalStore::new(directory.path()).expect("original store");
     let branches = vec![
         branch(222, TrackKind::Screen),
-        branch(223, TrackKind::Camera),
         branch(224, TrackKind::Microphone),
-        branch(225, TrackKind::SystemAudio),
     ];
     let graph = StudioRecordingGraphSpec::new(project_id(226), operation_id(227), branches)
         .expect("recording graph");
@@ -673,9 +852,7 @@ fn filesystem_recording_session_seals_four_independent_originals() {
         .expect("begin recording sinks");
     let payloads = [
         (TrackKind::Screen, b"screen-encoded".as_slice()),
-        (TrackKind::Camera, b"camera-encoded".as_slice()),
         (TrackKind::Microphone, b"microphone-encoded".as_slice()),
-        (TrackKind::SystemAudio, b"system-audio-encoded".as_slice()),
     ];
     for (track, payload) in payloads {
         recording
@@ -685,7 +862,12 @@ fn filesystem_recording_session_seals_four_independent_originals() {
     let temporary = recording
         .finish(seconds(0), seconds(2))
         .expect("seal isolated temporary tracks");
-    assert_eq!(temporary.len(), 4);
+    assert_eq!(temporary.len(), 2);
+    assert!(
+        temporary
+            .iter()
+            .all(|asset| !asset.requires_encoding_probe())
+    );
     for (index, asset) in temporary.into_iter().enumerate() {
         let committed = commit_verified_temporary(
             &mut store,
@@ -2471,7 +2653,7 @@ fn full_capabilities() -> RenderCapabilities {
         software_video: BTreeSet::from([
             StudioVideoCodec::H264Avc,
             StudioVideoCodec::H265Hevc,
-            StudioVideoCodec::Vp9,
+            StudioVideoCodec::Vp8,
             StudioVideoCodec::Ffv1,
         ]),
         audio: BTreeSet::from([

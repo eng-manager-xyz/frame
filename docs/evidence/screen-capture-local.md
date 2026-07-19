@@ -120,9 +120,11 @@ facts, not hardware results:
   `MacOsNativeDesktopBackend` only after GStreamer recorder preflight, reports
   `NativeMacOsDisplay`, and degrades to `Unavailable` if construction fails;
 - the runtime requires granted permission and a fresh opaque display selection,
-  rejects audio, camera, window, region, pause, and MP4 paths, then feeds the
-  selected full display into the bounded VP8/WebM `ScreenRecording` graph; and
-- stop seals a single-source artifact, cancel tears down the worker, and
+  rejects microphone, camera, window, region, pause, and MP4 paths, then feeds
+  the selected full display plus optional exact 48 kHz stereo system audio into
+  the bounded VP8/Opus WebM recording graph while excluding Frame's own process
+  audio; and
+- stop seals one verified recording artifact, cancel tears down the worker, and
   Editable WebM export is bound to that artifact and a prevalidated destination;
   recorder writes/verifies use a preopened descriptor, publication is a rooted
   identity-checked no-replace rename, and seal/export both enforce the verified

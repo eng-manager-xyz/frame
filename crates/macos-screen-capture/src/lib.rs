@@ -14,6 +14,10 @@ use frame_media::{
 };
 use thiserror::Error;
 
+mod target_catalog;
+
+pub use target_catalog::MacOsRegionSelection;
+
 #[cfg(target_os = "macos")]
 mod platform;
 
@@ -47,7 +51,7 @@ pub enum FrameMediaContractStatus {
 pub const FRAME_MEDIA_CONTRACT_STATUS: FrameMediaContractStatus =
     FrameMediaContractStatus::BlockedByMissingProtectedContentSignal;
 
-/// Configuration for one full-display BGRA capture.
+/// Configuration for one catalog-bound display, window, or region BGRA capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacOsCaptureConfig {
     target: ScreenTargetBinding,
@@ -115,6 +119,7 @@ impl MacOsCaptureConfig {
 pub struct MacOsCaptureFrame {
     target: ScreenTargetBinding,
     sequence: u64,
+    source_pts_ns: Option<u64>,
     timestamp: FrameTimestamp,
     spec: VideoFrameSpec,
     pixels: Vec<u8>,
@@ -129,6 +134,14 @@ impl MacOsCaptureFrame {
     #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// Raw ScreenCaptureKit presentation time in the shared epoch-zero media
+    /// clock. `None` means this sample cannot be compared with another native
+    /// source and therefore must not enter a shared-clock A/V graph.
+    #[must_use]
+    pub const fn source_pts_ns(&self) -> Option<u64> {
+        self.source_pts_ns
     }
 
     #[must_use]
@@ -205,6 +218,20 @@ pub enum MacOsCaptureError {
     TopologyGenerationExhausted,
     #[error("the display target is stale or did not come from this adapter")]
     StaleOrForeignTarget,
+    #[error("a region selection must reference an opaque display target")]
+    RegionRequiresDisplayTarget,
+    #[error("the region's display token is stale or came from another adapter session")]
+    StaleOrForeignRegionDisplay,
+    #[error("the selected region is not wholly contained by its display")]
+    InvalidRegionGeometry,
+    #[error("the requested output aspect ratio does not match the selected target")]
+    OutputAspectRatioDoesNotMatchTarget,
+    #[error("the native target catalog contains a duplicate identity")]
+    DuplicateNativeTarget,
+    #[error("the native target catalog exceeds the normalized 256-target bound")]
+    TargetCatalogLimitExceeded,
+    #[error("the selected target changed after it was enumerated")]
+    StaleTargetTopology,
     #[error("a capture stream is already running")]
     AlreadyRunning,
     #[error("no capture stream is running")]
@@ -437,6 +464,7 @@ impl RawMediaTime {
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy)]
 struct NormalizedTimestamp {
+    source_pts_ns: Option<u64>,
     timestamp: FrameTimestamp,
     used_nominal_duration: bool,
 }
@@ -568,6 +596,9 @@ impl TimestampNormalizer {
         self.last_raw_pts_ns = Some(raw_pts_ns);
         self.last_output_end_ns = timestamp.end_ns();
         Ok(NormalizedTimestamp {
+            source_pts_ns: (pts.epoch == 0)
+                .then(|| u64::try_from(raw_pts_ns).ok())
+                .flatten(),
             timestamp,
             used_nominal_duration,
         })
@@ -613,6 +644,14 @@ mod tests {
         assert_eq!(
             MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata),
             Err(MacOsCaptureError::UnsupportedCursorMode)
+        );
+    }
+
+    #[test]
+    fn configuration_accepts_exact_hidden_and_embedded_cursor_modes() {
+        assert!(MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Hidden).is_ok());
+        assert!(
+            MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::EmbeddedInFrame).is_ok()
         );
     }
 
@@ -690,6 +729,7 @@ mod tests {
             )
             .expect("second");
         assert_eq!(first.timestamp.pts_ns, 0);
+        assert_eq!(first.source_pts_ns, Some(30_000_000_000));
         assert_eq!(first.timestamp.duration_ns, 33_333_333);
         assert!(!first.used_nominal_duration);
         assert_eq!(second.timestamp.pts_ns, 33_333_333);
@@ -774,5 +814,6 @@ mod tests {
             .expect("epoch reset");
         assert!(epoch.timestamp.discontinuity);
         assert_eq!(epoch.timestamp.pts_ns, gap.timestamp.end_ns());
+        assert_eq!(epoch.source_pts_ns, None);
     }
 }

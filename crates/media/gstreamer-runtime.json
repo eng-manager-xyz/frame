@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "rust_manifest_version": 5,
+  "rust_manifest_version": 6,
   "minimum_gstreamer": "1.22.0",
   "plugin_search_policy": {
     "denied_environment_variables": [
@@ -66,6 +66,7 @@
     {"factory": "audiomixer", "capability": "audio_mixing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "volume", "capability": "audio_mixing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "level", "capability": "audio_metering", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "wavenc", "capability": "audio_normalize", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "compositor", "capability": "camera_composition", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "splitmuxsink", "capability": "instant_segmentation", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "playbin3", "capability": "studio_preview", "requirement": "optional", "platform": "native_desktop"},
@@ -76,13 +77,13 @@
     {"factory": "avenc_aac", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "h264parse", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "aacparse", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
-    {"factory": "wavenc", "capability": "studio_multitrack", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "videorate", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "jpegenc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "gifenc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "lamemp3enc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "concat", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
-    {"factory": "opusenc", "capability": "software_opus", "requirement": "required", "platform": "native_desktop"}
+    {"factory": "opusenc", "capability": "software_opus", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "opusdec", "capability": "decode_analysis", "requirement": "required", "platform": "native_desktop"}
   ],
   "targets": [
     {
@@ -139,6 +140,7 @@
   ],
   "codec_decisions": [
     {"profile": "synthetic_webm", "video": "vp8", "audio": "opus", "container": "webm", "status": "required_for_ci"},
+    {"profile": "studio_original_v2", "video": "vp8", "audio": "opus", "container": "webm", "status": "required_for_native_desktop"},
     {"profile": "distribution_mp4", "video": "h264", "audio": "aac", "container": "mp4", "status": "legal_and_patent_review_required"}
   ]
 }

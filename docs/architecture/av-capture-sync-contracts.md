@@ -168,9 +168,19 @@ native terminal reconciliation and confirm GStreamer `Null`; EOS completion is
 reported only after `Null`. The runtime owns a validated bounded EOS deadline,
 rejects a regressing caller clock, and rotates its first-polled source so a
 one-buffer poll budget cannot starve later sources. This runtime is currently a
-preview/execution foundation: it does not yet drain mixed-media appsinks, parse
-`level` messages into production meters, or authenticate a lossless native
-callback tail for a recording artifact.
+preview/execution foundation. Explicit `quiesce` makes one terminal
+reconciliation/stop attempt and independently confirms GStreamer `Null`; it may
+retry the same sticky terminal authority after an unconfirmed result. Dropping
+a runtime still in `Playing` or `EosRequested` invokes that same one-attempt
+path. Adapter and graph unwinds are contained separately so a hostile native
+panic cannot skip the graph's bounded five-second `Null` confirmation. Drop
+does not wait for EOS and does not claim a completed artifact. Native calls are
+bounded by their operation-ticket timeout contract, but safe Rust cannot
+preempt an adapter that blocks after violating that contract; production
+adapters still need their platform watchdog/process-isolation policy. The
+runtime also does not yet drain mixed-media appsinks, parse `level` messages
+into production meters, or authenticate a lossless native callback tail for a
+recording artifact.
 
 ## Current macOS system-audio primitive
 

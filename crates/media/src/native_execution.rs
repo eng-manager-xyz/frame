@@ -847,8 +847,9 @@ pub struct NativeStudioTrackArtifact {
     pub sha256: String,
 }
 
-/// Record four isolated tracks on one GStreamer clock. This is the executable
-/// conformance source; the appsrc production graph has the same branches.
+/// Record four isolated VP8/Opus WebM tracks on one GStreamer clock. This is
+/// the executable conformance source; the appsrc production graph has the same
+/// codecs and containers.
 pub fn record_synthetic_studio_tracks(
     directory: &Path,
     duration: Duration,
@@ -878,10 +879,10 @@ pub fn record_synthetic_studio_tracks(
             "! videoconvert ! vp8enc deadline=1 ! webmmux name=camera_mux ! filesink name=camera_sink ",
             "audiotestsrc num-buffers={audio_buffers} samplesperbuffer=1024 is-live=false wave=sine freq=440 ",
             "! audio/x-raw,format=F32LE,rate=48000,channels=1 ! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
-            "! audioconvert ! wavenc ! filesink name=microphone_sink ",
+            "! audioconvert ! audioresample ! opusenc ! webmmux name=microphone_mux ! filesink name=microphone_sink ",
             "audiotestsrc num-buffers={audio_buffers} samplesperbuffer=1024 is-live=false wave=sine freq=880 ",
             "! audio/x-raw,format=F32LE,rate=48000,channels=2 ! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
-            "! audioconvert ! wavenc ! filesink name=system_audio_sink"
+            "! audioconvert ! audioresample ! opusenc ! webmmux name=system_audio_mux ! filesink name=system_audio_sink"
         ),
         frames = frames,
         audio_buffers = audio_buffers,
@@ -893,12 +894,12 @@ pub fn record_synthetic_studio_tracks(
         (
             NativeStudioTrackRole::Microphone,
             "microphone_sink",
-            "microphone.wav",
+            "microphone.webm",
         ),
         (
             NativeStudioTrackRole::SystemAudio,
             "system_audio_sink",
-            "system-audio.wav",
+            "system-audio.webm",
         ),
     ];
     for (_, sink, name) in declarations {
@@ -946,11 +947,11 @@ pub fn build_studio_multitrack_appsrc_pipeline(
             "appsrc name=studio_microphone_src is-live=true do-timestamp=false block=false format=time ",
             "caps=\"audio/x-raw,format=F32LE,layout=interleaved,rate={},channels={}\" ",
             "! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 leaky=downstream ",
-            "! audioconvert ! wavenc ! filesink name=microphone_sink ",
+            "! audioconvert ! audioresample ! opusenc ! webmmux ! filesink name=microphone_sink ",
             "appsrc name=studio_system_audio_src is-live=true do-timestamp=false block=false format=time ",
             "caps=\"audio/x-raw,format=F32LE,layout=interleaved,rate={},channels={}\" ",
             "! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 leaky=downstream ",
-            "! audioconvert ! wavenc ! filesink name=system_audio_sink"
+            "! audioconvert ! audioresample ! opusenc ! webmmux ! filesink name=system_audio_sink"
         ),
         video.width,
         video.height,
@@ -969,8 +970,8 @@ pub fn build_studio_multitrack_appsrc_pipeline(
     for (sink, name) in [
         ("screen_sink", "screen.webm"),
         ("camera_sink", "camera.webm"),
-        ("microphone_sink", "microphone.wav"),
-        ("system_audio_sink", "system-audio.wav"),
+        ("microphone_sink", "microphone.webm"),
+        ("system_audio_sink", "system-audio.webm"),
     ] {
         pipeline
             .by_name(sink)
@@ -987,6 +988,13 @@ fn track_artifact(
 ) -> Result<NativeStudioTrackArtifact, NativeExecutionError> {
     let metadata = fs::symlink_metadata(&path).map_err(|_| NativeExecutionError::Filesystem)?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() || metadata.len() < 44 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let mut prefix = [0_u8; 4];
+    File::open(&path)
+        .and_then(|mut file| file.read_exact(&mut prefix))
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    if prefix != [0x1a, 0x45, 0xdf, 0xa3] {
         return Err(NativeExecutionError::InvalidOutput);
     }
     Ok(NativeStudioTrackArtifact {
@@ -1056,11 +1064,19 @@ pub fn decode_studio_preview_frame(
     pipeline
         .set_state(gst::State::Paused)
         .map_err(|_| NativeExecutionError::Pipeline)?;
-    let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+    let (transition, current, _) = pipeline.state(gst::ClockTime::from_seconds(10));
+    if transition.is_err() || current != gst::State::Paused {
+        let _ = pipeline.set_state(gst::State::Null);
+        return Err(NativeExecutionError::Pipeline);
+    }
+    if !pipeline_has_trusted_factory_provenance(&pipeline) {
+        let _ = pipeline.set_state(gst::State::Null);
+        return Err(NativeExecutionError::UntrustedFactory);
+    }
     if !position.is_zero()
         && player
             .seek_simple(
-                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
                 gst::ClockTime::from_nseconds(
                     u64::try_from(position.as_nanos())
                         .map_err(|_| NativeExecutionError::ResourceLimit)?,
@@ -1296,7 +1312,7 @@ fn run_to_eos(
     teardown
 }
 
-fn set_null(pipeline: &gst::Pipeline) -> Result<(), NativeExecutionError> {
+pub(crate) fn set_null(pipeline: &gst::Pipeline) -> Result<(), NativeExecutionError> {
     pipeline
         .set_state(gst::State::Null)
         .map_err(|_| NativeExecutionError::Pipeline)?;
@@ -1307,7 +1323,7 @@ fn set_null(pipeline: &gst::Pipeline) -> Result<(), NativeExecutionError> {
     Ok(())
 }
 
-fn require_codec_approval() -> Result<(), NativeExecutionError> {
+pub(crate) fn require_codec_approval() -> Result<(), NativeExecutionError> {
     (std::env::var("FRAME_NATIVE_H264_AAC_APPROVED")
         .ok()
         .as_deref()
@@ -1316,7 +1332,7 @@ fn require_codec_approval() -> Result<(), NativeExecutionError> {
     .ok_or(NativeExecutionError::CodecApprovalRequired)
 }
 
-fn create_private_directory(path: &Path) -> Result<(), NativeExecutionError> {
+pub(crate) fn create_private_directory(path: &Path) -> Result<(), NativeExecutionError> {
     fs::create_dir_all(path).map_err(|_| NativeExecutionError::Filesystem)?;
     #[cfg(unix)]
     {
@@ -1334,7 +1350,7 @@ fn create_private_directory(path: &Path) -> Result<(), NativeExecutionError> {
     Ok(())
 }
 
-fn sync_directory(path: &Path) -> Result<(), NativeExecutionError> {
+pub(crate) fn sync_directory(path: &Path) -> Result<(), NativeExecutionError> {
     File::open(path)
         .and_then(|file| file.sync_all())
         .map_err(|_| NativeExecutionError::Filesystem)
@@ -1360,7 +1376,7 @@ fn sha256_file(path: &Path) -> Result<String, NativeExecutionError> {
         .collect())
 }
 
-fn sha256_file_with_budget(
+pub(crate) fn sha256_file_with_budget(
     path: &Path,
     cancellation: &CancellationToken,
     deadline: Duration,

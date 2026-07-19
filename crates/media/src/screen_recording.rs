@@ -7,6 +7,7 @@
 //! the recording; only [`ScreenRecording::finish`] verifies every encoded
 //! frame and atomically commits an output.
 
+mod av;
 mod output;
 mod pump;
 
@@ -35,6 +36,10 @@ use output::{
 };
 
 pub use crate::ScreenFramePayload as ScreenRecordingPayload;
+pub use av::{
+    F32StereoAudioChunk, ScreenAudioRecording, ScreenAudioRecordingArtifact,
+    ScreenAudioRecordingIngressStatus, SystemAudioRecordingSpec,
+};
 pub use pump::{
     ScreenPumpCancellationTeardown, ScreenPumpError, ScreenPumpOutcome, ScreenPumpReport,
     ScreenPumpRetirementFailure, ScreenPumpTeardownStatus, ScreenPumpTerminalFailure,

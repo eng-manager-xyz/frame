@@ -19,13 +19,14 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{Sha256Digest, strong_sha256};
+use crate::{AudioSampleFormat, PixelFormat, Sha256Digest, strong_sha256};
 
 pub const STUDIO_PROJECT_VERSION: u16 = 1;
-pub const STUDIO_ASSET_VERSION: u16 = 1;
+pub const STUDIO_ASSET_VERSION: u16 = 2;
 pub const STUDIO_EDIT_VERSION: u16 = 1;
 pub const STUDIO_JOURNAL_VERSION: u16 = 2;
 pub const STUDIO_RENDER_PROTOCOL_VERSION: u16 = 1;
+pub const STUDIO_RECORDING_GRAPH_VERSION: u16 = 2;
 pub const MAX_STUDIO_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_STUDIO_ASSETS: usize = 64;
 pub const MAX_STUDIO_EDITS: usize = 1_024;
@@ -384,6 +385,169 @@ pub enum AssetCommitState {
     DurableOriginal,
 }
 
+/// The exact raw video caps presented to the recording encoder.
+///
+/// These values are persisted with the encoded original so a native adapter
+/// never has to reconstruct the capture contract from a filename or host
+/// default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StudioVideoRawCaps {
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: FrameRate,
+    pub pixel_format: PixelFormat,
+}
+
+impl StudioVideoRawCaps {
+    pub fn validate(self) -> Result<Self, StudioError> {
+        self.frame_rate.validate()?;
+        let pixels = u64::from(self.width)
+            .checked_mul(u64::from(self.height))
+            .ok_or(StudioError::InvalidAssetEncoding)?;
+        if self.width == 0 || self.height == 0 || pixels > 132_710_400 {
+            return Err(StudioError::InvalidAssetEncoding);
+        }
+        Ok(self)
+    }
+}
+
+/// The exact interleaved raw audio caps presented to the recording encoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StudioAudioRawCaps {
+    pub sample_rate: u32,
+    pub channels: u8,
+    pub sample_format: AudioSampleFormat,
+}
+
+impl StudioAudioRawCaps {
+    pub fn validate(self) -> Result<Self, StudioError> {
+        if !(8_000..=384_000).contains(&self.sample_rate) || !(1..=32).contains(&self.channels) {
+            return Err(StudioError::InvalidAssetEncoding);
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StudioAssetRawCaps {
+    Video(StudioVideoRawCaps),
+    Audio(StudioAudioRawCaps),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StudioAssetCodec {
+    Video(StudioVideoCodec),
+    Audio(StudioAudioCodec),
+}
+
+/// Persisted encoding identity for one immutable original.
+///
+/// `UnspecifiedLegacyV1` is an explicit migration result for documents that
+/// predate encoding metadata. Native consumers must probe and persist a
+/// replacement descriptor before decoding such an asset; they must not infer
+/// its format from the source name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StudioAssetEncoding {
+    UnspecifiedLegacyV1,
+    Encoded {
+        container: MediaContainer,
+        codec: StudioAssetCodec,
+        raw_caps: StudioAssetRawCaps,
+        time_base: TimeBase,
+    },
+}
+
+impl StudioAssetEncoding {
+    pub fn recording_vp8_webm(raw_caps: StudioVideoRawCaps) -> Result<Self, StudioError> {
+        raw_caps.validate()?;
+        if raw_caps.pixel_format != PixelFormat::Bgra8 {
+            return Err(StudioError::InvalidAssetEncoding);
+        }
+        Ok(Self::Encoded {
+            container: MediaContainer::WebM,
+            codec: StudioAssetCodec::Video(StudioVideoCodec::Vp8),
+            raw_caps: StudioAssetRawCaps::Video(raw_caps),
+            time_base: TimeBase(90_000),
+        })
+    }
+
+    pub fn recording_opus_webm(raw_caps: StudioAudioRawCaps) -> Result<Self, StudioError> {
+        raw_caps.validate()?;
+        if raw_caps.sample_rate != 48_000 || raw_caps.sample_format != AudioSampleFormat::Float32 {
+            return Err(StudioError::InvalidAssetEncoding);
+        }
+        Ok(Self::Encoded {
+            container: MediaContainer::WebM,
+            codec: StudioAssetCodec::Audio(StudioAudioCodec::Opus),
+            raw_caps: StudioAssetRawCaps::Audio(raw_caps),
+            time_base: TimeBase(48_000),
+        })
+    }
+
+    #[must_use]
+    pub const fn requires_probe(self) -> bool {
+        matches!(self, Self::UnspecifiedLegacyV1)
+    }
+
+    fn validate_for_track(self, track: TrackKind) -> Result<(), StudioError> {
+        let Self::Encoded {
+            container,
+            codec,
+            raw_caps,
+            time_base: _,
+        } = self
+        else {
+            return Ok(());
+        };
+        match raw_caps {
+            StudioAssetRawCaps::Video(caps) => {
+                caps.validate()?;
+                if !matches!(track, TrackKind::Screen | TrackKind::Camera)
+                    || !matches!(codec, StudioAssetCodec::Video(_))
+                {
+                    return Err(StudioError::InvalidAssetEncoding);
+                }
+            }
+            StudioAssetRawCaps::Audio(caps) => {
+                caps.validate()?;
+                if !matches!(track, TrackKind::Microphone | TrackKind::SystemAudio)
+                    || !matches!(codec, StudioAssetCodec::Audio(_))
+                {
+                    return Err(StudioError::InvalidAssetEncoding);
+                }
+            }
+        }
+        let supported_pair = matches!(
+            (container, codec),
+            (
+                MediaContainer::WebM,
+                StudioAssetCodec::Video(
+                    StudioVideoCodec::Vp8 | StudioVideoCodec::Vp9 | StudioVideoCodec::Av1,
+                ),
+            ) | (
+                MediaContainer::WebM,
+                StudioAssetCodec::Audio(StudioAudioCodec::Opus)
+            ) | (MediaContainer::Matroska, _)
+                | (
+                    MediaContainer::Mp4,
+                    StudioAssetCodec::Video(
+                        StudioVideoCodec::H264Avc
+                            | StudioVideoCodec::H265Hevc
+                            | StudioVideoCodec::Av1,
+                    ),
+                )
+                | (
+                    MediaContainer::Mp4,
+                    StudioAssetCodec::Audio(StudioAudioCodec::AacLowComplexity)
+                )
+        );
+        if !supported_pair {
+            return Err(StudioError::InvalidAssetEncoding);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct StudioAsset {
     pub version: u16,
@@ -395,6 +559,7 @@ pub struct StudioAsset {
     pub duration: RationalTime,
     pub checksum: AssetChecksum,
     pub commit_state: AssetCommitState,
+    pub encoding: StudioAssetEncoding,
 }
 
 impl fmt::Debug for StudioAsset {
@@ -410,6 +575,7 @@ impl fmt::Debug for StudioAsset {
             .field("duration", &self.duration)
             .field("checksum", &self.checksum)
             .field("commit_state", &self.commit_state)
+            .field("encoding", &self.encoding)
             .finish()
     }
 }
@@ -422,8 +588,27 @@ impl StudioAsset {
         if self.byte_len == 0 || self.duration.ticks == 0 {
             return Err(StudioError::InvalidAsset);
         }
+        self.encoding.validate_for_track(self.track)?;
         self.end()?;
         Ok(())
+    }
+
+    #[must_use]
+    pub const fn requires_encoding_probe(&self) -> bool {
+        self.encoding.requires_probe()
+    }
+
+    /// Returns a replacement descriptor after a bounded media probe has
+    /// authenticated a migrated v1 asset's real format. Immutable media
+    /// identity, timing, and commit state are retained exactly.
+    pub fn with_probed_encoding(&self, encoding: StudioAssetEncoding) -> Result<Self, StudioError> {
+        if !self.requires_encoding_probe() || encoding.requires_probe() {
+            return Err(StudioError::InvalidAssetEncoding);
+        }
+        let mut resolved = self.clone();
+        resolved.encoding = encoding;
+        resolved.validate()?;
+        Ok(resolved)
     }
 
     pub fn end(&self) -> Result<ExactDuration, StudioError> {
@@ -1150,13 +1335,13 @@ impl StudioDocumentCodec {
 
     pub fn decode_asset(bytes: &[u8]) -> Result<StudioAsset, StudioError> {
         let (version, payload) = unwrap_document(bytes, DocumentKind::Asset)?;
-        if version != STUDIO_ASSET_VERSION {
+        if !matches!(version, 1 | STUDIO_ASSET_VERSION) {
             return Err(StudioError::UnsupportedAssetVersion(version));
         }
         let mut reader = CanonicalReader::new(payload);
-        let asset = decode_asset(&mut reader)?;
+        let (source_version, asset) = decode_asset_versioned(&mut reader)?;
         reader.finish()?;
-        if asset.version != version {
+        if source_version != version {
             return Err(StudioError::MalformedDocument);
         }
         asset.validate()?;
@@ -1474,6 +1659,184 @@ fn decode_time(reader: &mut CanonicalReader<'_>) -> Result<RationalTime, StudioE
     Ok(RationalTime::new(ticks, time_base))
 }
 
+const fn media_container_tag(container: MediaContainer) -> u8 {
+    match container {
+        MediaContainer::Mp4 => 1,
+        MediaContainer::WebM => 2,
+        MediaContainer::Matroska => 3,
+    }
+}
+
+fn media_container_from_tag(tag: u8) -> Result<MediaContainer, StudioError> {
+    match tag {
+        1 => Ok(MediaContainer::Mp4),
+        2 => Ok(MediaContainer::WebM),
+        3 => Ok(MediaContainer::Matroska),
+        _ => Err(StudioError::MalformedDocument),
+    }
+}
+
+const fn studio_video_codec_tag(codec: StudioVideoCodec) -> u8 {
+    match codec {
+        StudioVideoCodec::H264Avc => 1,
+        StudioVideoCodec::H265Hevc => 2,
+        StudioVideoCodec::Vp8 => 3,
+        StudioVideoCodec::Vp9 => 4,
+        StudioVideoCodec::Av1 => 5,
+        StudioVideoCodec::Ffv1 => 6,
+    }
+}
+
+fn studio_video_codec_from_tag(tag: u8) -> Result<StudioVideoCodec, StudioError> {
+    match tag {
+        1 => Ok(StudioVideoCodec::H264Avc),
+        2 => Ok(StudioVideoCodec::H265Hevc),
+        3 => Ok(StudioVideoCodec::Vp8),
+        4 => Ok(StudioVideoCodec::Vp9),
+        5 => Ok(StudioVideoCodec::Av1),
+        6 => Ok(StudioVideoCodec::Ffv1),
+        _ => Err(StudioError::MalformedDocument),
+    }
+}
+
+const fn studio_audio_codec_tag(codec: StudioAudioCodec) -> u8 {
+    match codec {
+        StudioAudioCodec::AacLowComplexity => 1,
+        StudioAudioCodec::Opus => 2,
+        StudioAudioCodec::Flac => 3,
+        StudioAudioCodec::Pcm24 => 4,
+    }
+}
+
+fn studio_audio_codec_from_tag(tag: u8) -> Result<StudioAudioCodec, StudioError> {
+    match tag {
+        1 => Ok(StudioAudioCodec::AacLowComplexity),
+        2 => Ok(StudioAudioCodec::Opus),
+        3 => Ok(StudioAudioCodec::Flac),
+        4 => Ok(StudioAudioCodec::Pcm24),
+        _ => Err(StudioError::MalformedDocument),
+    }
+}
+
+const fn pixel_format_tag(format: PixelFormat) -> u8 {
+    match format {
+        PixelFormat::Bgra8 => 1,
+        PixelFormat::Rgba8 => 2,
+        PixelFormat::Nv12 => 3,
+        PixelFormat::I420 => 4,
+    }
+}
+
+fn pixel_format_from_tag(tag: u8) -> Result<PixelFormat, StudioError> {
+    match tag {
+        1 => Ok(PixelFormat::Bgra8),
+        2 => Ok(PixelFormat::Rgba8),
+        3 => Ok(PixelFormat::Nv12),
+        4 => Ok(PixelFormat::I420),
+        _ => Err(StudioError::MalformedDocument),
+    }
+}
+
+const fn audio_sample_format_tag(format: AudioSampleFormat) -> u8 {
+    match format {
+        AudioSampleFormat::Signed16 => 1,
+        AudioSampleFormat::Signed32 => 2,
+        AudioSampleFormat::Float32 => 3,
+    }
+}
+
+fn audio_sample_format_from_tag(tag: u8) -> Result<AudioSampleFormat, StudioError> {
+    match tag {
+        1 => Ok(AudioSampleFormat::Signed16),
+        2 => Ok(AudioSampleFormat::Signed32),
+        3 => Ok(AudioSampleFormat::Float32),
+        _ => Err(StudioError::MalformedDocument),
+    }
+}
+
+fn encode_asset_encoding(writer: &mut CanonicalWriter, encoding: StudioAssetEncoding) {
+    match encoding {
+        StudioAssetEncoding::UnspecifiedLegacyV1 => writer.u8(1),
+        StudioAssetEncoding::Encoded {
+            container,
+            codec,
+            raw_caps,
+            time_base,
+        } => {
+            writer.u8(2);
+            writer.u8(media_container_tag(container));
+            match codec {
+                StudioAssetCodec::Video(codec) => {
+                    writer.u8(1);
+                    writer.u8(studio_video_codec_tag(codec));
+                }
+                StudioAssetCodec::Audio(codec) => {
+                    writer.u8(2);
+                    writer.u8(studio_audio_codec_tag(codec));
+                }
+            }
+            match raw_caps {
+                StudioAssetRawCaps::Video(caps) => {
+                    writer.u8(1);
+                    writer.u32(caps.width);
+                    writer.u32(caps.height);
+                    writer.u32(caps.frame_rate.numerator);
+                    writer.u32(caps.frame_rate.denominator);
+                    writer.u8(pixel_format_tag(caps.pixel_format));
+                }
+                StudioAssetRawCaps::Audio(caps) => {
+                    writer.u8(2);
+                    writer.u32(caps.sample_rate);
+                    writer.u8(caps.channels);
+                    writer.u8(audio_sample_format_tag(caps.sample_format));
+                }
+            }
+            writer.u32(time_base.0);
+        }
+    }
+}
+
+fn decode_asset_encoding(
+    reader: &mut CanonicalReader<'_>,
+) -> Result<StudioAssetEncoding, StudioError> {
+    let encoding = match reader.u8()? {
+        1 => StudioAssetEncoding::UnspecifiedLegacyV1,
+        2 => {
+            let container = media_container_from_tag(reader.u8()?)?;
+            let codec = match reader.u8()? {
+                1 => StudioAssetCodec::Video(studio_video_codec_from_tag(reader.u8()?)?),
+                2 => StudioAssetCodec::Audio(studio_audio_codec_from_tag(reader.u8()?)?),
+                _ => return Err(StudioError::MalformedDocument),
+            };
+            let raw_caps = match reader.u8()? {
+                1 => StudioAssetRawCaps::Video(StudioVideoRawCaps {
+                    width: reader.u32()?,
+                    height: reader.u32()?,
+                    frame_rate: FrameRate {
+                        numerator: reader.u32()?,
+                        denominator: reader.u32()?,
+                    },
+                    pixel_format: pixel_format_from_tag(reader.u8()?)?,
+                }),
+                2 => StudioAssetRawCaps::Audio(StudioAudioRawCaps {
+                    sample_rate: reader.u32()?,
+                    channels: reader.u8()?,
+                    sample_format: audio_sample_format_from_tag(reader.u8()?)?,
+                }),
+                _ => return Err(StudioError::MalformedDocument),
+            };
+            StudioAssetEncoding::Encoded {
+                container,
+                codec,
+                raw_caps,
+                time_base: TimeBase::new(reader.u32()?)?,
+            }
+        }
+        _ => return Err(StudioError::MalformedDocument),
+    };
+    Ok(encoding)
+}
+
 fn encode_asset(writer: &mut CanonicalWriter, asset: &StudioAsset) -> Result<(), StudioError> {
     writer.u16(asset.version);
     writer.id(asset.id.canonical_bytes());
@@ -1487,11 +1850,17 @@ fn encode_asset(writer: &mut CanonicalWriter, asset: &StudioAsset) -> Result<(),
         AssetCommitState::Temporary => 1,
         AssetCommitState::DurableOriginal => 2,
     });
+    encode_asset_encoding(writer, asset.encoding);
     Ok(())
 }
 
-fn decode_asset(reader: &mut CanonicalReader<'_>) -> Result<StudioAsset, StudioError> {
-    let version = reader.u16()?;
+fn decode_asset_versioned(
+    reader: &mut CanonicalReader<'_>,
+) -> Result<(u16, StudioAsset), StudioError> {
+    let source_version = reader.u16()?;
+    if !matches!(source_version, 1 | STUDIO_ASSET_VERSION) {
+        return Err(StudioError::UnsupportedAssetVersion(source_version));
+    }
     let id = StudioAssetId::from_csprng(reader.array_16()?)?;
     let track = TrackKind::from_tag(reader.u8()?)?;
     let source_name = StudioSourceName::new(reader.string(MAX_STUDIO_SOURCE_NAME_BYTES)?)?;
@@ -1504,8 +1873,13 @@ fn decode_asset(reader: &mut CanonicalReader<'_>) -> Result<StudioAsset, StudioE
         2 => AssetCommitState::DurableOriginal,
         _ => return Err(StudioError::MalformedDocument),
     };
+    let encoding = if source_version == 1 {
+        StudioAssetEncoding::UnspecifiedLegacyV1
+    } else {
+        decode_asset_encoding(reader)?
+    };
     let asset = StudioAsset {
-        version,
+        version: STUDIO_ASSET_VERSION,
         id,
         track,
         source_name,
@@ -1514,9 +1888,14 @@ fn decode_asset(reader: &mut CanonicalReader<'_>) -> Result<StudioAsset, StudioE
         duration,
         checksum,
         commit_state,
+        encoding,
     };
     asset.validate()?;
-    Ok(asset)
+    Ok((source_version, asset))
+}
+
+fn decode_asset(reader: &mut CanonicalReader<'_>) -> Result<StudioAsset, StudioError> {
+    decode_asset_versioned(reader).map(|(_, asset)| asset)
 }
 
 fn encode_project_payload(
@@ -2119,6 +2498,8 @@ pub enum StudioError {
     InvalidTimeBase,
     #[error("Studio asset metadata is invalid")]
     InvalidAsset,
+    #[error("Studio asset encoding metadata is invalid or incompatible with its track")]
+    InvalidAssetEncoding,
     #[error("Studio asset conflicts with an existing original")]
     AssetConflict,
     #[error("temporary Studio asset escaped the recording journal")]
@@ -2131,6 +2512,8 @@ pub enum StudioError {
     UnsupportedEditVersion(u16),
     #[error("unsupported Studio journal version {0}")]
     UnsupportedJournalVersion(u16),
+    #[error("unsupported Studio recording graph version {0}")]
+    UnsupportedRecordingGraphVersion(u16),
     #[error("legacy Studio document must use the non-mutating importer")]
     LegacyImportRequired,
     #[error("Studio document exceeds its bounded codec limit")]
@@ -2163,7 +2546,7 @@ pub enum StudioError {
     LegacyIdAssignmentMismatch,
     #[error("legacy Cap source changed during a read-only import")]
     LegacySourceChanged,
-    #[error("Studio recording graph is not an isolated four-track graph")]
+    #[error("Studio recording graph must contain one screen and only enabled isolated tracks")]
     InvalidRecordingGraph,
     #[error("Studio graph contains an unbounded media queue")]
     UnboundedMediaQueue,
@@ -3344,6 +3727,7 @@ pub fn import_legacy_cap<P: LegacyCapProjectPort>(
             duration: decoded.duration,
             checksum: decoded.file.checksum,
             commit_state: AssetCommitState::DurableOriginal,
+            encoding: StudioAssetEncoding::UnspecifiedLegacyV1,
         });
         copy_entries.push(LegacyCopyPlanEntry {
             asset_id: id,
@@ -3484,10 +3868,9 @@ pub enum CaptureElementFamily {
     NativeCameraBridge,
     NativeMicrophoneBridge,
     NativeSystemAudioBridge,
-    MatroskaMux,
-    Vp9Encoder,
+    WebMMux,
+    Vp8Encoder,
     OpusEncoder,
-    FlacEncoder,
 }
 
 impl CaptureElementFamily {
@@ -3497,10 +3880,9 @@ impl CaptureElementFamily {
             Self::NativeCameraBridge => 2,
             Self::NativeMicrophoneBridge => 3,
             Self::NativeSystemAudioBridge => 4,
-            Self::MatroskaMux => 5,
-            Self::Vp9Encoder => 6,
+            Self::WebMMux => 5,
+            Self::Vp8Encoder => 6,
             Self::OpusEncoder => 7,
-            Self::FlacEncoder => 8,
         }
     }
 }
@@ -3535,7 +3917,7 @@ pub struct IsolatedTrackBranch {
     pub source: CaptureElementFamily,
     pub encoder: CaptureElementFamily,
     pub muxer: CaptureElementFamily,
-    pub time_base: TimeBase,
+    pub encoding: StudioAssetEncoding,
     pub queue: BoundedMediaQueue,
 }
 
@@ -3548,26 +3930,44 @@ impl IsolatedTrackBranch {
             TrackKind::Microphone => CaptureElementFamily::NativeMicrophoneBridge,
             TrackKind::SystemAudio => CaptureElementFamily::NativeSystemAudioBridge,
         };
-        let encoder_valid = match self.track {
-            TrackKind::Screen | TrackKind::Camera => {
-                self.encoder == CaptureElementFamily::Vp9Encoder
+        let encoding_valid = match (self.track, self.encoding) {
+            (
+                TrackKind::Screen | TrackKind::Camera,
+                StudioAssetEncoding::Encoded {
+                    container: MediaContainer::WebM,
+                    codec: StudioAssetCodec::Video(StudioVideoCodec::Vp8),
+                    raw_caps: StudioAssetRawCaps::Video(caps),
+                    time_base,
+                },
+            ) => {
+                self.encoder == CaptureElementFamily::Vp8Encoder
+                    && caps.pixel_format == PixelFormat::Bgra8
+                    && time_base.0 == 90_000
             }
-            TrackKind::Microphone | TrackKind::SystemAudio => matches!(
-                self.encoder,
-                CaptureElementFamily::OpusEncoder | CaptureElementFamily::FlacEncoder
-            ),
-        };
-        let time_base_valid = match self.track {
-            TrackKind::Screen | TrackKind::Camera => self.time_base.0 == 90_000,
-            TrackKind::Microphone | TrackKind::SystemAudio => self.time_base.0 == 48_000,
+            (
+                TrackKind::Microphone | TrackKind::SystemAudio,
+                StudioAssetEncoding::Encoded {
+                    container: MediaContainer::WebM,
+                    codec: StudioAssetCodec::Audio(StudioAudioCodec::Opus),
+                    raw_caps: StudioAssetRawCaps::Audio(caps),
+                    time_base,
+                },
+            ) => {
+                self.encoder == CaptureElementFamily::OpusEncoder
+                    && caps.sample_rate == 48_000
+                    && caps.sample_format == AudioSampleFormat::Float32
+                    && time_base.0 == 48_000
+            }
+            _ => false,
         };
         if self.source != expected_source
-            || !encoder_valid
-            || !time_base_valid
-            || self.muxer != CaptureElementFamily::MatroskaMux
+            || !encoding_valid
+            || self.muxer != CaptureElementFamily::WebMMux
+            || !self.temporary_name.as_str().ends_with(".webm")
         {
             return Err(StudioError::InvalidRecordingGraph);
         }
+        self.encoding.validate_for_track(self.track)?;
         Ok(())
     }
 }
@@ -3595,7 +3995,7 @@ impl StudioRecordingGraphSpec {
     }
 
     pub fn validate(&self) -> Result<(), StudioError> {
-        if self.branches.len() != 4 {
+        if self.branches.is_empty() || self.branches.len() > 4 {
             return Err(StudioError::InvalidRecordingGraph);
         }
         let mut tracks = BTreeSet::new();
@@ -3610,14 +4010,7 @@ impl StudioRecordingGraphSpec {
                 return Err(StudioError::InvalidRecordingGraph);
             }
         }
-        if tracks
-            != BTreeSet::from([
-                TrackKind::Screen,
-                TrackKind::Camera,
-                TrackKind::Microphone,
-                TrackKind::SystemAudio,
-            ])
-        {
+        if !tracks.contains(&TrackKind::Screen) {
             return Err(StudioError::InvalidRecordingGraph);
         }
         Ok(())
@@ -4840,10 +5233,11 @@ impl StudioOriginalStorePort for FilesystemStudioOriginalStore {
     }
 }
 
-/// Production sink for the four pre-encoded branches in a validated recording
-/// graph. Native capture bridges feed bounded chunks; each track is written,
-/// hashed, synced, and sealed into the original store's temporary namespace
-/// independently so no mixed/flattened master can replace the originals.
+/// Production sink for the enabled pre-encoded branches in a validated
+/// recording graph. Native capture bridges feed bounded chunks; each track is
+/// written, hashed, synced, and sealed into the original store's temporary
+/// namespace independently so no mixed/flattened master can replace the
+/// originals.
 pub struct FilesystemStudioRecordingSession {
     root: PathBuf,
     graph: StudioRecordingGraphSpec,
@@ -5079,6 +5473,7 @@ impl FilesystemStudioRecordingSession {
                 duration,
                 checksum,
                 commit_state: AssetCommitState::Temporary,
+                encoding: branch.encoding,
             });
         }
         self.finished = true;
@@ -5166,12 +5561,16 @@ fn encode_recording_graph(
         writer.u8(branch.source.tag());
         writer.u8(branch.encoder.tag());
         writer.u8(branch.muxer.tag());
-        writer.u32(branch.time_base.0);
+        encode_asset_encoding(&mut writer, branch.encoding);
         writer.u32(branch.queue.max_buffers);
         writer.u64(branch.queue.max_bytes);
         writer.u64(branch.queue.max_time_ns);
     }
-    wrap_document(DocumentKind::RecordingGraph, 1, writer.finish()?)
+    wrap_document(
+        DocumentKind::RecordingGraph,
+        STUDIO_RECORDING_GRAPH_VERSION,
+        writer.finish()?,
+    )
 }
 
 fn persist_recording_graph(
@@ -5182,6 +5581,10 @@ fn persist_recording_graph(
     let path = recording_graph_path(project, graph.clock_id);
     let expected = encode_recording_graph(graph, maximum_track_bytes)?;
     if let Some(existing) = read_bounded_file(&path, MAX_STUDIO_DOCUMENT_BYTES)? {
+        let (version, _) = unwrap_document(&existing, DocumentKind::RecordingGraph)?;
+        if version != STUDIO_RECORDING_GRAPH_VERSION {
+            return Err(StudioError::UnsupportedRecordingGraphVersion(version));
+        }
         return if existing == expected {
             Ok(())
         } else {
@@ -5200,14 +5603,12 @@ fn verify_recording_graph(
     let path = recording_graph_path(project, graph.clock_id);
     let existing =
         read_bounded_file(&path, MAX_STUDIO_DOCUMENT_BYTES)?.ok_or(StudioError::JournalCorrupt)?;
+    let (version, _) = unwrap_document(&existing, DocumentKind::RecordingGraph)?;
+    if version != STUDIO_RECORDING_GRAPH_VERSION {
+        return Err(StudioError::UnsupportedRecordingGraphVersion(version));
+    }
     let expected = encode_recording_graph(graph, maximum_track_bytes)?;
     if existing != expected {
-        return Err(StudioError::JournalCorrupt);
-    }
-    // Re-run the envelope verifier so a coincidental byte comparison cannot
-    // bypass the declared kind, version, or checksum contract.
-    let (version, _) = unwrap_document(&existing, DocumentKind::RecordingGraph)?;
-    if version != 1 {
         return Err(StudioError::JournalCorrupt);
     }
     Ok(())
@@ -6613,6 +7014,7 @@ pub enum MediaContainer {
 pub enum StudioVideoCodec {
     H264Avc,
     H265Hevc,
+    Vp8,
     Vp9,
     Av1,
     Ffv1,
@@ -6638,7 +7040,7 @@ pub enum ExportProfile {
     /// H.264/AAC MP4 distribution master constrained to the approved hosted
     /// media ingestion contract.
     DistributionMaster,
-    /// VP9/Opus WebM native high-quality output.
+    /// VP8/Opus WebM native high-quality output.
     NativeHighQualityWebM,
     /// HEVC/AAC MP4 native high-quality output; requires an explicit license.
     NativeHighQualityHevc,
@@ -6714,7 +7116,7 @@ impl ExportProfileSpec {
             ExportProfile::NativeHighQualityWebM => Self {
                 profile,
                 container: MediaContainer::WebM,
-                video_codec: StudioVideoCodec::Vp9,
+                video_codec: StudioVideoCodec::Vp8,
                 audio_codec: StudioAudioCodec::Opus,
                 resolution: Resolution {
                     width: 2_560,
@@ -6910,7 +7312,10 @@ fn required_licenses(profile: ExportProfileSpec) -> Vec<CodecLicense> {
     match profile.video_codec {
         StudioVideoCodec::H264Avc => required.push(CodecLicense::H264Encode),
         StudioVideoCodec::H265Hevc => required.push(CodecLicense::H265Encode),
-        StudioVideoCodec::Vp9 | StudioVideoCodec::Av1 | StudioVideoCodec::Ffv1 => {}
+        StudioVideoCodec::Vp8
+        | StudioVideoCodec::Vp9
+        | StudioVideoCodec::Av1
+        | StudioVideoCodec::Ffv1 => {}
     }
     if profile.audio_codec == StudioAudioCodec::AacLowComplexity {
         required.push(CodecLicense::AacEncode);

@@ -1015,14 +1015,13 @@ impl DesktopRuntime {
                     ));
                 }
                 if self.settings.microphone_enabled
-                    || self.settings.system_audio_enabled
                     || self.settings.camera_enabled
                     || self.selected_sources.microphone_selected
                     || self.selected_sources.system_audio_selected
                     || self.selected_sources.camera_selected
                 {
                     return Err(ExecutionFailure::invalid(
-                        "Native capture currently supports display video only.",
+                        "Native capture supports display video with optional system audio only.",
                     ));
                 }
                 let target = self
@@ -1049,9 +1048,15 @@ impl DesktopRuntime {
                         target: target.clone(),
                         frame_rate: self.settings.frame_rate,
                         exclude_frame_windows: self.recorder_configuration.exclude_frame_windows,
+                        system_audio_enabled: self.settings.system_audio_enabled,
                     })
                     .map_err(ExecutionFailure::native_backend)?;
-                validate_start_outcome(&outcome, self.capture_targets.generation, &target.token)?;
+                validate_start_outcome(
+                    &outcome,
+                    self.capture_targets.generation,
+                    &target.token,
+                    self.settings.system_audio_enabled,
+                )?;
                 let events = self.transition(
                     intent_id,
                     IntentKind::RecorderStart,
@@ -1074,7 +1079,14 @@ impl DesktopRuntime {
                     system_audio_basis_points: 0,
                     camera_active: false,
                 };
-                self.announcement = "Native display recording started.".into();
+                self.announcement = if outcome.system_audio_included {
+                    "Native display and system-audio recording started."
+                } else if self.settings.system_audio_enabled {
+                    "System audio was unavailable; verified screen-only recording started."
+                } else {
+                    "Native display recording started."
+                }
+                .into();
                 Ok(events)
             }
             IpcCommand::RecorderStop { intent_id } => {
@@ -1234,6 +1246,36 @@ impl DesktopRuntime {
                 )?;
                 self.announcement = "Editable WebM export completed.".into();
                 Ok(events)
+            }
+            IpcCommand::SettingsApply {
+                expected_revision,
+                mode,
+                frame_rate,
+                microphone_enabled,
+                system_audio_enabled,
+                camera_enabled,
+                reduced_motion,
+            } => {
+                if *microphone_enabled || *camera_enabled {
+                    return Err(ExecutionFailure::unavailable());
+                }
+                if self.settings.revision != *expected_revision {
+                    return Err(ExecutionFailure::conflict(
+                        "Settings changed in another window. Refresh and retry.",
+                    ));
+                }
+                self.settings = DesktopSettingsSnapshot {
+                    revision: expected_revision.saturating_add(1),
+                    mode: *mode,
+                    frame_rate: *frame_rate,
+                    microphone_enabled: false,
+                    system_audio_enabled: *system_audio_enabled,
+                    camera_enabled: false,
+                    reduced_motion: *reduced_motion,
+                };
+                self.recorder_configuration.mode = *mode;
+                self.announcement = "Native system-audio preference saved.".into();
+                Ok(Vec::new())
             }
             _ => Err(ExecutionFailure::unavailable()),
         }
@@ -2029,11 +2071,13 @@ fn validate_start_outcome(
     outcome: &NativeRecordingStartOutcome,
     catalog_generation: u64,
     target_token: &str,
+    system_audio_requested: bool,
 ) -> Result<(), ExecutionFailure> {
     if outcome.catalog_generation != catalog_generation
         || outcome.target_token != target_token
         || !valid_opaque_id(&outcome.target_token)
         || !valid_opaque_id(&outcome.recording_token)
+        || (outcome.system_audio_included && !system_audio_requested)
     {
         Err(ExecutionFailure::invalid_backend_response())
     } else {
@@ -2306,6 +2350,7 @@ mod tests {
                 catalog_generation: request.catalog_generation,
                 target_token: request.target.token.clone(),
                 recording_token: "recording-token-1".into(),
+                system_audio_included: request.system_audio_enabled,
             })
         }
 
@@ -3586,6 +3631,55 @@ mod tests {
             }
         ));
         assert!(backend.calls.is_empty());
+    }
+
+    #[test]
+    fn native_backend_accepts_system_audio_without_enabling_unimplemented_sources() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        let settings = request(
+            &runtime,
+            WindowRole::Settings,
+            1,
+            "native-system-audio-settings",
+            IpcCommand::SettingsApply {
+                expected_revision: 1,
+                mode: RecorderMode::Instant,
+                frame_rate: 30,
+                microphone_enabled: false,
+                system_audio_enabled: true,
+                camera_enabled: false,
+                reduced_motion: false,
+            },
+        );
+
+        let applied = runtime
+            .dispatch_native(settings, &mut backend)
+            .expect("bounded native system-audio settings response");
+
+        assert!(matches!(
+            applied.response.outcome,
+            CommandOutcome::Ok { .. }
+        ));
+        assert!(!applied.snapshot.settings.microphone_enabled);
+        assert!(applied.snapshot.settings.system_audio_enabled);
+        assert!(!applied.snapshot.settings.camera_enabled);
+    }
+
+    #[test]
+    fn native_start_response_cannot_add_unrequested_system_audio() {
+        let outcome = NativeRecordingStartOutcome {
+            catalog_generation: 7,
+            target_token: "display-token-1".into(),
+            recording_token: "recording-token-1".into(),
+            system_audio_included: true,
+        };
+
+        assert!(
+            validate_start_outcome(&outcome, 7, "display-token-1", false).is_err(),
+            "the backend must not add an unrequested native source"
+        );
+        assert!(validate_start_outcome(&outcome, 7, "display-token-1", true).is_ok());
     }
 
     #[test]

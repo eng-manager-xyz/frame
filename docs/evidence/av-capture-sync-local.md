@@ -45,7 +45,7 @@ recording contains audio or implements checkboxes 1 or 4–8.
   discontinuity, fair bounded runtime polling, source calibration,
   non-draining appsinks that cannot stall EOS, deadline-bounded EOS-to-`Null`
   completion, serialized empty-source TIME-segment/EOS ordering, and
-  fail-closed attach/poll teardown;
+  fail-closed attach/poll teardown plus one-attempt abandonment cleanup;
 - safe macOS ScreenCaptureKit system-audio format/permission/start/stop
   primitives with current-process exclusion, a 1.6-second callback prequeue,
   stable secret-bound IDs, five-second native-call deadlines, one-second queue
@@ -110,7 +110,15 @@ three-stage ingress partition, pushes owned CPU buffers through a real
 GStreamer appsink, proves pre-transfer rejection versus post-transfer failure,
 observes bounded appsrc/queue overload and next-buffer discontinuity, rotates
 hostile one-buffer polls fairly, reconciles a lost Stop acknowledgement without
-double release, and confirms deadline-bounded EOS/`Null` teardown. It does not
+double release, and confirms deadline-bounded EOS/`Null` teardown. Running and
+EOS-requested abandonment tests prove that Drop attempts native quiescence and
+confirms the graph `Null` without a second release. A hostile adapter-panic test
+proves the unwind is contained, the graph is still confirmed `Null`, and native
+authority remains explicitly unconfirmed; explicit `quiesce` then reconciles
+the same terminal ID on retry. This is a one-attempt destructor safeguard, not
+a hard preemption boundary: an adapter that ignores its operation-ticket
+timeout can still block its caller and needs a platform watchdog or process
+isolation. The suite does not
 push a production device buffer, consume the mixed-media sinks as a recording,
 emit production meters, or connect a UI event consumer.
 

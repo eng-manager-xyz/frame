@@ -133,8 +133,8 @@ def validate_macos_capture_contract(tauri: dict[str, object]) -> None:
     macos = bundle.get("macOS")
     if not isinstance(macos, dict):
         fail("macOS bundle configuration is absent")
-    if macos.get("minimumSystemVersion") != "12.3":
-        fail("ScreenCaptureKit builds must require macOS 12.3 or newer")
+    if macos.get("minimumSystemVersion") != "13.0":
+        fail("ScreenCaptureKit system-audio builds must require macOS 13.0 or newer")
     if macos.get("infoPlist") != "Info.plist":
         fail("macOS bundle does not merge the checked-in privacy plist")
     try:
