@@ -7,6 +7,10 @@
   lifecycle.
 - `apple-cf = 0.9.3` supplies the owned serial dispatch queue and Core Media
   format/timing access used through the published safe wrappers.
+- `apple-metal = 0.6.0` constrains `screencapturekit`'s broad compatibility
+  range to its newest pre-sampler release. Later releases compile the macOS
+  26-only `MTLSamplerDescriptor.lodBias` property on SDKs where it is absent;
+  this adapter does not use that sampler surface.
 - `core-graphics = 0.25.0` supplies Screen Recording permission preflight and
   request APIs.
 - The native-call deadline and delegate/context teardown proof follow the

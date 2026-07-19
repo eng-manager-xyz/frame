@@ -41,6 +41,10 @@ publish = false
 aes = { version = "0.8.4", default-features = false, features = ["zeroize"] }
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc", "zeroize"] }
 apple-cf = "=0.9.3"
+# `screencapturekit` permits 0.6..<0.9, but 0.6.1+ compiles the macOS
+# 26-only `MTLSamplerDescriptor.lodBias` property even when the selected SDK
+# predates it. Frame uses only the stable device interop present in 0.6.0.
+apple-metal = { version = "=0.6.0", default-features = false }
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8.9"

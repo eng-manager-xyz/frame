@@ -14,6 +14,7 @@ thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-cf.workspace = true
+apple-metal.workspace = true
 core-graphics.workspace = true
 screencapturekit.workspace = true
 zeroize.workspace = true
