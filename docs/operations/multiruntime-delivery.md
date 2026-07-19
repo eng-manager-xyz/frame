@@ -4,7 +4,7 @@
 
 | Target | Sole release authority | Forbidden duplicate |
 | --- | --- | --- |
-| Worker and expand-only D1 migrations | `production-gate.yml`, protected `production` GitHub environment | Cloudflare Workers Builds Git integration, dashboard deploy, another workflow |
+| Worker and expand-only D1 migrations | Explicit `production-gate.yml` dispatch from `main`, protected `production` GitHub environment | Automatic push release, Cloudflare Workers Builds Git integration, dashboard deploy, another workflow |
 | Render web | Render Git integration with `autoDeployTrigger: checksPass` and the committed build filter | deploy hook, Render API/CLI workflow, manual build from a different SHA |
 | Frame Cloudflare account/R2 | protected manual `cloudflare-account.yml` plan/apply against isolated remote state | shared-zone resources or an unreviewed local state |
 | Shared `engmanager.xyz` zone | portfolio repository's designated zone workflow/state | Frame workflow, Wrangler zone mutation, dashboard-only rules |
@@ -26,20 +26,25 @@ package checks. The Worker is built before bounded D1/R2 readiness probes, so a
 cold compiler cannot consume a service-readiness timeout. Branch protection
 must require the final `production-gate` context before merge.
 
-Pull requests validate only the shared build path; the provider job is
-structurally unreachable and the final sentinel accepts that one explicit
-`skipped` result. Main and manual events require provider success. A checksummed
-handoff binds the Git SHA, API major, D1 migration level, web assets/binary,
-Worker bundle, cargo metadata, and SBOM.
+Pull requests and main pushes validate exactly that shared build path. The
+required `production-gate` sentinel depends only on impact evaluation,
+preflight, and immutable build, and resolves those same three results for both
+events. Protected provider evidence cannot turn the required main build check
+red. A checksummed handoff binds the Git SHA, API major, D1 migration level, web
+assets/binary, Worker bundle, cargo metadata, and SBOM.
 
-The protected job first requires the protected parity corpus, then verifies the
-handoff. A Worker-impacting SHA applies only expand-first migrations, deploys
-the prebuilt Worker, and smokes the canonical API. An irrelevant SHA performs
-the same compatibility smoke and records why no Worker deploy occurred. The
-final `production-gate` job uses `always()` and converts every dependency
-result into success or failure; skipped or neutral provider work cannot satisfy
-a main/manual release. Production concurrency is serialized and is never
-cancelled mid-migration.
+Provider release is a distinct manual lane. It runs only for an explicit
+`workflow_dispatch` from `refs/heads/main`, waits for the same run's successful
+`production-gate`, and consumes that run's verified handoff. Pull requests,
+automatic main pushes, and non-main dispatches cannot enter the protected
+environment. The protected job requires the complete parity corpus before any
+provider access or mutation. A Worker-impacting SHA then applies only
+expand-first migrations, deploys the prebuilt Worker, and smokes the canonical
+API; an irrelevant SHA performs the same compatibility smoke and records why
+no Worker deploy occurred. The independent `provider-release-gate` uses
+`always()` and fails the manual run unless both the build gate and protected job
+succeed. Production concurrency is serialized and is never cancelled
+mid-migration.
 
 Render sees that same commit's checks. A web/shared-impacting SHA triggers one
 checks-pass build; a correctly filtered SHA triggers none. The secret-free
@@ -48,17 +53,20 @@ raises a failed check if it never arrives. There is no second Render trigger.
 
 ## Compatibility and failure behavior
 
-The Worker/D1 half releases before the web half and must support the current
-and immediately preceding web/client contract. D1 changes are expand/migrate/
-contract; rollback deploys compatible code and never reverses a destructive
-migration. Worker failure leaves Render blocked at the prior release. Render
-failure leaves the compatible Worker live and fails canonical smoke.
+The provider and Render lanes are independently triggered, so either compatible
+half can finish first. Worker/D1 releases must support the current and
+immediately preceding web/client contract, and a web release may not require a
+new Worker until its explicit provider dispatch succeeds. D1 changes are
+expand/migrate/contract; rollback deploys compatible code and never reverses a
+destructive migration. A failure in either lane leaves the other compatible
+release live and fails the corresponding release or canonical-smoke check.
 
-Retries create a new, attributable run against the same immutable SHA. Never
-hide a first failure with `continue-on-error`, a neutral conclusion, or a
-renamed check. The release record joins Worker version, Render deploy/commit,
-contract major, migration level, portfolio consumer SHA when present, outcome,
-and previous compatible SHAs.
+Build retries create a new, attributable run against the same immutable SHA;
+provider retries require another explicit dispatch from `main`. Never hide a
+first failure with `continue-on-error`, a neutral conclusion, or a renamed
+check. The release record joins Worker version, Render deploy/commit, contract
+major, migration level, portfolio consumer SHA when present, outcome, and
+previous compatible SHAs.
 
 ## Compromised credential response
 

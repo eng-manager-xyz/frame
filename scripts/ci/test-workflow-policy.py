@@ -111,15 +111,45 @@ def main() -> int:
             ),
             (
                 production,
-                "      - name: Resolve every release phase to a binary result",
-                "      - name: Resolve every release phase to a binary result\n        continue-on-error: true",
+                "      - name: Resolve the event-identical build path to a binary result",
+                "      - name: Resolve the event-identical build path to a binary result\n        continue-on-error: true",
                 "advisory sentinel",
             ),
             (
                 production,
-                "  provider_release:\n    name: Protected Worker deploy or compatibility verify\n    if: ${{ github.event_name != 'pull_request' }}",
-                "  provider_release:\n    name: Protected Worker deploy or compatibility verify",
-                "provider access reachable from pull requests",
+                "if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}",
+                "if: ${{ github.event_name == 'workflow_dispatch' }}",
+                "provider dispatch allowed from a non-main ref",
+            ),
+            (
+                production,
+                "if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}",
+                "if: ${{ github.event_name == 'push' }}",
+                "provider release reachable from an automatic main push",
+            ),
+            (
+                production,
+                "needs: [evaluate, preflight, build_release, production-gate]",
+                "needs: [evaluate, preflight, build_release]",
+                "provider release detached from the successful build sentinel",
+            ),
+            (
+                production,
+                "needs: [evaluate, preflight, build_release]",
+                "needs: [evaluate, preflight, build_release, provider_release]",
+                "protected provider evidence coupled to the required build gate",
+            ),
+            (
+                production,
+                "if: ${{ always() && github.event_name == 'workflow_dispatch' }}",
+                "if: ${{ always() }}",
+                "provider release sentinel made active on pull requests and main pushes",
+            ),
+            (
+                production,
+                "needs: [production-gate, provider_release]",
+                "needs: [production-gate]",
+                "provider release sentinel detached from provider outcome",
             ),
             (
                 production,
@@ -141,9 +171,9 @@ def main() -> int:
             ),
             (
                 production,
-                'pull_request) test "${PROVIDER_RESULT}" = skipped ;;',
-                'pull_request) test "${PROVIDER_RESULT}" = success ;;',
-                "pull requests required protected provider execution",
+                "      - name: Require protected release parity before provider access\n        run: python3 scripts/ci/check-parity-evidence.py --require-full",
+                "      - name: Require protected release parity before provider access\n        run: |\n          npx --yes wrangler@4.111.0 d1 migrations apply frame --remote\n          python3 scripts/ci/check-parity-evidence.py --require-full",
+                "protected parity evaluated after provider mutation",
             ),
             (
                 share,

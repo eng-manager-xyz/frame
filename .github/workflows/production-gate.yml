@@ -211,8 +211,8 @@ jobs:
 
   provider_release:
     name: Protected Worker deploy or compatibility verify
-    if: ${{ github.event_name != 'pull_request' }}
-    needs: [evaluate, preflight, build_release]
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    needs: [evaluate, preflight, build_release, production-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production
@@ -535,23 +535,32 @@ jobs:
   production-gate:
     name: production-gate
     if: ${{ always() }}
-    needs: [evaluate, preflight, build_release, provider_release]
+    needs: [evaluate, preflight, build_release]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Resolve every release phase to a binary result
+      - name: Resolve the event-identical build path to a binary result
         env:
-          EVENT_NAME: ${{ github.event_name }}
           EVALUATE_RESULT: ${{ needs.evaluate.result }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           BUILD_RESULT: ${{ needs.build_release.result }}
-          PROVIDER_RESULT: ${{ needs.provider_release.result }}
         run: |
           test "${EVALUATE_RESULT}" = success
           test "${PREFLIGHT_RESULT}" = success
           test "${BUILD_RESULT}" = success
-          case "${EVENT_NAME}" in
-            pull_request) test "${PROVIDER_RESULT}" = skipped ;;
-            push|workflow_dispatch) test "${PROVIDER_RESULT}" = success ;;
-            *) exit 1 ;;
-          esac
+
+  provider-release-gate:
+    name: provider-release-gate
+    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+    needs: [production-gate, provider_release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Resolve the explicit protected release to a binary result
+        env:
+          BUILD_GATE_RESULT: ${{ needs.production-gate.result }}
+          PROVIDER_RESULT: ${{ needs.provider_release.result }}
+        run: |
+          test "${GITHUB_REF}" = refs/heads/main
+          test "${BUILD_GATE_RESULT}" = success
+          test "${PROVIDER_RESULT}" = success
