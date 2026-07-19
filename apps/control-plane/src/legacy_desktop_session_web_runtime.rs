@@ -4,7 +4,10 @@ use frame_application::{
     LegacyDesktopSessionCredentialTypeV1, LegacyDesktopSessionDestinationV1,
     LegacyDesktopSessionPayloadV1, legacy_desktop_deployment_origin, legacy_desktop_login_url,
     legacy_desktop_session_destination, parse_legacy_desktop_session_query,
-    render_legacy_desktop_redirect_page,
+};
+use frame_ui::class_contract::{
+    ALERT_BASE, ALERT_DEFAULT, BUTTON_BASE, BUTTON_DEFAULT_SIZE, BUTTON_GROUP, BUTTON_LINK,
+    BUTTON_OUTLINE, BUTTON_PRIMARY, CARD,
 };
 use url::Url;
 use worker::{Env, Request, Response, Result};
@@ -178,6 +181,25 @@ fn hybrid_response(primary_url: &Url, fallback_url: &Url) -> HttpOutcome<Respons
     Ok(response)
 }
 
+fn render_legacy_desktop_redirect_page(primary_url: &Url, fallback_url: &Url) -> String {
+    let fallback_href = crate::control_plane_ui::escape_html(fallback_url.as_str());
+    let serialized_state = serde_json::json!({
+        "primaryUrl": primary_url.as_str(),
+        "fallbackUrl": fallback_url.as_str(),
+    })
+    .to_string()
+    .replace('&', "\\u0026")
+    .replace('<', "\\u003c")
+    .replace('>', "\\u003e");
+    let content = format!(
+        r#"<main class="w-full max-w-xl" tabindex="-1"><section class="{CARD}" aria-labelledby="open-cap-title"><p class="mb-2 text-sm font-semibold text-primary">Desktop handoff</p><h1 id="open-cap-title" class="mt-0 text-2xl font-bold">Opening Cap</h1><p class="text-muted-foreground">If Cap does not open automatically, try the button below. Browser fallback will start in a moment.</p><div class="{BUTTON_GROUP} my-5"><button class="{BUTTON_BASE} {BUTTON_PRIMARY} {BUTTON_DEFAULT_SIZE}" id="open-cap" type="button">Open Cap</button><a class="{BUTTON_BASE} {BUTTON_OUTLINE} {BUTTON_DEFAULT_SIZE} {BUTTON_LINK}" id="browser-fallback" href="{fallback_href}">Use browser fallback</a></div><div class="{ALERT_BASE} {ALERT_DEFAULT} mb-0" id="status" role="status">Trying the desktop app first...</div></section></main>"#
+    );
+    let script = format!(
+        r#"<script>const state={serialized_state};const status=document.getElementById("status");let fallbackStarted=false;const startFallback=()=>{{if(fallbackStarted)return;fallbackStarted=true;status.textContent="Switching to the browser fallback...";window.location.replace(state.fallbackUrl);}};const openCap=()=>{{status.textContent="Trying to open the Cap desktop app...";window.location.href=state.primaryUrl;}};document.getElementById("open-cap").addEventListener("click",openCap);document.getElementById("browser-fallback").addEventListener("click",()=>{{fallbackStarted=true;}});openCap();window.setTimeout(startFallback,1800);</script>"#
+    );
+    crate::control_plane_ui::utility_document("Open Cap", &format!("{content}{script}"))
+}
+
 fn set_no_store(headers: &mut worker::Headers) -> Result<()> {
     headers.set("cache-control", "no-store, no-cache, must-revalidate")?;
     headers.set("pragma", "no-cache")?;
@@ -208,5 +230,18 @@ mod tests {
             LegacyDesktopSessionHttpFailureV1::Unavailable,
             LegacyDesktopSessionHttpFailureV1::Unavailable
         );
+    }
+
+    #[test]
+    fn hybrid_page_uses_shared_ui_and_safe_json_state() {
+        let primary =
+            Url::parse("cap-desktop://signin?type=api_key&api_key=x").expect("primary deep link");
+        let fallback = Url::parse("http://127.0.0.1:43117?x=1&y=2").expect("loopback fallback");
+        let html = render_legacy_desktop_redirect_page(&primary, &fallback);
+        assert!(html.contains("data-frame-ui=\"shadcn-tailwind\""));
+        assert!(html.contains("window.setTimeout(startFallback,1800)"));
+        assert!(html.contains("http://127.0.0.1:43117/?x=1&amp;y=2"));
+        assert!(html.contains("\\u0026api_key=x"));
+        assert!(!html.contains("href=\"http://127.0.0.1:43117/?x=1&y=2\""));
     }
 }

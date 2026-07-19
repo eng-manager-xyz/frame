@@ -1,3 +1,6 @@
+#[cfg(target_arch = "wasm32")]
+use frame_ui::Input;
+use frame_ui::{Button, ButtonGroup, ButtonSize, ButtonVariant, Label, Select, Textarea};
 use leptos::prelude::*;
 
 pub const ROOT_ID: &str = "frame-hydration-root";
@@ -223,24 +226,24 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
     };
 
     view! {
-        <section class="panel authenticated-browser-panel" aria-labelledby="browser-workspace-title">
+        <section class="rounded-xl border border-border bg-card p-6 text-card-foreground shadow-sm authenticated-browser-panel" aria-labelledby="browser-workspace-title">
             <p class="eyebrow">"Private workspace"</p>
             <h1 id="browser-workspace-title">"Frame workspace"</h1>
             <p role="status" aria-live="polite" aria-atomic="true">
                 {move || status.get()}
             </p>
-            <button
-                class="button secondary"
-                type="button"
-                disabled=move || logout_busy.get()
+            <Button
+                variant=ButtonVariant::Secondary
+                attr:r#type="button"
+                attr:disabled=move || logout_busy.get()
                 on:click=logout
             >
                 {move || if logout_busy.get() { "Signing out…" } else { "Sign out" }}
-            </button>
-            <button
-                class="button secondary"
-                type="button"
-                disabled=move || theme_busy.get()
+            </Button>
+            <Button
+                variant=ButtonVariant::Secondary
+                attr:r#type="button"
+                attr:disabled=move || theme_busy.get()
                 on:click=toggle_theme
             >
                 {move || if theme_busy.get() {
@@ -252,7 +255,7 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                     };
                     format!("Switch to {next} theme")
                 }}
-            </button>
+            </Button>
             {move || workspace.get().map(|current| {
                 let recording_items = current.recordings.iter().map(|recording| {
                     view! { <li>{format!("{} · {}", recording.title, recording.state)}</li> }
@@ -281,17 +284,17 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                         })
                     on:submit=submit
                 >
-                    <label
-                        for="authenticated-organization-choice"
-                        hidden={action != BrowserAction::SetActiveOrganization}
+                    <Label
+                        attr:r#for="authenticated-organization-choice"
+                        attr:hidden={action != BrowserAction::SetActiveOrganization}
                     >
                         "Active organization"
-                    </label>
-                    <select
-                        id="authenticated-organization-choice"
-                        hidden={action != BrowserAction::SetActiveOrganization}
-                        required={action == BrowserAction::SetActiveOrganization}
-                        disabled=move || busy.get()
+                    </Label>
+                    <Select
+                        attr:id="authenticated-organization-choice"
+                        attr:hidden={action != BrowserAction::SetActiveOrganization}
+                        attr:required={action == BrowserAction::SetActiveOrganization}
+                        attr:disabled=move || busy.get()
                             || uncertain_mutation.get().is_some()
                             || !workspace.get().is_some_and(|current| {
                                 action.permitted_for(current.role)
@@ -308,15 +311,15 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                                 }
                             }).collect::<Vec<_>>()
                         }).collect_view()}
-                    </select>
+                    </Select>
                     {(action.requires_value()
                         && action != BrowserAction::SetActiveOrganization).then(|| view! {
-                        <label for="authenticated-action-value">"Action value"</label>
-                        <input
-                            id="authenticated-action-value"
-                            maxlength="120"
-                            required
-                            disabled=move || busy.get()
+                        <Label attr:r#for="authenticated-action-value">"Action value"</Label>
+                        <Input
+                            attr:id="authenticated-action-value"
+                            attr:maxlength="120"
+                            attr:required=true
+                            attr:disabled=move || busy.get()
                                 || uncertain_mutation.get().is_some()
                                 || !workspace.get().is_some_and(|current| {
                                     action.permitted_for(current.role)
@@ -325,10 +328,10 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                             on:input=move |event| action_value.set(event_target_value(&event))
                         />
                     })}
-                    <button
-                        class="button"
-                        type="submit"
-                        disabled=move || busy.get()
+                    <Button
+
+                        attr:r#type="submit"
+                        attr:disabled=move || busy.get()
                             || uncertain_mutation.get().is_none()
                                 && !workspace.get().is_some_and(|current| {
                                     action.permitted_for(current.role)
@@ -341,7 +344,7 @@ pub fn AuthenticatedWorkspacePanel() -> impl IntoView {
                         } else {
                             "Submit authenticated request"
                         }}
-                    </button>
+                    </Button>
                 </form>
             })}
         </section>
@@ -475,39 +478,39 @@ pub fn PlayerKeyboardHelp() -> impl IntoView {
             data-frame-enhanced=move || hydrated.get().then_some("true")
         >
             <h2 id="player-keyboard-help-title">"Keyboard playback help"</h2>
-            <div
+            <ButtonGroup
                 class="player-controls hydration-only"
-                role="group"
-                aria-label="Playback controls"
+                attr:role="group"
+                attr:aria-label="Playback controls"
             >
-                <button
-                    class="button secondary compact"
-                    type="button"
-                    aria-controls="frame-public-player"
+                <Button
+                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                    attr:r#type="button"
+                    attr:aria-controls="frame-public-player"
                     on:click=move |_| player_toggle(status)
                 >
                     "Play or pause"
-                </button>
-                <button
-                    class="button secondary compact"
-                    type="button"
-                    aria-controls="frame-public-player"
+                </Button>
+                <Button
+                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                    attr:r#type="button"
+                    attr:aria-controls="frame-public-player"
                     on:click=move |_| player_seek(-10.0, status)
                 >
                     "Back 10 seconds"
-                </button>
-                <button
-                    class="button secondary compact"
-                    type="button"
-                    aria-controls="frame-public-player"
+                </Button>
+                <Button
+                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                    attr:r#type="button"
+                    attr:aria-controls="frame-public-player"
                     on:click=move |_| player_seek(10.0, status)
                 >
                     "Forward 10 seconds"
-                </button>
-                <label for="frame-playback-rate">"Speed"</label>
-                <select
-                    id="frame-playback-rate"
-                    aria-controls="frame-public-player"
+                </Button>
+                <Label attr:r#for="frame-playback-rate">"Speed"</Label>
+                <Select
+                    attr:id="frame-playback-rate"
+                    attr:aria-controls="frame-public-player"
                     on:change=move |event| {
                         player_set_rate(&event_target_value(&event), status);
                     }
@@ -518,34 +521,34 @@ pub fn PlayerKeyboardHelp() -> impl IntoView {
                     <option value="1.25">"1.25×"</option>
                     <option value="1.5">"1.5×"</option>
                     <option value="2">"2×"</option>
-                </select>
-                <button
-                    class="button secondary compact"
-                    type="button"
-                    aria-controls="frame-public-player"
-                    disabled=move || !allow_fullscreen.get()
+                </Select>
+                <Button
+                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                    attr:r#type="button"
+                    attr:aria-controls="frame-public-player"
+                    attr:disabled=move || !allow_fullscreen.get()
                     on:click=move |_| player_fullscreen(status)
                 >
                     "Fullscreen"
-                </button>
-                <button
-                    class="button secondary compact"
-                    type="button"
-                    aria-controls="frame-public-player"
-                    disabled=move || !allow_picture_in_picture.get()
+                </Button>
+                <Button
+                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                    attr:r#type="button"
+                    attr:aria-controls="frame-public-player"
+                    attr:disabled=move || !allow_picture_in_picture.get()
                     on:click=move |_| player_picture_in_picture(status)
                 >
                     "Picture in picture"
-                </button>
-                <button
-                    class="button secondary compact"
-                    type="button"
-                    aria-controls="frame-public-player"
+                </Button>
+                <Button
+                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                    attr:r#type="button"
+                    attr:aria-controls="frame-public-player"
                     on:click=move |_| player_retry(status)
                 >
                     "Retry playback"
-                </button>
-            </div>
+                </Button>
+            </ButtonGroup>
             <p
                 class="hydration-only player-status"
                 role="status"
@@ -554,15 +557,15 @@ pub fn PlayerKeyboardHelp() -> impl IntoView {
             >
                 {move || status.get()}
             </p>
-            <button
-                class="button secondary compact hydration-only"
-                type="button"
-                aria-controls="player-keyboard-help-panel"
-                aria-expanded=move || open.get().to_string()
+            <Button
+                variant=ButtonVariant::Secondary size=ButtonSize::Small class="hydration-only"
+                attr:r#type="button"
+                attr:aria-controls="player-keyboard-help-panel"
+                attr:aria-expanded=move || open.get().to_string()
                 on:click=move |_| open.update(|value| *value = !*value)
             >
                 {move || if open.get() { "Hide shortcuts" } else { "Show shortcuts" }}
-            </button>
+            </Button>
             <div
                 id="player-keyboard-help-panel"
                 class="hydration-only player-keyboard-help-panel"
@@ -695,13 +698,13 @@ pub fn PublicCollaborationPanel() -> impl IntoView {
                                             .unwrap_or_default();
                                         view! {
                                             <li>
-                                                <button
-                                                    class="button secondary compact"
-                                                    type="button"
+                                                <Button
+                                                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                                                    attr:r#type="button"
                                                     on:click=move |_| player_seek_to(cue.start_ms, status)
                                                 >
                                                     {format_collaboration_time(cue.start_ms)}
-                                                </button>
+                                                </Button>
                                                 <span>{format!(" {speaker}{}", cue.text)}</span>
                                                 <span class="visually-hidden">
                                                     {format!(" Ends at {}.", format_collaboration_time(cue.end_ms))}
@@ -726,13 +729,13 @@ pub fn PublicCollaborationPanel() -> impl IntoView {
                                     {values.into_iter().map(|comment| {
                                         let position = comment.timeline_ms.map(|milliseconds| {
                                             view! {
-                                                <button
-                                                    class="button secondary compact"
-                                                    type="button"
+                                                <Button
+                                                    variant=ButtonVariant::Secondary size=ButtonSize::Small
+                                                    attr:r#type="button"
                                                     on:click=move |_| player_seek_to(milliseconds, status)
                                                 >
                                                     {format_collaboration_time(milliseconds)}
-                                                </button>
+                                                </Button>
                                             }
                                         });
                                         view! {
@@ -762,32 +765,32 @@ pub fn PublicCollaborationPanel() -> impl IntoView {
                             );
                         }
                     >
-                        <label for="frame-public-comment">"Add a comment"</label>
-                        <textarea
-                            id="frame-public-comment"
-                            maxlength="4000"
-                            rows="3"
+                        <Label attr:r#for="frame-public-comment">"Add a comment"</Label>
+                        <Textarea
+                            attr:id="frame-public-comment"
+                            attr:maxlength="4000"
+                            attr:rows="3"
                             prop:value=move || comment_body.get()
-                            disabled=move || busy.get()
+                            attr:disabled=move || busy.get()
                             on:input=move |event| comment_body.set(event_target_value(&event))
-                        ></textarea>
-                        <button
-                            class="button"
-                            type="submit"
-                            disabled=move || busy.get() || comment_body.get().trim().is_empty()
+                        ></Textarea>
+                        <Button
+
+                            attr:r#type="submit"
+                            attr:disabled=move || busy.get() || comment_body.get().trim().is_empty()
                         >
                             "Submit comment"
-                        </button>
+                        </Button>
                     </form>
                 </section>
                 <section aria-labelledby="analytics-consent-title">
                     <h3 id="analytics-consent-title">"Playback analytics"</h3>
                     <p>"Choose explicitly. The decision and later events remain scoped to this share and in-memory grant."</p>
                     <div role="group" aria-label="Playback analytics consent">
-                        <button
-                            class="button secondary compact"
-                            type="button"
-                            disabled=move || busy.get()
+                        <Button
+                            variant=ButtonVariant::Secondary size=ButtonSize::Small
+                            attr:r#type="button"
+                            attr:disabled=move || busy.get()
                             on:click=move |_| set_public_analytics_consent(
                                 true,
                                 grant,
@@ -797,11 +800,11 @@ pub fn PublicCollaborationPanel() -> impl IntoView {
                             )
                         >
                             "Allow analytics"
-                        </button>
-                        <button
-                            class="button secondary compact"
-                            type="button"
-                            disabled=move || busy.get()
+                        </Button>
+                        <Button
+                            variant=ButtonVariant::Secondary size=ButtonSize::Small
+                            attr:r#type="button"
+                            attr:disabled=move || busy.get()
                             on:click=move |_| set_public_analytics_consent(
                                 false,
                                 grant,
@@ -811,7 +814,7 @@ pub fn PublicCollaborationPanel() -> impl IntoView {
                             )
                         >
                             "Keep analytics off"
-                        </button>
+                        </Button>
                     </div>
                 </section>
             </div>

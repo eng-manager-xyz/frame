@@ -37,6 +37,7 @@ infrastructure, browser security, E2E, and launch.
 - `apps/media-worker`: native executable that probes GStreamer and can produce a synthetic WebM smoke artifact.
 - `apps/web`: Axum-served Leptos SSR with authority-free hydration islands.
 - `apps/desktop`: typed workflow core plus a Tauri 2 shell embedding Leptos CSR.
+- `crates/ui`: shared shadcn-inspired Leptos primitives and the minified Tailwind theme used by web and desktop.
 - `crates/domain`: IDs, recording state, object keys, and transition rules.
 - `crates/media`: GStreamer pipeline construction and runtime checks.
 - `crates/macos-screen-capture`: safe, bounded ScreenCaptureKit display primitives.
@@ -47,12 +48,14 @@ infrastructure, browser security, E2E, and launch.
 
 ## Quick start
 
-Prerequisites are Rust 1.96.1 and GStreamer with the base/good plugin sets. On macOS, `brew install gstreamer` supplies the development runtime. Then run:
+Prerequisites are Rust 1.96.1, Node.js with npm, and GStreamer with the base/good plugin sets. On macOS, `brew install gstreamer` supplies the development runtime. Then run:
 
 ```sh
 scripts/frame test
 scripts/frame doctor
 scripts/frame media-smoke
+npm ci --ignore-scripts
+npm run build:ui-css
 python3 -I scripts/ci/build-web-hydration.py
 cargo run -p frame-web
 ```
@@ -65,6 +68,11 @@ is checked separately because it targets `wasm32-unknown-unknown`:
 ```sh
 cargo check -p frame-control-plane --target wasm32-unknown-unknown
 ```
+
+The web and desktop build scripts regenerate the shared Tailwind CSS with the
+pinned CLI, minify it for bundling, and verify the committed output and size
+budget before Trunk runs. The complete UI-to-component inventory and migration
+record is in [`_issues/UI`](_issues/UI/README.md).
 
 Before running Wrangler, install `worker-build`, create the D1 database and R2 buckets, replace the placeholder IDs in `apps/control-plane/wrangler.toml`, enable the Media Transformations binding for the account, and apply the migrations. Cloudflare currently requires remote development for the Media binding, so normal local tests use the media port/fake and a dedicated remote lane exercises the real binding.
 

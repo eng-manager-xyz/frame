@@ -9,6 +9,7 @@ publish.workspace = true
 [features]
 default = []
 csr = [
+    "dep:frame-ui",
     "dep:js-sys",
     "dep:leptos",
     "dep:serde-wasm-bindgen",
@@ -19,6 +20,7 @@ csr = [
 [dependencies]
 frame-desktop-core = { path = ".." }
 frame-client = { path = "../../../crates/frame-client" }
+frame-ui = { path = "../../../crates/ui", default-features = false, features = ["csr"], optional = true }
 js-sys = { workspace = true, optional = true }
 leptos = { workspace = true, optional = true, features = ["csr"] }
 serde.workspace = true

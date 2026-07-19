@@ -401,36 +401,6 @@ fn normalized_http_origin(value: &str) -> Option<Url> {
 }
 
 #[must_use]
-pub fn render_legacy_desktop_redirect_page(primary_url: &Url, fallback_url: &Url) -> String {
-    let state = serde_json::json!({
-        "primaryUrl": primary_url.as_str(),
-        "fallbackUrl": fallback_url.as_str(),
-    });
-    let fallback_attribute = html_escape(fallback_url.as_str());
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate"><meta http-equiv="Pragma" content="no-cache"><title>Open Cap</title></head>
-<body><main><h1>Opening Cap</h1><p>If Cap does not open automatically, try the button below. Browser fallback will start in a moment.</p><button id="open-cap" type="button">Open Cap</button><a id="browser-fallback" href="{fallback_attribute}">Use browser fallback</a><p id="status">Trying the desktop app first...</p></main>
-<script>const state={state};const status=document.getElementById("status");let fallbackStarted=false;const startFallback=()=>{{if(fallbackStarted)return;fallbackStarted=true;status.textContent="Switching to the browser fallback...";window.location.replace(state.fallbackUrl);}};const openCap=()=>{{status.textContent="Trying to open the Cap desktop app...";window.location.href=state.primaryUrl;}};document.getElementById("open-cap").addEventListener("click",openCap);document.getElementById("browser-fallback").addEventListener("click",()=>{{fallbackStarted=true;}});openCap();window.setTimeout(startFallback,1800);</script></body></html>"#
-    )
-}
-
-fn html_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            other => escaped.push(other),
-        }
-    }
-    escaped
-}
-
-#[must_use]
 pub fn legacy_desktop_session_source_manifest() -> String {
     let mut digest = Sha256::new();
     digest.update(b"frame-cap-desktop-session-source-manifest-v1\0");
@@ -576,17 +546,5 @@ mod tests {
                 .expect("login query")
                 .contains("next=https%3A%2F%2Fframe.engmanager.xyz")
         );
-    }
-
-    #[test]
-    fn hybrid_page_uses_json_state_no_store_script_and_escaped_attribute() {
-        let primary =
-            Url::parse("cap-desktop://signin?type=api_key&api_key=x").expect("primary deep link");
-        let fallback = Url::parse("http://127.0.0.1:43117?x=1&y=2").expect("loopback fallback");
-        let html = render_legacy_desktop_redirect_page(&primary, &fallback);
-        assert!(html.contains("window.setTimeout(startFallback,1800)"));
-        assert!(html.contains("http://127.0.0.1:43117/?x=1&amp;y=2"));
-        assert!(html.contains("\"primaryUrl\":\"cap-desktop://signin?type=api_key&api_key=x\""));
-        assert!(!html.contains("href=\"http://127.0.0.1:43117/?x=1&y=2\""));
     }
 }

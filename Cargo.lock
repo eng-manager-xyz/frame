@@ -1303,6 +1303,7 @@ dependencies = [
  "frame-client",
  "frame-domain",
  "frame-ports",
+ "frame-ui",
  "futures",
  "getrandom 0.3.4",
  "hmac",
@@ -1348,6 +1349,7 @@ version = "0.1.0"
 dependencies = [
  "frame-client",
  "frame-desktop-core",
+ "frame-ui",
  "js-sys",
  "leptos",
  "serde",
@@ -1447,12 +1449,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "frame-ui"
+version = "0.1.0"
+dependencies = [
+ "leptos",
+]
+
+[[package]]
 name = "frame-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
  "frame-client",
+ "frame-ui",
  "js-sys",
  "leptos",
  "reqwest",

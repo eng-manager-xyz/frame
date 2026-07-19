@@ -10,11 +10,13 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WEB = ROOT / "apps" / "web"
 TRUNK_CONFIG = "Trunk.toml"
+NPM = "npm.cmd" if os.name == "nt" else "npm"
 
 
 def run(*args: str) -> None:
@@ -31,6 +33,9 @@ def main() -> int:
         help="copy the verified closure next to a production executable",
     )
     args = parser.parse_args()
+    run_at_root(NPM, "run", "build:ui-css")
+    run_at_root(sys.executable, "-I", "scripts/ci/check-ui-styles.py")
+    run_at_root(sys.executable, "-I", "scripts/ci/check-ui-migration.py")
     run("trunk", "clean", "--config", TRUNK_CONFIG)
     run(
         "trunk",
@@ -84,6 +89,19 @@ def main() -> int:
             shutil.rmtree(runtime_dir)
         shutil.copytree(dist, runtime_dir)
     return 0
+
+
+def run_at_root(*args: str) -> None:
+    environment = os.environ.copy()
+    environment["NO_COLOR"] = "false"
+    if not (ROOT / "node_modules" / ".bin" / "tailwindcss").is_file():
+        subprocess.run(
+            (NPM, "ci", "--ignore-scripts"),
+            cwd=ROOT,
+            env=environment,
+            check=True,
+        )
+    subprocess.run(args, cwd=ROOT, env=environment, check=True)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ use frame_application::{
     legacy_protected_integration_plaintext_request_digest, legacy_protected_integration_profile,
     legacy_protected_integration_replay_origin,
 };
+use frame_ui::class_contract::{ALERT_BASE, ALERT_DESTRUCTIVE, CARD};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -264,9 +265,12 @@ fn google_callback_public_error_response(request: &Request) -> Result<Option<Res
     let Some(message) = message else {
         return Ok(None);
     };
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Google Drive was not connected</title></head><body><main><h1>Google Drive was not connected</h1><p>{message}</p></main></body></html>"
+    let message = crate::control_plane_ui::escape_html(message);
+    let content = format!(
+        r#"<main class="w-full max-w-lg" tabindex="-1"><section class="{CARD}" aria-labelledby="integration-error-title"><p class="mb-2 text-sm font-semibold text-destructive">Integration error</p><h1 id="integration-error-title" class="mt-0 text-2xl font-bold">Google Drive was not connected</h1><div class="{ALERT_BASE} {ALERT_DESTRUCTIVE}" role="alert">{message}</div></section></main>"#
     );
+    let body =
+        crate::control_plane_ui::utility_document("Google Drive was not connected", &content);
     let mut response = Response::from_html(body)?.with_status(400);
     harden_terminal_response(&mut response)?;
     Ok(Some(response))

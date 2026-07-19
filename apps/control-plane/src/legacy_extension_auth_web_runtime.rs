@@ -2,9 +2,13 @@
 
 use frame_application::{
     LEGACY_EXTENSION_AUTH_MAX_FORM_BYTES, LegacyExtensionAuthParamsV1,
-    legacy_extension_approved_url, legacy_extension_bearer_segment, legacy_extension_consent_url,
-    legacy_extension_header_selects_api_key, legacy_extension_login_url,
-    render_legacy_extension_consent_page, validate_legacy_extension_redirect_uri,
+    legacy_extension_approved_url, legacy_extension_bearer_segment, legacy_extension_cancel_url,
+    legacy_extension_consent_url, legacy_extension_header_selects_api_key,
+    legacy_extension_login_url, validate_legacy_extension_redirect_uri,
+};
+use frame_ui::class_contract::{
+    ALERT_BASE, ALERT_DEFAULT, BUTTON_BASE, BUTTON_DEFAULT_SIZE, BUTTON_LINK, BUTTON_OUTLINE,
+    BUTTON_PRIMARY, CARD, INPUT,
 };
 use serde_json::json;
 use url::Url;
@@ -166,6 +170,25 @@ async fn approve(
         params.state.as_deref(),
     );
     Ok(redirect_response(&approved))
+}
+
+fn render_legacy_extension_consent_page(
+    email: &str,
+    redirect_uri: &Url,
+    state: Option<&str>,
+) -> String {
+    let cancel_url = legacy_extension_cancel_url(redirect_uri, state);
+    let redirect_uri = crate::control_plane_ui::escape_html(redirect_uri.as_str());
+    let cancel_url = crate::control_plane_ui::escape_html(cancel_url.as_str());
+    let email = crate::control_plane_ui::escape_html(email);
+    let state_field = state.map_or_else(String::new, |state| {
+        let state = crate::control_plane_ui::escape_html(state);
+        format!(r#"<input class="{INPUT}" type="hidden" name="state" value="{state}">"#)
+    });
+    let content = format!(
+        r#"<main class="w-full max-w-lg" tabindex="-1"><section class="{CARD}" aria-labelledby="extension-consent-title"><p class="mb-2 text-sm font-semibold text-primary">Extension access</p><h1 id="extension-consent-title" class="mt-0 text-2xl font-bold">Connect the Cap Chrome extension</h1><p class="text-muted-foreground">The Cap extension is asking for access to your Cap account <strong class="text-foreground">{email}</strong> to create and upload recordings on your behalf.</p><div class="{ALERT_BASE} {ALERT_DEFAULT}">Only continue if you opened this page from the Cap extension.</div><form method="post" action="approve" class="mt-6 grid gap-3 sm:grid-cols-2"><input class="{INPUT}" type="hidden" name="redirectUri" value="{redirect_uri}">{state_field}<a class="{BUTTON_BASE} {BUTTON_OUTLINE} {BUTTON_DEFAULT_SIZE} {BUTTON_LINK}" href="{cancel_url}">Cancel</a><button class="{BUTTON_BASE} {BUTTON_PRIMARY} {BUTTON_DEFAULT_SIZE}" type="submit">Allow access</button></form></section></main>"#
+    );
+    crate::control_plane_ui::utility_document("Connect Cap", &content)
 }
 
 async fn revoke(request: &Request, env: &Env, now_ms: i64) -> Result<HttpOutcome<Response>> {
@@ -457,5 +480,22 @@ mod tests {
         assert!(source.contains("LegacyExtensionRuntimeFailureV1::RateLimited"));
         assert!(source.contains("legacy_extension_header_selects_api_key"));
         assert!(source.contains("{ \"success\": false }"));
+    }
+
+    #[test]
+    fn consent_page_uses_shared_ui_and_escapes_reflected_values() {
+        let redirect = Url::parse("https://abcdefghijklmnop.chromiumapp.org/cb?x=1").expect("url");
+        let page = render_legacy_extension_consent_page(
+            "a<&\"'@example.com",
+            &redirect,
+            Some("<script>&\"'"),
+        );
+        assert!(page.contains("data-frame-ui=\"shadcn-tailwind\""));
+        assert!(page.contains("a&lt;&amp;"));
+        assert!(!page.contains("a<&"));
+        assert!(!page.contains("<script>"));
+        assert!(page.contains("#error=access_denied&amp;state=%3Cscript%3E%26%22%27"));
+        assert!(page.contains("method=\"post\""));
+        assert!(page.contains("action=\"approve\""));
     }
 }

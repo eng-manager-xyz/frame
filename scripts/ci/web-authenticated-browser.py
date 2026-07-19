@@ -209,9 +209,17 @@ def main() -> int:
                       const skipRect = skip.getBoundingClientRect();
                       const mainStyle = getComputedStyle(main);
                       const bodyStyle = getComputedStyle(document.body);
+                      const colorCanvas = document.createElement('canvas');
+                      colorCanvas.width = 1;
+                      colorCanvas.height = 1;
+                      const colorContext = colorCanvas.getContext('2d', {willReadFrequently: true});
                       const parse = value => {
-                        const values = value.match(/[\d.]+/g)?.map(Number) ?? [];
-                        return values.length >= 3 ? [values[0], values[1], values[2], values[3] ?? 1] : null;
+                        if (!value || !colorContext) return null;
+                        colorContext.clearRect(0, 0, 1, 1);
+                        colorContext.fillStyle = value;
+                        colorContext.fillRect(0, 0, 1, 1);
+                        const [red, green, blue, alpha] = colorContext.getImageData(0, 0, 1, 1).data;
+                        return [red, green, blue, alpha / 255];
                       };
                       const composite = (front, back) => front[3] >= 1 ? front : [
                         front[0] * front[3] + back[0] * (1 - front[3]),
@@ -268,6 +276,11 @@ def main() -> int:
                         skipVisible: skipRect.width > 0 && skipRect.height > 0,
                         skipOutlineWidth: parseFloat(skipStyle.outlineWidth),
                         contrast,
+                        contrastColors: {
+                          foreground: mainStyle.color,
+                          mainBackground: mainStyle.backgroundColor,
+                          bodyBackground: bodyStyle.backgroundColor,
+                        },
                         minimumTextContrast: minimumText.value,
                         minimumContrastElement: minimumText.element,
                         layoutColumns: document.querySelector('.workspace-layout') ? getComputedStyle(document.querySelector('.workspace-layout')).gridTemplateColumns : null,
@@ -287,7 +300,7 @@ def main() -> int:
                 require(state.get("skipTarget") == "#main", f"{name} skip target drifted")
                 require(bool(state.get("skipVisible")), f"{name} focused skip link is invisible")
                 require(float(state.get("skipOutlineWidth", 0)) >= 3, f"{name} focus indicator is too small")
-                require(float(state.get("contrast", 0)) >= 4.5, f"{name} body contrast is below WCAG AA")
+                require(float(state.get("contrast", 0)) >= 4.5, f"{name} body contrast is below WCAG AA: {state.get('contrast')} {state.get('contrastColors')}")
                 require(float(state.get("minimumTextContrast", 0)) >= 4.5, f"{name} visible text contrast is below WCAG AA: {state.get('minimumContrastElement')}={state.get('minimumTextContrast')}")
                 require(bool(state.get("workspaceReady")) == ready_expected, f"{name} ready boundary drifted")
                 require(bool(state.get("accessDenied")) != ready_expected, f"{name} denied boundary drifted")

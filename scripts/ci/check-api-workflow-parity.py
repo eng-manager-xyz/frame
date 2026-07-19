@@ -12553,7 +12553,6 @@ def validate_desktop_session_fixture(report: dict[str, Any]) -> list[str]:
         "parse_legacy_desktop_session_query",
         "legacy_desktop_session_destination",
         "legacy_desktop_login_url",
-        "render_legacy_desktop_redirect_page",
         "port == 0",
     ):
         if token not in application:
@@ -12600,6 +12599,8 @@ def validate_desktop_session_fixture(report: dict[str, Any]) -> list[str]:
         'get("idempotency-key")',
         "content-security-policy",
         "VERCEL_BRANCH_URL_HOST",
+        "render_legacy_desktop_redirect_page",
+        "frame_ui::class_contract",
     ):
         if token not in web_runtime:
             errors.append(f"desktop-session HTTP carrier lost token: {token}")
@@ -14350,7 +14351,7 @@ def validate_extension_auth_fixture(report: dict[str, Any]) -> list[str]:
             errors.append(f"extension-auth semantic closure lost token: {token}")
     for token in (
         "LEGACY_EXTENSION_AUTH_SOURCES", "LEGACY_EXTENSION_AUTH_PROFILES",
-        "validate_legacy_extension_redirect_uri", "render_legacy_extension_consent_page",
+        "validate_legacy_extension_redirect_uri",
         "legacy_extension_user_is_pro", "!is_cap_hosted",
         "active organization is owned by the actor",
     ):
@@ -14392,6 +14393,7 @@ def validate_extension_auth_fixture(report: dict[str, Any]) -> list[str]:
         "sec_fetch_site != \"same-origin\"", "application/x-www-form-urlencoded",
         "legacy_extension_header_selects_api_key", "with_status(302)",
         "{ \"success\": false }", "CAP_CHROME_EXTENSION_ID",
+        "render_legacy_extension_consent_page", "frame_ui::class_contract",
     ):
         if token not in ingress and token not in control_lib:
             errors.append(f"extension-auth HTTP carrier lost token: {token}")

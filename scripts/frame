@@ -116,7 +116,7 @@ refuse_production() {
 
 doctor() {
   local failed=0
-  for tool in cargo cargo-deny worker-build rustc rustup python3 node npx pkg-config; do
+  for tool in cargo cargo-deny worker-build rustc rustup python3 node npm npx pkg-config; do
     need "$tool" || failed=1
   done
   if [[ $failed -ne 0 ]]; then
@@ -126,6 +126,7 @@ doctor() {
   rustc --version
   cargo --version
   node --version
+  npm --version
   if [[ $(cargo-deny --version) != "cargo-deny 0.20.2" ]]; then
     printf 'cargo-deny 0.20.2 is required (install with --version 0.20.2 --locked)\n' >&2
     failed=1
@@ -219,6 +220,8 @@ case "$command" in
     python3 scripts/ci/generate-cyclonedx.py --self-test
     python3 -I scripts/ci/hermetic-journey.py --timeout 20
     python3 scripts/ci/check-fixtures.py
+    python3 -I scripts/ci/check-ui-styles.py
+    python3 -I scripts/ci/check-ui-migration.py
     python3 -I scripts/ci/check-issue-closure.py
     python3 -I scripts/ci/check-desktop-product.py
     python3 -I scripts/ci/check-media-service.py

@@ -9,6 +9,7 @@ mod cloudflare_media;
 mod commands;
 mod compatibility_rate_limit;
 mod contracts;
+mod control_plane_ui;
 pub mod cutover_authority;
 pub mod cutover_authority_runtime;
 mod instant_finalize_contract;

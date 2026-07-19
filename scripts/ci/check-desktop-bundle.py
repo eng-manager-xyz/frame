@@ -21,6 +21,7 @@ ICON_ICO = ROOT / "apps" / "desktop" / "icons" / "icon.ico"
 MACOS_INFO_PLIST = ROOT / "apps" / "desktop" / "Info.plist"
 MACOS_SIGNER = ROOT / "scripts" / "ci" / "sign-macos-local-app.sh"
 DESKTOP_MAIN = ROOT / "apps" / "desktop" / "src" / "main.rs"
+UI_STYLESHEET = ROOT / "crates" / "ui" / "styles" / "tailwind.generated.css"
 # Generated with ImageMagick 7.1.1-47 from the checked-in PNG:
 # magick icon.png -background none -alpha on -filter Lanczos \
 #   -define icon:auto-resize=256,128,64,48,32,24,16 icon.ico
@@ -204,7 +205,6 @@ def main() -> int:
         fail("stale snippet or source-map output is present")
 
     index = dist / "index.html"
-    css = one(list(dist.glob("app-*.css")), "fingerprinted stylesheet")
     javascript = one(
         list(dist.glob("frame-desktop-ui-*.js")), "fingerprinted JavaScript loader"
     )
@@ -213,17 +213,20 @@ def main() -> int:
     )
     expected = sorted(
         path.relative_to(dist).as_posix()
-        for path in (index, css, javascript, wasm)
+        for path in (index, javascript, wasm)
     )
     if relative != expected:
         fail(f"unexpected bundle file set: {relative}")
     if wasm.read_bytes()[:4] != b"\x00asm":
         fail("Wasm artifact has an invalid magic header")
+    stylesheet = UI_STYLESHEET.read_bytes()
+    if stylesheet not in wasm.read_bytes():
+        fail("Wasm does not embed the exact shared minified Tailwind stylesheet")
 
     html = index.read_text(encoding="utf-8")
     if "http://" in html or "https://" in html or "tauri.js" in html:
         fail("index contains a remote or removed JavaScript dependency")
-    for asset in (css, javascript, wasm):
+    for asset in (javascript, wasm):
         if f"/{asset.name}" not in html:
             fail(f"index does not reference {asset.name}")
     references = set(re.findall(r"['\"](/[A-Za-z0-9_./-]+)", html))
@@ -300,6 +303,8 @@ def main() -> int:
         "capability_sha256": sha256(
             ROOT / "apps" / "desktop" / "capabilities" / "main.json"
         ),
+        "tailwind_bytes": len(stylesheet),
+        "tailwind_sha256": hashlib.sha256(stylesheet).hexdigest(),
         "icon_png_sha256": sha256(ICON_PNG),
         "icon_ico_sha256": sha256(ICON_ICO),
         "macos_info_plist_sha256": sha256(MACOS_INFO_PLIST),

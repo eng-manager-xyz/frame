@@ -353,76 +353,6 @@ pub fn legacy_extension_approved_url(
 }
 
 #[must_use]
-pub fn escape_legacy_extension_html(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
-
-#[must_use]
-pub fn render_legacy_extension_consent_page(
-    email: &str,
-    redirect_uri: &Url,
-    state: Option<&str>,
-) -> String {
-    let state_field = state.map_or_else(String::new, |state| {
-        format!(
-            "<input type=\"hidden\" name=\"state\" value=\"{}\" />",
-            escape_legacy_extension_html(state)
-        )
-    });
-    let cancel_url = legacy_extension_cancel_url(redirect_uri, state);
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<meta name="robots" content="noindex" />
-		<title>Connect Cap</title>
-		<style>
-			body {{ margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: #f4f4f5; color: #18181b; }}
-			.card {{ background: #fff; border: 1px solid #e4e4e7; border-radius: 16px; padding: 32px; max-width: 400px; width: 100%; margin: 16px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06); }}
-			h1 {{ font-size: 18px; margin: 0 0 12px; }}
-			p {{ font-size: 14px; line-height: 1.5; color: #52525b; margin: 0 0 12px; }}
-			.email {{ font-weight: 600; color: #18181b; }}
-			.actions {{ display: flex; gap: 12px; margin: 24px 0 0; }}
-			.actions > * {{ flex: 1; display: flex; align-items: center; justify-content: center; height: 40px; border-radius: 10px; font-size: 14px; font-weight: 500; cursor: pointer; text-decoration: none; box-sizing: border-box; }}
-			button {{ background: #18181b; color: #fff; border: none; }}
-			a.cancel {{ background: #fff; color: #18181b; border: 1px solid #d4d4d8; }}
-		</style>
-	</head>
-	<body>
-		<main class="card">
-			<h1>Connect the Cap Chrome extension</h1>
-			<p>The Cap extension is asking for access to your Cap account <span class="email">{}</span> to create and upload recordings on your behalf.</p>
-			<p>Only continue if you opened this page from the Cap extension.</p>
-			<form method="post" action="approve" class="actions">
-				<input type="hidden" name="redirectUri" value="{}" />
-				{}
-				<a class="cancel" href="{}">Cancel</a>
-				<button type="submit">Allow access</button>
-			</form>
-		</main>
-	</body>
-</html>"#,
-        escape_legacy_extension_html(email),
-        escape_legacy_extension_html(redirect_uri.as_str()),
-        state_field,
-        escape_legacy_extension_html(cancel_url.as_str()),
-    )
-}
-
-#[must_use]
 pub fn legacy_extension_bearer_segment(authorization: Option<&str>) -> Option<&str> {
     authorization
         .and_then(|value| value.split(' ').nth(1))
@@ -545,21 +475,6 @@ mod tests {
                 Err(LegacyExtensionRedirectErrorV1::Invalid)
             );
         }
-    }
-
-    #[test]
-    fn consent_success_escapes_every_reflected_value_and_cancel_uses_fragment() {
-        let redirect = Url::parse("https://abcdefghijklmnop.chromiumapp.org/cb?x=1").expect("url");
-        let page = render_legacy_extension_consent_page(
-            "a<&\"'@example.com",
-            &redirect,
-            Some("<script>&\"'"),
-        );
-        assert!(page.contains("a&lt;&amp;&quot;&#39;@example.com"));
-        assert!(page.contains("value=\"&lt;script&gt;&amp;&quot;&#39;\""));
-        assert!(!page.contains("<script>"));
-        assert!(page.contains("#error=access_denied&amp;state=%3Cscript%3E%26%22%27"));
-        assert!(page.contains("method=\"post\" action=\"approve\""));
     }
 
     #[test]

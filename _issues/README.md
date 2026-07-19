@@ -2,6 +2,8 @@
 
 This directory is a dependency-ordered set of implementation-ready issue specifications for migrating Cap toward Rust, GStreamer, Cloudflare D1, R2, Media Transformations, and Leptos, then distributing Frame through the EngManager portfolio, Render, and Cloudflare. The files are written as epics: create child tasks when a deliverable needs independent ownership, but do not discard the epic's acceptance and rollout gates.
 
+The completed, surface-by-surface shadcn-inspired Leptos/Tailwind migration is tracked separately in the nested [`UI` issue set](./UI/README.md), including the exhaustive component map and legacy-use replacements.
+
 ## Ground truth and assumptions
 
 - Upstream is [CapSoftware/Cap](https://github.com/CapSoftware/Cap), inspected at `6ba69561ac86b8efdb17616d6727f9638015546b` on 2026-07-15.
