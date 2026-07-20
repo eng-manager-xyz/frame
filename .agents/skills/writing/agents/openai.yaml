@@ -1,0 +1,4 @@
+interface:
+  display_name: "Writing"
+  short_description: "Write clear, precise, audience-ready prose"
+  default_prompt: "Use $writing to revise this text for clarity, fidelity, and reader purpose."
