@@ -19,10 +19,12 @@ and integration gaps close.
 `NativeAvAppSrc` is a real CPU-byte adapter and `NativeAvRuntime` executes a
 real bounded graph against hostile bridges, but no production device source
 pumps owned buffers through that bridge. The narrower macOS desktop composition
-does mux `MacOsSystemAudioSource` with full-display video and now computes a
-bounded coarse system-audio peak in its capture worker. The existing one-second
-recorder poll carries only a 0..=10,000 value; raw PCM never crosses IPC. This
-direct path still stops short of the bridge's microphone, camera,
+does mux `MacOsSystemAudioSource` with selected display/window/region video and
+computes a bounded coarse system-audio peak in its capture worker. That A/V
+worker still owns the direct screen source; only screen-only recording uses the
+normalized capture ingress/pump. The existing one-second recorder poll carries
+only a 0..=10,000 value; raw PCM never crosses IPC. This direct path still stops
+short of the bridge's microphone, camera,
 calibration/hotplug/default/sleep-wake, and coalesced-event contracts.
 `DurableAvSettingsStore` provides strict storage semantics without pretending
 to be the older unversioned `AvSettingsStorage` trait. Consequently these local

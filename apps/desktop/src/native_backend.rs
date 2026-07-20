@@ -1,7 +1,7 @@
 //! Portable contract between the desktop state machine and native capture.
 //!
 //! Native platform identities never cross this boundary. Backends mint opaque
-//! tokens and return only bounded, privacy-safe display metadata. File paths
+//! tokens and return only bounded, privacy-safe target metadata. File paths
 //! passed to native export have already been scoped by the IPC path policy.
 
 use std::{collections::HashSet, fmt};
@@ -13,7 +13,7 @@ use crate::ipc::{CaptureTargetKind, ValidatedPath, valid_opaque_id};
 
 pub const CAPTURE_TARGET_CATALOG_VERSION: u16 = 1;
 pub const CAPTURE_ARTIFACT_SUMMARY_VERSION: u16 = 1;
-const MAX_CAPTURE_TARGETS: usize = 64;
+const MAX_CAPTURE_TARGETS: usize = 256;
 const MAX_CAPTURE_DIMENSION: u32 = 65_535;
 
 /// A versioned catalog containing no display titles or platform identifiers.
@@ -70,7 +70,7 @@ impl CaptureTargetCatalog {
     }
 }
 
-/// Coarse display geometry paired with a backend-minted opaque token.
+/// Coarse capture geometry paired with a backend-minted opaque token.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureTargetSummary {
@@ -178,6 +178,47 @@ impl fmt::Debug for NativeTargetSelectionRequest {
 pub struct NativeTargetSelectionOutcome {
     pub catalog_generation: u64,
     pub target_token: String,
+}
+
+/// A display-relative logical region. Desktop origins remain native-only, and
+/// the catalog generation binds the request to the geometry the user saw.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeRegionDefinitionRequest {
+    pub catalog_generation: u64,
+    pub display: CaptureTargetSummary,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl fmt::Debug for NativeRegionDefinitionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeRegionDefinitionRequest")
+            .field("catalog_generation", &self.catalog_generation)
+            .field("display", &self.display)
+            .field("geometry", &"<redacted>")
+            .finish()
+    }
+}
+
+/// The refreshed catalog and exact region selected by the backend. Returning
+/// both prevents the WebView from guessing which token belongs to its request.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeRegionDefinitionOutcome {
+    pub catalog: CaptureTargetCatalog,
+    pub region: CaptureTargetSummary,
+}
+
+impl fmt::Debug for NativeRegionDefinitionOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeRegionDefinitionOutcome")
+            .field("catalog", &self.catalog)
+            .field("region", &self.region)
+            .finish()
+    }
 }
 
 impl fmt::Debug for NativeTargetSelectionOutcome {
@@ -385,18 +426,21 @@ impl fmt::Debug for NativeEditableWebmExportOutcome {
 /// Injected native capability. Implementations own platform handles, raw IDs,
 /// capture sessions, and filesystem opens; the desktop core owns UI truth.
 pub trait NativeDesktopBackend {
-    fn prepare_display_capture(
-        &mut self,
-    ) -> Result<NativePermissionOutcome, NativeDesktopBackendError>;
+    fn prepare_capture(&mut self) -> Result<NativePermissionOutcome, NativeDesktopBackendError>;
 
-    fn enumerate_displays(&mut self) -> Result<CaptureTargetCatalog, NativeDesktopBackendError>;
+    fn enumerate_targets(&mut self) -> Result<CaptureTargetCatalog, NativeDesktopBackendError>;
 
-    fn select_display(
+    fn select_target(
         &mut self,
         request: &NativeTargetSelectionRequest,
     ) -> Result<NativeTargetSelectionOutcome, NativeDesktopBackendError>;
 
-    fn start_display_recording(
+    fn define_region(
+        &mut self,
+        request: &NativeRegionDefinitionRequest,
+    ) -> Result<NativeRegionDefinitionOutcome, NativeDesktopBackendError>;
+
+    fn start_recording(
         &mut self,
         request: &NativeCaptureStartRequest,
     ) -> Result<NativeRecordingStartOutcome, NativeDesktopBackendError>;

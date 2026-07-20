@@ -1,10 +1,13 @@
-# Build and test the macOS display recorder locally
+# Build and test the macOS screen recorder locally
 
 The `macos-native` release composition is a real, narrow production path. It
-can capture one full display, preserve unchanged-screen time, write a VP8/WebM
-recording, optionally mux exact 48 kHz stereo system audio as Opus, seal it,
-and export a byte-identical Editable WebM. It is not the complete Studio
-product described by issue 27: microphone, camera, window/region capture,
+can capture one selected display, non-Frame window, or user-defined
+single-display region; preserve unchanged-screen time; write a VP8/WebM
+recording; optionally mux exact 48 kHz stereo system audio as Opus; seal it;
+and export a byte-identical Editable WebM. The screen-only path uses Frame's
+normalized capture ingress and GStreamer pump. The optional system-audio path
+remains the separately bounded Issue 25 A/V composition. This is not the
+complete Studio product described by issue 27: microphone, camera,
 pause/resume, project journaling/recovery,
 timeline edits, edit-aware rendering, MP4 distribution output, distribution
 signing, and notarization remain separate deliverables.
@@ -69,12 +72,15 @@ owner's confirmation.
 
 In Frame:
 
-1. Select **Confirm permissions** and accept the macOS prompt.
-2. Select **Refresh displays**, then choose one of the opaque Display buttons.
+1. Select **Check macOS access** and accept the macOS prompt.
+2. Select **Refresh capture targets**, then choose an opaque Display or Window
+   button. To record a region, choose its containing display and enter bounded
+   logical x/y/width/height values in **Define capture region**; the new Region
+   target is selected automatically.
 3. Optionally enable system audio in Settings, then select **Start recording**.
-4. Leave the display unchanged for at least five seconds, change visible
-   content once, then select **Stop**. The status must say the artifact was
-   sealed; a failure or a UI that remains Recording is a failed test.
+4. Leave the selected content unchanged for at least five seconds, change
+   visible content once, then select **Stop**. The status must say the artifact
+   was sealed; a failure or a UI that remains Recording is a failed test.
 5. Select **Export editable WebM**. The export status must reach Completed.
 
 The sealed original is stored below the app data directory in
@@ -140,5 +146,5 @@ python3 scripts/ci/desktop-shell-smoke.py \
   --expected-adapter native_macos_display
 ```
 
-These automated checks do not substitute for the physical five-second capture
-and playback check above.
+These automated checks do not substitute for physical five-second display,
+window, and region capture/playback checks on representative hardware.

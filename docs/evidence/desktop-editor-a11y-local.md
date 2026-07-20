@@ -14,9 +14,10 @@ release built with `macos-native` instead requests `NativeMacOs`, reports
 `NativeMacOsDisplay` after successful backend construction, and falls back to
 `Unavailable` if trusted GStreamer preflight or native source construction
 fails. The deterministic
-adapter remains debug-only and fake-gated. This new native slice covers only
-permission preparation, opaque full-display selection, display-video
-record/stop/cancel, and artifact-backed Editable WebM export. It does not make
+adapter remains debug-only and fake-gated. This native slice covers permission
+preparation, opaque display/window selection, bounded single-display region
+definition, target-video record/stop/cancel, and artifact-backed Editable WebM
+export. It does not make
 the fake recovery, lifecycle, updater, multitrack Studio, or accessibility
 journeys production behavior.
 
@@ -46,12 +47,12 @@ Validated contract, state-model, and fake implementation:
 - fake record/pause/resume/stop, recovery, trim/save, export, verified upload, device-loss,
   crash/restart, settings/preset, and update/relaunch journeys;
 - semantic Leptos recorder, recovery, numeric timeline, export, upload, settings, and bounded error
-  surfaces; only the narrow native display controls described below are
+  surfaces; only the narrow native target controls described below are
   connected to a release backend; and
 - read-only legacy settings/project inspection models and a retained-selector flag, without a
   production migration adapter or usable legacy-desktop selection action.
 
-## Native macOS display-only source evidence
+## Native macOS target source evidence
 
 Static source checks and focused Rust tests establish a bounded native path:
 
@@ -62,12 +63,15 @@ Static source checks and focused Rust tests establish a bounded native path:
   failed backend construction to `Unavailable`;
 - the backend performs GStreamer recorder preflight and ScreenCaptureKit
   permission preflight/request before accepting a recording;
-- display catalogs expose opaque tokens and coarse geometry rather than native
-  display IDs or titles;
-- native start accepts only a selected full display with Frame-owned window
-  exclusion and embedded cursor, can optionally include exact 48 kHz stereo
-  system audio while excluding Frame's own process audio, and keeps microphone
-  and camera inputs disabled;
+- target catalogs expose opaque display/window tokens and coarse geometry
+  rather than native IDs, application names, or window titles; a region is
+  accepted only inside a freshly selected display and receives a new opaque
+  topology-bound token;
+- native start accepts a selected display/window/region with embedded cursor;
+  display/region capture excludes Frame's whole application and Frame windows
+  are absent from the window catalog; screen-only recording uses the normalized
+  capture ingress/pump, while the optional direct A/V worker includes exact
+  48 kHz stereo system audio and excludes Frame's own process audio;
 - the bounded one-second recorder poll carries only a coarse system-audio level
   (0..=10,000) from a worker-owned atomic; no PCM, device label, or native
   identifier crosses the WebView boundary; and
@@ -113,8 +117,8 @@ project paths, session tokens, or user data.
 Local code still satisfies the typed surface, backend-owned state model, and IPC
 security classifications without closing broader product-integration
 checkboxes. In addition, the macOS composition now has a real but narrow
-display-video and optional-system-audio WebM path. It continues to refuse
-microphone, camera, window, region, pause, MP4, upload, updater, Instant
+target-video and optional-system-audio WebM path. It continues to refuse
+microphone, camera, pause, MP4, upload, updater, Instant
 publication, recovery, and edit-aware Studio behavior.
 Optional macOS system audio is the only native audio source currently supported;
 microphone capture remains unavailable. The registered Instant command

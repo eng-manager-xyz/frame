@@ -1,9 +1,10 @@
 # frame-macos-screen-capture
 
 Safe, bounded display, window, and single-display-region capture primitives
-for Frame's macOS production path. The desktop composition still deliberately
-enables only full-display recording until the broader product contract and
-physical evidence gates land. The crate uses the published
+for Frame's macOS production path. Screen-only desktop recording composes
+these primitives through Frame's normalized capture ingress and GStreamer
+pump; the optional system-audio path remains a separate Issue 25 composition.
+The crate uses the published
 `screencapturekit = 8.0.0` and
 `core-graphics = 0.25.0` crates; it contains no direct FFI or unsafe block.
 
@@ -131,20 +132,29 @@ binary setting.
 - Backward/duplicate PTS, Core Media epoch changes, native state gaps, and
   gaps over two seconds are surfaced through the discontinuity bit.
 
-## Deliberate contract gap
+## Normalized media contract
 
-This crate intentionally does **not** implement
-`frame_media::ScreenCaptureSource`. That contract requires the adapter to
-advertise and emit an exact protected-content signal. ScreenCaptureKit 8 only
-reports ambiguous `Blank` and `Suspended` frame states; neither proves that
-DRM/protected content caused the state.
+`MacOsNormalizedScreenCaptureSource` implements
+`frame_media::ScreenCaptureSource` for display, window, and region targets.
+It exposes CPU BGRA/sRGB frames, hidden or frame-embedded cursor modes, exact
+owner-bound permission/catalog/start/stop calls, and a finite post-stop frame
+tail. The production screen-only worker drives that source through
+`ScreenCaptureIngress` and `ScreenRecordingPump` before finalizing GStreamer.
 
-`FRAME_MEDIA_CONTRACT_STATUS` makes the blocker compile-visible. Blank,
-suspended, and Started samples are skipped, counted, and cause the next
-delivered frame to carry a discontinuity. Idle samples repeat the last valid
-Complete frame at the negotiated nominal duration, preserving static and
-trailing time without interpreting Idle as new pixel content. None of these
-states is mislabeled as protected content.
+ScreenCaptureKit 8 does not expose an exact protected-content signal: its
+`Blank` and `Suspended` frame states are ambiguous. The normalized capability
+therefore advertises `content_unavailable_failures`, not protected-content
+events, and supports only the fail-session policy. Blank or suspended content
+terminates the segment as `ContentUnavailable`; it is never labeled as DRM or
+treated as a recoverable protected-content transition. `Started` is ignored
+as a discontinuity marker. Idle samples repeat the last valid Complete frame
+at the negotiated nominal duration, preserving static and trailing time
+without interpreting Idle as new pixel content.
+
+`FRAME_MEDIA_CONTRACT_STATUS` makes that fail-closed policy compile-visible.
+Cursor image/position/click metadata, exact lifecycle recovery signals, native
+memory, and physical protected-content behavior remain separate evidence or
+implementation gates; the wrapper does not advertise them.
 
 See [PROVENANCE.md](PROVENANCE.md) for the mechanical-port reference and
 license record.

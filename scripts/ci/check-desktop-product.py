@@ -52,13 +52,22 @@ def main() -> int:
     native_contract = text("apps/desktop/src/native_backend.rs")
     macos_backend = text("apps/desktop/src/macos_native_backend.rs")
     macos_av_worker = text("apps/desktop/src/macos_native_backend/av_worker.rs")
+    macos_normalized_worker = text(
+        "apps/desktop/src/macos_native_backend/normalized_worker.rs"
+    )
     rooted_io = text("apps/desktop/src/rooted_io.rs")
     gstreamer_bootstrap = text("apps/desktop/src/gstreamer_bootstrap.rs")
     macos_capture = text("crates/macos-screen-capture/src/lib.rs") + text(
         "crates/macos-screen-capture/src/platform.rs"
     )
+    macos_normalized_capture = text(
+        "crates/macos-screen-capture/src/normalized.rs"
+    )
+    screen_capture = text("crates/media/src/screen_capture.rs")
+    screen_pump = text("crates/media/src/screen_recording/pump.rs")
     screen_recording = text("crates/media/src/screen_recording.rs")
     ui = text("apps/desktop/ui/src/main.rs")
+    region_picker = text("apps/desktop/ui/src/browser/region_picker.rs")
     css = text("crates/ui/styles/tailwind.css")
     ui_components = "".join(
         text(path)
@@ -115,7 +124,7 @@ def main() -> int:
             "pub fn preflight_instant_finalize",
             "pub fn disable_native_instant_finalize",
             "InstantUiProgressV1",
-            "Native capture supports display video with optional system audio only.",
+            "Native capture supports selected-target video with optional system audio only.",
             "ExportProfile::EditableWebm",
             "NativeRecordingStopOutcome::Sealed",
             "NativeRecordingCancelOutcome::Cancelled",
@@ -159,10 +168,13 @@ def main() -> int:
         native_contract,
         (
             "pub trait NativeDesktopBackend",
-            "fn prepare_display_capture",
-            "fn enumerate_displays",
-            "fn select_display",
-            "fn start_display_recording",
+            "pub struct NativeRegionDefinitionRequest",
+            "pub struct NativeRegionDefinitionOutcome",
+            "fn prepare_capture",
+            "fn enumerate_targets",
+            "fn select_target",
+            "fn define_region",
+            "fn start_recording",
             "fn poll_recording_terminal_failure",
             "fn stop_recording",
             "fn cancel_recording",
@@ -173,13 +185,16 @@ def main() -> int:
     require(
         macos_backend,
         (
-            "records one full display",
+            "records one opaque display, window, or region target",
             "preflight_screen_recording_runtime()",
             "PermissionPreflight::PromptRequired => source.request_permission()",
-            "fn enumerate_displays",
-            "fn start_display_recording",
+            "fn enumerate_targets",
+            "fn select_target",
+            "fn define_region",
+            "fn start_recording",
             "if !request.exclude_frame_windows",
             "CursorCaptureMode::EmbeddedInFrame",
+            "ScreenWorkerStart::prepare(",
             "ScreenRecording::start_preopened",
             "create_new_file(&staging_relative)",
             "publish_file_if_identity(",
@@ -198,7 +213,21 @@ def main() -> int:
             "ScreenAudioRecording::start_preopened(",
             "system_audio_included",
         ),
-        "macOS display and system-audio backend",
+        "macOS target and system-audio backend",
+    )
+    require(
+        macos_normalized_worker,
+        (
+            "Owner-bound screen-only production worker",
+            "MacOsNormalizedScreenCaptureSource::new",
+            "BoundScreenCaptureSource::new",
+            "ScreenCaptureIngress::new",
+            "negotiate_screen_capture",
+            "ScreenRecordingPump::new",
+            "ProtectedContentPolicy::FailSession",
+            "ScreenSourceFailureCode::ContentUnavailable",
+        ),
+        "macOS normalized production worker",
     )
     require(
         macos_av_worker,
@@ -251,6 +280,30 @@ def main() -> int:
             "pub fn stop_and_drain_frames",
         ),
         "ScreenCaptureKit source",
+    )
+    require(
+        macos_normalized_capture,
+        (
+            "pub struct MacOsNormalizedScreenCaptureSource",
+            "impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource",
+            "fn poll_stopped_event",
+            "ScreenTargetKind::Display",
+            "ScreenTargetKind::Window",
+            "ScreenTargetKind::Region",
+            "content_unavailable_failures: true",
+            "ScreenSourceFailureCode::ContentUnavailable",
+        ),
+        "normalized ScreenCaptureKit source",
+    )
+    require(
+        screen_capture + screen_pump,
+        (
+            "fn poll_stopped_event",
+            "const MAX_STOP_TAIL_FRAMES: u16 = 16",
+            "ScreenPumpError::StopTailExceeded",
+            "poll_owned_stopped_event",
+        ),
+        "normalized screen stop tail",
     )
     require(
         screen_recording,
@@ -324,6 +377,17 @@ def main() -> int:
             '<Meter',
         ),
         "Leptos accessibility surface",
+    )
+    require(
+        region_picker,
+        (
+            "pub(super) fn RegionPicker",
+            'legend>"Screen region"',
+            'IpcCommand::CaptureRegionDefine',
+            'attr:r#type="number"',
+            'attr:min="0"',
+        ),
+        "bounded accessible region picker",
     )
     require(
         ui_components,
@@ -408,9 +472,10 @@ def main() -> int:
             "Composition and adapter truth",
             "Window ownership",
             "NativeMacOsDisplay",
-            "display-target-only",
-            "can optionally mux exact 48 kHz stereo",
-            "system audio while excluding Frame's own process audio",
+            "display/window/region",
+            "normalized `ScreenCaptureSource`/ingress/pump path",
+            "optional exact 48 kHz stereo system-audio path",
+            "excludes Frame's own process audio",
             "not a Studio project",
             "does not wire a usable previous-channel selector",
             "Production-mode build and smoke",
@@ -423,7 +488,7 @@ def main() -> int:
         (
             "portable `tauri-app` build deliberately selects `Unavailable`",
             "`NativeMacOsDisplay` is not the complete recorder",
-            "optionally includes exact 48 kHz stereo system audio",
+            "includes exact 48 kHz stereo system audio",
             "--features tauri-app,custom-protocol,macos-native",
             "--expected-adapter unavailable",
             "--expected-adapter native_macos_display",
@@ -435,9 +500,10 @@ def main() -> int:
         screen_evidence,
         (
             "does not reclassify any checkbox",
-            "Native macOS display-only source evidence",
+            "Native macOS target source evidence",
+            "MacOsNormalizedScreenCaptureSource",
             "optional exact 48 kHz stereo system audio",
-            "source wired; physical run pending",
+            "display/window/region screen-only source wired; physical run pending",
             "does not start capture",
             "--expected-adapter native_macos_display",
         ),
@@ -459,7 +525,8 @@ def main() -> int:
         evidence_doc,
         (
             "Local deterministic evidence",
-            "Native macOS display-only source evidence",
+            "Native macOS target source evidence",
+            "screen-only recording uses the normalized",
             "Optional macOS system audio is the only native audio source currently supported",
             "Protected evidence still required",
             "publication journey; the native WebM path",
@@ -471,11 +538,11 @@ def main() -> int:
         operations,
         (
             "Build modes and current boundary",
-            "optionally mux exact 48 kHz stereo system audio as Opus",
+            "direct A/V worker can optionally mux exact 48 kHz stereo system audio",
             "Crash and recovery",
             "`macos-native` has no durable journal or recovery-store composition.",
             "workflow and validator are not evidence that a physical run occurred",
-            "current `macos-native` display slice cannot execute this rollback procedure",
+            "current `macos-native` target-capture slice cannot execute this rollback procedure",
             "--expected-adapter unavailable",
             "--expected-adapter native_macos_display",
             "Rollback",
@@ -509,6 +576,11 @@ def main() -> int:
                 "stop seals a single-source artifact",
                 "display-video source and WebM path",
                 "Windows, audio, camera",
+                "Native macOS display-only source evidence",
+                "records one full display",
+                "does not support window/region capture",
+                "macOS adapter is not yet connected",
+                "current source Stop contract still has no bounded-tail return channel",
             ),
             label,
         )
@@ -521,9 +593,13 @@ def main() -> int:
         "apps/desktop/Info.plist",
         "apps/desktop/src/native_backend.rs",
         "apps/desktop/src/macos_native_backend.rs",
+        "apps/desktop/src/macos_native_backend/normalized_worker.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
         "crates/macos-screen-capture/src/lib.rs",
         "crates/macos-screen-capture/src/platform.rs",
+        "crates/macos-screen-capture/src/normalized.rs",
+        "crates/media/src/screen_capture.rs",
+        "crates/media/src/screen_recording/pump.rs",
         "crates/media/src/screen_recording.rs",
         ".github/workflows/desktop-real-hardware.yml",
         "scripts/ci/desktop-real-hardware.py",
@@ -532,6 +608,7 @@ def main() -> int:
         "scripts/ci/check-desktop-bundle.py",
         "scripts/ci/desktop-shell-smoke.py",
         "apps/desktop/ui/src/main.rs",
+        "apps/desktop/ui/src/browser/region_picker.rs",
         "crates/ui/src/button.rs",
         "crates/ui/src/display.rs",
         "crates/ui/src/form.rs",
@@ -559,13 +636,16 @@ def main() -> int:
             "logical_window_scopes": True,
             "backend_truth_runtime": True,
             "portable_unavailable_shell_source": True,
-            "macos_native_display_source_contract": True,
+            "macos_native_target_source_contract": True,
+            "macos_normalized_screen_only_worker": True,
+            "macos_window_region_selection": True,
+            "bounded_native_stop_tail": True,
             "explicit_tauri_capabilities": True,
             "fake_pipeline_journey_present": True,
             "partial_macos_hardware_validator_present": True,
             "semantic_accessibility_surface": True,
             "real_hardware_evidence": False,
-            "native_display_physical_evidence": False,
+            "native_target_physical_evidence": False,
             "studio_edit_aware_integration": False,
             "native_recovery_evidence": False,
             "assistive_technology_evidence": False,

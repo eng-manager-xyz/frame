@@ -6,15 +6,17 @@ use thiserror::Error;
 
 use crate::{
     BoundScreenCaptureSource, CancellationToken, ScreenAppSrcPlan, ScreenCaptureError,
-    ScreenCaptureIngress, ScreenCaptureQueueDiagnostics, ScreenCaptureSession, ScreenCaptureSource,
-    ScreenFrameAdmission, ScreenFramePayload, ScreenGracefulProofError, ScreenGracefulStop,
-    ScreenGracefulStopAbort, ScreenGracefulStopAbortCompletion, ScreenGracefulStopCompletion,
-    ScreenGracefulStopCompletionOutcome, ScreenGracefulStopRetryOutcome, ScreenIngressOutcome,
-    ScreenIngressOwner, ScreenIngressPopOutcome, ScreenIngressTransition, ScreenOperationAck,
-    ScreenOperationBudget, ScreenRecording, ScreenRecordingArtifact, ScreenRecordingError,
-    ScreenRecordingIngressStatus, ScreenRecordingSpec, ScreenSourceFailureEnvelope,
-    ScreenStreamStamp,
+    ScreenCaptureIngress, ScreenCapturePhase, ScreenCaptureQueueDiagnostics, ScreenCaptureSession,
+    ScreenCaptureSource, ScreenFrameAdmission, ScreenFramePayload, ScreenGracefulProofError,
+    ScreenGracefulStop, ScreenGracefulStopAbort, ScreenGracefulStopAbortCompletion,
+    ScreenGracefulStopCompletion, ScreenGracefulStopCompletionOutcome,
+    ScreenGracefulStopRetryOutcome, ScreenIngressOutcome, ScreenIngressOwner,
+    ScreenIngressPopOutcome, ScreenIngressTransition, ScreenOperationAck, ScreenOperationBudget,
+    ScreenRecording, ScreenRecordingArtifact, ScreenRecordingError, ScreenRecordingIngressStatus,
+    ScreenRecordingSpec, ScreenSourceFailureEnvelope, ScreenStreamStamp,
 };
+
+const MAX_STOP_TAIL_FRAMES: u16 = 16;
 
 #[derive(Debug, Error)]
 pub enum ScreenPumpError {
@@ -71,6 +73,13 @@ pub enum ScreenPumpError {
     RetirementFailed(Box<ScreenPumpRetirementFailure>),
     #[error("the screen recording pump is no longer active")]
     InvalidLifecycle,
+    #[error("the stopped source callback tail failed")]
+    StopTailSource {
+        failure: Box<ScreenSourceFailureEnvelope>,
+        teardown: ScreenPumpTeardownStatus,
+    },
+    #[error("the stopped source exceeded the bounded callback tail")]
+    StopTailExceeded { teardown: ScreenPumpTeardownStatus },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -250,6 +259,15 @@ where
         now_ns: u64,
         cancellation: &CancellationToken,
     ) -> Result<ScreenPumpOutcome, ScreenPumpError> {
+        self.drain_queue(session, now_ns, cancellation)
+    }
+
+    fn drain_queue(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+        now_ns: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<ScreenPumpOutcome, ScreenPumpError> {
         if self.recording.is_none() || !self.accepting_frames {
             return Err(ScreenPumpError::InvalidLifecycle);
         }
@@ -348,6 +366,137 @@ where
             }
         }
         Ok(ScreenPumpOutcome::Drained(report))
+    }
+
+    /// Ingests the finite callback tail retained by a source after native Stop
+    /// succeeded but before its acknowledgement is applied to the session.
+    /// The frames have already passed the source's bounded callback queue, so
+    /// they are owner- and stream-validated and submitted directly without
+    /// entering the capture queue that the stop transition intentionally
+    /// retired.
+    pub fn drain_stopped_source_tail<S>(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+        source: &mut BoundScreenCaptureSource<S>,
+        budget: &ScreenOperationBudget<'_>,
+        _now_ns: u64,
+    ) -> Result<ScreenPumpReport, ScreenPumpError>
+    where
+        S: ScreenCaptureSource<
+                FramePayload = FramePayload,
+                CursorImagePayload = CursorImagePayload,
+            >,
+    {
+        if self.recording.is_none()
+            || self.accepting_frames
+            || self.sealing_stream != Some(self.active_stream)
+            || session.phase() != ScreenCapturePhase::Stopping
+            || source.binding() != self.owner.source_session_binding()
+        {
+            return Err(ScreenPumpError::InvalidLifecycle);
+        }
+
+        let mut combined = ScreenPumpReport {
+            total_submitted_frames: self.submitted_frames,
+            queue: self.ingress.queue_diagnostics(),
+            ..ScreenPumpReport::default()
+        };
+        for _ in 0..MAX_STOP_TAIL_FRAMES {
+            let event = match source.poll_owned_stopped_event(budget) {
+                Ok(event) => event,
+                Err(failure) => {
+                    let teardown = self.teardown_status();
+                    return Err(ScreenPumpError::StopTailSource {
+                        failure: Box::new(failure),
+                        teardown,
+                    });
+                }
+            };
+            let Some(event) = event else {
+                return Ok(combined);
+            };
+            let frame = match event.into_stopped_frame(self.owner.source_session_binding()) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    let teardown = self.teardown_status();
+                    return Err(match teardown {
+                        ScreenPumpTeardownStatus::Confirmed => ScreenPumpError::Capture(error),
+                        ScreenPumpTeardownStatus::Unconfirmed(teardown) => {
+                            ScreenPumpError::CaptureAndTeardown {
+                                operation: Box::new(error),
+                                teardown,
+                            }
+                        }
+                    });
+                }
+            };
+            if let Err(error) =
+                self.ingress
+                    .validate_stopped_tail_frame(session, self.active_stream, &frame)
+            {
+                let teardown = self.teardown_status();
+                return Err(match teardown {
+                    ScreenPumpTeardownStatus::Confirmed => ScreenPumpError::Capture(error),
+                    ScreenPumpTeardownStatus::Unconfirmed(teardown) => {
+                        ScreenPumpError::CaptureAndTeardown {
+                            operation: Box::new(error),
+                            teardown,
+                        }
+                    }
+                });
+            }
+            let admission = ScreenFrameAdmission {
+                retained_bytes: frame.retained_bytes(),
+                duration_ns: frame.timestamp().duration_ns,
+            };
+            if !self.recording_can_accept(admission)? {
+                return Err(
+                    self.terminalize_recording_failure(session, ScreenRecordingError::Backpressure)
+                );
+            }
+            let mut frame = frame;
+            let sequence_gap = self
+                .last_sequence
+                .and_then(|sequence| sequence.checked_add(1))
+                .is_some_and(|expected| expected != frame.sequence());
+            if sequence_gap {
+                frame.force_discontinuity();
+            }
+            let sequence = frame.sequence();
+            let retained_bytes = frame.retained_bytes();
+            let discontinuity = frame.timestamp().discontinuity;
+            let status = match self.recording_mut()?.push_screen_frame(frame) {
+                Ok(status) => status,
+                Err(operation) => {
+                    return Err(self.terminalize_recording_failure(session, operation));
+                }
+            };
+            self.last_sequence = Some(sequence);
+            self.submitted_frames = status.submitted_frames;
+            combined.popped_frames = combined.popped_frames.saturating_add(1);
+            combined.submitted_bytes = combined.submitted_bytes.saturating_add(retained_bytes);
+            if discontinuity {
+                combined.submitted_discontinuities =
+                    combined.submitted_discontinuities.saturating_add(1);
+            }
+            combined.total_submitted_frames = self.submitted_frames;
+            combined.last_ingress = Some(status);
+        }
+
+        match source.poll_owned_stopped_event(budget) {
+            Ok(None) => Ok(combined),
+            Ok(Some(_)) => {
+                let teardown = self.teardown_status();
+                Err(ScreenPumpError::StopTailExceeded { teardown })
+            }
+            Err(failure) => {
+                let teardown = self.teardown_status();
+                Err(ScreenPumpError::StopTailSource {
+                    failure: Box::new(failure),
+                    teardown,
+                })
+            }
+        }
     }
 
     /// Polls through the exclusively owned ingress. Any authenticated epoch
@@ -558,6 +707,19 @@ where
     pub fn abort(mut self) -> Result<(), ScreenPumpError> {
         self.abort_active_recording()
             .map_err(ScreenPumpError::Teardown)
+    }
+
+    /// Confirms graph teardown after any pump operation, including operations
+    /// that already aborted the graph as part of their failure path.
+    ///
+    /// Unlike [`Self::abort`], this cleanup boundary is deliberately
+    /// idempotent so production workers can preserve a primary capture error
+    /// without guessing whether a nested transition already retired appsrc.
+    pub fn teardown(mut self) -> Result<(), ScreenPumpError> {
+        let Some(recording) = self.recording.take() else {
+            return Ok(());
+        };
+        recording.abort().map_err(ScreenPumpError::Teardown)
     }
 
     fn recording_spec(&self) -> Result<ScreenRecordingSpec, ScreenPumpError> {

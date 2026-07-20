@@ -2,7 +2,7 @@
 
 ## Build modes and current boundary
 
-The portable Tauri shell and the native macOS display slice are different
+The portable Tauri shell and the native macOS target-capture slice are different
 release-mode builds. Build and smoke them separately from the repository root:
 
 ```sh
@@ -19,13 +19,16 @@ cargo build --locked --release -p frame-desktop-core \
 python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
 ```
 
-The native slice records one selected full display as VP8/WebM, embeds the
-cursor, excludes Frame-owned windows in the ScreenCaptureKit filter, and can
-optionally mux exact 48 kHz stereo system audio as Opus while excluding Frame's
-own process audio. It supports stop, cancel, and artifact-bound Editable WebM
-publication. It does not support window/region capture, microphone, camera,
-pause/resume, multitrack or edit-aware Studio export, MP4, persisted recording
-recovery, native tray/hotkey/overlay lifecycle, or updater installation.
+The native slice records one selected display, non-Frame window, or bounded
+single-display region as VP8/WebM and embeds the cursor. Display/region capture
+excludes Frame's whole application; Frame windows are absent from the window
+catalog. Screen-only recording uses the normalized capture ingress/pump. The
+separate direct A/V worker can optionally mux exact 48 kHz stereo system audio
+as Opus while excluding Frame's own process audio. The slice supports stop,
+cancel, and artifact-bound Editable WebM publication. It does not support
+microphone, camera, pause/resume, multitrack or edit-aware Studio export, MP4,
+persisted recording recovery, native tray/hotkey/overlay lifecycle, or updater
+installation.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
 coherent adapter truth. A successful smoke is not capture, playback, recovery,
@@ -55,7 +58,7 @@ distributable app-relative runtime.
 ## Crash and recovery
 
 This section is the required release behavior, not evidence that the current
-`macos-native` display slice implements it.
+`macos-native` target-capture slice implements it.
 `macos-native` has no durable journal or recovery-store composition. A
 stop/cancel/worker failure is handled
 as a terminal backend outcome, and a process crash must not be advertised as
@@ -111,8 +114,8 @@ Apple team, designated requirement, and signed executable digest. Denial →
 approval → relaunch remains attended manual evidence because an unattended job
 cannot approve a macOS privacy prompt.
 
-The future full product gate must additionally prove window/region selection;
-multi-monitor scale/rotation placement; microphone, system audio, and camera;
+The future full product gate must additionally prove physical window/region
+selection; multi-monitor scale/rotation placement; microphone, system audio, and camera;
 device loss/hotplug; sleep/wake; Instant and Studio; pause/resume; tray/hotkey/
 overlay ownership; crash/restart recovery; updater relaunch; keyboard-only
 operation; and a named screen-reader journey. A valid protected partial result
@@ -123,7 +126,7 @@ cannot satisfy or substitute for that matrix.
 The following is normative full-release behavior once signed channel
 selection, updater, native journal, upload, and protected matrix integrations
 exist.
-The current `macos-native` display slice cannot execute this rollback procedure.
+The current `macos-native` target-capture slice cannot execute this rollback procedure.
 
 1. Stop rollout for the affected OS/mode without changing the other matrix cells.
 2. Select the previous signed desktop channel and keep all new project/recovery copies intact.

@@ -49,13 +49,14 @@ assets and does not provide a server runtime inside the desktop application.
   preflight/request occurs only when the user prepares capture. The debug-only
   deterministic fake remains separately gated by `FRAME_DESKTOP_FAKE_PIPELINE=1`.
 - `NativeMacOsDisplay` is not the complete recorder described by issues 24,
-  27, and 33. It enumerates opaque displays, requests screen-recording
-  permission, records one full display with embedded cursor and Frame-owned
-  window exclusion, optionally includes exact 48 kHz stereo system audio, and
-  seals and safely publishes an Editable WebM artifact. Window/region capture,
-  microphone, camera, pause/resume, multitrack Studio, edit-aware export,
-  recovery, MP4 distribution, updater, and native lifecycle integrations remain
-  unavailable.
+  27, and 33. It enumerates opaque display/non-Frame-window targets, accepts a
+  bounded single-display region, requests screen-recording permission, and
+  records the exact selected target with embedded cursor. Screen-only capture
+  uses the normalized ingress/pump; the separate direct A/V worker optionally
+  includes exact 48 kHz stereo system audio. The backend seals and safely
+  publishes an Editable WebM artifact. Microphone, camera, pause/resume,
+  multitrack Studio, edit-aware export, recovery, MP4 distribution, updater,
+  and native lifecycle integrations remain unavailable.
 
 ## Commands and evidence
 
@@ -71,7 +72,7 @@ python3 scripts/ci/check-desktop-bundle.py
 cargo build --locked --release -p frame-desktop-core --features tauri-app,custom-protocol --bin frame-desktop
 python3 scripts/ci/desktop-shell-smoke.py --expected-adapter unavailable
 
-# Native macOS display-only shell, run on a macOS build machine with the
+# Native macOS display/window/region shell, run on a macOS build machine with the
 # audited GStreamer installation discovered by pkg-config.
 cargo build --locked --release -p frame-desktop-core \
   --features tauri-app,custom-protocol,macos-native --bin frame-desktop

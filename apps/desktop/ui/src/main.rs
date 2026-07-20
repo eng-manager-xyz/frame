@@ -1,5 +1,7 @@
 #[cfg(all(target_arch = "wasm32", feature = "csr"))]
 mod browser {
+    mod region_picker;
+
     use std::{
         collections::HashMap,
         sync::{
@@ -31,6 +33,8 @@ mod browser {
     use serde::Serialize;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
+
+    use self::region_picker::RegionPicker;
 
     const RECORDER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -720,6 +724,7 @@ mod browser {
                                     }
                                 />
                             </ToggleGroup>
+                            <RegionPicker client snapshot status error busy />
                         </Show>
                     </FieldGroup>
 

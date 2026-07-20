@@ -1,10 +1,11 @@
 # Desktop product contract v1
 
 Issue 33 owns the Leptos/Tauri recorder and editor boundary, while issues 24–27
-own capture and media behavior. The portable contract now composes one narrow
-macOS display-video adapter without allowing the WebView to acquire filesystem,
-shell, device, tray, updater, or arbitrary Tauri authority. That slice is not
-the complete recorder or editor required to close any of those issues.
+own capture and media behavior. The portable contract now composes one bounded
+macOS display/window/region video adapter without allowing the WebView to
+acquire filesystem, shell, device, tray, updater, or arbitrary Tauri authority.
+That slice is not the complete recorder or editor required to close any of
+those issues.
 
 ## Backend truth
 
@@ -46,14 +47,19 @@ the WebView observes `Unavailable`, `DeterministicFake`, or
 `dispatch_native_json` only while that same runtime snapshot names
 `NativeMacOs`; the portable shell continues through the non-native dispatcher.
 
-The native macOS implementation is deliberately display-target-only. It performs
-GStreamer factory preflight before backend construction, uses ScreenCaptureKit
-permission preflight/request, enumerates bounded privacy-safe display summaries,
-records one selected full display as BGRA/sRGB video with embedded cursor and
-whole-Frame-application exclusion, and can optionally mux exact 48 kHz stereo
-system audio while excluding Frame's own process audio. ScreenCaptureKit `Idle`
-callbacks repeat the last valid Complete frame at the nominal cadence, including
-the bounded stop tail, so unchanged display time remains in the media timeline.
+The native macOS implementation performs GStreamer factory preflight before
+backend construction, uses ScreenCaptureKit permission preflight/request, and
+enumerates bounded privacy-safe display and non-Frame-window summaries. The
+user may select a display/window or define a single-display region through the
+bounded numeric picker. Screen-only recording binds that exact catalog target
+to the normalized `ScreenCaptureSource`/ingress/pump path and records BGRA/sRGB
+video with an embedded cursor. Display/region filters exclude the whole Frame
+application; the window catalog and filter never target a Frame window. The
+optional exact 48 kHz stereo system-audio path remains the direct Issue 25 A/V
+worker and excludes Frame's own process audio. ScreenCaptureKit `Idle`
+callbacks repeat the last valid Complete frame at the nominal cadence,
+including the bounded stop tail, so unchanged time remains in the media
+timeline.
 The recorder writes and verifies through a preopened descriptor, publishes the
 sealed inode with a rooted no-replace rename, retains its SHA-256, and copies
 exports through rooted descriptors while checking that digest. Media,
@@ -64,7 +70,7 @@ false path. Export keeps its staging descriptor through the cross-root rename
 and rehashes the published inode. A bounded health poll reconciles
 terminal worker failures without leaving the UI in Recording. The first slice
 is capped at four hours, 2 GB, and a 512 MB filesystem reserve. It
-rejects microphone, camera, window, region, pause/resume, and MP4 paths. Its
+rejects microphone, camera, pause/resume, and MP4 paths. Its
 export is artifact-backed screen-plus-optional-system-audio WebM, not the
 canonical Studio edit plan or a multitrack/distribution-master render.
 
@@ -111,9 +117,10 @@ progress, terminal states remove the opaque WebView handle, and stable error
 copy is announced without exposing credentials or recording identity.
 
 Representation is not implementation. `NativeMacOsDisplay` currently enables
-permission preparation, display refresh/selection, display-video start, stop,
-cancel, and Editable WebM export. The remaining represented operations continue
-to return unavailable or stay disabled. In particular, a sealed native
+permission preparation, display/window refresh and selection, bounded region
+definition and selection, target-video start, stop, cancel, and Editable WebM
+export. The remaining represented operations continue to return unavailable
+or stay disabled. In particular, a sealed native
 recording is not a Studio project, export progress is not a cancellable
 edit-aware render, and no native recording journal/recovery owner is wired.
 
