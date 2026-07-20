@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+if ! command -v rg >/dev/null 2>&1; then
+  printf 'workspace boundary check requires ripgrep (rg)\n' >&2
+  exit 1
+fi
+
 fail=0
 
 check_absent() {

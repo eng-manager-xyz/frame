@@ -14,7 +14,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -113,11 +112,11 @@ def main() -> int:
         ("imports-admin-desktop-light", "/imports?fixture=admin&theme=light", 1440, 1000, "light", True),
         ("onboarding-member-tablet", "/onboarding?fixture=member&theme=system", 768, 1024, "dark", True),
     )
-    port = HELPER.reserve_loopback_port()
     records: list[dict[str, object]] = []
     with tempfile.TemporaryDirectory(
         prefix="frame-authenticated-chrome-", ignore_cleanup_errors=True
     ) as profile:
+        devtools_port_file = pathlib.Path(profile) / "DevToolsActivePort"
         process = subprocess.Popen(
             [
                 browser,
@@ -129,7 +128,7 @@ def main() -> int:
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--remote-debugging-address=127.0.0.1",
-                f"--remote-debugging-port={port}",
+                "--remote-debugging-port=0",
                 f"--user-data-dir={profile}",
                 "about:blank",
             ],
@@ -138,20 +137,23 @@ def main() -> int:
         )
         devtools = None
         try:
-            endpoint = f"http://127.0.0.1:{port}"
             # Hosted runners can spend several seconds starting crashpad and
             # the first browser process after a release build. Keep the probe
             # bounded, but do not turn normal runner variance into a false
             # product failure.
             deadline = time.monotonic() + 30
             while True:
-                try:
-                    with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
+                if devtools_port_file.is_file():
+                    lines = devtools_port_file.read_text(encoding="utf-8").splitlines()
+                    if lines and lines[0].isdigit():
+                        port = int(lines[0])
                         break
-                except (urllib.error.URLError, ConnectionError, TimeoutError):
-                    require(process.poll() is None, "Chrome exited before DevTools was ready")
-                    require(time.monotonic() < deadline, "Chrome DevTools did not start")
-                    time.sleep(0.05)
+                require(process.poll() is None, "Chrome exited before DevTools was ready")
+                require(time.monotonic() < deadline, "Chrome DevTools did not start")
+                time.sleep(0.05)
+            endpoint = f"http://127.0.0.1:{port}"
+            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=5):
+                pass
             target_request = urllib.request.Request(
                 f"{endpoint}/json/new?{urllib.parse.quote('about:blank', safe='')}",
                 method="PUT",
