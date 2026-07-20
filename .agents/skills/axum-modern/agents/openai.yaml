@@ -1,0 +1,4 @@
+interface:
+  display_name: "Axum Modern"
+  short_description: "Use current Axum APIs and migrate legacy servers"
+  default_prompt: "Use $axum-modern to write or migrate Axum code with the repository-pinned modern API surface."
