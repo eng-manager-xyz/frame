@@ -14,7 +14,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -113,11 +112,11 @@ def main() -> int:
         ("imports-admin-desktop-light", "/imports?fixture=admin&theme=light", 1440, 1000, "light", True),
         ("onboarding-member-tablet", "/onboarding?fixture=member&theme=system", 768, 1024, "dark", True),
     )
-    port = HELPER.reserve_loopback_port()
     records: list[dict[str, object]] = []
     with tempfile.TemporaryDirectory(
         prefix="frame-authenticated-chrome-", ignore_cleanup_errors=True
     ) as profile:
+        devtools_port_file = pathlib.Path(profile) / "DevToolsActivePort"
         process = subprocess.Popen(
             [
                 browser,
@@ -129,7 +128,7 @@ def main() -> int:
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--remote-debugging-address=127.0.0.1",
-                f"--remote-debugging-port={port}",
+                "--remote-debugging-port=0",
                 f"--user-data-dir={profile}",
                 "about:blank",
             ],
@@ -138,20 +137,23 @@ def main() -> int:
         )
         devtools = None
         try:
-            endpoint = f"http://127.0.0.1:{port}"
             # Hosted runners can spend several seconds starting crashpad and
             # the first browser process after a release build. Keep the probe
             # bounded, but do not turn normal runner variance into a false
             # product failure.
             deadline = time.monotonic() + 30
             while True:
-                try:
-                    with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
+                if devtools_port_file.is_file():
+                    lines = devtools_port_file.read_text(encoding="utf-8").splitlines()
+                    if lines and lines[0].isdigit():
+                        port = int(lines[0])
                         break
-                except (urllib.error.URLError, ConnectionError, TimeoutError):
-                    require(process.poll() is None, "Chrome exited before DevTools was ready")
-                    require(time.monotonic() < deadline, "Chrome DevTools did not start")
-                    time.sleep(0.05)
+                require(process.poll() is None, "Chrome exited before DevTools was ready")
+                require(time.monotonic() < deadline, "Chrome DevTools did not start")
+                time.sleep(0.05)
+            endpoint = f"http://127.0.0.1:{port}"
+            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=5):
+                pass
             target_request = urllib.request.Request(
                 f"{endpoint}/json/new?{urllib.parse.quote('about:blank', safe='')}",
                 method="PUT",
@@ -209,9 +211,17 @@ def main() -> int:
                       const skipRect = skip.getBoundingClientRect();
                       const mainStyle = getComputedStyle(main);
                       const bodyStyle = getComputedStyle(document.body);
+                      const colorCanvas = document.createElement('canvas');
+                      colorCanvas.width = 1;
+                      colorCanvas.height = 1;
+                      const colorContext = colorCanvas.getContext('2d', {willReadFrequently: true});
                       const parse = value => {
-                        const values = value.match(/[\d.]+/g)?.map(Number) ?? [];
-                        return values.length >= 3 ? [values[0], values[1], values[2], values[3] ?? 1] : null;
+                        if (!value || !colorContext) return null;
+                        colorContext.clearRect(0, 0, 1, 1);
+                        colorContext.fillStyle = value;
+                        colorContext.fillRect(0, 0, 1, 1);
+                        const [red, green, blue, alpha] = colorContext.getImageData(0, 0, 1, 1).data;
+                        return [red, green, blue, alpha / 255];
                       };
                       const composite = (front, back) => front[3] >= 1 ? front : [
                         front[0] * front[3] + back[0] * (1 - front[3]),
@@ -268,6 +278,11 @@ def main() -> int:
                         skipVisible: skipRect.width > 0 && skipRect.height > 0,
                         skipOutlineWidth: parseFloat(skipStyle.outlineWidth),
                         contrast,
+                        contrastColors: {
+                          foreground: mainStyle.color,
+                          mainBackground: mainStyle.backgroundColor,
+                          bodyBackground: bodyStyle.backgroundColor,
+                        },
                         minimumTextContrast: minimumText.value,
                         minimumContrastElement: minimumText.element,
                         layoutColumns: document.querySelector('.workspace-layout') ? getComputedStyle(document.querySelector('.workspace-layout')).gridTemplateColumns : null,
@@ -287,7 +302,7 @@ def main() -> int:
                 require(state.get("skipTarget") == "#main", f"{name} skip target drifted")
                 require(bool(state.get("skipVisible")), f"{name} focused skip link is invisible")
                 require(float(state.get("skipOutlineWidth", 0)) >= 3, f"{name} focus indicator is too small")
-                require(float(state.get("contrast", 0)) >= 4.5, f"{name} body contrast is below WCAG AA")
+                require(float(state.get("contrast", 0)) >= 4.5, f"{name} body contrast is below WCAG AA: {state.get('contrast')} {state.get('contrastColors')}")
                 require(float(state.get("minimumTextContrast", 0)) >= 4.5, f"{name} visible text contrast is below WCAG AA: {state.get('minimumContrastElement')}={state.get('minimumTextContrast')}")
                 require(bool(state.get("workspaceReady")) == ready_expected, f"{name} ready boundary drifted")
                 require(bool(state.get("accessDenied")) != ready_expected, f"{name} denied boundary drifted")

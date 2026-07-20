@@ -70,7 +70,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good ripgrep
           plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
           test -d "${plugin_dir}"
           echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"

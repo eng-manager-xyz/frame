@@ -226,12 +226,6 @@ def wait_for_value(
     )
 
 
-def reserve_loopback_port() -> int:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
-
-
 def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
     normal_state = r"""(() => {
       const status = document.querySelector('#frame-hydration-state');
@@ -299,10 +293,10 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
       };
     })()"""
 
-    port = reserve_loopback_port()
     with tempfile.TemporaryDirectory(
         prefix="frame-chrome-", ignore_cleanup_errors=True
     ) as profile:
+        devtools_port_file = pathlib.Path(profile) / "DevToolsActivePort"
         process = subprocess.Popen(
             [
                 browser,
@@ -311,7 +305,7 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
                 "--disable-dev-shm-usage",
                 "--no-first-run",
                 "--no-default-browser-check",
-                f"--remote-debugging-port={port}",
+                "--remote-debugging-port=0",
                 f"--user-data-dir={profile}",
                 "about:blank",
             ],
@@ -320,17 +314,20 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
         )
         devtools: DevTools | None = None
         try:
-            endpoint = f"http://127.0.0.1:{port}"
             deadline = time.monotonic() + 10
             while True:
-                try:
-                    with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
+                if devtools_port_file.is_file():
+                    lines = devtools_port_file.read_text(encoding="utf-8").splitlines()
+                    if lines and lines[0].isdigit():
+                        port = int(lines[0])
                         break
-                except (urllib.error.URLError, ConnectionError, TimeoutError):
-                    require(process.poll() is None, "Chrome exited before DevTools was ready")
-                    if time.monotonic() >= deadline:
-                        raise SystemExit("web hydration smoke: Chrome DevTools did not start")
-                    time.sleep(0.05)
+                require(process.poll() is None, "Chrome exited before DevTools was ready")
+                if time.monotonic() >= deadline:
+                    raise SystemExit("web hydration smoke: Chrome DevTools did not start")
+                time.sleep(0.05)
+            endpoint = f"http://127.0.0.1:{port}"
+            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=5):
+                pass
             request = urllib.request.Request(
                 f"{endpoint}/json/new?{urllib.parse.quote('about:blank', safe='')}",
                 method="PUT",

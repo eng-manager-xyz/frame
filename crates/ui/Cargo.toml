@@ -1,0 +1,19 @@
+[package]
+name = "frame-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["ssr"]
+ssr = ["dep:leptos", "leptos/ssr"]
+hydrate = ["dep:leptos", "leptos/hydrate"]
+csr = ["dep:leptos", "leptos/csr"]
+
+[dependencies]
+leptos = { workspace = true, optional = true }
+
+[lints]
+workspace = true

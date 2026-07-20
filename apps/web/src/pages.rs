@@ -3,6 +3,11 @@ use frame_client::{
     InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1, PublicShareSummary,
     ShareAvailability,
 };
+use frame_ui::{
+    Alert, AlertVariant, AspectRatio, Badge, BadgeVariant, Button, ButtonGroup, ButtonLink,
+    ButtonSize, ButtonVariant, Card, EmptyState, FeatureCard, Input, Label, NavigationMenu,
+    Progress, STYLESHEET, Select,
+};
 use leptos::prelude::*;
 
 use crate::authenticated::{RecordingFilter, RouteViewQuery};
@@ -35,7 +40,7 @@ pub fn landing(config: &RuntimeConfig) -> Page {
     let canonical = format!("{}/", config.public_origin().as_str());
     let body = view! {
         <main id="main" tabindex="-1">
-            <nav aria-label="Primary">
+            <NavigationMenu attr:aria-label="Primary">
                 <a class="brand" href="/" aria-label="Frame home">
                     <span class="mark" aria-hidden="true">"F"</span>
                     <span>"Frame"</span>
@@ -46,34 +51,34 @@ pub fn landing(config: &RuntimeConfig) -> Page {
                         "Source"
                     </a>
                 </div>
-            </nav>
+            </NavigationMenu>
             <section class="hero" aria-labelledby="page-title">
                 <p class="eyebrow">"Private recording, built in Rust"</p>
                 <h1 id="page-title">"Record locally. Share deliberately."</h1>
                 <p class="lede">
                     "Frame is building an accessible recording workflow with a privacy-safe web boundary and native media processing."
                 </p>
-                <div class="actions">
-                    <a class="button" href="/login">"Open Frame"</a>
-                    <a class="button secondary" href="/health/live">"Service health"</a>
-                </div>
+                <ButtonGroup class="actions">
+                    <ButtonLink href="/login">"Open Frame"</ButtonLink>
+                    <ButtonLink variant=ButtonVariant::Secondary href="/health/live">"Service health"</ButtonLink>
+                </ButtonGroup>
             </section>
             <section class="grid" aria-label="Frame architecture">
-                <article>
+                <FeatureCard>
                     <p class="card-label">"Capture"</p>
                     <h2>"Native by default"</h2>
                     <p>"Recording and advanced media work stay in least-privilege native processes."</p>
-                </article>
-                <article>
+                </FeatureCard>
+                <FeatureCard>
                     <p class="card-label">"Sharing"</p>
                     <h2>"Privacy before metadata"</h2>
                     <p>"Unavailable recordings never disclose titles, thumbnails, storage keys, or signed URLs."</p>
-                </article>
-                <article>
+                </FeatureCard>
+                <FeatureCard>
                     <p class="card-label">"Access"</p>
                     <h2>"Keyboard-ready shells"</h2>
                     <p>"Every route starts with semantic structure, visible focus, and reduced-motion support."</p>
-                </article>
+                </FeatureCard>
             </section>
         </main>
     }
@@ -105,7 +110,7 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
     let body = view! {
         <main id="main" class="narrow" tabindex="-1">
             <a class="back" href="/">"← Frame home"</a>
-            <section class="panel" aria-labelledby="page-title">
+            <Card attr:aria-labelledby="page-title">
                 <p class="eyebrow">"Authentication boundary"</p>
                 <h1 id="page-title">"Sign in on Frame"</h1>
                 <p id="signin-help">
@@ -114,50 +119,50 @@ pub fn login(config: &RuntimeConfig, state: SignInState) -> Page {
                 {match state {
                     SignInState::Ready => view! {
                         <form class="stack" method="post" action="/api/v1/web/auth/login" aria-describedby="signin-help">
-                            <label for="email">"Email address"</label>
-                            <input
-                                id="email"
-                                name="email"
-                                type="email"
-                                inputmode="email"
-                                autocomplete="email"
-                                maxlength="254"
-                                required
+                            <Label attr:r#for="email">"Email address"</Label>
+                            <Input
+                                attr:id="email"
+                                attr:name="email"
+                                attr:r#type="email"
+                                attr:inputmode="email"
+                                attr:autocomplete="email"
+                                attr:maxlength="254"
+                                attr:required=true
                             />
-                            <button class="button" type="submit">"Continue securely"</button>
+                            <Button  attr:r#type="submit">"Continue securely"</Button>
                         </form>
                     }.into_any(),
                     SignInState::Invalid => view! {
-                        <div id="signin-error" class="notice error" role="alert" tabindex="-1">
+                        <Alert attr:id="signin-error" variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "Enter a valid email address. Nothing was submitted."
-                        </div>
+                        </Alert>
                         <form class="stack" method="post" action="/api/v1/web/auth/login" aria-describedby="signin-help signin-error">
-                            <label for="email">"Email address"</label>
-                            <input
-                                id="email"
-                                name="email"
-                                type="email"
-                                inputmode="email"
-                                autocomplete="email"
-                                maxlength="254"
-                                aria-invalid="true"
-                                required
+                            <Label attr:r#for="email">"Email address"</Label>
+                            <Input
+                                attr:id="email"
+                                attr:name="email"
+                                attr:r#type="email"
+                                attr:inputmode="email"
+                                attr:autocomplete="email"
+                                attr:maxlength="254"
+                                attr:aria-invalid="true"
+                                attr:required=true
                             />
-                            <button class="button" type="submit">"Continue securely"</button>
+                            <Button  attr:r#type="submit">"Continue securely"</Button>
                         </form>
                     }.into_any(),
                     SignInState::Failed => view! {
-                        <div class="notice error" role="alert" tabindex="-1">
+                        <Alert variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "Sign-in is temporarily unavailable. No session was created. Try again later."
-                        </div>
-                        <a class="button secondary" href="/login">"Try again"</a>
+                        </Alert>
+                        <ButtonLink variant=ButtonVariant::Secondary href="/login">"Try again"</ButtonLink>
                     }.into_any(),
                 }}
                 <p class="form-help">
                     "New to Frame? " <a href="/signup">"Create an account"</a>
                     " · " <a href="/recovery">"Recover access"</a>
                 </p>
-            </section>
+            </Card>
         </main>
     }
     .to_html();
@@ -181,7 +186,7 @@ pub fn recovery(config: &RuntimeConfig, state: SignInState) -> Page {
     let body = view! {
         <main id="main" class="narrow" tabindex="-1">
             <a class="back" href="/login">"← Return to sign in"</a>
-            <section class="panel" aria-labelledby="page-title">
+            <Card attr:aria-labelledby="page-title">
                 <p class="eyebrow">"Authentication boundary"</p>
                 <h1 id="page-title">"Recover Frame access"</h1>
                 <p id="recovery-help">
@@ -190,46 +195,46 @@ pub fn recovery(config: &RuntimeConfig, state: SignInState) -> Page {
                 {match state {
                     SignInState::Ready => view! {
                         <form class="stack" method="post" action="/api/v1/web/auth/recovery" aria-describedby="recovery-help">
-                            <label for="recovery-email">"Email address"</label>
-                            <input
-                                id="recovery-email"
-                                name="email"
-                                type="email"
-                                inputmode="email"
-                                autocomplete="email"
-                                maxlength="254"
-                                required
+                            <Label attr:r#for="recovery-email">"Email address"</Label>
+                            <Input
+                                attr:id="recovery-email"
+                                attr:name="email"
+                                attr:r#type="email"
+                                attr:inputmode="email"
+                                attr:autocomplete="email"
+                                attr:maxlength="254"
+                                attr:required=true
                             />
-                            <button class="button" type="submit">"Continue securely"</button>
+                            <Button  attr:r#type="submit">"Continue securely"</Button>
                         </form>
                     }.into_any(),
                     SignInState::Invalid => view! {
-                        <div id="recovery-error" class="notice error" role="alert" tabindex="-1">
+                        <Alert attr:id="recovery-error" variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "Enter a valid email address. Nothing was submitted."
-                        </div>
+                        </Alert>
                         <form class="stack" method="post" action="/api/v1/web/auth/recovery" aria-describedby="recovery-help recovery-error">
-                            <label for="recovery-email">"Email address"</label>
-                            <input
-                                id="recovery-email"
-                                name="email"
-                                type="email"
-                                inputmode="email"
-                                autocomplete="email"
-                                maxlength="254"
-                                aria-invalid="true"
-                                required
+                            <Label attr:r#for="recovery-email">"Email address"</Label>
+                            <Input
+                                attr:id="recovery-email"
+                                attr:name="email"
+                                attr:r#type="email"
+                                attr:inputmode="email"
+                                attr:autocomplete="email"
+                                attr:maxlength="254"
+                                attr:aria-invalid="true"
+                                attr:required=true
                             />
-                            <button class="button" type="submit">"Continue securely"</button>
+                            <Button  attr:r#type="submit">"Continue securely"</Button>
                         </form>
                     }.into_any(),
                     SignInState::Failed => view! {
-                        <div class="notice error" role="alert" tabindex="-1">
+                        <Alert variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "Recovery is temporarily unavailable. No account details were disclosed."
-                        </div>
-                        <a class="button secondary" href="/recovery">"Try again later"</a>
+                        </Alert>
+                        <ButtonLink variant=ButtonVariant::Secondary href="/recovery">"Try again later"</ButtonLink>
                     }.into_any(),
                 }}
-            </section>
+            </Card>
         </main>
     }
     .to_html();
@@ -252,7 +257,7 @@ pub fn signup(config: &RuntimeConfig, state: SignInState) -> Page {
     let body = view! {
         <main id="main" class="narrow" tabindex="-1">
             <a class="back" href="/login">"← Sign in instead"</a>
-            <section class="panel" aria-labelledby="page-title">
+            <Card attr:aria-labelledby="page-title">
                 <p class="eyebrow">"Authentication boundary"</p>
                 <h1 id="page-title">"Create your Frame account"</h1>
                 <p id="signup-help">
@@ -261,27 +266,27 @@ pub fn signup(config: &RuntimeConfig, state: SignInState) -> Page {
                 {match state {
                     SignInState::Ready => view! {
                         <form class="stack" method="post" action="/api/v1/web/auth/signup" aria-describedby="signup-help">
-                            <label for="signup-name">"Display name"</label>
-                            <input id="signup-name" name="display_name" maxlength="120" autocomplete="name" required/>
-                            <label for="signup-email">"Email address"</label>
-                            <input id="signup-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required/>
-                            <button class="button" type="submit">"Create account securely"</button>
+                            <Label attr:r#for="signup-name">"Display name"</Label>
+                            <Input attr:id="signup-name" attr:name="display_name" attr:maxlength="120" attr:autocomplete="name" attr:required=true/>
+                            <Label attr:r#for="signup-email">"Email address"</Label>
+                            <Input attr:id="signup-email" attr:name="email" attr:r#type="email" attr:inputmode="email" attr:autocomplete="email" attr:maxlength="254" attr:required=true/>
+                            <Button  attr:r#type="submit">"Create account securely"</Button>
                         </form>
                     }.into_any(),
                     SignInState::Invalid => view! {
-                        <div class="notice error" role="alert" tabindex="-1">
+                        <Alert variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "Check the highlighted account details. Nothing was submitted."
-                        </div>
-                        <a class="button secondary" href="/signup">"Try again"</a>
+                        </Alert>
+                        <ButtonLink variant=ButtonVariant::Secondary href="/signup">"Try again"</ButtonLink>
                     }.into_any(),
                     SignInState::Failed => view! {
-                        <div class="notice error" role="alert" tabindex="-1">
+                        <Alert variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "Account creation is temporarily unavailable. No partial account is shown."
-                        </div>
-                        <a class="button secondary" href="/signup">"Try again later"</a>
+                        </Alert>
+                        <ButtonLink variant=ButtonVariant::Secondary href="/signup">"Try again later"</ButtonLink>
                     }.into_any(),
                 }}
-            </section>
+            </Card>
         </main>
     }
     .to_html();
@@ -304,7 +309,7 @@ pub fn verify(config: &RuntimeConfig, state: SignInState) -> Page {
     let body = view! {
         <main id="main" class="narrow" tabindex="-1">
             <a class="back" href="/login">"← Start sign in again"</a>
-            <section class="panel" aria-labelledby="page-title">
+            <Card attr:aria-labelledby="page-title">
                 <p class="eyebrow">"Verification boundary"</p>
                 <h1 id="page-title">"Enter your one-time code"</h1>
                 <p id="verify-help">
@@ -313,34 +318,34 @@ pub fn verify(config: &RuntimeConfig, state: SignInState) -> Page {
                 {match state {
                     SignInState::Ready => view! {
                         <form class="stack" method="post" action="/api/v1/web/auth/verify" aria-describedby="verify-help">
-                            <label for="otp">"Six-digit code"</label>
-                            <input
-                                id="otp"
-                                name="otp"
-                                inputmode="numeric"
-                                autocomplete="one-time-code"
-                                minlength="6"
-                                maxlength="6"
-                                pattern="[0-9]{6}"
-                                required
+                            <Label attr:r#for="otp">"Six-digit code"</Label>
+                            <Input
+                                attr:id="otp"
+                                attr:name="otp"
+                                attr:inputmode="numeric"
+                                attr:autocomplete="one-time-code"
+                                attr:minlength="6"
+                                attr:maxlength="6"
+                                attr:pattern="[0-9]{6}"
+                                attr:required=true
                             />
-                            <button class="button" type="submit">"Verify securely"</button>
+                            <Button  attr:r#type="submit">"Verify securely"</Button>
                         </form>
                     }.into_any(),
                     SignInState::Invalid => view! {
-                        <div class="notice error" role="alert" tabindex="-1">
+                        <Alert variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "The code must contain exactly six digits. No verification was attempted."
-                        </div>
-                        <a class="button secondary" href="/verify">"Try the code again"</a>
+                        </Alert>
+                        <ButtonLink variant=ButtonVariant::Secondary href="/verify">"Try the code again"</ButtonLink>
                     }.into_any(),
                     SignInState::Failed => view! {
-                        <div class="notice error" role="alert" tabindex="-1">
+                        <Alert variant=AlertVariant::Destructive attr:role="alert" attr:tabindex="-1">
                             "Verification is unavailable or the code cannot be accepted. Start sign in again."
-                        </div>
-                        <a class="button secondary" href="/login">"Restart sign in"</a>
+                        </Alert>
+                        <ButtonLink variant=ButtonVariant::Secondary href="/login">"Restart sign in"</ButtonLink>
                     }.into_any(),
                 }}
-            </section>
+            </Card>
         </main>
     }
     .to_html();
@@ -530,12 +535,12 @@ pub fn share(config: &RuntimeConfig, video_id: &str, view: ShareView) -> Page {
 
     let body = view! {
         <main id="main" class="player-page" tabindex="-1">
-            <nav aria-label="Share navigation">
+            <NavigationMenu attr:aria-label="Share navigation">
                 <a class="brand" href="/" aria-label="Frame home">
                     <span class="mark" aria-hidden="true">"F"</span>
                     <span>"Frame"</span>
                 </a>
-            </nav>
+            </NavigationMenu>
             {content}
         </main>
     }
@@ -613,10 +618,10 @@ pub fn embed(config: &RuntimeConfig, video_id: &str, share: ShareView) -> Page {
 fn unavailable_embed(canonical: &str) -> Page {
     let body = view! {
         <main id="main" class="embed-page" tabindex="-1">
-            <section class="panel" aria-labelledby="page-title">
+            <Card attr:aria-labelledby="page-title">
                 <h1 id="page-title">"Embedded playback unavailable"</h1>
                 <p>"No recording metadata or storage location is available in this response."</p>
-            </section>
+            </Card>
         </main>
     }
     .to_html();
@@ -638,12 +643,12 @@ pub fn not_found(config: &RuntimeConfig) -> Page {
     let canonical = format!("{}/", config.public_origin().as_str());
     let body = view! {
         <main id="main" class="narrow" tabindex="-1">
-            <section class="panel" aria-labelledby="page-title">
+            <Card attr:aria-labelledby="page-title">
                 <p class="eyebrow">"404"</p>
                 <h1 id="page-title">"Page not found"</h1>
                 <p>"The requested Frame page is unavailable."</p>
-                <a class="button" href="/">"Frame home"</a>
-            </section>
+                <ButtonLink href="/">"Frame home"</ButtonLink>
+            </Card>
         </main>
     }
     .to_html();
@@ -686,15 +691,15 @@ fn private_status_shell(label: &'static str, message: &'static str, role: &'stat
     view! {
         <div class="narrow private-boundary">
             <a class="back" href="/">"← Frame home"</a>
-            <section class="panel" aria-labelledby="page-title">
+            <Card attr:aria-labelledby="page-title">
                 <p class="eyebrow">"Private workspace"</p>
                 <h1 id="page-title">{label}</h1>
                 <p>
                     "No account, tenant, recording, developer, admin, or billing data is rendered into this response."
                 </p>
-                <div class="notice" role=role>{message}</div>
-                <a class="button" href="/login">"Go to sign in"</a>
-            </section>
+                <Alert attr:role=role>{message}</Alert>
+                <ButtonLink href="/login">"Go to sign in"</ButtonLink>
+            </Card>
         </div>
     }
     .into_any()
@@ -723,6 +728,9 @@ fn workspace_shell(
         })
         .collect_view();
     let content = surface_content(route, workspace, query);
+    let member_label = workspace.member_label.clone();
+    let organization_name = workspace.organization_name.clone();
+    let role_label = workspace.role.label();
 
     view! {
         <header class="workspace-header">
@@ -731,16 +739,16 @@ fn workspace_shell(
                 <span>"Frame"</span>
             </a>
             <div class="session-summary">
-                <span>{workspace.member_label.clone()}</span>
-                <span class="role-badge">{workspace.role.label()}</span>
+                <span>{member_label}</span>
+                <Badge variant=BadgeVariant::Outline class="role-badge">{role_label}</Badge>
             </div>
         </header>
         <div class="workspace-layout">
-            <nav class="workspace-nav" aria-label="Workspace">
-                <p class="workspace-name">{workspace.organization_name.clone()}</p>
+            <NavigationMenu class="workspace-nav" attr:aria-label="Workspace">
+                <p class="workspace-name">{organization_name}</p>
                 <ul>{navigation}</ul>
                 <a href="/login">"Go to sign in"</a>
-            </nav>
+            </NavigationMenu>
             <section class="workspace-content" aria-labelledby="page-title">
                 <p class="eyebrow">"Private workspace"</p>
                 <h1 id="page-title">{route.label()}</h1>
@@ -801,17 +809,21 @@ fn surface_content(
             "Storage integrations",
             "Provider credentials never enter rendered HTML. Connection, verification, rollback, and deletion are separate audited actions.",
         ),
-        AuthenticatedRoute::Analytics => view! {
-            <section class="panel" aria-labelledby="settings-title">
-                <h2 id="settings-title">"Usage analytics"</h2>
-                <dl class="detail-list">
-                    <div><dt>"Workspace"</dt><dd>{workspace.organization_name.clone()}</dd></div>
-                    <div><dt>"Your role"</dt><dd>{workspace.role.label()}</dd></div>
-                </dl>
-                <p>"Product telemetry remains off until a recorded consent decision exists. Operational measurements contain no private titles or identities."</p>
-            </section>
+        AuthenticatedRoute::Analytics => {
+            let organization_name = workspace.organization_name.clone();
+            let role_label = workspace.role.label();
+            view! {
+                <Card attr:aria-labelledby="settings-title">
+                    <h2 id="settings-title">"Usage analytics"</h2>
+                    <dl class="detail-list">
+                        <div><dt>"Workspace"</dt><dd>{organization_name}</dd></div>
+                        <div><dt>"Your role"</dt><dd>{role_label}</dd></div>
+                    </dl>
+                    <p>"Product telemetry remains off until a recorded consent decision exists. Operational measurements contain no private titles or identities."</p>
+                </Card>
+            }
+            .into_any()
         }
-        .into_any(),
         AuthenticatedRoute::Developer => restricted_surface(
             "Developer access",
             "API keys are never rendered in this SSR fixture. New secrets must be shown once, after a CSRF-protected action.",
@@ -835,25 +847,25 @@ fn collection_surface(route: AuthenticatedRoute, role: WorkspaceRole) -> AnyView
     };
     let can_create = matches!(role, WorkspaceRole::Owner | WorkspaceRole::Admin);
     view! {
-        <section class="panel empty-state" aria-labelledby="collection-title">
+        <EmptyState class="empty-state" attr:aria-labelledby="collection-title">
             <h2 id="collection-title">{format!("No {singular}s yet")}</h2>
             <p>
                 "No optimistic resource is shown before the server accepts a tenant-scoped create command."
             </p>
             {can_create.then(|| view! {
-                <button
-                    class="button secondary"
-                    type="button"
-                    disabled
-                    aria-describedby="collection-action-status"
+                <Button
+                    variant=ButtonVariant::Secondary
+                    attr:r#type="button"
+                    attr:disabled=true
+                    attr:aria-describedby="collection-action-status"
                 >
                     {format!("Create {singular}")}
-                </button>
+                </Button>
             })}
             <p id="collection-action-status" class="form-help">
                 "Creation remains disabled until the CSRF-protected typed action adapter is available."
             </p>
-        </section>
+        </EmptyState>
     }
     .into_any()
 }
@@ -861,37 +873,42 @@ fn collection_surface(route: AuthenticatedRoute, role: WorkspaceRole) -> AnyView
 fn detail_surface(route: AuthenticatedRoute) -> AnyView {
     let label = route.label().to_lowercase();
     view! {
-        <section class="panel" aria-labelledby="detail-title">
+        <Card attr:aria-labelledby="detail-title">
             <h2 id="detail-title">{format!("{label} details")}</h2>
-            <div class="notice" role="status">
+            <Alert attr:role="status">
                 "The local fixture proves the routed, authorized detail boundary. Production identifiers and resources load only through the typed tenant-scoped API."
-            </div>
-        </section>
+            </Alert>
+        </Card>
     }
     .into_any()
 }
 
 fn settings_index(workspace: &WorkspaceView) -> AnyView {
+    let organization_name = workspace.organization_name.clone();
+    let role_label = workspace.role.label();
+    let show_organization = AuthenticatedRoute::OrganizationSettings.permitted_for(workspace.role);
+    let show_members = AuthenticatedRoute::MemberSettings.permitted_for(workspace.role);
+    let show_storage = AuthenticatedRoute::StorageSettings.permitted_for(workspace.role);
     view! {
-        <section class="panel" aria-labelledby="settings-title">
+        <Card attr:aria-labelledby="settings-title">
             <h2 id="settings-title">"Settings surfaces"</h2>
             <dl class="detail-list">
-                <div><dt>"Workspace"</dt><dd>{workspace.organization_name.clone()}</dd></div>
-                <div><dt>"Your role"</dt><dd>{workspace.role.label()}</dd></div>
+                <div><dt>"Workspace"</dt><dd>{organization_name}</dd></div>
+                <div><dt>"Your role"</dt><dd>{role_label}</dd></div>
             </dl>
             <ul class="settings-links">
                 <li><a href="/settings/account">"Account"</a></li>
-                {AuthenticatedRoute::OrganizationSettings.permitted_for(workspace.role).then(|| view! {
+                {show_organization.then(|| view! {
                     <li><a href="/settings/organization">"Organization"</a></li>
                 })}
-                {AuthenticatedRoute::MemberSettings.permitted_for(workspace.role).then(|| view! {
+                {show_members.then(|| view! {
                     <li><a href="/settings/members">"Members"</a></li>
                 })}
-                {AuthenticatedRoute::StorageSettings.permitted_for(workspace.role).then(|| view! {
+                {show_storage.then(|| view! {
                     <li><a href="/settings/storage">"Storage"</a></li>
                 })}
             </ul>
-        </section>
+        </Card>
     }
     .into_any()
 }
@@ -907,7 +924,7 @@ fn form_surface(
     required: bool,
 ) -> AnyView {
     view! {
-        <section class="panel" aria-labelledby=title_id>
+        <Card attr:aria-labelledby=title_id>
             <h2 id=title_id>{title}</h2>
             <p id="form-contract-help">{description}</p>
             <form
@@ -918,36 +935,38 @@ fn form_surface(
                 data-unsaved-guard="required"
                 aria-describedby="form-contract-help form-authority-status"
             >
-                <label for=field_name>{field_label}</label>
-                <input
-                    id=field_name
-                    name=field_name
-                    maxlength="120"
-                    autocomplete="off"
-                    required=required
-                    disabled
+                <Label attr:r#for=field_name>{field_label}</Label>
+                <Input
+                    attr:id=field_name
+                    attr:name=field_name
+                    attr:maxlength="120"
+                    attr:autocomplete="off"
+                    attr:required=required
+                    attr:disabled=true
                 />
-                <button class="button" type="submit" disabled>"Save changes"</button>
+                <Button  attr:r#type="submit" attr:disabled=true>"Save changes"</Button>
             </form>
-            <div id="form-authority-status" class="notice" role="status">
+            <Alert attr:id="form-authority-status" attr:role="status">
                 "The form contract covers validation, pending state, duplicate suppression, retry, stale completion, and unsaved changes. Submission stays disabled until the server action adapter is connected."
-            </div>
-        </section>
+            </Alert>
+        </Card>
     }
     .into_any()
 }
 
 fn restricted_surface(title: &'static str, message: &'static str) -> AnyView {
     view! {
-        <section class="panel" aria-labelledby="restricted-title">
+        <Card attr:aria-labelledby="restricted-title">
             <h2 id="restricted-title">{title}</h2>
-            <div class="notice" role="status">{message}</div>
-        </section>
+            <Alert attr:role="status">{message}</Alert>
+        </Card>
     }
     .into_any()
 }
 
 fn recording_library(workspace: &WorkspaceView, query: &RouteViewQuery) -> AnyView {
+    let search_value = query.search().unwrap_or_default().to_owned();
+    let active_filter = query.filter();
     let filtered = workspace
         .recordings
         .iter()
@@ -970,28 +989,36 @@ fn recording_library(workspace: &WorkspaceView, query: &RouteViewQuery) -> AnyVi
     let recordings = filtered
         .into_iter()
         .map(|recording| {
-            let identifier = safe_id(&recording.public_id);
+            let identifier = safe_id(&recording.public_id).to_owned();
             let ready = recording.state == RecordingState::Ready && identifier != "unavailable";
-            let state_class = match recording.state {
+            let state = recording.state;
+            let title = recording.title.clone();
+            let duration_label = recording.duration_label.clone();
+            let state_class = match state {
                 RecordingState::Ready => "state ready",
                 RecordingState::Processing => "state processing",
                 RecordingState::Failed => "state failed",
             };
+            let state_variant = match state {
+                RecordingState::Ready => BadgeVariant::Success,
+                RecordingState::Processing => BadgeVariant::Secondary,
+                RecordingState::Failed => BadgeVariant::Destructive,
+            };
             view! {
                 <li class="recording-row">
                     <div>
-                        <h3>{recording.title.clone()}</h3>
+                        <h3>{title}</h3>
                         <p>
-                            <span class=state_class>{recording.state.label()}</span>
-                            {recording.duration_label.as_ref().map(|duration| {
-                                view! { <span class="duration">{duration.clone()}</span> }
+                            <Badge variant=state_variant class=state_class>{state.label()}</Badge>
+                            {duration_label.map(|duration| {
+                                view! { <span class="duration">{duration}</span> }
                             })}
                         </p>
                     </div>
                     {ready.then(|| view! {
-                        <a class="button secondary compact" href=format!("/s/{identifier}")>
+                        <ButtonLink variant=ButtonVariant::Secondary size=ButtonSize::Small href=format!("/s/{identifier}")>
                             "Open share"
-                        </a>
+                        </ButtonLink>
                     })}
                 </li>
             }
@@ -1000,33 +1027,33 @@ fn recording_library(workspace: &WorkspaceView, query: &RouteViewQuery) -> AnyVi
 
     view! {
         <form class="search-form" method="get" action="/library" role="search">
-            <label for="recording-search">"Search recordings"</label>
+            <Label attr:r#for="recording-search">"Search recordings"</Label>
             <div>
-                <input
-                    id="recording-search"
-                    name="q"
-                    type="search"
-                    maxlength="120"
-                    autocomplete="off"
-                    value=query.search().unwrap_or_default()
+                <Input
+                    attr:id="recording-search"
+                    attr:name="q"
+                    attr:r#type="search"
+                    attr:maxlength="120"
+                    attr:autocomplete="off"
+                    attr:value=search_value
                 />
-                <label class="visually-hidden" for="recording-filter">"Filter by status"</label>
-                <select id="recording-filter" name="filter">
-                    <option value="all" selected={query.filter() == RecordingFilter::All}>"All statuses"</option>
-                    <option value="ready" selected={query.filter() == RecordingFilter::Ready}>"Ready"</option>
-                    <option value="processing" selected={query.filter() == RecordingFilter::Processing}>"Processing"</option>
-                    <option value="failed" selected={query.filter() == RecordingFilter::Failed}>"Needs attention"</option>
-                </select>
-                <button class="button" type="submit">"Search"</button>
+                <Label class="visually-hidden" attr:r#for="recording-filter">"Filter by status"</Label>
+                <Select attr:id="recording-filter" attr:name="filter">
+                    <option value="all" selected={active_filter == RecordingFilter::All}>"All statuses"</option>
+                    <option value="ready" selected={active_filter == RecordingFilter::Ready}>"Ready"</option>
+                    <option value="processing" selected={active_filter == RecordingFilter::Processing}>"Processing"</option>
+                    <option value="failed" selected={active_filter == RecordingFilter::Failed}>"Needs attention"</option>
+                </Select>
+                <Button  attr:r#type="submit">"Search"</Button>
             </div>
-            <input type="hidden" name="page" value="1"/>
+            <Input attr:r#type="hidden" attr:name="page" attr:value="1"/>
         </form>
         {if empty {
             view! {
-                <section class="panel empty-state" aria-labelledby="empty-title">
+                <EmptyState class="empty-state" attr:aria-labelledby="empty-title">
                     <h2 id="empty-title">"No recordings match"</h2>
                     <p>"Clear search and filters, record in the desktop app, or begin an authorized import."</p>
-                </section>
+                </EmptyState>
             }.into_any()
         } else {
             view! {
@@ -1043,27 +1070,30 @@ fn recording_library(workspace: &WorkspaceView, query: &RouteViewQuery) -> AnyVi
 fn import_surface(workspace: &WorkspaceView) -> AnyView {
     let Some(import) = workspace.import.as_ref() else {
         return view! {
-            <section class="panel empty-state" aria-labelledby="imports-title">
+            <EmptyState class="empty-state" attr:aria-labelledby="imports-title">
                 <h2 id="imports-title">"No import in progress"</h2>
                 <p>"Completed and quarantined imports will appear only after a server-authorized load."</p>
-            </section>
+            </EmptyState>
         }
         .into_any();
     };
     let percent = import.percent();
+    let label = import.label.clone();
+    let completed = import.completed.min(import.total);
+    let total = import.total;
     view! {
-        <section class="panel" aria-labelledby="imports-title">
-            <h2 id="imports-title">{import.label.clone()}</h2>
+        <Card attr:aria-labelledby="imports-title">
+            <h2 id="imports-title">{label}</h2>
             <p id="import-progress-label">
-                {format!("{} of {} objects verified ({}%)", import.completed.min(import.total), import.total, percent)}
+                {format!("{completed} of {total} objects verified ({percent}%)")}
             </p>
-            <progress
-                max="100"
-                value=percent
-                aria-labelledby="import-progress-label"
-            >{format!("{percent}%")}</progress>
+            <Progress
+                attr:max="100"
+                attr:value=percent
+                attr:aria-labelledby="import-progress-label"
+            >{format!("{percent}%")}</Progress>
             <p>"Refresh is safe: progress is read from a durable checkpoint, not inferred in the browser."</p>
-        </section>
+        </Card>
     }
     .into_any()
 }
@@ -1075,7 +1105,7 @@ fn public_player_shell(summary: &PublicShareSummary, embed: Option<(String, Stri
         .unwrap_or_else(|| "Shared recording".into());
     let description = summary.description.clone();
     let duration = summary.duration_ms.map(format_duration);
-    let Some(playback) = summary.playback.as_ref() else {
+    let Some(playback) = summary.playback.clone() else {
         return status_shell("Recording unavailable", "Playback is unavailable.");
     };
     let caption_tracks = playback
@@ -1122,12 +1152,12 @@ fn public_player_shell(summary: &PublicShareSummary, embed: Option<(String, Stri
         .map(str::to_owned);
 
     view! {
-        <article class="player-shell" aria-labelledby="page-title">
+        <FeatureCard class="player-shell" attr:aria-labelledby="page-title">
             <p class="eyebrow">"Shared recording"</p>
             <h1 id="page-title">{title.clone()}</h1>
             {description.map(|description| view! { <p class="lede compact-lede">{description}</p> })}
             {duration.map(|duration| view! { <p class="duration-summary">{duration}</p> })}
-            <div class="video-frame">
+            <AspectRatio class="video-frame">
                 <video
                     id="frame-public-player"
                     controls
@@ -1144,7 +1174,7 @@ fn public_player_shell(summary: &PublicShareSummary, embed: Option<(String, Stri
                     {caption_tracks}
                     "Your browser does not support HTML video."
                 </video>
-            </div>
+            </AspectRatio>
             <div class="player-grid">
                 <section aria-labelledby="captions-title">
                     <h2 id="captions-title">"Captions"</h2>
@@ -1189,7 +1219,7 @@ fn public_player_shell(summary: &PublicShareSummary, embed: Option<(String, Stri
             >
                 <PlayerKeyboardHelp/>
             </div>
-        </article>
+        </FeatureCard>
     }
     .into_any()
 }
@@ -1203,11 +1233,11 @@ fn format_duration(duration_ms: u64) -> String {
 
 fn status_shell(label: &'static str, message: &'static str) -> AnyView {
     view! {
-        <section class="panel" aria-labelledby="page-title">
+        <Card attr:aria-labelledby="page-title">
             <h1 id="page-title">{label}</h1>
-            <div class="notice" role="status">{message}</div>
-            <a class="button secondary" href="/">"Frame home"</a>
-        </section>
+            <Alert attr:role="status">{message}</Alert>
+            <ButtonLink variant=ButtonVariant::Secondary href="/">"Frame home"</ButtonLink>
+        </Card>
     }
     .into_any()
 }
@@ -1229,30 +1259,30 @@ fn processing_status_shell(status: Option<&InstantUiProgressV1>) -> AnyView {
     };
     let progress = match status.and_then(|status| status.progress_basis_points) {
         Some(basis_points) => view! {
-            <progress
-                max="10000"
-                value=basis_points
-                aria-labelledby="processing-progress-label"
-            >{format!("{} percent", basis_points / 100)}</progress>
+            <Progress
+                attr:max="10000"
+                attr:value=basis_points
+                attr:aria-labelledby="processing-progress-label"
+            >{format!("{} percent", basis_points / 100)}</Progress>
         }
         .into_any(),
         None => view! {
-            <progress max="10000" aria-labelledby="processing-progress-label">
+            <Progress attr:max="10000" attr:aria-labelledby="processing-progress-label">
                 "Processing"
-            </progress>
+            </Progress>
         }
         .into_any(),
     };
 
     view! {
-        <section class="panel" aria-labelledby="page-title">
+        <Card attr:aria-labelledby="page-title">
             <p class="eyebrow">"Instant recording"</p>
             <h1 id="page-title">"Recording processing"</h1>
             <p id="processing-progress-label">{phase}</p>
             {progress}
-            <div class="notice" role="status">{message}</div>
-            <a class="button secondary" href="/">"Frame home"</a>
-        </section>
+            <Alert attr:role="status">{message}</Alert>
+            <ButtonLink variant=ButtonVariant::Secondary href="/">"Frame home"</ButtonLink>
+        </Card>
     }
     .into_any()
 }
@@ -1329,7 +1359,7 @@ fn document_with_head(
             leptos::html::meta().attr("property", "og:url").content(canonical.to_owned()),
         ))}
         <title>{title.to_owned()}</title>
-        <style>{STYLE}</style>
+        <style data-frame-ui="shadcn-tailwind">{STYLESHEET}</style>
     }
     .to_html();
     let hydration = view! {
@@ -1343,117 +1373,9 @@ fn document_with_head(
         _ => String::new(),
     };
     format!(
-        "<!doctype html><html lang=\"en\"><head>{head}<!--FRAME_HYDRATION_HEAD--></head><body{body_theme}><a class=\"skip-link\" href=\"#main\">Skip to content</a>{app}{hydration}<!--FRAME_HYDRATION_SCRIPT--></body></html>"
+        "<!doctype html><html lang=\"en\"><head>{head}<!--FRAME_HYDRATION_HEAD--></head><body data-frame-surface=\"web\"{body_theme}><a class=\"skip-link\" href=\"#main\">Skip to content</a>{app}{hydration}<!--FRAME_HYDRATION_SCRIPT--></body></html>"
     )
 }
-
-const STYLE: &str = r#"
-:root { color-scheme: dark light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #090b10; color: #f3f5f7; }
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 75% 15%, #253150 0, transparent 30rem), #090b10; }
-a { color: inherit; }
-a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 3px solid #fbbf24; outline-offset: 4px; }
-.skip-link { position: fixed; z-index: 10; top: 12px; left: 12px; padding: 10px 14px; background: #f3f5f7; color: #090b10; transform: translateY(-180%); }
-.skip-link:focus { transform: translateY(0); }
-main { width: min(1120px, calc(100% - 40px)); margin: auto; }
-nav { min-height: 80px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; text-decoration: none; }
-.mark { display: grid; place-items: center; width: 34px; height: 34px; color: #081014; background: #a7f3d0; border-radius: 10px; }
-.nav-links, .actions { display: flex; align-items: center; gap: 14px; }
-.hero { padding: 92px 0 70px; max-width: 900px; }
-.eyebrow, .card-label { color: #a7f3d0; font-size: 13px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-h1 { margin: 18px 0; font-size: clamp(44px, 8vw, 88px); line-height: 1; letter-spacing: -.05em; }
-h2 { margin: 24px 0 8px; }
-.lede { max-width: 720px; color: #c0c7d2; font-size: 20px; line-height: 1.6; }
-.button { display: inline-block; margin-top: 18px; padding: 13px 17px; border-radius: 10px; background: #a7f3d0; color: #081014; font-weight: 800; text-decoration: none; }
-.button.secondary { background: #171c25; color: #e6e9ee; border: 1px solid #394354; }
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding-bottom: 60px; }
-article, .panel, .player-shell { padding: 24px; background: rgba(18, 22, 30, .9); border: 1px solid #394354; border-radius: 16px; }
-article { min-height: 210px; }
-article p:last-child, .panel p, .player-help { color: #b2bbc8; line-height: 1.6; }
-.narrow, .player-page { padding: 40px 0 80px; max-width: 760px; }
-.narrow h1, .player-page h1, .embed-page h1 { font-size: clamp(36px, 7vw, 60px); }
-.back { display: inline-block; margin-bottom: 28px; }
-.notice { margin: 24px 0; padding: 16px; border-left: 4px solid #a7f3d0; background: #111827; line-height: 1.5; }
-.notice.error { border-color: #fca5a5; }
-.stack { display: grid; gap: 10px; margin-top: 24px; }
-label { font-weight: 750; }
-input, select { width: 100%; min-height: 44px; padding: 10px 12px; color: #f3f5f7; background: #090b10; border: 1px solid #697386; border-radius: 8px; font: inherit; }
-button { border: 0; font: inherit; cursor: pointer; }
-button:disabled, input:disabled { cursor: not-allowed; opacity: .62; }
-.visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.workspace-page { width: min(1280px, calc(100% - 32px)); padding-bottom: 72px; }
-.workspace-header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #303846; }
-.session-summary { display: flex; align-items: center; gap: 10px; color: #b2bbc8; font-size: 14px; }
-.role-badge, .state { display: inline-block; padding: 4px 8px; border: 1px solid #526074; border-radius: 999px; color: #e6e9ee; font-size: 12px; font-weight: 800; }
-.workspace-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 40px; padding-top: 36px; }
-.workspace-nav { display: block; min-height: 0; }
-.workspace-nav ul { display: grid; gap: 4px; margin: 18px 0 28px; padding: 0; list-style: none; }
-.workspace-nav li a { display: block; padding: 10px 12px; border-radius: 8px; color: #c0c7d2; text-decoration: none; }
-.workspace-nav li a:hover, .workspace-nav li a[aria-current="page"] { background: #171c25; color: #fff; }
-.workspace-name { overflow-wrap: anywhere; font-weight: 800; }
-.workspace-content { min-width: 0; }
-.workspace-content > h1 { margin-top: 8px; font-size: clamp(40px, 6vw, 68px); }
-.search-form { margin: 18px 0 36px; }
-.search-form > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .35fr) auto; gap: 10px; margin-top: 8px; }
-.search-form .button { margin-top: 0; }
-.recording-list { display: grid; gap: 10px; padding: 0; list-style: none; }
-.recording-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px; background: rgba(18, 22, 30, .9); border: 1px solid #394354; border-radius: 12px; }
-.recording-row h3 { margin: 0 0 10px; }
-.recording-row p { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; color: #b2bbc8; }
-.state.ready { border-color: #34d399; }
-.state.processing { border-color: #fbbf24; }
-.state.failed { border-color: #f87171; }
-.button.compact { margin-top: 0; white-space: nowrap; }
-.empty-state { margin-top: 20px; text-align: center; }
-.detail-list > div { display: grid; grid-template-columns: 140px 1fr; gap: 20px; padding: 12px 0; border-bottom: 1px solid #303846; }
-.detail-list dt { color: #b2bbc8; }
-.detail-list dd { margin: 0; font-weight: 750; }
-.settings-links { display: grid; gap: 8px; padding-left: 20px; }
-.form-help { font-size: 14px; }
-progress { width: 100%; height: 18px; accent-color: #a7f3d0; }
-.player-shell { overflow: hidden; }
-.compact-lede { font-size: 17px; }
-.duration-summary { color: #b2bbc8; }
-.video-frame { overflow: hidden; background: #05070a; border: 1px solid #394354; border-radius: 12px; }
-video { display: block; width: 100%; min-height: 280px; max-height: 70vh; background: #05070a; }
-.player-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 18px; }
-.player-grid section { padding: 0 4px; }
-.player-grid h2 { font-size: 18px; }
-.player-keyboard-help { margin-top: 22px; padding-top: 2px; border-top: 1px solid #303846; }
-.player-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
-.player-controls label { margin-left: 4px; }
-.player-controls select { width: auto; min-width: 84px; }
-.player-controls .button { min-height: 44px; }
-.player-status { min-height: 1.5em; color: #b2bbc8; }
-.player-keyboard-help-panel { margin-top: 12px; padding: 14px; background: #0d1118; border: 1px solid #394354; border-radius: 10px; }
-.player-keyboard-help:not([data-frame-enhanced="true"]) .hydration-only { display: none; }
-.player-keyboard-help[data-frame-enhanced="true"] .player-keyboard-help-fallback { display: none; }
-.public-collaboration:not([data-frame-enhanced="true"]) .hydration-only { display: none; }
-.public-collaboration[data-frame-enhanced="true"] .collaboration-fallback { display: none; }
-.collaboration-grid { display: grid; gap: 1rem; }
-.comment-form { display: grid; gap: .65rem; }
-.transcript-cues, .public-comments { display: grid; gap: .7rem; padding-left: 1.4rem; }
-.transcript-cues li, .public-comments li { padding-left: .25rem; }
-.embed-page { display: grid; min-height: 100vh; place-items: center; padding: 16px; }
-[data-theme="dark"] { color-scheme: dark; }
-[data-theme="light"] { color-scheme: light; min-height: 100vh; color: #172033; background: #f6f8fb; }
-[data-theme="light"] article, [data-theme="light"] .panel, [data-theme="light"] .recording-row { background: #fff; border-color: #b8c2d2; }
-[data-theme="light"] .workspace-header, [data-theme="light"] .detail-list > div { border-color: #c9d1dc; }
-[data-theme="light"] .workspace-nav li a, [data-theme="light"] article p:last-child, [data-theme="light"] .panel p { color: #46536a; }
-[data-theme="light"] .recording-row p { color: #46536a; }
-[data-theme="light"] .workspace-nav li a:hover, [data-theme="light"] .workspace-nav li a[aria-current="page"] { background: #dce5f1; color: #111827; }
-[data-theme="light"] input, [data-theme="light"] select { color: #111827; background: #fff; border-color: #526074; }
-[data-theme="light"] .notice { color: #172033; background: #e8eef6; }
-[data-theme="light"] .session-summary, [data-theme="light"] .role-badge, [data-theme="light"] .state { color: #26344b; border-color: #526074; }
-[data-theme="light"] .eyebrow { color: #047857; }
-[data-theme="light"] .button.secondary { color: #172033; background: #eef2f7; border-color: #697386; }
-@media (max-width: 760px) { .grid, .player-grid { grid-template-columns: 1fr; } .hero { padding-top: 52px; } .workspace-layout { grid-template-columns: 1fr; gap: 24px; } .workspace-nav ul { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 520px) { .actions, .recording-row { align-items: stretch; flex-direction: column; } .nav-links { gap: 10px; font-size: 14px; } .session-summary > span:first-child { display: none; } .workspace-nav ul { grid-template-columns: 1fr; } .search-form > div { grid-template-columns: 1fr; } .detail-list > div { grid-template-columns: 1fr; gap: 4px; } }
-@media (prefers-color-scheme: light) { [data-theme="system"] { color-scheme: light; min-height: 100vh; color: #172033; background: #f6f8fb; } [data-theme="system"] article, [data-theme="system"] .panel, [data-theme="system"] .recording-row { background: #fff; border-color: #b8c2d2; } [data-theme="system"] .workspace-header, [data-theme="system"] .detail-list > div { border-color: #c9d1dc; } [data-theme="system"] .workspace-nav li a, [data-theme="system"] article p:last-child, [data-theme="system"] .panel p, [data-theme="system"] .recording-row p { color: #46536a; } [data-theme="system"] .workspace-nav li a:hover, [data-theme="system"] .workspace-nav li a[aria-current="page"] { color: #111827; background: #dce5f1; } [data-theme="system"] input, [data-theme="system"] select { color: #111827; background: #fff; border-color: #526074; } [data-theme="system"] .notice { color: #172033; background: #e8eef6; } [data-theme="system"] .session-summary, [data-theme="system"] .role-badge, [data-theme="system"] .state { color: #26344b; border-color: #526074; } [data-theme="system"] .eyebrow { color: #047857; } [data-theme="system"] .button.secondary { color: #172033; background: #eef2f7; border-color: #697386; } }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
-"#;
 
 #[cfg(test)]
 mod tests {

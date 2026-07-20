@@ -21,6 +21,11 @@ mod browser {
         ShellCapabilities, UpdateAction, UpdateState, UploadState, WindowRole,
         instant_error_message, instant_progress_announcement,
     };
+    use frame_ui::{
+        Alert, Badge, BadgeVariant, Button, ButtonGroup, ButtonVariant, Card, CardFrame,
+        DialogContent, DialogOverlay, FieldGroup, Input, Label, Meter, NavigationMenu, Progress,
+        ToggleGroup, UiStyles,
+    };
     use js_sys::Reflect;
     use leptos::prelude::*;
     use serde::Serialize;
@@ -573,6 +578,8 @@ mod browser {
         };
 
         view! {
+            <UiStyles/>
+            <div data-frame-surface="desktop" class="mx-auto max-w-7xl p-4 md:p-8">
             <a class="skip-link" href="#main-content">"Skip to desktop controls"</a>
             <header class="app-header">
                 <div>
@@ -581,34 +588,36 @@ mod browser {
                     <p>"Every success state below comes from the native Rust backend."</p>
                 </div>
                 <output class="connection-pill" aria-label="Native connection status">
-                    {move || if snapshot.get().is_some() { "Backend connected" } else { "Connecting" }}
+                    <Badge variant=BadgeVariant::Outline class="connection-pill">
+                        {move || if snapshot.get().is_some() { "Backend connected" } else { "Connecting" }}
+                    </Badge>
                 </output>
             </header>
 
-            <nav aria-label="Desktop workspace">
+            <NavigationMenu attr:aria-label="Desktop workspace">
                 <a href="#recorder">"Recorder"</a>
                 <a href="#recovery">"Recovery"</a>
                 <a href="#editor">"Editor"</a>
                 <a href="#settings">"Settings"</a>
-            </nav>
+            </NavigationMenu>
 
             <main id="main-content" tabindex="-1">
-                <section id="recorder" class="panel" aria-labelledby="recorder-heading">
+                <Card attr:id="recorder" attr:aria-labelledby="recorder-heading">
                     <div class="section-heading">
                         <div>
                             <p class="eyebrow">"Capture"</p>
                             <h2 id="recorder-heading">"Recorder"</h2>
                         </div>
-                        <strong class="state-badge">{move || recorder_status(snapshot.get())}</strong>
+                        <strong><Badge variant=BadgeVariant::Outline class="state-badge">{move || recorder_status(snapshot.get())}</Badge></strong>
                     </div>
 
-                    <fieldset>
+                    <FieldGroup>
                         <legend>"Recording mode"</legend>
-                        <div class="button-row" role="group" aria-label="Recording mode">
-                            <button
-                                type="button"
-                                aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Instant)
-                                disabled=move || !is_fake() || busy.get()
+                        <ToggleGroup class="button-row" attr:role="group" attr:aria-label="Recording mode">
+                            <Button variant=ButtonVariant::Outline
+                                attr:r#type="button"
+                                attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Instant)
+                                attr:disabled=move || !is_fake() || busy.get()
                                 on:click=move |_| submit(
                                     client,
                                     snapshot,
@@ -622,11 +631,11 @@ mod browser {
                                         exclude_frame_windows: true,
                                     },
                                 )
-                            >"Instant"</button>
-                            <button
-                                type="button"
-                                aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Studio)
-                                disabled=move || !is_fake() || busy.get()
+                            >"Instant"</Button>
+                            <Button variant=ButtonVariant::Outline
+                                attr:r#type="button"
+                                attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Studio)
+                                attr:disabled=move || !is_fake() || busy.get()
                                 on:click=move |_| submit(
                                     client,
                                     snapshot,
@@ -640,29 +649,29 @@ mod browser {
                                         exclude_frame_windows: true,
                                     },
                                 )
-                            >"Studio"</button>
-                        </div>
-                    </fieldset>
+                            >"Studio"</Button>
+                        </ToggleGroup>
+                    </FieldGroup>
 
-                    <fieldset>
+                    <FieldGroup>
                         <legend>"Capture target"</legend>
                         <p id="target-help">"Frame windows are excluded. Choose one opaque target; application names, window titles, and platform identifiers are not sent to the UI."</p>
-                        <div class="button-row" aria-describedby="target-help">
-                            <button type="button" aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Display)) disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                        <ToggleGroup class="button-row" attr:aria-describedby="target-help">
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Display)) attr:disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::CaptureTargetSelect { kind: CaptureTargetKind::Display, target_token: "fake-display-1".into() }
-                            )>"Entire display"</button>
-                            <button type="button" aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Window)) disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            )>"Entire display"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Window)) attr:disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::CaptureTargetSelect { kind: CaptureTargetKind::Window, target_token: "fake-window-1".into() }
-                            )>"Application window"</button>
-                            <button type="button" aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Region)) disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            )>"Application window"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.selected_sources.target == Some(CaptureTargetKind::Region)) attr:disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::CaptureTargetSelect { kind: CaptureTargetKind::Region, target_token: "fake-region-1".into() }
-                            )>"Screen region"</button>
-                        </div>
+                            )>"Screen region"</Button>
+                        </ToggleGroup>
                         <Show when=move || is_native()>
-                            <div class="button-row" role="group" aria-label="Native capture targets">
+                            <ToggleGroup class="button-row" attr:aria-label="Native capture targets">
                                 <For
                                     each=move || snapshot
                                         .get()
@@ -686,14 +695,14 @@ mod browser {
                                         );
                                         let accessible_label = label.clone();
                                         view! {
-                                            <button
-                                                type="button"
-                                                aria-label=accessible_label
-                                                aria-pressed=move || snapshot
+                                            <Button variant=ButtonVariant::Outline
+                                                attr:r#type="button"
+                                                attr:aria-label=accessible_label
+                                                attr:aria-pressed=move || snapshot
                                                     .get()
                                                     .as_ref()
                                                     .and_then(|state| native_target_pressed(state, kind))
-                                                disabled=move || busy.get()
+                                                attr:disabled=move || busy.get()
                                                 on:click=move |_| submit(
                                                     client,
                                                     snapshot,
@@ -706,27 +715,27 @@ mod browser {
                                                         target_token: token.clone(),
                                                     },
                                                 )
-                                            >{label}</button>
+                                            >{label}</Button>
                                         }
                                     }
                                 />
-                            </div>
+                            </ToggleGroup>
                         </Show>
-                    </fieldset>
+                    </FieldGroup>
 
-                    <div class="permission-card">
+                    <CardFrame class="permission-card">
                         <h3>"Permissions and devices"</h3>
                         <p>{move || permission_guidance(snapshot.get())}</p>
-                        <div class="button-row">
-                            <button type="button" disabled=move || !supports_capture_targets() || busy.get() on:click=move |_| submit(
+                        <ButtonGroup class="button-row">
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !supports_capture_targets() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::DeviceEnumerate { class: DeviceClass::Display }
-                            )>"Refresh capture targets"</button>
-                            <button type="button" disabled=move || !supports_capture_targets() || busy.get() on:click=move |_| submit(
+                            )>"Refresh capture targets"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !supports_capture_targets() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::RecorderPrepare
-                            )>{move || if is_native() { "Check macOS access" } else { "Confirm permissions" }}</button>
-                        </div>
+                            )>{move || if is_native() { "Check macOS access" } else { "Confirm permissions" }}</Button>
+                        </ButtonGroup>
                         <p class="device-summary">{move || match snapshot.get().map(|state| state.devices) {
                             Some(DeviceState::Ready(counts)) => format!(
                                 "{} displays, {} microphones, {} system audio sources, {} cameras.",
@@ -736,14 +745,14 @@ mod browser {
                             Some(DeviceState::Unavailable) => "Selected device is unavailable.".into(),
                             _ => "No confirmed device inventory.".into(),
                         }}</p>
-                    </div>
+                    </CardFrame>
 
                     <Show when=move || is_fake()>
                         <div class="meter-grid" aria-label="Live input meters">
-                            <label for="microphone-meter">"Microphone"</label>
-                            <meter id="microphone-meter" min="0" max="10000" value=move || snapshot.get().map_or(0, |state| state.meter.microphone_basis_points)>"Microphone level"</meter>
-                            <label for="system-meter">"System audio"</label>
-                            <meter id="system-meter" min="0" max="10000" value=move || snapshot.get().map_or(0, |state| state.meter.system_audio_basis_points)>"System audio level"</meter>
+                            <Label attr:r#for="microphone-meter">"Microphone"</Label>
+                            <Meter attr:id="microphone-meter" attr:min="0" attr:max="10000" attr:value=move || snapshot.get().map_or(0, |state| state.meter.microphone_basis_points)>"Microphone level"</Meter>
+                            <Label attr:r#for="system-meter">"System audio"</Label>
+                            <Meter attr:id="system-meter" attr:min="0" attr:max="10000" attr:value=move || snapshot.get().map_or(0, |state| state.meter.system_audio_basis_points)>"System audio level"</Meter>
                         </div>
                     </Show>
                     <Show when=move || is_native()>
@@ -753,46 +762,48 @@ mod browser {
                     </Show>
 
                     <div class="primary-actions" role="group" aria-label="Recording controls">
-                        <button class="primary" type="button" disabled=move || !can_start() on:click=move |_| {
+                        <Button variant=ButtonVariant::Primary attr:r#type="button" attr:disabled=move || !can_start() on:click=move |_| {
                             if let Some(client_value) = client.get_untracked() {
                                 let intent_id = client_value.next_intent_id();
                                 submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderStart { intent_id });
                             }
-                        }>"Start recording"</button>
-                        <button type="button" disabled=move || !can_pause() on:click=move |_| {
+                        }>"Start recording"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_pause() on:click=move |_| {
                             if let Some(client_value) = client.get_untracked() {
                                 let intent_id = client_value.next_intent_id();
                                 submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderPause { intent_id });
                             }
-                        }>"Pause"</button>
-                        <button type="button" disabled=move || !can_resume() on:click=move |_| {
+                        }>"Pause"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_resume() on:click=move |_| {
                             if let Some(client_value) = client.get_untracked() {
                                 let intent_id = client_value.next_intent_id();
                                 submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderResume { intent_id });
                             }
-                        }>"Resume"</button>
-                        <button type="button" disabled=move || !can_stop() on:click=move |_| {
+                        }>"Resume"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() on:click=move |_| {
                             if let Some(client_value) = client.get_untracked() {
                                 let intent_id = client_value.next_intent_id();
                                 submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderStop { intent_id });
                             }
-                        }>"Stop"</button>
-                        <button class="danger" type="button" disabled=move || !can_stop() on:click=move |_| {
+                        }>"Stop"</Button>
+                        <Button variant=ButtonVariant::Destructive attr:r#type="button" attr:disabled=move || !can_stop() on:click=move |_| {
                             if let Some(client_value) = client.get_untracked() {
                                 let intent_id = client_value.next_intent_id();
                                 submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderCancel { intent_id });
                             }
-                        }>"Cancel recording"</button>
+                        }>"Cancel recording"</Button>
                     </div>
 
-                    <section class="instant-sharing" aria-labelledby="instant-sharing-heading">
+                    <Card class="instant-sharing" attr:aria-labelledby="instant-sharing-heading">
                         <div class="section-heading compact">
                             <div>
                                 <p class="eyebrow">"Native publication"</p>
                                 <h3 id="instant-sharing-heading">"Instant sharing"</h3>
                             </div>
                             <output class="state-badge" aria-label="Instant sharing phase">
-                                {move || instant_phase_label(snapshot.get().and_then(|state| state.instant_progress))}
+                                <Badge variant=BadgeVariant::Outline class="state-badge">
+                                    {move || instant_phase_label(snapshot.get().and_then(|state| state.instant_progress))}
+                                </Badge>
                             </output>
                         </div>
 
@@ -814,22 +825,22 @@ mod browser {
                                         .and_then(|progress| progress.progress_basis_points)
                                         .is_some()
                                     fallback=move || view! {
-                                        <progress
+                                        <Progress
                                             class="instant-progress"
-                                            max="10000"
-                                            aria-label="Instant sharing progress"
-                                        >"In progress"</progress>
+                                            attr:max="10000"
+                                            attr:aria-label="Instant sharing progress"
+                                        >"In progress"</Progress>
                                     }
                                 >
-                                    <progress
+                                    <Progress
                                         class="instant-progress"
-                                        max="10000"
-                                        value=move || snapshot
+                                        attr:max="10000"
+                                        attr:value=move || snapshot
                                             .get()
                                             .and_then(|state| state.instant_progress)
                                             .and_then(|progress| progress.progress_basis_points)
                                             .unwrap_or(0)
-                                        aria-label="Instant sharing progress"
+                                        attr:aria-label="Instant sharing progress"
                                     >
                                         {move || format!(
                                             "{} percent",
@@ -839,7 +850,7 @@ mod browser {
                                                 .and_then(|progress| progress.progress_basis_points)
                                                 .unwrap_or(0) / 100
                                         )}
-                                    </progress>
+                                    </Progress>
                                 </Show>
                             </Show>
                             <p class="instant-message" role="status" aria-live="polite">
@@ -867,9 +878,9 @@ mod browser {
                             </Show>
                         </Show>
 
-                        <button
-                            type="button"
-                            disabled=move || !snapshot.get().is_some_and(|state| {
+                        <Button variant=ButtonVariant::Outline
+                            attr:r#type="button"
+                            attr:disabled=move || !snapshot.get().is_some_and(|state| {
                                 state.instant_finalize == InstantFinalizeCapabilityState::Available
                                     && state.instant_finalize_handle.is_some()
                                     && state.instant_finalize_next_sequence.is_some()
@@ -882,15 +893,15 @@ mod browser {
                                 error,
                                 busy,
                             )
-                        >"Retry sharing"</button>
+                        >"Retry sharing"</Button>
                         <p class="privacy-note">
                             "The WebView receives only coarse progress, stable error codes, and an opaque native handle. Credentials and recording identities stay in Rust."
                         </p>
-                    </section>
+                    </Card>
                     <p class="shortcut-help">"Keyboard: Control+Shift+R starts or stops; Control+Shift+P pauses or resumes. Global registration is backend-owned."</p>
-                </section>
+                </Card>
 
-                <section id="recovery" class="panel" aria-labelledby="recovery-heading">
+                <Card attr:id="recovery" attr:aria-labelledby="recovery-heading">
                     <div class="section-heading">
                         <div>
                             <p class="eyebrow">"Crash-safe"</p>
@@ -898,93 +909,93 @@ mod browser {
                         </div>
                     </div>
                     <p>"Recovery opens a preserved copy. Discard is explicit and never mutates the source project silently."</p>
-                    <div class="button-row">
-                        <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                    <ButtonGroup class="button-row">
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                             client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryScan
-                        )>"Scan for recovery"</button>
-                        <button type="button" disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
+                        )>"Scan for recovery"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
                             if let Some(paths) = fake_paths() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryOpen { project_path: paths.project });
                             }
-                        }>"Open recovered copy"</button>
-                        <button class="danger" type="button" disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
+                        }>"Open recovered copy"</Button>
+                        <Button variant=ButtonVariant::Destructive attr:r#type="button" attr:disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
                             if let Some(paths) = fake_paths() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryDiscard { project_path: paths.project });
                             }
-                        }>"Discard recovery copy"</button>
-                    </div>
-                </section>
+                        }>"Discard recovery copy"</Button>
+                    </ButtonGroup>
+                </Card>
 
-                <section id="editor" class="panel" aria-labelledby="editor-heading">
+                <Card attr:id="editor" attr:aria-labelledby="editor-heading">
                     <div class="section-heading">
                         <div>
                             <p class="eyebrow">"Revision fenced"</p>
                             <h2 id="editor-heading">"Editor and timeline"</h2>
                         </div>
                     </div>
-                    <button type="button" disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
+                    <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
                         if let Some(paths) = fake_paths() {
                             submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::EditorOpen { project_path: paths.project });
                         }
-                    }>"Open sample project"</button>
-                    <fieldset class="timeline-controls">
+                    }>"Open sample project"</Button>
+                    <FieldGroup class="timeline-controls">
                         <legend>"Numeric timeline alternative"</legend>
                         <p id="timeline-help">"Arrow keys adjust each native range control. The numeric fields expose the same essential trim operation without drag gestures."</p>
-                        <label for="selection-start">"Selection start, milliseconds"</label>
-                        <input
-                            id="selection-start"
-                            type="number"
-                            min="0"
-                            max="89999"
-                            step="1000"
+                        <Label attr:r#for="selection-start">"Selection start, milliseconds"</Label>
+                        <Input
+                            attr:id="selection-start"
+                            attr:r#type="number"
+                            attr:min="0"
+                            attr:max="89999"
+                            attr:step="1000"
                             prop:value=move || selection_start.get().to_string()
                             on:input=move |event| {
                                 if let Ok(value) = event_target_value(&event).parse::<u64>() {
                                     selection_start.set(value.min(selection_end.get().saturating_sub(1)));
                                 }
                             }
-                            aria-describedby="timeline-help"
+                            attr:aria-describedby="timeline-help"
                         />
-                        <label for="selection-end">"Selection end, milliseconds"</label>
-                        <input
-                            id="selection-end"
-                            type="number"
-                            min="1"
-                            max="90000"
-                            step="1000"
+                        <Label attr:r#for="selection-end">"Selection end, milliseconds"</Label>
+                        <Input
+                            attr:id="selection-end"
+                            attr:r#type="number"
+                            attr:min="1"
+                            attr:max="90000"
+                            attr:step="1000"
                             prop:value=move || selection_end.get().to_string()
                             on:input=move |event| {
                                 if let Ok(value) = event_target_value(&event).parse::<u64>() {
                                     selection_end.set(value.max(selection_start.get().saturating_add(1)).min(90_000));
                                 }
                             }
-                            aria-describedby="timeline-help"
+                            attr:aria-describedby="timeline-help"
                         />
-                    </fieldset>
-                    <div class="button-row">
-                        <button type="button" disabled=move || !snapshot.get().is_some_and(|state| matches!(state.editor, EditorState::Ready { .. })) || busy.get() on:click=move |_| {
+                    </FieldGroup>
+                    <ButtonGroup class="button-row">
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !snapshot.get().is_some_and(|state| matches!(state.editor, EditorState::Ready { .. })) || busy.get() on:click=move |_| {
                             if let Some(EditorState::Ready { revision, .. }) = snapshot.get().map(|state| state.editor) {
                                 submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::EditorApply {
                                     base_revision: revision,
                                     mutation: EditorMutation::Trim { start_ms: selection_start.get_untracked(), end_ms: selection_end.get_untracked() },
                                 });
                             }
-                        }>"Trim to selection"</button>
-                        <button type="button" disabled=move || !snapshot.get().is_some_and(|state| matches!(state.editor, EditorState::Ready { dirty: true, .. })) || busy.get() on:click=move |_| {
+                        }>"Trim to selection"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !snapshot.get().is_some_and(|state| matches!(state.editor, EditorState::Ready { dirty: true, .. })) || busy.get() on:click=move |_| {
                             if let Some(EditorState::Ready { revision, .. }) = snapshot.get().map(|state| state.editor) {
                                 submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::EditorSave { expected_revision: revision });
                             }
-                        }>"Save project"</button>
-                    </div>
+                        }>"Save project"</Button>
+                    </ButtonGroup>
 
                     <div class="split-grid">
-                        <section aria-labelledby="export-heading">
+                        <Card attr:aria-labelledby="export-heading">
                             <h3 id="export-heading">"Export"</h3>
-                            <progress max="10000" value=move || snapshot.get().map_or(0, |state| progress(state.export))>
+                            <Progress attr:max="10000" attr:value=move || snapshot.get().map_or(0, |state| progress(state.export))>
                                 {move || format!("{} percent", snapshot.get().map_or(0, |state| progress(state.export) / 100))}
-                            </progress>
-                            <div class="button-row">
-                                <button type="button" disabled=move || {
+                            </Progress>
+                            <ButtonGroup class="button-row">
+                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || {
                                     if busy.get() {
                                         return true;
                                     }
@@ -1033,45 +1044,45 @@ mod browser {
                                         }
                                         DesktopAdapterKind::Unavailable => {}
                                     }
-                                }>{move || if is_native() { "Export editable WebM" } else { "Start export" }}</button>
-                                <button type="button" disabled=move || !is_fake() || !snapshot.get().is_some_and(|state| matches!(state.export, ExportState::Running { .. })) || busy.get() on:click=move |_| {
+                                }>{move || if is_native() { "Export editable WebM" } else { "Start export" }}</Button>
+                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || !snapshot.get().is_some_and(|state| matches!(state.export, ExportState::Running { .. })) || busy.get() on:click=move |_| {
                                     if let Some(client_value) = client.get_untracked() {
                                         let intent_id = client_value.next_intent_id();
                                         submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportCancel { intent_id });
                                     }
-                                }>"Cancel export"</button>
-                            </div>
-                        </section>
-                        <section aria-labelledby="upload-heading">
+                                }>"Cancel export"</Button>
+                            </ButtonGroup>
+                        </Card>
+                        <Card attr:aria-labelledby="upload-heading">
                             <h3 id="upload-heading">"Upload"</h3>
-                            <progress max="100" value=move || snapshot.get().map_or(0, |state| upload_progress(state.upload))>
+                            <Progress attr:max="100" attr:value=move || snapshot.get().map_or(0, |state| upload_progress(state.upload))>
                                 {move || format!("{} percent", snapshot.get().map_or(0, |state| upload_progress(state.upload)))}
-                            </progress>
-                            <div class="button-row">
-                                <button type="button" disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
+                            </Progress>
+                            <ButtonGroup class="button-row">
+                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
                                     if let (Some(paths), Some(client_value)) = (fake_paths(), client.get_untracked()) {
                                         let upload_intent = client_value.next_intent_id();
                                         submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::UploadStart { source_path: paths.media, upload_intent });
                                     }
-                                }>"Start upload"</button>
-                                <button type="button" disabled=move || !snapshot.get().is_some_and(|state| matches!(state.upload, UploadState::Uploading { .. })) || busy.get() on:click=move |_| {
+                                }>"Start upload"</Button>
+                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !snapshot.get().is_some_and(|state| matches!(state.upload, UploadState::Uploading { .. })) || busy.get() on:click=move |_| {
                                     if let Some(client_value) = client.get_untracked() {
                                         let intent_id = client_value.next_intent_id();
                                         submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::UploadPause { intent_id });
                                     }
-                                }>"Pause upload"</button>
-                                <button type="button" disabled=move || !snapshot.get().is_some_and(|state| matches!(state.upload, UploadState::Paused { .. })) || busy.get() on:click=move |_| {
+                                }>"Pause upload"</Button>
+                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !snapshot.get().is_some_and(|state| matches!(state.upload, UploadState::Paused { .. })) || busy.get() on:click=move |_| {
                                     if let Some(client_value) = client.get_untracked() {
                                         let intent_id = client_value.next_intent_id();
                                         submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::UploadResume { intent_id });
                                     }
-                                }>"Resume upload"</button>
-                            </div>
-                        </section>
+                                }>"Resume upload"</Button>
+                            </ButtonGroup>
+                        </Card>
                     </div>
-                </section>
+                </Card>
 
-                <section id="settings" class="panel" aria-labelledby="settings-heading">
+                <Card attr:id="settings" attr:aria-labelledby="settings-heading">
                     <div class="section-heading">
                         <div>
                             <p class="eyebrow">"Preferences"</p>
@@ -1088,13 +1099,13 @@ mod browser {
                             <p id="native-audio-help">
                                 "System audio is optional and uses macOS Screen & System Audio Recording access. Frame excludes its own process audio. Microphone and camera remain off."
                             </p>
-                            <button
-                                type="button"
-                                aria-describedby="native-audio-help"
-                                aria-pressed=move || snapshot
+                            <Button variant=ButtonVariant::Outline
+                                attr:r#type="button"
+                                attr:aria-describedby="native-audio-help"
+                                attr:aria-pressed=move || snapshot
                                     .get()
                                     .is_some_and(|state| state.settings.system_audio_enabled)
-                                disabled=move || !can_configure_native_audio()
+                                attr:disabled=move || !can_configure_native_audio()
                                 on:click=move |_| {
                                     if let Some(state) = snapshot.get_untracked() {
                                         submit(
@@ -1120,27 +1131,27 @@ mod browser {
                                 "Include system audio: on"
                             } else {
                                 "Include system audio: off"
-                            }}</button>
+                            }}</Button>
                         </div>
                     </Show>
-                    <div class="button-row">
-                        <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                    <ButtonGroup class="button-row">
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                             if let Some(state) = snapshot.get_untracked() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::PresetApply {
                                     preset_token: "preset-balanced".into(),
                                     expected_settings_revision: state.settings.revision,
                                 });
                             }
-                        }>"Apply balanced preset"</button>
-                        <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                        }>"Apply balanced preset"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                             if let Some(state) = snapshot.get_untracked() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::PresetApply {
                                     preset_token: "preset-quality".into(),
                                     expected_settings_revision: state.settings.revision,
                                 });
                             }
-                        }>"Apply quality preset"</button>
-                        <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                        }>"Apply quality preset"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                             if let Some(state) = snapshot.get_untracked() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::SettingsApply {
                                     expected_revision: state.settings.revision,
@@ -1152,24 +1163,26 @@ mod browser {
                                     reduced_motion: !state.settings.reduced_motion,
                                 });
                             }
-                        }>"Toggle reduced motion"</button>
-                    </div>
-                    <aside class="legacy-note" aria-labelledby="legacy-heading">
-                        <h3 id="legacy-heading">"Legacy desktop safety"</h3>
-                        <p>"Legacy settings and projects are inspected read-only. The previous signed desktop remains selectable until parity gate 29 is approved."</p>
+                        }>"Toggle reduced motion"</Button>
+                    </ButtonGroup>
+                    <aside aria-labelledby="legacy-heading">
+                        <Alert class="legacy-note">
+                            <h3 id="legacy-heading">"Legacy desktop safety"</h3>
+                            <p>"Legacy settings and projects are inspected read-only. The previous signed desktop remains selectable until parity gate 29 is approved."</p>
+                        </Alert>
                     </aside>
                     <div class="split-grid">
-                        <section aria-labelledby="lifecycle-heading">
+                        <Card attr:aria-labelledby="lifecycle-heading">
                             <h3 id="lifecycle-heading">"Hotkeys, tray, and overlay"</h3>
                             <p>{move || snapshot.get().map_or("Lifecycle unavailable.", |state| {
                                 if state.lifecycle.hotkeys_registered { "Global hotkeys registered by backend." } else { "Global hotkeys are not registered." }
                             })}</p>
-                            <button type="button" disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Main,
                                 IpcCommand::Lifecycle { action: LifecycleAction::RegisterHotkeys }
-                            )>"Register fake hotkeys"</button>
-                        </section>
-                        <section aria-labelledby="update-heading">
+                            )>"Register fake hotkeys"</Button>
+                        </Card>
+                        <Card attr:aria-labelledby="update-heading">
                             <h3 id="update-heading">"Updates"</h3>
                             <p>{move || match snapshot.get().map(|state| state.update) {
                                 Some(UpdateState::Current { .. }) => "Frame is current.",
@@ -1177,7 +1190,7 @@ mod browser {
                                 Some(UpdateState::ReadyToRelaunch { .. }) => "Update installed; relaunch is ready.",
                                 None => "Update status unavailable.",
                             }}</p>
-                            <button type="button" disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
                                 if let Some(state) = snapshot.get_untracked() {
                                     let (action, expected_revision) = match state.update {
                                         UpdateState::Current { revision } => (UpdateAction::Check, revision),
@@ -1190,27 +1203,28 @@ mod browser {
                                 Some(UpdateState::Available { .. }) => "Install update",
                                 Some(UpdateState::ReadyToRelaunch { .. }) => "Relaunch Frame",
                                 _ => "Check for updates",
-                            }}</button>
-                        </section>
+                            }}</Button>
+                        </Card>
                     </div>
-                </section>
+                </Card>
             </main>
 
             <footer>
-                <p id="backend-status" class="status" role="status" aria-live="polite" aria-atomic="true">
+                <Alert attr:id="backend-status" class="status" attr:role="status" attr:aria-live="polite" attr:aria-atomic="true">
                     {move || status.get()}
-                </p>
+                </Alert>
             </footer>
 
             {move || error.get().map(|message| view! {
-                <div class="dialog-backdrop">
-                    <section class="error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="error-title" aria-describedby="error-message">
+                <DialogOverlay>
+                    <DialogContent attr:role="alertdialog" attr:aria-modal="true" attr:aria-labelledby="error-title" attr:aria-describedby="error-message">
                         <h2 id="error-title">"Desktop operation needs attention"</h2>
                         <p id="error-message">{message}</p>
-                        <button type="button" autofocus=true on:click=move |_| error.set(None)>"Dismiss error"</button>
-                    </section>
-                </div>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:autofocus=true on:click=move |_| error.set(None)>"Dismiss error"</Button>
+                    </DialogContent>
+                </DialogOverlay>
             })}
+            </div>
         }
     }
 
