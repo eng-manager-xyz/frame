@@ -1,9 +1,10 @@
 # Local screen-capture contract evidence
 
 This record covers the provider-free issue-24 contract plus repository-local
-source evidence for the narrow `macos-native` display-video composition. It
-contains no physical screen recording, observed OS permission prompt, customer
-media, device label, window title, process identity, or platform certification.
+source evidence for the narrow `macos-native` display-video composition and
+the target-gated Windows Graphics Capture source. It contains no physical
+screen recording, observed OS permission prompt, customer media, device label,
+window title, process identity, or platform certification.
 
 ## Closure ledger boundary
 
@@ -12,8 +13,8 @@ file does not reclassify any checkbox. The macOS source and screen-only desktop
 composition now implement display, privacy-filtered window, and
 single-display-region targets through the normalized provider-neutral ingress.
 The issue acceptance criteria still require cursor-metadata and lifecycle
-parity, Windows and Linux adapters, representative hardware, performance,
-protected-content observations, and an issue-04 parity recording.
+parity, Windows desktop composition, a Linux adapter, representative hardware,
+performance, protected-content observations, and an issue-04 parity recording.
 
 The provider-neutral tests below still compile a dummy `ScreenCaptureSource`
 using only the exported API. Their simulated frames, permission events,
@@ -162,6 +163,37 @@ were absent from recorded pixels, that a written WebM was viewed or decoded in
 this desktop journey, or that performance and lifecycle bounds hold on
 supported hardware.
 
+## Native Windows target source evidence
+
+Repository inspection and focused checks establish the following local source
+facts, not Windows hardware results:
+
+- `frame-windows-screen-capture` provides an unsafe-free Windows Graphics
+  Capture adapter for display, privacy-filtered window, and display-relative
+  region targets; its separate `frame-windows-capture-ffi` crate is the only
+  pointer-level Win32 boundary and exposes no window title, process name,
+  device name, raw handle, or pointer;
+- native target identities are converted to session-secret HMAC tokens, exact
+  display geometry includes DPI and rotation, and Frame's own process windows
+  are omitted from the catalog before a normalized target can be selected;
+- WGC frames are copied into exact CPU BGRA/sRGB allocations, timestamped on a
+  monotonic capture timeline, and handed off through a three-frame
+  nonblocking channel with explicit drop diagnostics; regions are cropped only
+  after exact source-dimension validation;
+- startup and teardown have caller-provided deadlines, a dedicated worker owns
+  the WGC message loop, `WM_QUIT` requests shutdown, and any retained stop tail
+  is bounded before it enters the shared `ScreenCaptureSource` contract; and
+- the Windows CI lane compiles and lints both target-gated crates on a native
+  Windows runner, while the portable desktop dependency gate rejects either
+  native crate or `wgc` from the default shell closure.
+
+The adapter deliberately advertises neither cursor metadata, topology
+recovery, exact protected-content signaling, nor Frame-window exclusion.
+Because WGC may redact protected surfaces without an exact event, normalized
+negotiation currently fails closed instead of inventing a signal. The source
+is therefore not yet wired into the release desktop composition, and this
+slice cannot produce a production Windows recording by itself.
+
 Reproduce the focused tests and lint gate with:
 
 ```sh
@@ -188,6 +220,15 @@ python3 scripts/ci/build-desktop-ui.py
 cargo build --locked --release -p frame-desktop-core \
   --features tauri-app,custom-protocol,macos-native --bin frame-desktop
 python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
+
+# Run these target-gated checks on a native Windows host. DOCS_RS skips the
+# GStreamer link probe for cargo check; it does not constitute capture evidence.
+export DOCS_RS=1
+cargo check --locked \
+  -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
+cargo clippy --locked \
+  -p frame-windows-capture-ffi -p frame-windows-screen-capture \
+  --all-targets -- -D warnings
 ```
 
 The complete media test suite remains the integration gate because this module
@@ -209,8 +250,8 @@ composition, not the complete issue-24 or Studio contracts.
 
 | Gate | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Native source and release composition | display/window/region screen-only source wired; physical run pending | pending | pending |
-| Permission preflight, prompt, denial, settings, revocation | preflight source wired; observed flow pending | pending | pending |
+| Native source and release composition | display/window/region screen-only source wired; physical run pending | display/window/region source implemented; release composition and physical run pending | pending |
+| Permission preflight, prompt, denial, settings, revocation | preflight source wired; observed flow pending | WGC availability preflight implemented; observed flow, settings, and revocation pending | pending |
 | Physical display/window/region samples | pending | pending | pending |
 | Multi-monitor negative origins, mixed/fractional DPI, rotations | pending | pending | pending |
 | Cursor image/position/click parity and clipping | pending | pending | pending |
@@ -221,8 +262,9 @@ composition, not the complete issue-24 or Studio contracts.
 
 No pending row in this table may be inferred from a unit test or an
 enum-to-source mapping. Before the OS/architecture/device matrix can produce
-valid acceptance evidence, Frame must exercise the wired macOS targets and
-still implement missing cursor metadata, lifecycle/recovery, Windows/Linux,
-performance, and parity behavior represented by checkboxes 1–10. Recorded
-samples, probes, measurements, operational documentation, and rollout evidence
-remain subsequent gates rather than substitutes for that code.
+valid acceptance evidence, Frame must exercise the wired macOS targets, wire
+the Windows source into the desktop composition, implement Linux plus missing
+cursor metadata and lifecycle/recovery behavior, and complete the performance
+and parity work represented by checkboxes 1–10. Recorded samples, probes,
+measurements, operational documentation, and rollout evidence remain subsequent
+gates rather than substitutes for that code.

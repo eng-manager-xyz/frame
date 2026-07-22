@@ -312,9 +312,15 @@ def main() -> int:
             ),
             (
                 quality,
-                "frame-media|frame-macos-screen-capture|frame-macos-av-capture|gstreamer",
+                "frame-media|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer",
                 "frame-unrelated|frame-macos-unrelated|not-gstreamer",
                 "portable desktop native-media dependency rejection removed",
+            ),
+            (
+                quality,
+                "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets",
+                "cargo check --locked -p frame-windows-secure-spool --all-targets",
+                "Windows native capture check omitted",
             ),
             (
                 quality,

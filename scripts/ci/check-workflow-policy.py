@@ -465,6 +465,14 @@ def main() -> int:
         )
     require("macos-15" in quality and "windows-2022" in quality and "macos-14" not in quality,
             "quality-gates.yml: portable core checks must cover macOS and Windows", errors)
+    require(
+        "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets"
+        in quality
+        and "cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets -- -D warnings"
+        in quality,
+        "quality-gates.yml: Windows native capture boundaries must be checked and linted on Windows",
+        errors,
+    )
     require("desktop_shell:" in quality and "trunk --version 0.21.14 --locked" in quality
             and "build-desktop-ui.py" in quality
             and "--no-color=false" not in quality
@@ -492,7 +500,7 @@ def main() -> int:
         bool(dependency_step)
         and "cargo tree --locked -p frame-desktop-core" in dependency_step
         and "--features tauri-app,custom-protocol --edges normal" in dependency_step
-        and "frame-media|frame-macos-screen-capture|frame-macos-av-capture|gstreamer"
+        and "frame-media|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer"
         in dependency_step,
         "quality-gates.yml: the portable desktop dependency graph must reject native media crates",
         errors,
