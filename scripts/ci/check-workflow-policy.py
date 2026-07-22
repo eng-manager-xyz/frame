@@ -468,42 +468,6 @@ def main() -> int:
     portability = quality.split("\n  portability:\n", maxsplit=1)[-1].split(
         "\n  desktop_shell:\n", maxsplit=1
     )[0]
-    windows_ui_toolchain = workflow_step(
-        portability, "Install pinned Windows native UI toolchain"
-    )
-    require(
-        "if: runner.os == 'Windows'" in windows_ui_toolchain
-        and windows_ui_toolchain.count("rustup component add clippy") == 1
-        and windows_ui_toolchain.count("rustup target add wasm32-unknown-unknown")
-        == 1
-        and windows_ui_toolchain.count(
-            "cargo install trunk --version 0.21.14 --locked"
-        )
-        == 1,
-        "quality-gates.yml: Windows native composition must install pinned clippy, wasm, and Trunk tools",
-        errors,
-    )
-    windows_webview = workflow_step(
-        portability, "Build Windows native WebView bundle"
-    )
-    require(
-        "if: runner.os == 'Windows'" in windows_webview
-        and windows_webview.count("python scripts/ci/build-desktop-ui.py") == 1
-        and windows_webview.count("python scripts/ci/check-desktop-bundle.py")
-        == 1,
-        "quality-gates.yml: Windows native composition must build and validate its WebView before checking the binary",
-        errors,
-    )
-    windows_webview_marker = "      - name: Build Windows native WebView bundle"
-    windows_compile_marker = "      - name: Compile the Windows native adapters"
-    require(
-        windows_webview_marker in portability
-        and windows_compile_marker in portability
-        and portability.index(windows_webview_marker)
-        < portability.index(windows_compile_marker),
-        "quality-gates.yml: the Windows WebView bundle must exist before the native desktop check",
-        errors,
-    )
     require(
         "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets"
         in quality
@@ -513,11 +477,11 @@ def main() -> int:
         errors,
     )
     require(
-        "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --all-targets"
-        in quality
-        and "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --all-targets --no-deps -- -D warnings"
-        in quality,
-        "quality-gates.yml: the production Windows capture composition must compile and lint natively",
+        "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests"
+        in portability
+        and "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests --no-deps -- -D warnings"
+        in portability,
+        "quality-gates.yml: the Windows capture library and tests must compile and lint natively",
         errors,
     )
     require("desktop_shell:" in quality and "trunk --version 0.21.14 --locked" in quality
@@ -532,6 +496,35 @@ def main() -> int:
     desktop_shell = quality.split("\n  desktop_shell:\n", maxsplit=1)[-1].split(
         "\n  quality-gate:\n", maxsplit=1
     )[0]
+    windows_native_binary = workflow_step(
+        desktop_shell, "Check the native Windows production desktop composition"
+    )
+    require(
+        "if: runner.os == 'Windows'" in windows_native_binary
+        and 'DOCS_RS: "1"' in windows_native_binary
+        and windows_native_binary.count(
+            "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --bin frame-desktop"
+        )
+        == 1
+        and windows_native_binary.count(
+            "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --bin frame-desktop --no-deps -- -D warnings"
+        )
+        == 1,
+        "quality-gates.yml: the verified Windows WebView must feed a checked and linted native production binary",
+        errors,
+    )
+    windows_bundle_marker = "      - name: Verify the closed frontend bundle and advisory boundary"
+    windows_native_binary_marker = (
+        "      - name: Check the native Windows production desktop composition"
+    )
+    require(
+        windows_bundle_marker in desktop_shell
+        and windows_native_binary_marker in desktop_shell
+        and desktop_shell.index(windows_bundle_marker)
+        < desktop_shell.index(windows_native_binary_marker),
+        "quality-gates.yml: the Windows WebView bundle must be verified before the native desktop check",
+        errors,
+    )
     require(
         "macos-native" not in desktop_shell
         and "FRAME_GSTREAMER_COMPILE_ONLY" not in desktop_shell

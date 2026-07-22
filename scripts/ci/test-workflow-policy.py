@@ -324,15 +324,15 @@ def main() -> int:
             ),
             (
                 quality,
-                "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --all-targets",
-                "cargo check --locked -p frame-desktop-core --features tauri-app,custom-protocol --all-targets",
-                "Windows native desktop composition check omitted",
+                "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests",
+                "cargo check --locked -p frame-desktop-core --features tauri-app,custom-protocol --lib --tests",
+                "Windows native desktop library check omitted",
             ),
             (
                 quality,
-                "\n      - name: Build Windows native WebView bundle\n",
-                "\n      - name: Skip Windows native WebView bundle\n",
-                "Windows native desktop WebView build omitted",
+                "\n      - name: Check the native Windows production desktop composition\n",
+                "\n      - name: Skip the native Windows production desktop composition\n",
+                "Windows native production binary check omitted",
             ),
             (
                 quality,
