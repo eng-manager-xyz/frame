@@ -330,6 +330,12 @@ def main() -> int:
             ),
             (
                 quality,
+                "\n      - name: Build Windows native WebView bundle\n",
+                "\n      - name: Skip Windows native WebView bundle\n",
+                "Windows native desktop WebView build omitted",
+            ),
+            (
+                quality,
                 "\n  macos_native_capture:\n",
                 "\n  macos_native_capture_disabled:\n",
                 "required macOS native-capture job removed",

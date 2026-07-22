@@ -421,11 +421,22 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           cache-on-failure: false
+      - name: Install pinned Windows native UI toolchain
+        if: runner.os == 'Windows'
+        run: |
+          rustup component add clippy
+          rustup target add wasm32-unknown-unknown
+          cargo install trunk --version 0.21.14 --locked
       - name: Test portable domain, clients, application, ports, and desktop core
         run: >-
           cargo test --locked
           -p frame-domain -p frame-ports -p frame-application
           -p frame-client -p frame-authenticated-client -p frame-desktop-core
+      - name: Build Windows native WebView bundle
+        if: runner.os == 'Windows'
+        run: |
+          python scripts/ci/build-desktop-ui.py
+          python scripts/ci/check-desktop-bundle.py
       - name: Compile the Windows native adapters
         if: runner.os == 'Windows'
         env:

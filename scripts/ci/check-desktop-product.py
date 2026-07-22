@@ -48,6 +48,7 @@ def main() -> int:
     ipc = text("apps/desktop/src/ipc.rs")
     runtime = text("apps/desktop/src/runtime.rs")
     native = text("apps/desktop/src/main.rs")
+    desktop_lib = text("apps/desktop/src/lib.rs")
     desktop_manifest = text("apps/desktop/Cargo.toml")
     native_contract = text("apps/desktop/src/native_backend.rs")
     macos_backend = text("apps/desktop/src/macos_native_backend.rs")
@@ -170,6 +171,14 @@ def main() -> int:
             '"dep:frame-macos-screen-capture"',
         ),
         "desktop feature boundary",
+    )
+    require(
+        desktop_lib,
+        (
+            '#[cfg(any(\n    all(target_os = "macos", feature = "macos-native"),\n    all(target_os = "windows", feature = "windows-native")\n))]\npub mod gstreamer_bootstrap;',
+            '#[cfg(any(\n    all(target_os = "macos", feature = "macos-native"),\n    all(target_os = "windows", feature = "windows-native")\n))]\npub use gstreamer_bootstrap::*;',
+        ),
+        "native GStreamer bootstrap exports",
     )
     require(
         native_contract,

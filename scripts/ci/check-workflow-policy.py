@@ -465,6 +465,45 @@ def main() -> int:
         )
     require("macos-15" in quality and "windows-2022" in quality and "macos-14" not in quality,
             "quality-gates.yml: portable core checks must cover macOS and Windows", errors)
+    portability = quality.split("\n  portability:\n", maxsplit=1)[-1].split(
+        "\n  desktop_shell:\n", maxsplit=1
+    )[0]
+    windows_ui_toolchain = workflow_step(
+        portability, "Install pinned Windows native UI toolchain"
+    )
+    require(
+        "if: runner.os == 'Windows'" in windows_ui_toolchain
+        and windows_ui_toolchain.count("rustup component add clippy") == 1
+        and windows_ui_toolchain.count("rustup target add wasm32-unknown-unknown")
+        == 1
+        and windows_ui_toolchain.count(
+            "cargo install trunk --version 0.21.14 --locked"
+        )
+        == 1,
+        "quality-gates.yml: Windows native composition must install pinned clippy, wasm, and Trunk tools",
+        errors,
+    )
+    windows_webview = workflow_step(
+        portability, "Build Windows native WebView bundle"
+    )
+    require(
+        "if: runner.os == 'Windows'" in windows_webview
+        and windows_webview.count("python scripts/ci/build-desktop-ui.py") == 1
+        and windows_webview.count("python scripts/ci/check-desktop-bundle.py")
+        == 1,
+        "quality-gates.yml: Windows native composition must build and validate its WebView before checking the binary",
+        errors,
+    )
+    windows_webview_marker = "      - name: Build Windows native WebView bundle"
+    windows_compile_marker = "      - name: Compile the Windows native adapters"
+    require(
+        windows_webview_marker in portability
+        and windows_compile_marker in portability
+        and portability.index(windows_webview_marker)
+        < portability.index(windows_compile_marker),
+        "quality-gates.yml: the Windows WebView bundle must exist before the native desktop check",
+        errors,
+    )
     require(
         "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets"
         in quality

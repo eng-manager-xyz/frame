@@ -37,7 +37,10 @@ pub mod workflow;
 pub use accessibility::*;
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 pub use av_settings::*;
-#[cfg(all(target_os = "macos", feature = "macos-native"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
 pub use gstreamer_bootstrap::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use instant_finalize::*;
