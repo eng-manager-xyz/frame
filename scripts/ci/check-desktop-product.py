@@ -494,7 +494,10 @@ def main() -> int:
     require(
         desktop_shell_smoke,
         (
-            'ADAPTERS = ("unavailable", "deterministic_fake", "native_macos_display")',
+            '"unavailable",',
+            '"deterministic_fake",',
+            '"native_macos_display",',
+            '"native_windows_display_window_region",',
             'parser.add_argument("--expected-adapter", choices=ADAPTERS, required=True)',
             "f\"recorder_adapter={args.expected_adapter}\"",
         ),
