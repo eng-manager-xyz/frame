@@ -218,6 +218,9 @@ mod browser {
             ) | (
                 RecorderAdapterState::NativeMacOsDisplay,
                 DesktopAdapterKind::NativeMacOs
+            ) | (
+                RecorderAdapterState::NativeWindowsDisplayWindowRegion,
+                DesktopAdapterKind::NativeWindows
             )
         )
     }
@@ -391,6 +394,21 @@ mod browser {
             Some((DesktopAdapterKind::NativeMacOs, _)) => {
                 "macOS Screen & System Audio Recording access has not been confirmed. Recording stays disabled."
             }
+            Some((
+                DesktopAdapterKind::NativeWindows,
+                frame_desktop_core::PermissionState::Granted,
+            )) => {
+                "Windows Graphics Capture is available. Frame windows remain excluded from recordings."
+            }
+            Some((
+                DesktopAdapterKind::NativeWindows,
+                frame_desktop_core::PermissionState::Denied,
+            )) => {
+                "Windows Graphics Capture is unavailable. Update Windows or review system capture policy, then reopen Frame."
+            }
+            Some((DesktopAdapterKind::NativeWindows, _)) => {
+                "Windows Graphics Capture availability has not been confirmed. Recording stays disabled."
+            }
             Some((_, frame_desktop_core::PermissionState::Granted)) => {
                 "Screen and device permissions are confirmed."
             }
@@ -494,8 +512,10 @@ mod browser {
             if let Ok(handle) = set_interval_with_handle(
                 move || {
                     let should_poll = snapshot.get_untracked().is_some_and(|state| {
-                        state.adapter == DesktopAdapterKind::NativeMacOs
-                            && state.recorder == RecorderState::Recording
+                        matches!(
+                            state.adapter,
+                            DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+                        ) && state.recorder == RecorderState::Recording
                     });
                     if should_poll && !busy.get_untracked() {
                         submit(
@@ -521,16 +541,21 @@ mod browser {
                 .is_some_and(|state| state.adapter == DesktopAdapterKind::DeterministicFake)
         };
         let is_native = move || {
-            snapshot
-                .get()
-                .is_some_and(|state| state.adapter == DesktopAdapterKind::NativeMacOs)
+            snapshot.get().is_some_and(|state| {
+                matches!(
+                    state.adapter,
+                    DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+                )
+            })
         };
         let supports_capture_targets = move || is_fake() || is_native();
         let can_start = move || {
             snapshot.get().is_some_and(|state| {
                 matches!(
                     state.adapter,
-                    DesktopAdapterKind::DeterministicFake | DesktopAdapterKind::NativeMacOs
+                    DesktopAdapterKind::DeterministicFake
+                        | DesktopAdapterKind::NativeMacOs
+                        | DesktopAdapterKind::NativeWindows
                 ) && state.permission == frame_desktop_core::PermissionState::Granted
                     && state.selected_sources.target.is_some()
                     && (state.adapter == DesktopAdapterKind::DeterministicFake
@@ -562,8 +587,10 @@ mod browser {
                         state.recorder,
                         RecorderState::Recording | RecorderState::Paused
                     ))
-                    || (state.adapter == DesktopAdapterKind::NativeMacOs
-                        && state.recorder == RecorderState::Recording)
+                    || (matches!(
+                        state.adapter,
+                        DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+                    ) && state.recorder == RecorderState::Recording)
             }) && !busy.get()
         };
         let can_configure_native_audio = move || {
@@ -1009,7 +1036,8 @@ mod browser {
                                             fake_paths().is_none()
                                                 || !matches!(state.editor, EditorState::Ready { dirty: false, .. })
                                         }
-                                        DesktopAdapterKind::NativeMacOs => state
+                                        DesktopAdapterKind::NativeMacOs
+                                        | DesktopAdapterKind::NativeWindows => state
                                             .capture_artifact
                                             .as_ref()
                                             .filter(|artifact| {
@@ -1034,7 +1062,8 @@ mod browser {
                                                 });
                                             }
                                         }
-                                        DesktopAdapterKind::NativeMacOs => {
+                                        DesktopAdapterKind::NativeMacOs
+                                        | DesktopAdapterKind::NativeWindows => {
                                             if let Some(artifact) = state.capture_artifact
                                                 && artifact.schema_version
                                                     == CAPTURE_ARTIFACT_SUMMARY_VERSION

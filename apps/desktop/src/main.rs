@@ -3,6 +3,8 @@ use std::sync::Mutex;
 
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 use frame_desktop_core::MacOsNativeDesktopBackend;
+#[cfg(all(target_os = "windows", feature = "windows-native"))]
+use frame_desktop_core::WindowsNativeDesktopBackend;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use frame_desktop_core::{
     DesktopAdapterKind, DesktopBootstrap, DesktopDispatch, DesktopRoots, DesktopRuntime,
@@ -20,6 +22,8 @@ struct NativeDesktopState {
     runtime: Mutex<DesktopRuntime>,
     #[cfg(all(target_os = "macos", feature = "macos-native"))]
     native_backend: Option<Mutex<MacOsNativeDesktopBackend>>,
+    #[cfg(all(target_os = "windows", feature = "windows-native"))]
+    native_backend: Option<Mutex<WindowsNativeDesktopBackend>>,
     instant_finalize: InstantFinalizeService,
 }
 
@@ -70,6 +74,9 @@ fn bootstrap_main(
                 frame_desktop_core::RecorderAdapterState::NativeMacOsDisplay => {
                     "native_macos_display"
                 }
+                frame_desktop_core::RecorderAdapterState::NativeWindowsDisplayWindowRegion => {
+                    "native_windows_display_window_region"
+                }
             }
         )
         .expect("desktop smoke marker write failed");
@@ -112,8 +119,14 @@ fn dispatch_main(
     let mut runtime = state.runtime.lock().map_err(|_| DesktopBoundaryError {
         code: PublicErrorCode::Internal,
     })?;
-    #[cfg(all(target_os = "macos", feature = "macos-native"))]
-    let dispatch = if runtime.snapshot().adapter == DesktopAdapterKind::NativeMacOs {
+    #[cfg(any(
+        all(target_os = "macos", feature = "macos-native"),
+        all(target_os = "windows", feature = "windows-native")
+    ))]
+    let dispatch = if matches!(
+        runtime.snapshot().adapter,
+        DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+    ) {
         let backend = state.native_backend.as_ref().ok_or(DesktopBoundaryError {
             code: PublicErrorCode::Unavailable,
         })?;
@@ -130,7 +143,7 @@ fn dispatch_main(
         code: error.public_code(),
     })?;
     #[cfg(any(
-        target_os = "windows",
+        all(target_os = "windows", not(feature = "windows-native")),
         all(target_os = "macos", not(feature = "macos-native"))
     ))]
     let dispatch = runtime
@@ -300,6 +313,9 @@ fn shell_capabilities(
         DesktopAdapterKind::NativeMacOs => {
             frame_desktop_core::RecorderAdapterState::NativeMacOsDisplay
         }
+        DesktopAdapterKind::NativeWindows => {
+            frame_desktop_core::RecorderAdapterState::NativeWindowsDisplayWindowRegion
+        }
     };
     ShellCapabilities {
         recorder_adapter,
@@ -325,6 +341,8 @@ fn configured_adapter() -> DesktopAdapterKind {
         DesktopAdapterKind::DeterministicFake
     } else if cfg!(all(target_os = "macos", feature = "macos-native")) {
         DesktopAdapterKind::NativeMacOs
+    } else if cfg!(all(target_os = "windows", feature = "windows-native")) {
+        DesktopAdapterKind::NativeWindows
     } else {
         DesktopAdapterKind::Unavailable
     }
@@ -332,9 +350,14 @@ fn configured_adapter() -> DesktopAdapterKind {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn main() {
-    #[cfg(all(target_os = "macos", feature = "macos-native"))]
-    if configured_adapter() == DesktopAdapterKind::NativeMacOs
-        && let Err(error) = frame_desktop_core::bootstrap_desktop_gstreamer()
+    #[cfg(any(
+        all(target_os = "macos", feature = "macos-native"),
+        all(target_os = "windows", feature = "windows-native")
+    ))]
+    if matches!(
+        configured_adapter(),
+        DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+    ) && let Err(error) = frame_desktop_core::bootstrap_desktop_gstreamer()
     {
         eprintln!("Frame desktop GStreamer bootstrap failed: {error}");
         std::process::exit(78);
@@ -366,8 +389,29 @@ fn main() {
             } else {
                 (requested_adapter, None)
             };
+            #[cfg(all(target_os = "windows", feature = "windows-native"))]
+            let (adapter, native_backend) = if requested_adapter
+                == DesktopAdapterKind::NativeWindows
+            {
+                let frame_windows_excluded = app
+                    .get_webview_window("main")
+                    .is_some_and(|window| window.set_content_protected(true).is_ok());
+                match WindowsNativeDesktopBackend::new(
+                    data.join("media"),
+                    exports,
+                    frame_windows_excluded,
+                ) {
+                    Ok(backend) => (DesktopAdapterKind::NativeWindows, Some(Mutex::new(backend))),
+                    Err(error) => {
+                        eprintln!("Frame native capture adapter is unavailable: {error}");
+                        (DesktopAdapterKind::Unavailable, None)
+                    }
+                }
+            } else {
+                (requested_adapter, None)
+            };
             #[cfg(any(
-                target_os = "windows",
+                all(target_os = "windows", not(feature = "windows-native")),
                 all(target_os = "macos", not(feature = "macos-native"))
             ))]
             let adapter = requested_adapter;
@@ -376,6 +420,8 @@ fn main() {
             app.manage(NativeDesktopState {
                 runtime: Mutex::new(runtime),
                 #[cfg(all(target_os = "macos", feature = "macos-native"))]
+                native_backend,
+                #[cfg(all(target_os = "windows", feature = "windows-native"))]
                 native_backend,
                 instant_finalize: InstantFinalizeService::not_configured(),
             });
@@ -431,8 +477,10 @@ mod tests {
         if !cfg!(debug_assertions) {
             #[cfg(all(target_os = "macos", feature = "macos-native"))]
             assert_eq!(configured_adapter(), DesktopAdapterKind::NativeMacOs);
+            #[cfg(all(target_os = "windows", feature = "windows-native"))]
+            assert_eq!(configured_adapter(), DesktopAdapterKind::NativeWindows);
             #[cfg(any(
-                target_os = "windows",
+                all(target_os = "windows", not(feature = "windows-native")),
                 all(target_os = "macos", not(feature = "macos-native"))
             ))]
             assert_eq!(configured_adapter(), DesktopAdapterKind::Unavailable);
@@ -475,6 +523,14 @@ mod tests {
             )
             .recorder_adapter,
             frame_desktop_core::RecorderAdapterState::NativeMacOsDisplay
+        );
+        assert_eq!(
+            shell_capabilities(
+                DesktopAdapterKind::NativeWindows,
+                frame_desktop_core::InstantFinalizeCapabilityState::NotConfigured,
+            )
+            .recorder_adapter,
+            frame_desktop_core::RecorderAdapterState::NativeWindowsDisplayWindowRegion
         );
     }
 

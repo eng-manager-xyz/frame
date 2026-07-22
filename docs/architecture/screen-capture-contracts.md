@@ -6,6 +6,12 @@ mapping as evidence that ScreenCaptureKit, Windows Graphics Capture, PipeWire,
 or X11 works on physical hardware. Platform FFI and permission UI remain in
 separate native adapters behind `ScreenCaptureSource`.
 
+The current Windows slice follows that boundary with an unsafe-free normalized
+adapter over a separately audited, target-gated Win32 crate. It implements
+bounded CPU BGRA display/window/region capture but intentionally remains out of
+the desktop release composition until protected-content semantics, lifecycle
+recovery, and physical Windows evidence can satisfy this contract.
+
 ```text
 native adapter
   ├─ stamped permission preflight / source-bound target snapshot

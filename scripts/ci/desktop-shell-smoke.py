@@ -14,7 +14,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ADAPTERS = ("unavailable", "deterministic_fake", "native_macos_display")
+ADAPTERS = (
+    "unavailable",
+    "deterministic_fake",
+    "native_macos_display",
+    "native_windows_display_window_region",
+)
 
 
 def digest(path: Path) -> str:

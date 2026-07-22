@@ -312,9 +312,33 @@ def main() -> int:
             ),
             (
                 quality,
-                "frame-media|frame-macos-screen-capture|frame-macos-av-capture|gstreamer",
+                "frame-media|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer",
                 "frame-unrelated|frame-macos-unrelated|not-gstreamer",
                 "portable desktop native-media dependency rejection removed",
+            ),
+            (
+                quality,
+                "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets",
+                "cargo check --locked -p frame-windows-secure-spool --all-targets",
+                "Windows native capture check omitted",
+            ),
+            (
+                quality,
+                "mkdir -p apps/desktop/ui/dist",
+                "test -d apps/desktop/ui/dist",
+                "Windows native desktop test frontend placeholder omitted",
+            ),
+            (
+                quality,
+                "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests",
+                "cargo check --locked -p frame-desktop-core --features tauri-app,custom-protocol --lib --tests",
+                "Windows native desktop library check omitted",
+            ),
+            (
+                quality,
+                "\n      - name: Check the native Windows production desktop composition\n",
+                "\n      - name: Skip the native Windows production desktop composition\n",
+                "Windows native production binary check omitted",
             ),
             (
                 quality,

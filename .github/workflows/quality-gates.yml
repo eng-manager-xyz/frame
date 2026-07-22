@@ -426,16 +426,23 @@ jobs:
           cargo test --locked
           -p frame-domain -p frame-ports -p frame-application
           -p frame-client -p frame-authenticated-client -p frame-desktop-core
-      - name: Compile the Windows encrypted Instant spool and credential adapter
+      - name: Compile the Windows native adapters
         if: runner.os == 'Windows'
         env:
-          # cargo check does not link; this skips native GStreamer probing while
-          # still type-checking every Windows-only Rust/Win32 code path.
+          # Skip native GStreamer probing while compile-checking and linting
+          # every Windows-only Rust/Win32 library and test path. The empty
+          # frontend directory only satisfies Tauri's incidental bin-test
+          # expansion; desktop_shell builds and verifies the real bundle.
           DOCS_RS: "1"
         run: |
           cargo test --locked -p frame-windows-secure-spool
           cargo clippy --locked -p frame-windows-secure-spool --all-targets -- -D warnings
           cargo check --locked -p frame-media --all-targets
+          cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
+          cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings
+          mkdir -p apps/desktop/ui/dist
+          cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests
+          cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests --no-deps -- -D warnings
 
   desktop_shell:
     name: Portable Tauri desktop shell on ${{ matrix.os }}
@@ -468,7 +475,7 @@ jobs:
           cargo tree --locked -p frame-desktop-core \
             --features tauri-app,custom-protocol --edges normal \
             > target/evidence/desktop-portable-dependencies-${{ runner.os }}.txt
-          if rg -n '(frame-media|frame-macos-screen-capture|frame-macos-av-capture|gstreamer[^[:space:]]*) v[0-9]' \
+          if rg -n '(frame-media|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer[^[:space:]]*) v[0-9]' \
             target/evidence/desktop-portable-dependencies-${{ runner.os }}.txt; then
             echo "portable desktop dependency graph contains native media code" >&2
             exit 1
@@ -486,6 +493,13 @@ jobs:
         run: |
           python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-${{ runner.os }}.json
           python scripts/ci/check-desktop-advisory-exception.py
+      - name: Check the native Windows production desktop composition
+        if: runner.os == 'Windows'
+        env:
+          DOCS_RS: "1"
+        run: |
+          cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --bin frame-desktop
+          cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --bin frame-desktop --no-deps -- -D warnings
       - name: Build the portable desktop executable
         run: >-
           cargo build --locked --release -p frame-desktop-core

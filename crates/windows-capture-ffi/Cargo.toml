@@ -1,0 +1,31 @@
+[package]
+name = "frame-windows-capture-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgc.workspace = true
+windows = { workspace = true, features = [
+  "Graphics_Capture",
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Threading",
+  "Win32_System_WinRT_Graphics_Capture",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# This package is the deliberately narrow pointer-level Windows capture
+# boundary. Consumers receive only safe opaque identities and bounded calls.
+[lints.rust]
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "warn"

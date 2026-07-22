@@ -1,0 +1,21 @@
+[package]
+name = "frame-windows-screen-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+frame-media = { path = "../media" }
+ring.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+frame-windows-capture-ffi = { path = "../windows-capture-ffi" }
+wgc.workspace = true
+windows = { workspace = true, features = ["Graphics_Capture"] }
+
+[lints]
+workspace = true

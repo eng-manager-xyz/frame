@@ -1,29 +1,33 @@
 # Local screen-capture contract evidence
 
 This record covers the provider-free issue-24 contract plus repository-local
-source evidence for the narrow `macos-native` display-video composition. It
-contains no physical screen recording, observed OS permission prompt, customer
-media, device label, window title, process identity, or platform certification.
+source evidence for the narrow `macos-native` and `windows-native`
+display-video compositions. It contains no physical
+screen recording, observed OS permission prompt, customer media, device label,
+window title, process identity, or platform certification.
 
 ## Closure ledger boundary
 
 Issue 24 checkboxes 1–10 remain unclosed in the closure ledger. This evidence
-file does not reclassify any checkbox. The macOS source and screen-only desktop
-composition now implement display, privacy-filtered window, and
-single-display-region targets through the normalized provider-neutral ingress.
+file does not reclassify any checkbox. The macOS and Windows sources and
+screen-only desktop compositions now implement display, privacy-filtered
+window, and single-display-region targets through the normalized
+provider-neutral ingress.
 The issue acceptance criteria still require cursor-metadata and lifecycle
-parity, Windows and Linux adapters, representative hardware, performance,
+parity, a Linux adapter, representative hardware, performance,
 protected-content observations, and an issue-04 parity recording.
 
 The provider-neutral tests below still compile a dummy `ScreenCaptureSource`
 using only the exported API. Their simulated frames, permission events,
 geometry, cursor, recovery, copy-budget, and exclusion results remain invalid
-as physical or parity evidence. The production macOS screen-only worker now
-binds `MacOsNormalizedScreenCaptureSource`, negotiates the exact catalog and
-CPU BGRA appsrc plan, and drains `ScreenCaptureIngress` through
-`ScreenRecordingPump`. The optional system-audio worker still owns the earlier
-direct screen source until Issue 25 connects the provider-neutral A/V contract.
-Neither local path may be generalized into complete issue-24 closure.
+as physical or parity evidence. The production macOS and Windows screen-only
+workers bind `MacOsNormalizedScreenCaptureSource` and
+`WindowsNormalizedScreenCaptureSource`, negotiate the exact catalog and CPU
+BGRA appsrc plan, and drain `ScreenCaptureIngress` through one shared
+`ScreenRecordingPump` worker. The optional macOS system-audio worker still owns
+the earlier direct screen source until Issue 25 connects the provider-neutral
+A/V contract. Neither local path may be generalized into complete issue-24
+closure.
 
 The focused contract gates cover:
 
@@ -162,6 +166,51 @@ were absent from recorded pixels, that a written WebM was viewed or decoded in
 this desktop journey, or that performance and lifecycle bounds hold on
 supported hardware.
 
+## Native Windows target source evidence
+
+Repository inspection and focused checks establish the following local source
+facts, not Windows hardware results:
+
+- `frame-windows-screen-capture` provides an unsafe-free Windows Graphics
+  Capture adapter for display, privacy-filtered window, and display-relative
+  region targets; its separate `frame-windows-capture-ffi` crate is the only
+  pointer-level Win32 boundary and exposes no window title, process name,
+  device name, raw handle, or pointer;
+- native target identities are converted to session-secret HMAC tokens, exact
+  display geometry includes DPI and rotation, and Frame's own process windows
+  are omitted from the catalog before a normalized target can be selected;
+- WGC frames are copied into exact CPU BGRA/sRGB allocations, timestamped on a
+  monotonic capture timeline, and handed off through a three-frame
+  nonblocking channel with explicit drop diagnostics; regions are cropped only
+  after exact source-dimension validation;
+- startup and teardown have caller-provided deadlines, a dedicated worker owns
+  the WGC message loop, `WM_QUIT` requests shutdown, and any retained stop tail
+  is bounded before it enters the shared `ScreenCaptureSource` contract; and
+- the Windows CI lane compiles and lints both target-gated crates on a native
+  Windows runner, while the portable desktop dependency gate rejects either
+  native crate or `wgc` from the default shell closure;
+- the `windows-native` desktop feature asks Tauri to protect Frame's main
+  window before constructing `WindowsNativeDesktopBackend`, reports
+  `NativeWindowsDisplayWindowRegion`, and degrades to `Unavailable` if window
+  protection, GStreamer preflight, private-root setup, or source construction
+  fails;
+- the backend exposes only fresh opaque display/window/region selections,
+  rejects system audio, and feeds the normalized Windows source through the
+  same bounded ingress/pump and VP8/WebM recording path as screen-only macOS;
+  and
+- recording and export roots use private Windows DACLs, no-reparse-point opens,
+  verified artifact hashes, and atomic publication before a completed export
+  is reported.
+
+The adapter deliberately advertises neither cursor metadata nor topology
+recovery. Its explicit protected-content policy relies on the operating
+system's public-capture redaction contract rather than inventing a detection
+event, and the composition refuses to start unless Frame's own window has been
+placed behind Tauri's content-protection boundary. Those are source and
+composition contracts, not physical proof that every protected surface or
+Frame pixel was absent on a supported Windows build. System audio, microphone,
+camera, pause/resume, durable recovery, and Studio export remain unavailable.
+
 Reproduce the focused tests and lint gate with:
 
 ```sh
@@ -188,6 +237,26 @@ python3 scripts/ci/build-desktop-ui.py
 cargo build --locked --release -p frame-desktop-core \
   --features tauri-app,custom-protocol,macos-native --bin frame-desktop
 python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
+
+# Run these target-gated checks on a native Windows host. DOCS_RS skips the
+# GStreamer link probe for cargo check; it does not constitute capture evidence.
+export DOCS_RS=1
+cargo check --locked \
+  -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
+cargo clippy --locked \
+  -p frame-windows-capture-ffi -p frame-windows-screen-capture \
+  --all-targets --no-deps -- -D warnings
+cargo check --locked -p frame-desktop-core \
+  --features windows-native,custom-protocol --all-targets
+cargo clippy --locked -p frame-desktop-core \
+  --features windows-native,custom-protocol --all-targets --no-deps -- \
+  -D warnings
+
+# Windows production composition smoke; this does not start capture.
+cargo build --locked --release -p frame-desktop-core \
+  --features windows-native,custom-protocol --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py \
+  --expected-adapter native_windows_display_window_region
 ```
 
 The complete media test suite remains the integration gate because this module
@@ -209,8 +278,8 @@ composition, not the complete issue-24 or Studio contracts.
 
 | Gate | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Native source and release composition | display/window/region screen-only source wired; physical run pending | pending | pending |
-| Permission preflight, prompt, denial, settings, revocation | preflight source wired; observed flow pending | pending | pending |
+| Native source and release composition | display/window/region screen-only source wired; physical run pending | display/window/region screen-only source wired; physical run pending | pending |
+| Permission preflight, prompt, denial, settings, revocation | preflight source wired; observed flow pending | WGC availability preflight implemented; observed flow, settings, and revocation pending | pending |
 | Physical display/window/region samples | pending | pending | pending |
 | Multi-monitor negative origins, mixed/fractional DPI, rotations | pending | pending | pending |
 | Cursor image/position/click parity and clipping | pending | pending | pending |
@@ -221,8 +290,9 @@ composition, not the complete issue-24 or Studio contracts.
 
 No pending row in this table may be inferred from a unit test or an
 enum-to-source mapping. Before the OS/architecture/device matrix can produce
-valid acceptance evidence, Frame must exercise the wired macOS targets and
-still implement missing cursor metadata, lifecycle/recovery, Windows/Linux,
-performance, and parity behavior represented by checkboxes 1–10. Recorded
-samples, probes, measurements, operational documentation, and rollout evidence
-remain subsequent gates rather than substitutes for that code.
+valid acceptance evidence, Frame must exercise the wired macOS and Windows
+targets, implement Linux plus missing cursor metadata and lifecycle/recovery
+behavior, and complete the performance
+and parity work represented by checkboxes 1–10. Recorded samples, probes,
+measurements, operational documentation, and rollout evidence remain subsequent
+gates rather than substitutes for that code.

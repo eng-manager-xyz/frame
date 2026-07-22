@@ -465,6 +465,26 @@ def main() -> int:
         )
     require("macos-15" in quality and "windows-2022" in quality and "macos-14" not in quality,
             "quality-gates.yml: portable core checks must cover macOS and Windows", errors)
+    portability = quality.split("\n  portability:\n", maxsplit=1)[-1].split(
+        "\n  desktop_shell:\n", maxsplit=1
+    )[0]
+    require(
+        "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets"
+        in quality
+        and "cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings"
+        in quality,
+        "quality-gates.yml: Windows native capture boundaries must be checked and linted on Windows",
+        errors,
+    )
+    require(
+        "mkdir -p apps/desktop/ui/dist" in portability
+        and "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests"
+        in portability
+        and "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests --no-deps -- -D warnings"
+        in portability,
+        "quality-gates.yml: the Windows capture library and tests must compile and lint natively",
+        errors,
+    )
     require("desktop_shell:" in quality and "trunk --version 0.21.14 --locked" in quality
             and "build-desktop-ui.py" in quality
             and "--no-color=false" not in quality
@@ -477,6 +497,35 @@ def main() -> int:
     desktop_shell = quality.split("\n  desktop_shell:\n", maxsplit=1)[-1].split(
         "\n  quality-gate:\n", maxsplit=1
     )[0]
+    windows_native_binary = workflow_step(
+        desktop_shell, "Check the native Windows production desktop composition"
+    )
+    require(
+        "if: runner.os == 'Windows'" in windows_native_binary
+        and 'DOCS_RS: "1"' in windows_native_binary
+        and windows_native_binary.count(
+            "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --bin frame-desktop"
+        )
+        == 1
+        and windows_native_binary.count(
+            "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --bin frame-desktop --no-deps -- -D warnings"
+        )
+        == 1,
+        "quality-gates.yml: the verified Windows WebView must feed a checked and linted native production binary",
+        errors,
+    )
+    windows_bundle_marker = "      - name: Verify the closed frontend bundle and advisory boundary"
+    windows_native_binary_marker = (
+        "      - name: Check the native Windows production desktop composition"
+    )
+    require(
+        windows_bundle_marker in desktop_shell
+        and windows_native_binary_marker in desktop_shell
+        and desktop_shell.index(windows_bundle_marker)
+        < desktop_shell.index(windows_native_binary_marker),
+        "quality-gates.yml: the Windows WebView bundle must be verified before the native desktop check",
+        errors,
+    )
     require(
         "macos-native" not in desktop_shell
         and "FRAME_GSTREAMER_COMPILE_ONLY" not in desktop_shell
@@ -492,7 +541,7 @@ def main() -> int:
         bool(dependency_step)
         and "cargo tree --locked -p frame-desktop-core" in dependency_step
         and "--features tauri-app,custom-protocol --edges normal" in dependency_step
-        and "frame-media|frame-macos-screen-capture|frame-macos-av-capture|gstreamer"
+        and "frame-media|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer"
         in dependency_step,
         "quality-gates.yml: the portable desktop dependency graph must reject native media crates",
         errors,

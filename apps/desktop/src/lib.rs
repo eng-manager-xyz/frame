@@ -7,7 +7,10 @@
 pub mod accessibility;
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 pub mod av_settings;
-#[cfg(all(target_os = "macos", feature = "macos-native"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
 pub mod gstreamer_bootstrap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod instant_finalize;
@@ -17,16 +20,27 @@ pub mod ipc;
 pub mod macos_native_backend;
 pub mod migration;
 pub mod native_backend;
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
+#[path = "macos_native_backend/normalized_worker.rs"]
+mod native_screen_worker;
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 pub mod rooted_io;
 pub mod runtime;
 pub mod surface;
+#[cfg(all(target_os = "windows", feature = "windows-native"))]
+pub mod windows_native_backend;
 pub mod workflow;
 
 pub use accessibility::*;
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 pub use av_settings::*;
-#[cfg(all(target_os = "macos", feature = "macos-native"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
 pub use gstreamer_bootstrap::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use instant_finalize::*;
@@ -40,4 +54,6 @@ pub use native_backend::*;
 pub use rooted_io::*;
 pub use runtime::*;
 pub use surface::*;
+#[cfg(all(target_os = "windows", feature = "windows-native"))]
+pub use windows_native_backend::*;
 pub use workflow::*;

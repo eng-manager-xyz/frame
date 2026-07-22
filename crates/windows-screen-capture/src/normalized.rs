@@ -1,4 +1,4 @@
-//! Provider-neutral ownership and event adapter for ScreenCaptureKit.
+//! Provider-neutral ownership and event adapter for Windows Graphics Capture.
 
 use std::collections::VecDeque;
 
@@ -14,19 +14,15 @@ use frame_media::{
 };
 
 use crate::{
-    CALLBACK_QUEUE_CAPACITY, MAX_CAPTURE_HEIGHT, MAX_CAPTURE_WIDTH, MacOsCaptureConfig,
-    MacOsCaptureError, MacOsCaptureFrame, MacOsRegionSelection, MacOsScreenCaptureSource,
+    CALLBACK_QUEUE_CAPACITY, MAX_CAPTURE_HEIGHT, MAX_CAPTURE_WIDTH, WindowsCaptureConfig,
+    WindowsCaptureError, WindowsCaptureFrame, WindowsRegionSelection, WindowsScreenCaptureSource,
 };
 
-/// ScreenCaptureKit source bound to the normalized capture session contract.
-///
-/// The wrapper owns a finite callback tail and never labels ScreenCaptureKit's
-/// ambiguous blank/suspended status as exact protected content. Production
-/// negotiation therefore uses the fail-session content-unavailable contract.
-pub struct MacOsNormalizedScreenCaptureSource {
-    source: MacOsScreenCaptureSource,
+/// WGC source bound to Frame's normalized capture-session contract.
+pub struct WindowsNormalizedScreenCaptureSource {
+    source: WindowsScreenCaptureSource,
     snapshot: ScreenTargetSnapshot,
-    regions: Vec<MacOsRegionSelection>,
+    regions: Vec<WindowsRegionSelection>,
     capabilities: ScreenSourceCapabilities,
     binding: Option<ScreenSourceSessionBinding>,
     active_stream: Option<frame_media::ScreenStreamStamp>,
@@ -34,30 +30,32 @@ pub struct MacOsNormalizedScreenCaptureSource {
     next_control_sequence: u64,
 }
 
-impl MacOsNormalizedScreenCaptureSource {
+impl WindowsNormalizedScreenCaptureSource {
     pub fn new(
-        source: MacOsScreenCaptureSource,
+        source: WindowsScreenCaptureSource,
         snapshot: ScreenTargetSnapshot,
-    ) -> Result<Self, MacOsCaptureError> {
+    ) -> Result<Self, WindowsCaptureError> {
         if source.source_instance() != snapshot.source_instance() {
-            return Err(MacOsCaptureError::StaleOrForeignTarget);
+            return Err(WindowsCaptureError::StaleOrForeignTarget);
         }
         let regions = snapshot
             .targets()
             .iter()
             .filter(|target| target.kind() == ScreenTargetKind::Region)
             .map(|target| {
-                let display = target
-                    .containing_display_binding()
-                    .ok_or(MacOsCaptureError::InvalidRegionGeometry)?;
-                MacOsRegionSelection::new(display, target.logical_bounds())
+                WindowsRegionSelection::new(
+                    target
+                        .containing_display_binding()
+                        .ok_or(WindowsCaptureError::InvalidRegionGeometry)?,
+                    target.logical_bounds(),
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
         let capabilities = capabilities(source.source_instance(), snapshot.generation())?;
         let next_control_sequence = capabilities
             .control_sequence()
             .checked_add(1)
-            .ok_or(MacOsCaptureError::TopologyGenerationExhausted)?;
+            .ok_or(WindowsCaptureError::TopologyGenerationExhausted)?;
         Ok(Self {
             source,
             snapshot,
@@ -71,7 +69,7 @@ impl MacOsNormalizedScreenCaptureSource {
     }
 
     #[must_use]
-    pub const fn raw_source(&self) -> &MacOsScreenCaptureSource {
+    pub const fn raw_source(&self) -> &WindowsScreenCaptureSource {
         &self.source
     }
 
@@ -133,7 +131,7 @@ impl MacOsNormalizedScreenCaptureSource {
     }
 }
 
-impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
+impl ScreenCaptureSource for WindowsNormalizedScreenCaptureSource {
     type FramePayload = Box<[u8]>;
     type CursorImagePayload = Box<[u8]>;
 
@@ -175,7 +173,7 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
         budget: &ScreenOperationBudget<'_>,
     ) -> Result<ScreenPermissionObservation, ScreenSourceFailure> {
         self.validate_call(ticket, budget)?;
-        let permission = self.source.preflight_permission();
+        let permission = self.source.preflight_permission().map_err(source_failure)?;
         self.permission_observation(permission)
     }
 
@@ -185,7 +183,7 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
         budget: &ScreenOperationBudget<'_>,
     ) -> Result<ScreenPermissionObservation, ScreenSourceFailure> {
         self.validate_call(ticket, budget)?;
-        let permission = self.source.request_permission();
+        let permission = self.source.request_permission().map_err(source_failure)?;
         self.permission_observation(permission)
     }
 
@@ -217,16 +215,21 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
             return Err(ticket.failure(ScreenSourceFailureCode::NativeOperationFailed, false));
         }
         let request = ticket.negotiated().request();
-        let config = MacOsCaptureConfig::new(
+        let config = WindowsCaptureConfig::new(
             request.target().binding(),
             request.output(),
             request.cursor().mode(),
         )
-        .map_err(|error| ticket.failure(source_failure_code(error).0, false))?;
-        self.source.start(config).map_err(|error| {
-            let (code, retryable) = source_failure_code(error);
+        .map_err(|error| {
+            let (code, retryable) = source_failure_code(&error);
             ticket.failure(code, retryable)
         })?;
+        self.source
+            .start(config, budget.remaining())
+            .map_err(|error| {
+                let (code, retryable) = source_failure_code(&error);
+                ticket.failure(code, retryable)
+            })?;
         self.active_stream = Some(ticket.stream());
         Ok(())
     }
@@ -286,26 +289,25 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
         if ticket.stream() != stream && ticket.predecessor_stream() != Some(stream) {
             return Err(ticket.failure(ScreenSourceFailureCode::NativeOperationFailed, false));
         }
-        let frames = self.source.stop_and_drain_frames().map_err(|error| {
-            let (code, retryable) = source_failure_code(error.into_capture_error());
-            ticket.failure(code, retryable)
-        })?;
-        // Native stop is authoritative even if one retained callback frame is
-        // malformed. Clear the active stream before converting the finite tail
-        // so a conversion failure cannot make a stopped source look live.
+        let frames = self
+            .source
+            .stop_and_drain_frames(budget.remaining())
+            .map_err(|error| {
+                let (code, retryable) = source_failure_code(&error);
+                ticket.failure(code, retryable)
+            })?;
         self.active_stream = None;
         if frames.len() > CALLBACK_QUEUE_CAPACITY {
             return Err(ticket.failure(ScreenSourceFailureCode::NativeOperationFailed, false));
         }
-        let tail = frames
+        self.stopped_tail = frames
             .into_iter()
             .map(|frame| normalized_frame(stream, frame))
             .collect::<Result<VecDeque<_>, _>>()
             .map_err(|error| {
-                let (code, retryable) = source_failure_code(error);
+                let (code, retryable) = source_failure_code(&error);
                 ticket.failure(code, retryable)
             })?;
-        self.stopped_tail = tail;
         Ok(())
     }
 }
@@ -313,14 +315,14 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
 fn capabilities(
     source_instance: ScreenSourceInstanceId,
     topology_generation: u64,
-) -> Result<ScreenSourceCapabilities, MacOsCaptureError> {
-    let spec = ScreenSourceCapabilitySpec {
+) -> Result<ScreenSourceCapabilities, WindowsCaptureError> {
+    ScreenSourceCapabilities::new(ScreenSourceCapabilitySpec {
         contract_version: SCREEN_CAPTURE_CONTRACT_VERSION,
-        source: PlatformScreenSource::ScreenCaptureKit,
+        source: PlatformScreenSource::WindowsGraphicsCapture,
         source_instance,
         topology_generation,
         control_epoch: ScreenControlEpoch::new(1)
-            .map_err(|_| MacOsCaptureError::MediaCatalogRejected)?,
+            .map_err(|_| WindowsCaptureError::MediaCatalogRejected)?,
         control_sequence: 1,
         targets: ScreenTargetKinds::none()
             .with(ScreenTargetKind::Display)
@@ -345,25 +347,28 @@ fn capabilities(
         topology_events: false,
         target_recovery: false,
         protected_content_events: false,
-        content_unavailable_failures: true,
-        platform_protected_content_redaction: false,
+        // WGC redacts protected surfaces but exposes no exact transition
+        // signal. FailSession therefore remains unavailable; callers must
+        // explicitly require the platform-redaction contract.
+        content_unavailable_failures: false,
+        platform_protected_content_redaction: true,
         window_exclusion: false,
         max_excluded_windows: 0,
         bounded_appsrc_ingress: true,
-    };
-    ScreenSourceCapabilities::new(spec).map_err(|_| MacOsCaptureError::MediaCatalogRejected)
+    })
+    .map_err(|_| WindowsCaptureError::MediaCatalogRejected)
 }
 
 fn normalized_frame(
     stream: frame_media::ScreenStreamStamp,
-    frame: MacOsCaptureFrame,
-) -> Result<ScreenFrame<Box<[u8]>>, MacOsCaptureError> {
+    frame: WindowsCaptureFrame,
+) -> Result<ScreenFrame<Box<[u8]>>, WindowsCaptureError> {
     let sequence = frame.sequence();
     let timestamp = frame.timestamp();
     let spec = frame.spec();
     let payload = frame.into_pixels().into_boxed_slice();
-    let retained_bytes =
-        u64::try_from(payload.len()).map_err(|_| MacOsCaptureError::FrameAllocationExceedsLimit)?;
+    let retained_bytes = u64::try_from(payload.len())
+        .map_err(|_| WindowsCaptureError::FrameAllocationExceedsLimit)?;
     ScreenFrame::new(
         ScreenFrameEnvelope {
             stream,
@@ -375,44 +380,32 @@ fn normalized_frame(
         },
         payload,
     )
-    .map_err(|_| MacOsCaptureError::InvalidSampleBuffer)
+    .map_err(|_| WindowsCaptureError::InvalidNativeFrame)
 }
 
-fn source_failure(error: MacOsCaptureError) -> ScreenSourceFailure {
-    let (code, retryable) = source_failure_code(error);
+fn source_failure(error: WindowsCaptureError) -> ScreenSourceFailure {
+    let (code, retryable) = source_failure_code(&error);
     ScreenSourceFailure::new(code, retryable)
 }
 
-const fn source_failure_code(error: MacOsCaptureError) -> (ScreenSourceFailureCode, bool) {
+const fn source_failure_code(error: &WindowsCaptureError) -> (ScreenSourceFailureCode, bool) {
     match error {
-        MacOsCaptureError::PermissionDenied => (ScreenSourceFailureCode::PermissionDenied, true),
-        MacOsCaptureError::TargetNoLongerAvailable
-        | MacOsCaptureError::StaleTargetTopology
-        | MacOsCaptureError::StaleOrForeignTarget
-        | MacOsCaptureError::UnexpectedStreamStop => (ScreenSourceFailureCode::TargetLost, true),
-        MacOsCaptureError::ContentUnavailable => {
-            (ScreenSourceFailureCode::ContentUnavailable, false)
+        WindowsCaptureError::AdapterUnavailable => {
+            (ScreenSourceFailureCode::AdapterUnavailable, true)
         }
-        MacOsCaptureError::MissingImageBuffer
-        | MacOsCaptureError::MissingFrameStatus
-        | MacOsCaptureError::InvalidSampleBuffer
-        | MacOsCaptureError::UnexpectedPixelFormat
-        | MacOsCaptureError::UnexpectedFrameDimensions { .. }
-        | MacOsCaptureError::InvalidRowStride
-        | MacOsCaptureError::PixelBufferTooShort
-        | MacOsCaptureError::PixelBufferLockFailed
-        | MacOsCaptureError::InvalidTimestamp
-        | MacOsCaptureError::SequenceExhausted => {
+        WindowsCaptureError::TargetNoLongerAvailable
+        | WindowsCaptureError::StaleTargetTopology
+        | WindowsCaptureError::StaleOrForeignTarget
+        | WindowsCaptureError::UnexpectedStreamStop => (ScreenSourceFailureCode::TargetLost, true),
+        WindowsCaptureError::InvalidNativeFrame
+        | WindowsCaptureError::InvalidRowStride
+        | WindowsCaptureError::NativeBufferTooShort
+        | WindowsCaptureError::InvalidTimestamp
+        | WindowsCaptureError::SequenceExhausted => {
             (ScreenSourceFailureCode::InvalidNativeFrame, false)
         }
-        MacOsCaptureError::NativeOperationTimedOut => {
+        WindowsCaptureError::CaptureStartTimedOut | WindowsCaptureError::CaptureStopTimedOut => {
             (ScreenSourceFailureCode::DeadlineExceeded, true)
-        }
-        MacOsCaptureError::DisplayCatalogUnavailable
-        | MacOsCaptureError::ShareableContentUnavailable
-        | MacOsCaptureError::NativeOperationCapacityUnavailable
-        | MacOsCaptureError::NativeOperationWorkerUnavailable => {
-            (ScreenSourceFailureCode::AdapterUnavailable, true)
         }
         _ => (ScreenSourceFailureCode::NativeOperationFailed, false),
     }
@@ -432,34 +425,38 @@ mod tests {
 
     use super::*;
 
-    fn source_instance() -> ScreenSourceInstanceId {
-        ScreenSourceInstanceId::new([1; 16]).expect("source identity")
-    }
-
-    fn catalog(source: ScreenSourceInstanceId) -> ScreenTargetSnapshot {
+    #[test]
+    fn wgc_requires_explicit_platform_redaction_without_inventing_an_event() {
+        let source_instance = ScreenSourceInstanceId::new([1; 16]).expect("source");
         let binding = ScreenTargetBinding::new(
-            source,
+            source_instance,
             1,
-            ScreenTargetEpoch::new(1).expect("target epoch"),
-            ScreenTargetId::new(ScreenTargetKind::Display, [2; 16]).expect("target identity"),
+            ScreenTargetEpoch::new(1).expect("epoch"),
+            ScreenTargetId::new(ScreenTargetKind::Display, [2; 16]).expect("target"),
         )
-        .expect("target binding");
-        let transform = DisplayGeometryTransform::new(
-            LogicalRect::new(-100, 50, 320, 180).expect("logical bounds"),
-            PhysicalRect::new(1_000, -500, 640, 360).expect("physical bounds"),
-            DpiScale::new(2, 1).expect("DPI scale"),
-            Rotation::Degrees0,
+        .expect("binding");
+        let target = ScreenTargetDescriptor::display(
+            binding,
+            DisplayGeometryTransform::new(
+                LogicalRect::new(0, 0, 320, 180).expect("logical"),
+                PhysicalRect::new(0, 0, 320, 180).expect("physical"),
+                DpiScale::new(1, 1).expect("scale"),
+                Rotation::Degrees0,
+            )
+            .expect("transform"),
         )
-        .expect("display transform");
-        let target = ScreenTargetDescriptor::display(binding, transform).expect("display target");
-        ScreenTargetSnapshot::new(source, 1, vec![target]).expect("target snapshot")
-    }
-
-    fn request(
-        target: ScreenTargetDescriptor,
-        protected_content: ProtectedContentPolicy,
-    ) -> ScreenCaptureRequest {
-        ScreenCaptureRequest::new(ScreenCaptureRequestSpec {
+        .expect("target");
+        let catalog =
+            ScreenTargetSnapshot::new(source_instance, 1, vec![target.clone()]).expect("catalog");
+        let raw = WindowsScreenCaptureSource::new(source_instance, [3; 32]).expect("raw");
+        let normalized =
+            WindowsNormalizedScreenCaptureSource::new(raw, catalog.clone()).expect("normalized");
+        let bound = BoundScreenCaptureSource::new(
+            normalized,
+            ScreenSessionId::from_csprng([4; 16]).expect("session"),
+        )
+        .expect("bound");
+        let request = ScreenCaptureRequest::new(ScreenCaptureRequestSpec {
             target,
             output: VideoFrameSpec {
                 width: 320,
@@ -470,7 +467,7 @@ mod tests {
                 memory: FrameMemory::Cpu,
             },
             cursor: CursorPolicy::new(CursorCaptureMode::EmbeddedInFrame, false, false)
-                .expect("cursor policy"),
+                .expect("cursor"),
             excluded_windows: Vec::new(),
             queue: ScreenCaptureQueuePolicy::new(
                 3,
@@ -478,52 +475,41 @@ mod tests {
                 500_000_000,
                 CaptureQueueOverflow::DropOldest,
             )
-            .expect("queue policy"),
+            .expect("queue"),
             recovery: TargetRecoveryPolicy::FailClosed,
-            protected_content,
+            protected_content: ProtectedContentPolicy::FailSession,
         })
-        .expect("capture request")
-    }
-
-    #[test]
-    fn normalized_capabilities_are_exact_and_protection_is_fail_closed() {
-        let source_instance = source_instance();
-        let catalog = catalog(source_instance);
-        let raw = MacOsScreenCaptureSource::new(source_instance, [3; 32]).expect("raw source");
-        let normalized =
-            MacOsNormalizedScreenCaptureSource::new(raw, catalog.clone()).expect("normalized");
-        let bound = BoundScreenCaptureSource::new(
-            normalized,
-            ScreenSessionId::from_csprng([4; 16]).expect("session identity"),
-        )
-        .expect("bound source");
-        let capabilities = bound.capabilities();
-
-        assert!(!capabilities.spec().protected_content_events);
-        assert!(capabilities.spec().content_unavailable_failures);
-        assert!(!capabilities.spec().cursor_image_metadata);
-        assert!(!capabilities.spec().cursor_click_metadata);
-        assert!(
-            negotiate_screen_capture(
-                capabilities,
-                &catalog,
-                request(
-                    catalog.targets()[0].clone(),
-                    ProtectedContentPolicy::FailSession,
-                ),
-            )
-            .is_ok()
-        );
+        .expect("request");
         assert_eq!(
-            negotiate_screen_capture(
-                capabilities,
-                &catalog,
-                request(
-                    catalog.targets()[0].clone(),
-                    ProtectedContentPolicy::SuspendUntilClear,
-                ),
-            ),
+            negotiate_screen_capture(bound.capabilities(), &catalog, request),
             Err(ScreenCaptureError::ProtectedContentSignalUnavailable)
         );
+
+        let target = catalog.targets()[0].clone();
+        let request = ScreenCaptureRequest::new(ScreenCaptureRequestSpec {
+            target,
+            output: VideoFrameSpec {
+                width: 320,
+                height: 180,
+                pixel_format: PixelFormat::Bgra8,
+                color_space: ColorSpace::Srgb,
+                nominal_frame_duration_ns: 33_333_333,
+                memory: FrameMemory::Cpu,
+            },
+            cursor: CursorPolicy::new(CursorCaptureMode::EmbeddedInFrame, false, false)
+                .expect("cursor"),
+            excluded_windows: Vec::new(),
+            queue: ScreenCaptureQueuePolicy::new(
+                3,
+                320 * 180 * 4 * 3,
+                500_000_000,
+                CaptureQueueOverflow::DropOldest,
+            )
+            .expect("queue"),
+            recovery: TargetRecoveryPolicy::FailClosed,
+            protected_content: ProtectedContentPolicy::RequirePlatformRedaction,
+        })
+        .expect("request");
+        assert!(negotiate_screen_capture(bound.capabilities(), &catalog, request).is_ok());
     }
 }

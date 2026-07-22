@@ -1,7 +1,9 @@
-//! Owner-bound screen-only production worker.
+//! Owner-bound, platform-neutral screen-only production worker.
 //!
-//! System-audio composition remains in the sibling A/V worker until the
-//! provider-neutral audio contract is connected in Issue 25.
+//! Platform modules adapt their native source to [`NativeScreenSource`]. This
+//! worker then owns the shared capture session, bounded appsrc ingress,
+//! lossless stop tail, and GStreamer/WebM graph without bypassing the
+//! provider-neutral contracts.
 
 use std::{
     sync::mpsc::{Receiver, TryRecvError},
@@ -9,23 +11,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use frame_macos_screen_capture::{
-    MacOsCaptureDiagnostics, MacOsNormalizedScreenCaptureSource, MacOsScreenCaptureSource,
-};
 use frame_media::{
     BoundScreenCaptureSource, CancellationToken, CaptureQueueOverflow, CursorCaptureMode,
     CursorPolicy, ProtectedContentPolicy, ScreenCaptureIngress, ScreenCapturePhase,
     ScreenCaptureQueuePolicy, ScreenCaptureRequest, ScreenCaptureRequestSpec, ScreenCaptureSession,
     ScreenGracefulStopCompletionOutcome, ScreenIngressOutcome, ScreenOperationBudget,
     ScreenOperationExecutionError, ScreenPumpError, ScreenPumpOutcome, ScreenRecording,
-    ScreenRecordingPump, ScreenSessionFailureCode, ScreenSessionId, ScreenSessionIntent,
-    ScreenSourceFailureCode, ScreenTargetDescriptor, ScreenTargetSnapshot, TargetRecoveryPolicy,
-    VideoFrameSpec, negotiate_screen_capture,
+    ScreenRecordingArtifact, ScreenRecordingPump, ScreenSessionFailureCode, ScreenSessionId,
+    ScreenSessionIntent, ScreenSourceFailureCode, ScreenTargetDescriptor, ScreenTargetSnapshot,
+    TargetRecoveryPolicy, VideoFrameSpec, negotiate_screen_capture,
 };
 
-use super::{
-    NativeDesktopBackendError, WorkerCompletion, WorkerControl, WorkerOutcome, diagnostics_failed,
-};
+use crate::NativeDesktopBackendError;
 
 const SOURCE_CALL_TIMEOUT: Duration = Duration::from_secs(1);
 const STOP_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -33,39 +30,102 @@ const QUEUE_MAX_FRAMES: u16 = 3;
 const QUEUE_MAX_AGE_NS: u64 = 500_000_000;
 const IDLE_POLL: Duration = Duration::from_millis(2);
 
-pub(super) struct ScreenWorkerStart {
-    source: BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+pub(crate) trait NativeScreenSource:
+    frame_media::ScreenCaptureSource<FramePayload = Box<[u8]>, CursorImagePayload = Box<[u8]>>
+    + Sized
+    + 'static
+{
+    type RawSource: Send + 'static;
+    type Diagnostics: Copy + Send + 'static;
+
+    fn normalize(
+        source: Self::RawSource,
+        snapshot: ScreenTargetSnapshot,
+    ) -> Result<Self, NativeDesktopBackendError>;
+    fn native_is_running(&self) -> bool;
+    fn diagnostics(&self) -> Self::Diagnostics;
+    fn diagnostics_failed(baseline: Self::Diagnostics, current: Self::Diagnostics) -> bool;
+    fn protected_content_policy() -> ProtectedContentPolicy;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkerControl {
+    Stop,
+    Cancel,
+}
+
+pub(crate) struct WorkerCompletion {
+    pub(crate) outcome: WorkerOutcome,
+}
+
+pub(crate) enum WorkerOutcome {
+    Finished(CompletedRecordingArtifact),
+    Cancelled,
+    Failed {
+        error: NativeDesktopBackendError,
+        teardown_confirmed: bool,
+    },
+}
+
+impl WorkerOutcome {
+    pub(crate) const fn teardown_confirmed(&self) -> bool {
+        match self {
+            Self::Finished(_) | Self::Cancelled => true,
+            Self::Failed {
+                teardown_confirmed, ..
+            } => *teardown_confirmed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletedRecordingArtifact {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
+    pub(crate) duration_ns: u64,
+}
+
+impl From<ScreenRecordingArtifact> for CompletedRecordingArtifact {
+    fn from(artifact: ScreenRecordingArtifact) -> Self {
+        Self {
+            path: artifact.path,
+            bytes: artifact.bytes,
+            sha256: artifact.sha256,
+            duration_ns: artifact.end_pts_ns.saturating_sub(artifact.first_pts_ns),
+        }
+    }
+}
+
+pub(crate) struct ScreenWorkerStart<S: NativeScreenSource> {
+    source: BoundScreenCaptureSource<S>,
     session: ScreenCaptureSession,
     ingress: ScreenCaptureIngress<Box<[u8]>, Box<[u8]>>,
     recording: ScreenRecording,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
+    diagnostic_baseline: S::Diagnostics,
 }
 
-pub(super) struct ScreenWorkerSetupFailure {
+pub(crate) struct ScreenWorkerSetupFailure {
     pub(super) error: NativeDesktopBackendError,
     pub(super) teardown_confirmed: bool,
 }
 
-impl ScreenWorkerStart {
-    pub(super) fn prepare(
-        source: MacOsScreenCaptureSource,
+impl<S: NativeScreenSource> ScreenWorkerStart<S> {
+    pub(crate) fn prepare(
+        source: S::RawSource,
         snapshot: ScreenTargetSnapshot,
         target: ScreenTargetDescriptor,
         frame_spec: VideoFrameSpec,
         recording: ScreenRecording,
-        diagnostic_baseline: MacOsCaptureDiagnostics,
         session_id: ScreenSessionId,
     ) -> Result<Self, ScreenWorkerSetupFailure> {
-        let normalized = match MacOsNormalizedScreenCaptureSource::new(source, snapshot.clone()) {
+        let normalized = match S::normalize(source, snapshot.clone()) {
             Ok(normalized) => normalized,
             Err(error) => {
-                return Err(setup_failure(
-                    recording,
-                    super::map_capture_error(error),
-                    true,
-                ));
+                return Err(setup_failure(recording, error, true));
             }
         };
+        let diagnostic_baseline = normalized.diagnostics();
         let mut source = match BoundScreenCaptureSource::new(normalized, session_id) {
             Ok(source) => source,
             Err(_) => {
@@ -128,7 +188,7 @@ impl ScreenWorkerStart {
             // ScreenCaptureKit does not expose an exact protected-content
             // signal. Blank/suspended native frames are surfaced as a
             // terminal ContentUnavailable failure instead of being mislabeled.
-            protected_content: ProtectedContentPolicy::FailSession,
+            protected_content: S::protected_content_policy(),
         });
         let request = match request {
             Ok(request) => request,
@@ -174,7 +234,7 @@ impl ScreenWorkerStart {
         let budget = match operation_budget(&cancellation) {
             Ok(budget) => budget,
             Err(error) => {
-                let capture_teardown_confirmed = !source.adapter().raw_source().is_running();
+                let capture_teardown_confirmed = !source.adapter().native_is_running();
                 return Err(setup_failure(recording, error, capture_teardown_confirmed));
             }
         };
@@ -419,11 +479,11 @@ impl ScreenWorkerStart {
     }
 }
 
-fn finish(
-    source: &mut BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+fn finish<S: NativeScreenSource>(
+    source: &mut BoundScreenCaptureSource<S>,
     session: &mut ScreenCaptureSession,
     mut pump: ScreenRecordingPump<'_, Box<[u8]>, Box<[u8]>>,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
+    diagnostic_baseline: S::Diagnostics,
     cancellation: &CancellationToken,
     started: Instant,
 ) -> WorkerOutcome {
@@ -508,10 +568,7 @@ fn finish(
             return fail_active(source, session, pump, primary, diagnostic_baseline);
         }
     };
-    if diagnostics_failed(
-        diagnostic_baseline,
-        source.adapter().raw_source().diagnostics(),
-    ) {
+    if S::diagnostics_failed(diagnostic_baseline, source.adapter().diagnostics()) {
         return fail_active(
             source,
             session,
@@ -524,16 +581,16 @@ fn finish(
         Ok(artifact) => WorkerOutcome::Finished(artifact.into()),
         Err(error) => WorkerOutcome::Failed {
             error: map_pump_error(&error),
-            teardown_confirmed: !source.adapter().raw_source().is_running(),
+            teardown_confirmed: !source.adapter().native_is_running(),
         },
     }
 }
 
-fn cancel(
-    source: &mut BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+fn cancel<S: NativeScreenSource>(
+    source: &mut BoundScreenCaptureSource<S>,
     session: &mut ScreenCaptureSession,
     mut pump: ScreenRecordingPump<'_, Box<[u8]>, Box<[u8]>>,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
+    diagnostic_baseline: S::Diagnostics,
 ) -> WorkerOutcome {
     let mut transition = match pump.cancel_session(session) {
         Ok(transition) => transition,
@@ -563,13 +620,10 @@ fn cancel(
         );
     }
     let graph_teardown_confirmed = pump.teardown().is_ok();
-    let capture_teardown_confirmed = !source.adapter().raw_source().is_running();
+    let capture_teardown_confirmed = !source.adapter().native_is_running();
     if graph_teardown_confirmed
         && capture_teardown_confirmed
-        && !diagnostics_failed(
-            diagnostic_baseline,
-            source.adapter().raw_source().diagnostics(),
-        )
+        && !S::diagnostics_failed(diagnostic_baseline, source.adapter().diagnostics())
     {
         WorkerOutcome::Cancelled
     } else {
@@ -580,14 +634,14 @@ fn cancel(
     }
 }
 
-fn fail_active(
-    source: &mut BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+fn fail_active<S: NativeScreenSource>(
+    source: &mut BoundScreenCaptureSource<S>,
     session: &mut ScreenCaptureSession,
     mut pump: ScreenRecordingPump<'_, Box<[u8]>, Box<[u8]>>,
     primary: NativeDesktopBackendError,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
+    diagnostic_baseline: S::Diagnostics,
 ) -> WorkerOutcome {
-    if source.adapter().raw_source().is_running()
+    if source.adapter().native_is_running()
         && !session.phase().is_terminal()
         && let Ok(mut transition) = pump.cancel_session(session)
         && let Ok(budget) = operation_budget(&CancellationToken::new())
@@ -601,11 +655,8 @@ fn fail_active(
         );
     }
     let graph_teardown_confirmed = pump.teardown().is_ok();
-    let capture_teardown_confirmed = !source.adapter().raw_source().is_running();
-    if diagnostics_failed(
-        diagnostic_baseline,
-        source.adapter().raw_source().diagnostics(),
-    ) {
+    let capture_teardown_confirmed = !source.adapter().native_is_running();
+    if S::diagnostics_failed(diagnostic_baseline, source.adapter().diagnostics()) {
         eprintln!("Frame normalized capture worker observed terminal native diagnostics");
     }
     WorkerOutcome::Failed {
@@ -614,9 +665,9 @@ fn fail_active(
     }
 }
 
-fn execute_pump_retirement(
+fn execute_pump_retirement<S: NativeScreenSource>(
     error: &mut ScreenPumpError,
-    source: &mut BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+    source: &mut BoundScreenCaptureSource<S>,
     session: &mut ScreenCaptureSession,
     pump: &mut ScreenRecordingPump<'_, Box<[u8]>, Box<[u8]>>,
     budget: &ScreenOperationBudget<'_>,
@@ -636,9 +687,9 @@ fn execute_pump_retirement(
     }
 }
 
-fn execute_retirement_action(
+fn execute_retirement_action<S: NativeScreenSource>(
     action: &mut frame_media::ScreenSessionAction,
-    source: &mut BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+    source: &mut BoundScreenCaptureSource<S>,
     session: &mut ScreenCaptureSession,
     pump: &mut ScreenRecordingPump<'_, Box<[u8]>, Box<[u8]>>,
     budget: &ScreenOperationBudget<'_>,
@@ -647,7 +698,7 @@ fn execute_retirement_action(
         Ok(Some(acknowledgement)) => pump
             .complete_abort_operation(session, acknowledgement)
             .is_ok(),
-        Ok(None) => !source.adapter().raw_source().is_running(),
+        Ok(None) => !source.adapter().native_is_running(),
         Err(error) => {
             eprintln!("Frame normalized capture teardown failed: {error}");
             false
@@ -655,12 +706,12 @@ fn execute_retirement_action(
     }
 }
 
-fn cancel_without_pump(
-    source: &mut BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+fn cancel_without_pump<S: NativeScreenSource>(
+    source: &mut BoundScreenCaptureSource<S>,
     session: &mut ScreenCaptureSession,
     ingress: &mut ScreenCaptureIngress<Box<[u8]>, Box<[u8]>>,
 ) -> bool {
-    if !source.adapter().raw_source().is_running() {
+    if !source.adapter().native_is_running() {
         return true;
     }
     // Pump construction already consumed and explicitly aborted the graph, so
@@ -675,16 +726,16 @@ fn cancel_without_pump(
     {
         let _ = ingress.complete_operation(session, acknowledgement);
     }
-    !source.adapter().raw_source().is_running()
+    !source.adapter().native_is_running()
 }
 
-fn teardown_setup(
-    source: &mut BoundScreenCaptureSource<MacOsNormalizedScreenCaptureSource>,
+fn teardown_setup<S: NativeScreenSource>(
+    source: &mut BoundScreenCaptureSource<S>,
     session: &mut ScreenCaptureSession,
     ingress: &mut ScreenCaptureIngress<Box<[u8]>, Box<[u8]>>,
     recording: ScreenRecording,
 ) -> bool {
-    if source.adapter().raw_source().is_running()
+    if source.adapter().native_is_running()
         && let Ok(mut transition) = ingress.cancel_session(session)
         && let Ok(budget) = operation_budget(&CancellationToken::new())
         && let Ok(Some(acknowledgement)) = transition
@@ -694,7 +745,7 @@ fn teardown_setup(
     {
         let _ = ingress.complete_operation(session, acknowledgement);
     }
-    let capture_teardown_confirmed = !source.adapter().raw_source().is_running();
+    let capture_teardown_confirmed = !source.adapter().native_is_running();
     let recording_teardown_confirmed = recording.abort().is_ok();
     capture_teardown_confirmed && recording_teardown_confirmed
 }
