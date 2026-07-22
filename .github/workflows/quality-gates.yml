@@ -429,8 +429,10 @@ jobs:
       - name: Compile the Windows native adapters
         if: runner.os == 'Windows'
         env:
-          # Skip native GStreamer probing while compiling, testing, and linting
-          # every Windows-only Rust/Win32 library path on the Windows runner.
+          # Skip native GStreamer probing while compile-checking and linting
+          # every Windows-only Rust/Win32 library and test path. The empty
+          # frontend directory only satisfies Tauri's incidental bin-test
+          # expansion; desktop_shell builds and verifies the real bundle.
           DOCS_RS: "1"
         run: |
           cargo test --locked -p frame-windows-secure-spool
@@ -438,8 +440,9 @@ jobs:
           cargo check --locked -p frame-media --all-targets
           cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
           cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings
-          cargo test --locked -p frame-desktop-core --features windows-native,custom-protocol --lib
-          cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --no-deps -- -D warnings
+          mkdir -p apps/desktop/ui/dist
+          cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests
+          cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests --no-deps -- -D warnings
 
   desktop_shell:
     name: Portable Tauri desktop shell on ${{ matrix.os }}

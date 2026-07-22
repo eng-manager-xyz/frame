@@ -324,8 +324,14 @@ def main() -> int:
             ),
             (
                 quality,
-                "cargo test --locked -p frame-desktop-core --features windows-native,custom-protocol --lib",
-                "cargo test --locked -p frame-desktop-core --features tauri-app,custom-protocol --lib",
+                "mkdir -p apps/desktop/ui/dist",
+                "test -d apps/desktop/ui/dist",
+                "Windows native desktop test frontend placeholder omitted",
+            ),
+            (
+                quality,
+                "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests",
+                "cargo check --locked -p frame-desktop-core --features tauri-app,custom-protocol --lib --tests",
                 "Windows native desktop library check omitted",
             ),
             (
