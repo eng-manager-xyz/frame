@@ -440,7 +440,7 @@ fn run_capture_worker(
     terminal: Arc<AtomicU8>,
     diagnostics: Arc<DiagnosticCounters>,
 ) {
-    let mut capture = match Wgc::new(item, settings) {
+    let capture = match Wgc::new(item, settings) {
         Ok(capture) => capture,
         Err(_) => {
             let _ = started.send(Err(()));
@@ -452,7 +452,7 @@ fn run_capture_worker(
     }
     let mut sequence = 0_u64;
     let mut timestamps = TimestampNormalizer::default();
-    while let Some(result) = capture.next() {
+    for result in capture {
         if stop_requested.load(Ordering::Acquire) {
             break;
         }
