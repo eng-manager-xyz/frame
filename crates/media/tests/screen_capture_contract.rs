@@ -129,6 +129,7 @@ fn capability_spec(
         topology_events: true,
         target_recovery: true,
         protected_content_events: true,
+        content_unavailable_failures: false,
         window_exclusion: true,
         max_excluded_windows: 8,
         bounded_appsrc_ingress: true,
@@ -255,6 +256,7 @@ struct DummySource {
     catalog: ScreenTargetSnapshot,
     pending_topology: RefCell<Option<(ScreenSourceCapabilities, ScreenTargetSnapshot)>>,
     pending_events: RefCell<VecDeque<TestSourceEvent>>,
+    stopped_events: RefCell<VecDeque<TestSourceEvent>>,
     preflight_observation: RefCell<Option<ScreenPermissionObservation>>,
     session_binding: Option<ScreenSourceSessionBinding>,
     native_streams: RefCell<SharedNativeStreams>,
@@ -295,6 +297,7 @@ impl DummySource {
             catalog,
             pending_topology: RefCell::new(None),
             pending_events: RefCell::new(VecDeque::new()),
+            stopped_events: RefCell::new(VecDeque::new()),
             preflight_observation: RefCell::new(None),
             session_binding: None,
             native_streams: RefCell::new(native_streams),
@@ -371,6 +374,10 @@ impl DummySource {
 
     fn queue_event(&self, event: TestSourceEvent) {
         self.pending_events.borrow_mut().push_back(event);
+    }
+
+    fn queue_stopped_event(&self, event: TestSourceEvent) {
+        self.stopped_events.borrow_mut().push_back(event);
     }
 
     fn receive_ticket(
@@ -647,6 +654,16 @@ impl ScreenCaptureSource for DummySource {
             return Err(ScreenSourceFailure::new(code, true));
         }
         Ok(self.pending_events.get_mut().pop_front())
+    }
+
+    fn poll_stopped_event(
+        &mut self,
+        ticket: &ScreenSourceCallTicket<'_>,
+        budget: &ScreenOperationBudget<'_>,
+    ) -> ScreenSourcePollResult<Self::FramePayload, Self::CursorImagePayload> {
+        assert_eq!(self.session_binding, Some(ticket.binding()));
+        budget.check()?;
+        Ok(self.stopped_events.get_mut().pop_front())
     }
 
     fn stop(
@@ -1069,6 +1086,49 @@ fn exact_negotiation_preserves_nonblocking_appsrc_and_cpu_allocation_lifetime() 
         AppSrcBufferLifetime::OwnedUntilDownstreamRelease
     );
     assert_eq!(ingress.frame_spec, output_spec());
+}
+
+#[test]
+fn content_unavailable_fallback_is_fail_closed_and_never_claims_reversible_protection() {
+    let source = source_instance(1);
+    let selected = display_target(source, 1, 1);
+    let catalog = ScreenTargetSnapshot::new(source, 1, vec![selected.clone()]).expect("catalog");
+    let mut spec = capability_spec(source, 1, 1);
+    spec.protected_content_events = false;
+    spec.content_unavailable_failures = true;
+    let capabilities = ScreenSourceCapabilities::new(spec).expect("fallback capabilities");
+    let embedded = cursor_policy(CursorCaptureMode::EmbeddedInFrame, false, false);
+
+    assert!(
+        negotiate_screen_capture(
+            &capabilities,
+            &catalog,
+            request(
+                selected.clone(),
+                vec![],
+                embedded,
+                default_queue(),
+                TargetRecoveryPolicy::FailClosed,
+                ProtectedContentPolicy::FailSession,
+            ),
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        negotiate_screen_capture(
+            &capabilities,
+            &catalog,
+            request(
+                selected,
+                vec![],
+                embedded,
+                default_queue(),
+                TargetRecoveryPolicy::FailClosed,
+                ProtectedContentPolicy::SuspendUntilClear,
+            ),
+        ),
+        Err(ScreenCaptureError::ProtectedContentSignalUnavailable)
+    );
 }
 
 #[test]
@@ -3606,6 +3666,104 @@ fn bounded_capture_pump_writes_playable_media_and_seals_on_graceful_stop() {
         .finish(*completion, &CancellationToken::new())
         .expect("verified pumped artifact");
     assert_eq!(artifact.path, output);
+    assert_eq!(artifact.submitted_frames, 3);
+    assert_eq!(artifact.encoded_frames, 3);
+}
+
+#[test]
+fn graceful_stop_ingests_the_bounded_native_callback_tail_before_eos() {
+    let spec = output_spec();
+    let frame_bytes = u64::from(spec.width) * u64::from(spec.height) * 4;
+    let mut harness = ready_harness_with(
+        cursor_policy(CursorCaptureMode::EmbeddedInFrame, false, false),
+        queue_policy(
+            3,
+            frame_bytes * 3,
+            1_000_000_000,
+            CaptureQueueOverflow::DropOldest,
+        ),
+        TargetRecoveryPolicy::FailClosed,
+        ProtectedContentPolicy::FailSession,
+        1,
+    );
+    start_and_ack(&mut harness);
+
+    let first = harness.source.recording_frame(1, 0);
+    harness
+        .ingress
+        .handle_source_event(
+            &mut harness.session,
+            &mut harness.source,
+            ScreenSourceEvent::Frame(first),
+            0,
+            &CancellationToken::new(),
+        )
+        .expect("initial frame");
+    let tail_a = harness
+        .source
+        .recording_frame(2, spec.nominal_frame_duration_ns);
+    let tail_b = harness
+        .source
+        .recording_frame(3, 2 * spec.nominal_frame_duration_ns);
+    harness
+        .source
+        .queue_stopped_event(ScreenSourceEvent::Frame(tail_a));
+    harness
+        .source
+        .queue_stopped_event(ScreenSourceEvent::Frame(tail_b));
+
+    let directory = tempfile::tempdir().expect("temporary recording directory");
+    let output = directory.path().join("stop-tail.webm");
+    let plan = harness.session.negotiated().ingress();
+    let recording = ScreenRecording::start(
+        &output,
+        ScreenRecordingSpec::from_appsrc_plan(plan).expect("recording plan"),
+    )
+    .expect("recording graph");
+    let mut pump =
+        ScreenRecordingPump::new(recording, plan, &harness.session, &mut harness.ingress)
+            .expect("capture pump");
+    let ScreenPumpOutcome::Drained(initial) = pump
+        .drain_available(
+            &mut harness.session,
+            spec.nominal_frame_duration_ns,
+            &CancellationToken::new(),
+        )
+        .expect("initial drain")
+    else {
+        panic!("initial drain must remain active");
+    };
+    assert_eq!(initial.popped_frames, 1);
+
+    let mut stop = pump
+        .request_graceful_stop(&mut harness.session)
+        .expect("graceful stop request");
+    let acknowledgement = execute(&harness.session, stop.action_mut(), &mut harness.source)
+        .expect("native stop execution")
+        .expect("native stop acknowledgement");
+    let tail_cancellation = CancellationToken::new();
+    let tail_budget = ScreenOperationBudget::new(&tail_cancellation, Duration::from_secs(1))
+        .expect("tail budget");
+    let tail = pump
+        .drain_stopped_source_tail(
+            &mut harness.session,
+            &mut harness.source,
+            &tail_budget,
+            3 * spec.nominal_frame_duration_ns,
+        )
+        .expect("bounded callback tail");
+    assert_eq!(tail.popped_frames, 2);
+    assert_eq!(tail.total_submitted_frames, 3);
+
+    let completion = pump
+        .complete_graceful_stop(&mut harness.session, stop, acknowledgement)
+        .expect("graceful stop completion");
+    let ScreenGracefulStopCompletionOutcome::Completed(completion) = completion else {
+        panic!("unchanged graceful lineage must publish");
+    };
+    let artifact = pump
+        .finish(*completion, &CancellationToken::new())
+        .expect("verified stop-tail artifact");
     assert_eq!(artifact.submitted_frames, 3);
     assert_eq!(artifact.encoded_frames, 3);
 }

@@ -1760,7 +1760,13 @@ pub struct ScreenSourceCapabilitySpec {
     pub permission_preflight: bool,
     pub topology_events: bool,
     pub target_recovery: bool,
+    /// The source can identify protected content exactly and emit reversible
+    /// protected-content events.
     pub protected_content_events: bool,
+    /// The source cannot identify protection exactly but can fail closed when
+    /// native capture reports blank, suspended, or otherwise unavailable
+    /// content. This satisfies only `FailSession`, never suspend-and-resume.
+    pub content_unavailable_failures: bool,
     pub window_exclusion: bool,
     pub max_excluded_windows: u8,
     pub bounded_appsrc_ingress: bool,
@@ -1783,6 +1789,10 @@ impl fmt::Debug for ScreenSourceCapabilitySpec {
             .field("topology_events", &self.topology_events)
             .field("target_recovery", &self.target_recovery)
             .field("protected_content_events", &self.protected_content_events)
+            .field(
+                "content_unavailable_failures",
+                &self.content_unavailable_failures,
+            )
             .field("window_exclusion", &self.window_exclusion)
             .field("max_excluded_windows", &self.max_excluded_windows)
             .field("bounded_appsrc_ingress", &self.bounded_appsrc_ingress)
@@ -1907,6 +1917,11 @@ impl ScreenSourceCapabilities {
     #[must_use]
     pub const fn protected_content_events(&self) -> bool {
         self.spec.protected_content_events
+    }
+
+    #[must_use]
+    pub const fn content_unavailable_failures(&self) -> bool {
+        self.spec.content_unavailable_failures
     }
 
     #[must_use]
@@ -2284,7 +2299,10 @@ pub fn negotiate_screen_capture(
     {
         return Err(ScreenCaptureError::UnsupportedRecoveryPolicy);
     }
-    if !spec.protected_content_events {
+    if !(spec.protected_content_events
+        || request.protected_content() == ProtectedContentPolicy::FailSession
+            && spec.content_unavailable_failures)
+    {
         return Err(ScreenCaptureError::ProtectedContentSignalUnavailable);
     }
 
@@ -3238,6 +3256,28 @@ pub struct ScreenSourceEventEnvelope<FramePayload, CursorImagePayload> {
     event: ScreenSourceEvent<FramePayload, CursorImagePayload>,
 }
 
+impl<FramePayload, CursorImagePayload> ScreenSourceEventEnvelope<FramePayload, CursorImagePayload> {
+    pub(crate) fn into_stopped_frame(
+        self,
+        expected_owner: ScreenSourceSessionBinding,
+    ) -> Result<ScreenFrame<FramePayload>, ScreenCaptureError> {
+        if self.owner != expected_owner {
+            return Err(ScreenCaptureError::SourceEventOwnershipMismatch);
+        }
+        match self.event {
+            ScreenSourceEvent::Frame(frame) => Ok(frame),
+            ScreenSourceEvent::CursorImage(_)
+            | ScreenSourceEvent::PermissionChanged(_)
+            | ScreenSourceEvent::TargetChanged(_)
+            | ScreenSourceEvent::Sleep(_)
+            | ScreenSourceEvent::Wake(_)
+            | ScreenSourceEvent::ProtectedContentDetected(_)
+            | ScreenSourceEvent::ProtectedContentCleared(_)
+            | ScreenSourceEvent::Failure(_) => Err(ScreenCaptureError::UnexpectedSourceData),
+        }
+    }
+}
+
 impl<FramePayload, CursorImagePayload> fmt::Debug
     for ScreenSourceEventEnvelope<FramePayload, CursorImagePayload>
 {
@@ -3355,6 +3395,19 @@ pub trait ScreenCaptureSource {
         ticket: &ScreenSourceCallTicket<'_>,
         budget: &ScreenOperationBudget<'_>,
     ) -> ScreenSourcePollResult<Self::FramePayload, Self::CursorImagePayload>;
+
+    /// Returns only the bounded callback tail retained by a successful native
+    /// stop. The state machine has not consumed the Stop acknowledgement yet,
+    /// so every returned frame must still carry the stopped stream stamp.
+    /// Sources without a native callback tail use this empty default.
+    fn poll_stopped_event(
+        &mut self,
+        _ticket: &ScreenSourceCallTicket<'_>,
+        budget: &ScreenOperationBudget<'_>,
+    ) -> ScreenSourcePollResult<Self::FramePayload, Self::CursorImagePayload> {
+        budget.check()?;
+        Ok(None)
+    }
 
     /// Stops all and only native capture resources owned by the ticket's
     /// session binding before returning success. `stream` identifies the
@@ -3495,6 +3548,24 @@ impl<S: ScreenCaptureSource> BoundScreenCaptureSource<S> {
             .map_err(|failure| self.wrap_failure(failure))
     }
 
+    pub(crate) fn poll_owned_stopped_event(
+        &mut self,
+        budget: &ScreenOperationBudget<'_>,
+    ) -> ScreenSourceEnvelopePollResult<S::FramePayload, S::CursorImagePayload> {
+        let ticket = ScreenSourceCallTicket {
+            binding: &self.binding,
+        };
+        self.source
+            .poll_stopped_event(&ticket, budget)
+            .map(|event| {
+                event.map(|event| ScreenSourceEventEnvelope {
+                    owner: self.binding,
+                    event,
+                })
+            })
+            .map_err(|failure| self.wrap_failure(failure))
+    }
+
     fn wrap_failure(&self, failure: ScreenSourceFailure) -> ScreenSourceFailureEnvelope {
         ScreenSourceFailureEnvelope {
             owner: self.binding,
@@ -3553,6 +3624,7 @@ pub enum ScreenSourceFailureCode {
     PermissionRestricted,
     TargetLost,
     ProtectedContent,
+    ContentUnavailable,
     InvalidNativeFrame,
     NativeOperationFailed,
 }
@@ -5390,6 +5462,11 @@ pub(crate) struct ScreenIngressOwner {
 
 impl ScreenIngressOwner {
     #[must_use]
+    pub(crate) const fn source_session_binding(self) -> ScreenSourceSessionBinding {
+        self.source_session_binding
+    }
+
+    #[must_use]
     pub(crate) const fn active_stream(self) -> Option<ScreenStreamStamp> {
         self.active_stream
     }
@@ -6416,6 +6493,26 @@ impl<FramePayload: ScreenFramePayload, CursorImagePayload: ScreenFramePayload>
             return Err(ScreenCaptureError::SourceEventOwnershipMismatch);
         }
         self.handle_validated_source_event(session, envelope.event, now_ns, cancellation)
+    }
+
+    pub(crate) fn validate_stopped_tail_frame(
+        &mut self,
+        session: &mut ScreenCaptureSession,
+        expected_stream: ScreenStreamStamp,
+        frame: &ScreenFrame<FramePayload>,
+    ) -> Result<(), ScreenCaptureError> {
+        self.validate_session_identity(session)?;
+        let stream = frame.stream();
+        if session.phase != ScreenCapturePhase::Stopping
+            || stream != expected_stream
+            || stream.source_instance() != self.source_instance
+            || stream.target() != self.target
+        {
+            return Err(ScreenCaptureError::UnexpectedSourceData);
+        }
+        self.validate_frame_cursor(frame.cursor())?;
+        session.record_queue_outcome(ScreenQueuePushOutcome::Accepted);
+        Ok(())
     }
 
     fn handle_validated_source_event(

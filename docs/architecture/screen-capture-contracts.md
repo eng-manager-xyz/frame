@@ -233,10 +233,16 @@ Cancellation, suspension, fault transitions, and any terminal appsrc failure
 atomically retire ingress/session leases, preserve the exact native Stop
 transition and teardown status, and confirm Null without publishing a partial
 artifact. A frame that would exceed current appsrc time capacity remains in the
-upstream queue; it is never popped merely to terminalize the graph. The
-current source Stop contract still has no bounded-tail return channel, so
-adapters such as ScreenCaptureKit that produce final frames after quiescence
-cannot yet use this shared path losslessly.
+upstream queue; it is never popped merely to terminalize the graph.
+
+After a successful native Stop, a source may expose a finite callback tail
+through `poll_stopped_event`. `ScreenRecordingPump` accepts no more than 16
+tail frames, verifies that each still belongs to the stopped stream, applies
+the normal ingress allocation/timing checks, submits them directly to the
+owned graph, and requires an empty tail before accepting the exact Stop
+acknowledgement and encoder EOS. Sources without a tail use the empty default.
+An excessive, foreign, malformed, or failing tail aborts the segment; it can
+never be silently discarded or published as a complete artifact.
 
 Executing a start/reconfigure action first verifies the action owner, session,
 bound source, and one pending operation. It then re-enumerates the complete

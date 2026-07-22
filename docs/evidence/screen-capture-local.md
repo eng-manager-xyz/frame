@@ -8,22 +8,22 @@ media, device label, window title, process identity, or platform certification.
 ## Closure ledger boundary
 
 Issue 24 checkboxes 1–10 remain unclosed in the closure ledger. This evidence
-file does not reclassify any checkbox. The new macOS source and desktop
-composition materially implement one narrow full-display path, but the issue
-acceptance criteria also require window/region behavior, cursor and lifecycle
-parity, protected-content semantics, representative hardware, performance,
-cross-platform coverage, and an issue-04 parity recording.
+file does not reclassify any checkbox. The macOS source and screen-only desktop
+composition now implement display, privacy-filtered window, and
+single-display-region targets through the normalized provider-neutral ingress.
+The issue acceptance criteria still require cursor-metadata and lifecycle
+parity, Windows and Linux adapters, representative hardware, performance,
+protected-content observations, and an issue-04 parity recording.
 
 The provider-neutral tests below still compile a dummy `ScreenCaptureSource`
 using only the exported API. Their simulated frames, permission events,
 geometry, cursor, recovery, copy-budget, and exclusion results remain invalid
-as physical or parity evidence. The production macOS desktop does not
-implement that complete provider-neutral contract: it uses a smaller
-ScreenCaptureKit source to feed the owned GStreamer recorder directly. A
-provider-neutral `ScreenRecordingPump` now validates the negotiated appsrc
-plan and drains the bounded capture ingress into that same real graph, but the
-macOS adapter is not yet connected to it. That deliberate boundary must not be
-generalized into issue-24 closure.
+as physical or parity evidence. The production macOS screen-only worker now
+binds `MacOsNormalizedScreenCaptureSource`, negotiates the exact catalog and
+CPU BGRA appsrc plan, and drains `ScreenCaptureIngress` through
+`ScreenRecordingPump`. The optional system-audio worker still owns the earlier
+direct screen source until Issue 25 connects the provider-neutral A/V contract.
+Neither local path may be generalized into complete issue-24 closure.
 
 The focused contract gates cover:
 
@@ -103,27 +103,28 @@ The focused contract gates cover:
   target loss/reconfiguration, sleep, and protected content; fail-closed access
   loss without a preflight action; and privacy-safe diagnostics.
 
-## Native macOS display-only source evidence
+## Native macOS target source evidence
 
 Repository inspection and focused checks establish the following local source
 facts, not hardware results:
 
 - `frame-macos-screen-capture` provides an unsafe-free ScreenCaptureKit source
-  with permission preflight/request, bounded opaque display enumeration,
-  BGRA/sRGB frames, embedded-or-hidden cursor policy, a bounded nonblocking
-  callback queue, explicit stop, unchanged-screen `Idle` frame repetition,
-  bounded stop-tail draining, and privacy-safe diagnostics;
-- its display filter excludes the entire current Frame application by exact
-  process identity, including later-created windows, and fails closed when
-  ownership is missing or ambiguous;
+  with permission preflight/request, bounded opaque display/window/region
+  enumeration, BGRA/sRGB frames, embedded-or-hidden cursor policy, a bounded
+  nonblocking callback queue, explicit stop, unchanged-screen `Idle` frame
+  repetition, bounded stop-tail draining, and privacy-safe diagnostics;
+- display and region filters exclude the entire current Frame application by
+  exact process identity, including later-created windows, and fail closed
+  when ownership is missing or ambiguous; the window catalog omits all Frame
+  windows and a selected non-Frame window is isolated by its exact binding;
 - the `macos-native` desktop feature constructs
   `MacOsNativeDesktopBackend` only after GStreamer recorder preflight, reports
   `NativeMacOsDisplay`, and degrades to `Unavailable` if construction fails;
-- the runtime requires granted permission and a fresh opaque display selection,
-  rejects microphone, camera, window, region, pause, and MP4 paths, then feeds
-  the selected full display plus optional exact 48 kHz stereo system audio into
-  the bounded VP8/Opus WebM recording graph while excluding Frame's own process
-  audio; and
+- the runtime requires granted permission and a fresh opaque display, window,
+  or user-defined region selection; screen-only recording uses the normalized
+  owner-bound ingress and pump, while optional exact 48 kHz stereo system audio
+  still uses the separately bounded direct A/V worker; both feed VP8/Opus WebM,
+  and the A/V path excludes Frame's own process audio; and
 - stop seals one verified recording artifact, cancel tears down the worker, and
   Editable WebM export is bound to that artifact and a prevalidated destination;
   recorder writes/verifies use a preopened descriptor, publication is a rooted
@@ -147,11 +148,13 @@ second graph. Opaque publication, retry, and abort proofs retain their actions;
 an epoch race or terminal graph failure can only abort and reports whether
 teardown was confirmed.
 
-The shared source contract still cannot represent ScreenCaptureKit's bounded
-post-stop frame tail, and its exact protected-content-event requirement cannot
-truthfully be advertised from ambiguous `Blank`/`Suspended` statuses. The
-production direct path therefore remains authoritative until those contracts,
-the ticket-gated macOS wrapper, and its runner are completed.
+The shared source contract now exposes a bounded post-stop event channel, and
+the pump requires every retained ScreenCaptureKit tail frame before encoder
+EOS. ScreenCaptureKit still cannot truthfully advertise exact protected-content
+events from ambiguous `Blank`/`Suspended` statuses. The normalized adapter
+instead advertises a content-unavailable failure and negotiates only the
+fail-session policy; the production screen-only worker aborts rather than
+mislabeling or silently encoding ambiguous content.
 
 These facts do not prove that ScreenCaptureKit returned a display or frame on a
 real machine, that the permission prompt behaved correctly, that Frame windows
@@ -199,14 +202,14 @@ copy.
 
 For a physical local recording and artifact probe, follow
 [`docs/operations/macos-display-recording-local.md`](../operations/macos-display-recording-local.md).
-That run validates the narrow display-video adapter, not the complete issue-24
-or Studio contracts.
+That run validates one selected macOS target through the local production
+composition, not the complete issue-24 or Studio contracts.
 
 ## Evidence not present
 
 | Gate | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Native source and release composition | source wired; physical run pending | pending | pending |
+| Native source and release composition | display/window/region screen-only source wired; physical run pending | pending | pending |
 | Permission preflight, prompt, denial, settings, revocation | preflight source wired; observed flow pending | pending | pending |
 | Physical display/window/region samples | pending | pending | pending |
 | Multi-monitor negative origins, mixed/fractional DPI, rotations | pending | pending | pending |
@@ -218,8 +221,8 @@ or Studio contracts.
 
 No pending row in this table may be inferred from a unit test or an
 enum-to-source mapping. Before the OS/architecture/device matrix can produce
-valid acceptance evidence, Frame must exercise the wired macOS path and still
-implement the missing window/region, lifecycle, protected-content, cursor,
-cross-platform, performance, and parity behavior represented by checkboxes
-1–10. Recorded samples, probes, measurements, operational documentation, and
-rollout evidence remain subsequent gates rather than substitutes for that code.
+valid acceptance evidence, Frame must exercise the wired macOS targets and
+still implement missing cursor metadata, lifecycle/recovery, Windows/Linux,
+performance, and parity behavior represented by checkboxes 1–10. Recorded
+samples, probes, measurements, operational documentation, and rollout evidence
+remain subsequent gates rather than substitutes for that code.

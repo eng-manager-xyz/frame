@@ -30,7 +30,8 @@ use crate::{
         NativeDesktopBackend, NativeDesktopBackendError, NativeEditableWebmExportRequest,
         NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
         NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
-        NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
+        NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeTargetSelectionOutcome,
+        NativeTargetSelectionRequest,
     },
     workflow::{
         BackendEvent, BackendEventEnvelope, DesktopWorkflow, DeviceCounts, DeviceState,
@@ -847,7 +848,7 @@ impl DesktopRuntime {
                     ));
                 }
                 let events = match backend
-                    .prepare_display_capture()
+                    .prepare_capture()
                     .map_err(ExecutionFailure::native_backend)?
                 {
                     NativePermissionOutcome::Granted => {
@@ -925,26 +926,25 @@ impl DesktopRuntime {
                 let intent_id = current_intent_id(owner, self.operation_revision);
                 self.preflight_transition(&intent_id, IntentKind::DevicesRefresh)?;
                 let catalog = backend
-                    .enumerate_displays()
+                    .enumerate_targets()
                     .map_err(ExecutionFailure::native_backend)?;
                 catalog
                     .validate_enumeration()
                     .map_err(|_| ExecutionFailure::invalid_backend_response())?;
-                if catalog
-                    .targets
-                    .iter()
-                    .any(|target| target.kind != CaptureTargetKind::Display)
-                {
-                    return Err(ExecutionFailure::invalid_backend_response());
-                }
                 if catalog.generation < self.capture_targets.generation
                     || (catalog.generation == self.capture_targets.generation
                         && catalog != self.capture_targets)
                 {
                     return Err(ExecutionFailure::invalid_backend_response());
                 }
-                let display_count = u16::try_from(catalog.targets.len())
-                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let display_count = u16::try_from(
+                    catalog
+                        .targets
+                        .iter()
+                        .filter(|target| target.kind == CaptureTargetKind::Display)
+                        .count(),
+                )
+                .map_err(|_| ExecutionFailure::invalid_backend_response())?;
                 let keep_selection =
                     self.selected_capture_target
                         .as_ref()
@@ -975,30 +975,25 @@ impl DesktopRuntime {
                     self.selected_sources.target = None;
                     self.selected_sources.display_selected = false;
                 }
-                self.announcement = "Native display catalog refreshed.".into();
+                self.announcement = "Native capture-target catalog refreshed.".into();
                 Ok(events)
             }
-            IpcCommand::CaptureTargetSelect {
-                kind: CaptureTargetKind::Display,
-                target_token,
-            } => {
+            IpcCommand::CaptureTargetSelect { kind, target_token } => {
                 let target = self
                     .capture_targets
                     .targets
                     .iter()
-                    .find(|target| {
-                        target.kind == CaptureTargetKind::Display && target.token == *target_token
-                    })
+                    .find(|target| target.kind == *kind && target.token == *target_token)
                     .cloned()
                     .ok_or_else(|| {
                         ExecutionFailure::conflict(
-                            "The display catalog changed. Refresh displays and select again.",
+                            "The capture-target catalog changed. Refresh targets and select again.",
                         )
                     })?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
                 self.preflight_transition(&intent_id, IntentKind::DeviceSelect)?;
                 let outcome = backend
-                    .select_display(&NativeTargetSelectionRequest {
+                    .select_target(&NativeTargetSelectionRequest {
                         catalog_generation: self.capture_targets.generation,
                         target: target.clone(),
                     })
@@ -1016,9 +1011,58 @@ impl DesktopRuntime {
                     }],
                 )?;
                 self.selected_capture_target = Some(target);
-                self.selected_sources.target = Some(CaptureTargetKind::Display);
-                self.selected_sources.display_selected = true;
-                self.announcement = "Native display selected by opaque token.".into();
+                self.selected_sources.target = Some(*kind);
+                self.selected_sources.display_selected = *kind == CaptureTargetKind::Display;
+                self.announcement = "Native capture target selected by opaque token.".into();
+                Ok(events)
+            }
+            IpcCommand::CaptureRegionDefine {
+                display_token,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let display = self
+                    .capture_targets
+                    .targets
+                    .iter()
+                    .find(|target| {
+                        target.kind == CaptureTargetKind::Display
+                            && target.token == *display_token
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        ExecutionFailure::conflict(
+                            "The display catalog changed. Refresh targets and define the region again.",
+                        )
+                    })?;
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::DeviceSelect)?;
+                let outcome = backend
+                    .define_region(&NativeRegionDefinitionRequest {
+                        catalog_generation: self.capture_targets.generation,
+                        display,
+                        x: *x,
+                        y: *y,
+                        width: *width,
+                        height: *height,
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                validate_region_definition_outcome(&outcome, &self.capture_targets)?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::DeviceSelect,
+                    vec![BackendEvent::DeviceSelected {
+                        intent_id: intent_id.clone(),
+                    }],
+                )?;
+                self.capture_targets = outcome.catalog;
+                self.selected_capture_target = Some(outcome.region);
+                self.selected_sources.target = Some(CaptureTargetKind::Region);
+                self.selected_sources.display_selected = false;
+                self.announcement =
+                    "Native capture region defined and selected by opaque token.".into();
                 Ok(events)
             }
             IpcCommand::RecorderStart { intent_id } => {
@@ -1034,29 +1078,27 @@ impl DesktopRuntime {
                     || self.selected_sources.camera_selected
                 {
                     return Err(ExecutionFailure::invalid(
-                        "Native capture supports display video with optional system audio only.",
+                        "Native capture supports selected-target video with optional system audio only.",
                     ));
                 }
                 let target = self
                     .selected_capture_target
                     .as_ref()
                     .filter(|selected| {
-                        selected.kind == CaptureTargetKind::Display
-                            && self
-                                .capture_targets
-                                .targets
-                                .iter()
-                                .any(|current| current == *selected)
+                        self.capture_targets
+                            .targets
+                            .iter()
+                            .any(|current| current == *selected)
                     })
                     .cloned()
                     .ok_or_else(|| {
                         ExecutionFailure::conflict(
-                            "The selected display is stale. Refresh displays and select again.",
+                            "The selected capture target is stale. Refresh targets and select again.",
                         )
                     })?;
                 self.preflight_transition(intent_id, IntentKind::RecorderStart)?;
                 let outcome = backend
-                    .start_display_recording(&NativeCaptureStartRequest {
+                    .start_recording(&NativeCaptureStartRequest {
                         catalog_generation: self.capture_targets.generation,
                         target: target.clone(),
                         frame_rate: self.settings.frame_rate,
@@ -1671,6 +1713,13 @@ impl DesktopRuntime {
                 self.announcement = "Capture target selected by opaque token.".into();
                 Ok(Vec::new())
             }
+            IpcCommand::CaptureRegionDefine { .. } => {
+                self.require_fake_execution()?;
+                self.selected_sources.target = Some(CaptureTargetKind::Region);
+                self.lifecycle.target_picker_visible = false;
+                self.announcement = "Capture region defined and selected.".into();
+                Ok(Vec::new())
+            }
             IpcCommand::SettingsApply {
                 expected_revision,
                 mode,
@@ -2080,6 +2129,30 @@ fn validate_selection_outcome(
     }
 }
 
+fn validate_region_definition_outcome(
+    outcome: &NativeRegionDefinitionOutcome,
+    previous_catalog: &CaptureTargetCatalog,
+) -> Result<(), ExecutionFailure> {
+    outcome
+        .catalog
+        .validate_enumeration()
+        .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+    if outcome.catalog.generation < previous_catalog.generation
+        || (outcome.catalog.generation == previous_catalog.generation
+            && outcome.catalog != *previous_catalog)
+        || outcome.region.kind != CaptureTargetKind::Region
+        || !outcome
+            .catalog
+            .targets
+            .iter()
+            .any(|target| target == &outcome.region)
+    {
+        Err(ExecutionFailure::invalid_backend_response())
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_start_outcome(
     outcome: &NativeRecordingStartOutcome,
     catalog_generation: u64,
@@ -2326,21 +2399,19 @@ mod tests {
     }
 
     impl NativeDesktopBackend for TestNativeBackend {
-        fn prepare_display_capture(
+        fn prepare_capture(
             &mut self,
         ) -> Result<NativePermissionOutcome, NativeDesktopBackendError> {
             self.calls.push("prepare");
             Ok(self.permission)
         }
 
-        fn enumerate_displays(
-            &mut self,
-        ) -> Result<CaptureTargetCatalog, NativeDesktopBackendError> {
+        fn enumerate_targets(&mut self) -> Result<CaptureTargetCatalog, NativeDesktopBackendError> {
             self.calls.push("enumerate");
             Ok(self.catalog.clone())
         }
 
-        fn select_display(
+        fn select_target(
             &mut self,
             request: &NativeTargetSelectionRequest,
         ) -> Result<NativeTargetSelectionOutcome, NativeDesktopBackendError> {
@@ -2353,7 +2424,34 @@ mod tests {
             })
         }
 
-        fn start_display_recording(
+        fn define_region(
+            &mut self,
+            request: &NativeRegionDefinitionRequest,
+        ) -> Result<NativeRegionDefinitionOutcome, NativeDesktopBackendError> {
+            self.calls.push("define_region");
+            let generation = request
+                .catalog_generation
+                .checked_add(1)
+                .ok_or(NativeDesktopBackendError::Internal)?;
+            let region = CaptureTargetSummary {
+                token: "region-token-1".into(),
+                kind: CaptureTargetKind::Region,
+                ordinal: 1,
+                width_pixels: request.width,
+                height_pixels: request.height,
+                scale_numerator: 1,
+                scale_denominator: 1,
+                rotation_degrees: 0,
+            };
+            self.catalog.generation = generation;
+            self.catalog.targets.push(region.clone());
+            Ok(NativeRegionDefinitionOutcome {
+                catalog: self.catalog.clone(),
+                region,
+            })
+        }
+
+        fn start_recording(
             &mut self,
             request: &NativeCaptureStartRequest,
         ) -> Result<NativeRecordingStartOutcome, NativeDesktopBackendError> {
@@ -3567,16 +3665,82 @@ mod tests {
     }
 
     #[test]
-    fn native_backend_rejects_window_audio_camera_pause_and_mp4_capabilities() {
+    fn native_region_definition_refreshes_catalog_selects_and_records_exact_target() {
         let mut runtime = native_runtime();
         let mut backend = TestNativeBackend::new();
 
         for (sequence, id, command) in [
             (
                 1,
-                "native-microphones",
+                "region-targets",
                 IpcCommand::DeviceEnumerate {
-                    class: DeviceClass::Microphone,
+                    class: DeviceClass::Display,
+                },
+            ),
+            (
+                2,
+                "region-define",
+                IpcCommand::CaptureRegionDefine {
+                    display_token: "display-token-1".into(),
+                    x: 100,
+                    y: 50,
+                    width: 640,
+                    height: 480,
+                },
+            ),
+            (3, "region-prepare", IpcCommand::RecorderPrepare),
+            (
+                4,
+                "region-start",
+                IpcCommand::RecorderStart {
+                    intent_id: "region-start".into(),
+                },
+            ),
+        ] {
+            let envelope = request(&runtime, WindowRole::Recorder, sequence, id, command);
+            let accepted = runtime
+                .dispatch_native(envelope, &mut backend)
+                .expect("bounded native region response");
+            ok(&accepted);
+        }
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(
+            snapshot.selected_sources.target,
+            Some(CaptureTargetKind::Region)
+        );
+        assert_eq!(snapshot.capture_targets.generation, 2);
+        assert!(snapshot.capture_targets.targets.iter().any(|target| {
+            target.kind == CaptureTargetKind::Region
+                && target.width_pixels == 640
+                && target.height_pixels == 480
+        }));
+        assert_eq!(backend.call_count("define_region"), 1);
+        assert_eq!(backend.call_count("start"), 1);
+    }
+
+    #[test]
+    fn native_backend_accepts_window_targets_and_rejects_unimplemented_capabilities() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+
+        backend.catalog.targets.push(CaptureTargetSummary {
+            token: "window-token-1".into(),
+            kind: CaptureTargetKind::Window,
+            ordinal: 1,
+            width_pixels: 1_280,
+            height_pixels: 720,
+            scale_numerator: 1,
+            scale_denominator: 1,
+            rotation_degrees: 0,
+        });
+
+        for (sequence, id, command) in [
+            (
+                1,
+                "native-targets",
+                IpcCommand::DeviceEnumerate {
+                    class: DeviceClass::Display,
                 },
             ),
             (
@@ -3587,8 +3751,51 @@ mod tests {
                     target_token: "window-token-1".into(),
                 },
             ),
+            (3, "native-prepare", IpcCommand::RecorderPrepare),
             (
-                3,
+                4,
+                "native-window-start",
+                IpcCommand::RecorderStart {
+                    intent_id: "native-window-start".into(),
+                },
+            ),
+        ] {
+            let envelope = request(&runtime, WindowRole::Recorder, sequence, id, command);
+            let accepted = runtime
+                .dispatch_native(envelope, &mut backend)
+                .expect("bounded native window response");
+            ok(&accepted);
+        }
+        assert_eq!(
+            runtime.snapshot().selected_sources.target,
+            Some(CaptureTargetKind::Window)
+        );
+        assert_eq!(backend.call_count("start"), 1);
+
+        let stop = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "native-window-stop",
+            IpcCommand::RecorderStop {
+                intent_id: "native-window-stop".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(stop, &mut backend)
+            .expect("native window stop"));
+        let calls_after_window_capture = backend.calls.len();
+
+        for (sequence, id, command) in [
+            (
+                6,
+                "native-microphones",
+                IpcCommand::DeviceEnumerate {
+                    class: DeviceClass::Microphone,
+                },
+            ),
+            (
+                7,
                 "native-pause",
                 IpcCommand::RecorderPause {
                     intent_id: "native-pause".into(),
@@ -3658,7 +3865,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(backend.calls.is_empty());
+        assert_eq!(backend.calls.len(), calls_after_window_capture);
     }
 
     #[test]

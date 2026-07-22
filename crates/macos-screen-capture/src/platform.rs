@@ -226,6 +226,7 @@ where
 enum FrameStatusDisposition {
     Content,
     RepeatLastContent,
+    ContentUnavailable,
     IgnoreWithDiscontinuity,
     Terminal,
 }
@@ -234,9 +235,10 @@ const fn frame_status_disposition(status: SCFrameStatus) -> FrameStatusDispositi
     match status {
         SCFrameStatus::Complete => FrameStatusDisposition::Content,
         SCFrameStatus::Idle => FrameStatusDisposition::RepeatLastContent,
-        SCFrameStatus::Blank | SCFrameStatus::Suspended | SCFrameStatus::Started => {
-            FrameStatusDisposition::IgnoreWithDiscontinuity
+        SCFrameStatus::Blank | SCFrameStatus::Suspended => {
+            FrameStatusDisposition::ContentUnavailable
         }
+        SCFrameStatus::Started => FrameStatusDisposition::IgnoreWithDiscontinuity,
         SCFrameStatus::Stopped => FrameStatusDisposition::Terminal,
     }
 }
@@ -975,6 +977,11 @@ fn process_sample(
             let pts = raw_media_time(sample.presentation_timestamp());
             active.frames.accept_idle(pts)?
         }
+        FrameStatusDisposition::ContentUnavailable => {
+            increment(&diagnostics.ignored_non_content_samples);
+            active.frames.mark_non_content_discontinuity();
+            return Err(MacOsCaptureError::ContentUnavailable);
+        }
         FrameStatusDisposition::IgnoreWithDiscontinuity => {
             increment(&diagnostics.ignored_non_content_samples);
             active.frames.mark_non_content_discontinuity();
@@ -1395,16 +1402,16 @@ mod tests {
             frame_status_disposition(SCFrameStatus::Idle),
             FrameStatusDisposition::RepeatLastContent
         );
-        for status in [
-            SCFrameStatus::Blank,
-            SCFrameStatus::Suspended,
-            SCFrameStatus::Started,
-        ] {
+        for status in [SCFrameStatus::Blank, SCFrameStatus::Suspended] {
             assert_eq!(
                 frame_status_disposition(status),
-                FrameStatusDisposition::IgnoreWithDiscontinuity
+                FrameStatusDisposition::ContentUnavailable
             );
         }
+        assert_eq!(
+            frame_status_disposition(SCFrameStatus::Started),
+            FrameStatusDisposition::IgnoreWithDiscontinuity
+        );
         assert_eq!(
             frame_status_disposition(SCFrameStatus::Stopped),
             FrameStatusDisposition::Terminal

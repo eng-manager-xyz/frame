@@ -68,10 +68,11 @@ The external contract suite exercises:
   screen-frame hold to one second, emits a playable VP8/Opus WebM whose measured
   duration is within 100 ms of the exact plan, decodes the result, and removes
   pre-cancelled or failed outputs;
-- a separately composed macOS display-only desktop source and recording graph
-  whose source-level checks cover permission preflight, opaque display
-  selection, bounded frame ingress, stop/cancel, and artifact-bound Editable
-  WebM export without claiming a physical capture run or Studio integration;
+- a separately composed macOS display/window/region desktop source and
+  recording graph whose source-level checks cover permission preflight, opaque
+  target selection, bounded normalized frame ingress and stop tail,
+  stop/cancel, and artifact-bound Editable WebM export without claiming a
+  physical capture run or Studio integration;
 - journal CAS, ownership fencing, lost acknowledgement reconciliation,
   idempotent replay, stale writers, exact pending asset/render continuity,
   asset/edit/render carry-forward and exact resolution from recoverable failure,
@@ -164,7 +165,7 @@ GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
 ```
 
 Record fresh output from this aggregate command for the revision under review;
-historical pass counts predate the native display-only composition and are not
+historical pass counts predate the current native target composition and are not
 native capture evidence.
 
 Static gate commands:
@@ -197,8 +198,8 @@ The contract suite uses deterministic fake native ports alongside production
 filesystem durability components. Its reference renderer writes a canonical
 checksum-bound bundle, while the separate native execution helpers supply
 synthetic tracks, edited preview mapping, aligned A/V WebM, single-source WebM,
-and gated MP4 evidence. The display-only desktop recorder is connected to the
-release shell but not to those multitrack helpers or the Studio coordinator.
+and gated MP4 evidence. The display/window/region desktop recorder is connected
+to the release shell but not to those multitrack helpers or the Studio coordinator.
 Most timeline goldens remain mathematical; the decoded edited artifact adds a
 duration/playability check, not a perceptual frame or reference-audio diff.
 The JSON keys and non-fragmented `.mp4`/`.ogg` paths were checked against

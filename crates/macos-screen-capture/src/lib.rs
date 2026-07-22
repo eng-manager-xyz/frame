@@ -18,8 +18,12 @@ use thiserror::Error;
 mod target_catalog;
 
 #[cfg(target_os = "macos")]
+mod normalized;
+#[cfg(target_os = "macos")]
 mod platform;
 
+#[cfg(target_os = "macos")]
+pub use normalized::MacOsNormalizedScreenCaptureSource;
 #[cfg(target_os = "macos")]
 pub use platform::MacOsScreenCaptureSource;
 
@@ -79,19 +83,15 @@ impl fmt::Debug for MacOsRegionSelection {
     }
 }
 
-/// Why this crate does not implement [`frame_media::ScreenCaptureSource`].
-///
-/// The provider-free contract requires an exact protected-content event.
-/// ScreenCaptureKit 8 exposes `Blank` and `Suspended`, but neither status is an
-/// exact DRM/protected-content signal. Treating either as protected content
-/// would lie to the contract and can misclassify ordinary display state.
+/// How the normalized source handles ScreenCaptureKit's ambiguous blank and
+/// suspended statuses without claiming an exact protected-content signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameMediaContractStatus {
-    BlockedByMissingProtectedContentSignal,
+    ImplementedWithFailClosedContentUnavailable,
 }
 
 pub const FRAME_MEDIA_CONTRACT_STATUS: FrameMediaContractStatus =
-    FrameMediaContractStatus::BlockedByMissingProtectedContentSignal;
+    FrameMediaContractStatus::ImplementedWithFailClosedContentUnavailable;
 
 /// Configuration for one catalog-bound display, window, or region BGRA capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +302,8 @@ pub enum MacOsCaptureError {
     CaptureStartTeardownUnconfirmed,
     #[error("ScreenCaptureKit reported an unexpected stream stop")]
     UnexpectedStreamStop,
+    #[error("ScreenCaptureKit reported blank or suspended capture content")]
+    ContentUnavailable,
     #[error("ScreenCaptureKit could not stop capture")]
     CaptureStopFailed,
     #[error("capture teardown remains unconfirmed and the source cannot be reused")]

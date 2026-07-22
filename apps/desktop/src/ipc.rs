@@ -161,6 +161,7 @@ pub enum CommandKind {
     UploadCancel,
     RecorderConfigure,
     CaptureTargetSelect,
+    CaptureRegionDefine,
     SettingsApply,
     PresetApply,
     Lifecycle,
@@ -367,6 +368,13 @@ pub enum IpcCommand {
         kind: CaptureTargetKind,
         target_token: String,
     },
+    CaptureRegionDefine {
+        display_token: String,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
     SettingsApply {
         expected_revision: u64,
         mode: RecorderMode,
@@ -427,6 +435,7 @@ impl IpcCommand {
             Self::UploadCancel { .. } => CommandKind::UploadCancel,
             Self::RecorderConfigure { .. } => CommandKind::RecorderConfigure,
             Self::CaptureTargetSelect { .. } => CommandKind::CaptureTargetSelect,
+            Self::CaptureRegionDefine { .. } => CommandKind::CaptureRegionDefine,
             Self::SettingsApply { .. } => CommandKind::SettingsApply,
             Self::PresetApply { .. } => CommandKind::PresetApply,
             Self::Lifecycle { .. } => CommandKind::Lifecycle,
@@ -460,6 +469,25 @@ impl IpcCommand {
             | Self::UploadCancel { intent_id } => validate_token(intent_id),
             Self::DeviceSelect { device_token, .. } => validate_token(device_token),
             Self::CaptureTargetSelect { target_token, .. } => validate_token(target_token),
+            Self::CaptureRegionDefine {
+                display_token,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                validate_token(display_token)?;
+                let right = x.checked_add(*width).ok_or(IpcError::InvalidPayload)?;
+                let bottom = y.checked_add(*height).ok_or(IpcError::InvalidPayload)?;
+                if *width == 0
+                    || *height == 0
+                    || right > u32::from(u16::MAX)
+                    || bottom > u32::from(u16::MAX)
+                {
+                    return Err(IpcError::InvalidPayload);
+                }
+                Ok(())
+            }
             Self::RecoveryInspect { project_path }
             | Self::RecoveryOpen { project_path }
             | Self::RecoveryDiscard { project_path }
@@ -590,6 +618,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "upload_cancel",
     "recorder_configure",
     "capture_target_select",
+    "capture_region_define",
     "settings_apply",
     "preset_apply",
     "lifecycle",
@@ -1024,6 +1053,7 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
                 | CommandKind::UploadCancel
                 | CommandKind::RecorderConfigure
                 | CommandKind::CaptureTargetSelect
+                | CommandKind::CaptureRegionDefine
         ),
         WindowRole::Recovery => matches!(
             command,
@@ -1268,6 +1298,54 @@ mod tests {
             WindowRole::Overlay,
         ] {
             assert!(!command_allowed(role, CommandKind::RecorderPoll));
+        }
+    }
+
+    #[test]
+    fn capture_region_is_bounded_redacted_and_recorder_scoped() {
+        let command = IpcCommand::CaptureRegionDefine {
+            display_token: "display-private-token".into(),
+            x: 10,
+            y: 20,
+            width: 640,
+            height: 480,
+        };
+        assert_eq!(command.validate_payload(), Ok(()));
+        let rendered = format!("{command:?}");
+        assert!(!rendered.contains("display-private-token"));
+        assert!(!rendered.contains("640"));
+        assert!(command_allowed(
+            WindowRole::Recorder,
+            CommandKind::CaptureRegionDefine
+        ));
+        for role in [
+            WindowRole::Main,
+            WindowRole::Recovery,
+            WindowRole::Editor,
+            WindowRole::Export,
+            WindowRole::Settings,
+            WindowRole::Overlay,
+        ] {
+            assert!(!command_allowed(role, CommandKind::CaptureRegionDefine));
+        }
+
+        for invalid in [
+            IpcCommand::CaptureRegionDefine {
+                display_token: "display-private-token".into(),
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 480,
+            },
+            IpcCommand::CaptureRegionDefine {
+                display_token: "display-private-token".into(),
+                x: u32::from(u16::MAX),
+                y: 0,
+                width: 1,
+                height: 480,
+            },
+        ] {
+            assert_eq!(invalid.validate_payload(), Err(IpcError::InvalidPayload));
         }
     }
 

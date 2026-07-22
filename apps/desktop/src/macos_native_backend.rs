@@ -1,14 +1,16 @@
 //! macOS composition of ScreenCaptureKit with the owned GStreamer recorder.
 //!
 //! This module is deliberately narrower than the provider-neutral capture
-//! contracts: it records one full display, embeds the cursor, excludes the
-//! entire current Frame application, optionally captures exact 48 kHz stereo
+//! contracts: it records one opaque display, window, or region target, embeds
+//! the cursor, excludes the entire current Frame application where the native
+//! target permits it, optionally captures exact 48 kHz stereo
 //! system audio, and exports an Editable WebM. Camera, microphone, pause, and
 //! distribution-master paths stay disabled in the desktop runtime.
 
 #![forbid(unsafe_code)]
 
 mod av_worker;
+mod normalized_worker;
 
 use std::{
     collections::BTreeMap,
@@ -19,7 +21,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU16, Ordering},
-        mpsc::{SyncSender, TryRecvError, TrySendError, sync_channel},
+        mpsc::{SyncSender, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -28,22 +30,26 @@ use std::{
 use frame_macos_av_capture::{
     MacOsSystemAudioDiagnostics, MacOsSystemAudioError, MacOsSystemAudioSource, SYSTEM_AUDIO_FORMAT,
 };
+#[cfg(test)]
+use frame_macos_screen_capture::MacOsCaptureStopError;
 use frame_macos_screen_capture::{
-    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError, MacOsCaptureStopError,
+    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError, MacOsRegionSelection,
     MacOsScreenCaptureSource,
 };
 use frame_media::{
-    BgraScreenFrame, CancellationToken, ColorSpace, CursorCaptureMode, DisplayGeometryTransform,
-    FrameMemory, PermissionPreflight, PixelFormat, Rotation, ScreenAudioRecording,
-    ScreenAudioRecordingArtifact, ScreenRecording, ScreenRecordingArtifact, ScreenRecordingError,
-    ScreenRecordingSpec, ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetDescriptor,
-    SystemAudioRecordingSpec, VideoFrameSpec, preflight_screen_recording_runtime,
+    ColorSpace, CursorCaptureMode, DisplayGeometryTransform, FrameMemory, LogicalRect,
+    PermissionPreflight, PixelFormat, Rotation, ScreenAudioRecording, ScreenAudioRecordingArtifact,
+    ScreenRecording, ScreenRecordingArtifact, ScreenRecordingError, ScreenRecordingSpec,
+    ScreenSessionId, ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetDescriptor,
+    ScreenTargetKind, ScreenTargetSnapshot, SystemAudioRecordingSpec, VideoFrameSpec,
+    preflight_screen_recording_runtime,
 };
 
 use self::av_worker::{
     AvWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup, classify_audio_stop,
     classify_screen_stop, run_av_capture_worker,
 };
+use self::normalized_worker::ScreenWorkerStart;
 use ring::{
     digest::{Context as Sha256Context, SHA256},
     rand::{SecureRandom, SystemRandom},
@@ -57,8 +63,8 @@ use crate::{
     NativeDesktopBackendError, NativeEditableWebmExportOutcome, NativeEditableWebmExportRequest,
     NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
     NativeRecordingMeter, NativeRecordingStartOutcome, NativeRecordingStopOutcome,
-    NativeRecordingTerminalFailure, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
-    PathUse,
+    NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest,
+    NativeTargetSelectionOutcome, NativeTargetSelectionRequest, PathUse,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
 };
 
@@ -74,7 +80,7 @@ const EXPORT_STAGING_DIRECTORY: &str = ".frame-staging";
 #[derive(Clone)]
 struct CatalogTarget {
     summary: CaptureTargetSummary,
-    binding: ScreenTargetBinding,
+    descriptor: ScreenTargetDescriptor,
 }
 
 impl fmt::Debug for CatalogTarget {
@@ -82,7 +88,7 @@ impl fmt::Debug for CatalogTarget {
         formatter
             .debug_struct("CatalogTarget")
             .field("summary", &self.summary)
-            .field("binding", &self.binding)
+            .field("descriptor", &self.descriptor)
             .finish()
     }
 }
@@ -115,6 +121,7 @@ struct SessionSource {
     source: MacOsScreenCaptureSource,
     system_audio: MacOsSystemAudioSource,
     observed_topology_generation: Option<u64>,
+    snapshot: Option<ScreenTargetSnapshot>,
 }
 
 enum CaptureLifecycle {
@@ -211,12 +218,6 @@ enum WorkerStart {
     ScreenAudio(Box<ScreenAudioWorkerStart>),
 }
 
-struct ScreenWorkerStart {
-    source: MacOsScreenCaptureSource,
-    recording: ScreenRecording,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
-}
-
 struct ScreenAudioWorkerStart {
     source: MacOsScreenCaptureSource,
     system_audio: MacOsSystemAudioSource,
@@ -229,15 +230,6 @@ struct ScreenAudioWorkerStart {
 enum PendingRecordingGraph {
     ScreenOnly(ScreenRecording),
     ScreenAudio(ScreenAudioRecording),
-}
-
-impl PendingRecordingGraph {
-    fn abort(self) -> Result<(), ScreenRecordingError> {
-        match self {
-            Self::ScreenOnly(recording) => recording.abort(),
-            Self::ScreenAudio(recording) => recording.abort(),
-        }
-    }
 }
 
 impl WorkerOutcome {
@@ -421,6 +413,61 @@ impl MacOsNativeDesktopBackend {
             }
         }
         Err(NativeDesktopBackendError::Internal)
+    }
+
+    fn install_target_snapshot(
+        &mut self,
+        snapshot: ScreenTargetSnapshot,
+        previous_topology_generation: Option<u64>,
+    ) -> Result<CaptureTargetCatalog, NativeDesktopBackendError> {
+        if previous_topology_generation
+            .is_some_and(|generation| generation != snapshot.generation())
+        {
+            self.advance_catalog_generation()?;
+        }
+
+        let mut next_catalog = BTreeMap::new();
+        for (index, target) in snapshot.targets().iter().enumerate() {
+            let binding = target.binding();
+            let token = if let Some(existing) = self.stable_tokens.get(&binding) {
+                existing.clone()
+            } else {
+                let fresh = self.fresh_token(target_token_prefix(target.kind()))?;
+                self.stable_tokens.insert(binding, fresh.clone());
+                fresh
+            };
+            let ordinal =
+                u16::try_from(index + 1).map_err(|_| NativeDesktopBackendError::Internal)?;
+            let summary = target_summary(token.clone(), ordinal, target, snapshot.targets())?;
+            next_catalog.insert(
+                token,
+                CatalogTarget {
+                    summary,
+                    descriptor: target.clone(),
+                },
+            );
+        }
+        self.catalog = next_catalog;
+        if self
+            .selected_token
+            .as_ref()
+            .is_some_and(|token| !self.catalog.contains_key(token))
+        {
+            self.selected_token = None;
+        }
+        let catalog = CaptureTargetCatalog {
+            schema_version: CAPTURE_TARGET_CATALOG_VERSION,
+            generation: self.catalog_generation,
+            targets: self
+                .catalog
+                .values()
+                .map(|target| target.summary.clone())
+                .collect(),
+        };
+        catalog
+            .validate_enumeration()
+            .map_err(|_| NativeDesktopBackendError::Internal)?;
+        Ok(catalog)
     }
 
     fn take_worker(
@@ -609,9 +656,7 @@ impl fmt::Debug for MacOsNativeDesktopBackend {
 }
 
 impl NativeDesktopBackend for MacOsNativeDesktopBackend {
-    fn prepare_display_capture(
-        &mut self,
-    ) -> Result<NativePermissionOutcome, NativeDesktopBackendError> {
+    fn prepare_capture(&mut self) -> Result<NativePermissionOutcome, NativeDesktopBackendError> {
         let source = self.source_mut()?;
         let permission = match source.preflight_permission() {
             PermissionPreflight::Granted => PermissionPreflight::Granted,
@@ -627,68 +672,28 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         })
     }
 
-    fn enumerate_displays(&mut self) -> Result<CaptureTargetCatalog, NativeDesktopBackendError> {
+    fn enumerate_targets(&mut self) -> Result<CaptureTargetCatalog, NativeDesktopBackendError> {
         let (snapshot, previous_topology_generation) = match &mut self.capture {
             CaptureLifecycle::Ready(session) => {
                 let snapshot = session
                     .source
-                    .enumerate_displays()
+                    .enumerate_targets(&[])
                     .map_err(map_capture_error)?;
                 let previous = session.observed_topology_generation;
                 if previous.is_some_and(|generation| generation > snapshot.generation()) {
                     return Err(NativeDesktopBackendError::Internal);
                 }
                 session.observed_topology_generation = Some(snapshot.generation());
+                session.snapshot = Some(snapshot.clone());
                 (snapshot, previous)
             }
             CaptureLifecycle::Recording(_) => return Err(NativeDesktopBackendError::Busy),
             CaptureLifecycle::Poisoned => return Err(NativeDesktopBackendError::Unavailable),
         };
-        if previous_topology_generation
-            .is_some_and(|generation| generation != snapshot.generation())
-        {
-            self.advance_catalog_generation()?;
-        }
-
-        let mut next_catalog = BTreeMap::new();
-        for (index, target) in snapshot.targets().iter().enumerate() {
-            let binding = target.binding();
-            let token = if let Some(existing) = self.stable_tokens.get(&binding) {
-                existing.clone()
-            } else {
-                let fresh = self.fresh_token("display")?;
-                self.stable_tokens.insert(binding, fresh.clone());
-                fresh
-            };
-            let ordinal =
-                u16::try_from(index + 1).map_err(|_| NativeDesktopBackendError::Internal)?;
-            let summary = target_summary(token.clone(), ordinal, target)?;
-            next_catalog.insert(token, CatalogTarget { summary, binding });
-        }
-        self.catalog = next_catalog;
-        if self
-            .selected_token
-            .as_ref()
-            .is_some_and(|token| !self.catalog.contains_key(token))
-        {
-            self.selected_token = None;
-        }
-        let catalog = CaptureTargetCatalog {
-            schema_version: CAPTURE_TARGET_CATALOG_VERSION,
-            generation: self.catalog_generation,
-            targets: self
-                .catalog
-                .values()
-                .map(|target| target.summary.clone())
-                .collect(),
-        };
-        catalog
-            .validate_enumeration()
-            .map_err(|_| NativeDesktopBackendError::Internal)?;
-        Ok(catalog)
+        self.install_target_snapshot(snapshot, previous_topology_generation)
     }
 
-    fn select_display(
+    fn select_target(
         &mut self,
         request: &NativeTargetSelectionRequest,
     ) -> Result<NativeTargetSelectionOutcome, NativeDesktopBackendError> {
@@ -712,7 +717,71 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         })
     }
 
-    fn start_display_recording(
+    fn define_region(
+        &mut self,
+        request: &NativeRegionDefinitionRequest,
+    ) -> Result<NativeRegionDefinitionOutcome, NativeDesktopBackendError> {
+        if request.catalog_generation != self.catalog_generation {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        let display = self
+            .catalog
+            .get(&request.display.token)
+            .filter(|target| {
+                target.summary == request.display
+                    && target.descriptor.kind() == ScreenTargetKind::Display
+            })
+            .cloned()
+            .ok_or(NativeDesktopBackendError::TargetUnavailable)?;
+        let display_bounds = display.descriptor.logical_bounds();
+        let x = i64::from(display_bounds.x())
+            .checked_add(i64::from(request.x))
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or(NativeDesktopBackendError::TargetUnavailable)?;
+        let y = i64::from(display_bounds.y())
+            .checked_add(i64::from(request.y))
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or(NativeDesktopBackendError::TargetUnavailable)?;
+        let logical_bounds = LogicalRect::new(x, y, request.width, request.height)
+            .map_err(|_| NativeDesktopBackendError::TargetUnavailable)?;
+        if !display_bounds.contains_rect(logical_bounds) {
+            return Err(NativeDesktopBackendError::TargetUnavailable);
+        }
+        let region_selection =
+            MacOsRegionSelection::new(display.descriptor.binding(), logical_bounds)
+                .map_err(map_capture_error)?;
+        let (snapshot, previous_topology_generation) = match &mut self.capture {
+            CaptureLifecycle::Ready(session) => {
+                let snapshot = session
+                    .source
+                    .enumerate_targets(&[region_selection])
+                    .map_err(map_capture_error)?;
+                let previous = session.observed_topology_generation;
+                if previous.is_some_and(|generation| generation > snapshot.generation()) {
+                    return Err(NativeDesktopBackendError::Internal);
+                }
+                session.observed_topology_generation = Some(snapshot.generation());
+                session.snapshot = Some(snapshot.clone());
+                (snapshot, previous)
+            }
+            CaptureLifecycle::Recording(_) => return Err(NativeDesktopBackendError::Busy),
+            CaptureLifecycle::Poisoned => return Err(NativeDesktopBackendError::Unavailable),
+        };
+        let catalog = self.install_target_snapshot(snapshot, previous_topology_generation)?;
+        let region = self
+            .catalog
+            .values()
+            .find(|target| {
+                target.descriptor.kind() == ScreenTargetKind::Region
+                    && target.descriptor.logical_bounds() == logical_bounds
+            })
+            .map(|target| target.summary.clone())
+            .ok_or(NativeDesktopBackendError::Internal)?;
+        self.selected_token = Some(region.token.clone());
+        Ok(NativeRegionDefinitionOutcome { catalog, region })
+    }
+
+    fn start_recording(
         &mut self,
         request: &NativeCaptureStartRequest,
     ) -> Result<NativeRecordingStartOutcome, NativeDesktopBackendError> {
@@ -755,12 +824,8 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             memory: FrameMemory::Cpu,
         };
         let recording_spec = ScreenRecordingSpec::new(frame_spec).map_err(map_recording_error)?;
-        let capture_config = MacOsCaptureConfig::new(
-            target.binding,
-            frame_spec,
-            CursorCaptureMode::EmbeddedInFrame,
-        )
-        .map_err(map_capture_error)?;
+        let screen_session_id = ScreenSessionId::from_csprng(random_array(&SystemRandom::new())?)
+            .map_err(|_| NativeDesktopBackendError::Internal)?;
         let recording_token = self.fresh_token("recording")?;
         let final_relative = PathBuf::from(format!("{recording_token}.webm"));
         let staging_relative = PathBuf::from(format!(".{recording_token}.partial"));
@@ -776,6 +841,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             mut source,
             mut system_audio,
             observed_topology_generation,
+            snapshot,
         } = *session;
 
         let screen_diagnostic_baseline = source.diagnostics();
@@ -814,6 +880,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                         source,
                         system_audio,
                         observed_topology_generation,
+                        snapshot,
                     }));
                 }
                 return Err(map_rooted_io_error(error));
@@ -859,6 +926,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                                 source,
                                 system_audio,
                                 observed_topology_generation,
+                                snapshot,
                             }));
                             return Err(map_rooted_io_error(error));
                         }
@@ -881,6 +949,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             source,
                             system_audio,
                             observed_topology_generation,
+                            snapshot,
                         }));
                         return Err(map_recording_error(error));
                     }
@@ -901,6 +970,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                         source,
                         system_audio,
                         observed_topology_generation,
+                        snapshot,
                     }));
                 }
                 return Err(primary_error);
@@ -911,39 +981,91 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             final_relative,
             identity: staging_identity,
         };
-        if let Err(error) = source.start(capture_config) {
-            let primary_error = map_capture_error(error);
-            let recorder_teardown_confirmed =
-                abort_pending_recording(recording, primary_error, "native capture start failed");
-            let audio_teardown_confirmed = if system_audio_included {
-                stop_unowned_system_audio(&mut system_audio, "native capture start failed")
-            } else {
-                true
-            };
-            if capture_start_resources_reusable(error, recorder_teardown_confirmed)
-                && audio_teardown_confirmed
-            {
-                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
-                    source,
-                    system_audio,
-                    observed_topology_generation,
-                }));
-            } else {
-                self.capture = CaptureLifecycle::Poisoned;
-            }
-            self.cleanup_recording_output(&output);
-            return Err(primary_error);
-        }
-
         let worker_start_value = match recording {
             PendingRecordingGraph::ScreenOnly(recording) => {
-                WorkerStart::ScreenOnly(Box::new(ScreenWorkerStart {
+                let Some(snapshot) = snapshot else {
+                    let teardown_confirmed = abort_unowned_recording(
+                        recording,
+                        NativeDesktopBackendError::StaleCatalog,
+                        "normalized capture snapshot was unavailable",
+                    );
+                    self.cleanup_recording_output(&output);
+                    let _ = self.retire_session(teardown_confirmed);
+                    return Err(NativeDesktopBackendError::StaleCatalog);
+                };
+                match ScreenWorkerStart::prepare(
                     source,
+                    snapshot,
+                    target.descriptor,
+                    frame_spec,
                     recording,
-                    diagnostic_baseline: screen_diagnostic_baseline,
-                }))
+                    screen_diagnostic_baseline,
+                    screen_session_id,
+                ) {
+                    Ok(start) => WorkerStart::ScreenOnly(Box::new(start)),
+                    Err(failure) => {
+                        self.cleanup_recording_output(&output);
+                        let _ = self.retire_session(failure.teardown_confirmed);
+                        return Err(failure.error);
+                    }
+                }
             }
             PendingRecordingGraph::ScreenAudio(mut recording) => {
+                let capture_config = match MacOsCaptureConfig::new(
+                    target.descriptor.binding(),
+                    frame_spec,
+                    CursorCaptureMode::EmbeddedInFrame,
+                ) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        let primary_error = map_capture_error(error);
+                        let recorder_teardown_confirmed = recording.abort().is_ok();
+                        let audio_teardown_confirmed = stop_unowned_system_audio(
+                            &mut system_audio,
+                            "native A/V capture configuration failed",
+                        );
+                        if recorder_teardown_confirmed && audio_teardown_confirmed {
+                            self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                                source,
+                                system_audio,
+                                observed_topology_generation,
+                                snapshot,
+                            }));
+                        }
+                        self.cleanup_recording_output(&output);
+                        return Err(primary_error);
+                    }
+                };
+                if let Err(error) = source.start(capture_config) {
+                    let primary_error = map_capture_error(error);
+                    let recorder_teardown_confirmed = match recording.abort() {
+                        Ok(()) => true,
+                        Err(teardown) => {
+                            eprintln!(
+                                "Frame A/V recorder teardown failed after native capture start failed while preserving primary error {primary_error}: {teardown}"
+                            );
+                            false
+                        }
+                    };
+                    let audio_teardown_confirmed = stop_unowned_system_audio(
+                        &mut system_audio,
+                        "native A/V capture start failed",
+                    );
+                    if capture_start_resources_reusable(error, recorder_teardown_confirmed)
+                        && audio_teardown_confirmed
+                    {
+                        self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                            source,
+                            system_audio,
+                            observed_topology_generation,
+                            snapshot,
+                        }));
+                    } else {
+                        self.capture = CaptureLifecycle::Poisoned;
+                    }
+                    self.cleanup_recording_output(&output);
+                    return Err(primary_error);
+                }
                 let timestamps =
                     match calibrate_av_startup(&mut source, &mut system_audio, &mut recording) {
                         Ok(timestamps) => timestamps,
@@ -963,6 +1085,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                                     source,
                                     system_audio,
                                     observed_topology_generation,
+                                    snapshot,
                                 }));
                             } else {
                                 self.capture = CaptureLifecycle::Poisoned;
@@ -1001,14 +1124,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     };
                 };
                 match worker_start {
-                    WorkerStart::ScreenOnly(start) => {
-                        let ScreenWorkerStart {
-                            source,
-                            recording,
-                            diagnostic_baseline,
-                        } = *start;
-                        run_capture_worker(source, recording, receiver, diagnostic_baseline)
-                    }
+                    WorkerStart::ScreenOnly(start) => start.run(receiver),
                     WorkerStart::ScreenAudio(start) => {
                         let ScreenAudioWorkerStart {
                             source,
@@ -1351,176 +1467,12 @@ impl Drop for MacOsNativeDesktopBackend {
     }
 }
 
-fn run_capture_worker(
-    mut source: MacOsScreenCaptureSource,
-    mut recording: ScreenRecording,
-    control: std::sync::mpsc::Receiver<WorkerControl>,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
-) -> WorkerCompletion {
-    loop {
-        match control.try_recv() {
-            Ok(WorkerControl::Stop) => {
-                let outcome = finish_worker_recording(&mut source, recording, diagnostic_baseline);
-                return WorkerCompletion { outcome };
-            }
-            Ok(WorkerControl::Cancel) | Err(TryRecvError::Disconnected) => {
-                let outcome = cancel_worker_recording(&mut source, recording, diagnostic_baseline);
-                return WorkerCompletion { outcome };
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-
-        match source.poll_frame() {
-            Ok(Some(frame)) => {
-                if let Err(error) = push_capture_frame(&mut recording, frame) {
-                    eprintln!("Frame native capture worker rejected recorder ingress: {error}");
-                    let outcome = fail_worker_recording(
-                        &mut source,
-                        recording,
-                        diagnostic_baseline,
-                        map_recording_error(error),
-                    );
-                    return WorkerCompletion { outcome };
-                }
-            }
-            Ok(None) => thread::park_timeout(WORKER_IDLE_POLL),
-            Err(error) => {
-                eprintln!("Frame native ScreenCaptureKit capture polling failed: {error}");
-                let outcome = fail_worker_recording(
-                    &mut source,
-                    recording,
-                    diagnostic_baseline,
-                    map_capture_error(error),
-                );
-                return WorkerCompletion { outcome };
-            }
-        }
-    }
-}
-
-fn finish_worker_recording(
-    source: &mut MacOsScreenCaptureSource,
-    mut recording: ScreenRecording,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
-) -> WorkerOutcome {
-    let tail = match source.stop_and_drain_frames() {
-        Ok(tail) => tail,
-        Err(error) => {
-            eprintln!("Frame native capture worker could not stop ScreenCaptureKit: {error}");
-            let (error, capture_teardown_confirmed) = map_capture_stop_error(error);
-            return fail_worker_after_capture_stop(recording, error, capture_teardown_confirmed);
-        }
-    };
-    for frame in tail {
-        if let Err(error) = push_capture_frame(&mut recording, frame) {
-            eprintln!("Frame native capture worker rejected a trailing capture frame: {error}");
-            return fail_worker_after_capture_stop(recording, map_recording_error(error), true);
-        }
-    }
-    if diagnostics_failed(diagnostic_baseline, source.diagnostics()) {
-        eprintln!("Frame native capture worker observed terminal capture diagnostics");
-        return fail_worker_after_capture_stop(
-            recording,
-            NativeDesktopBackendError::Internal,
-            true,
-        );
-    }
-    if let Err(error) = recording.end_of_stream() {
-        eprintln!("Frame native capture worker could not send recorder EOS: {error}");
-        return fail_worker_after_capture_stop(recording, map_recording_error(error), true);
-    }
-    match recording.finish(&CancellationToken::new()) {
-        Ok(artifact) => WorkerOutcome::Finished(artifact.into()),
-        Err(error) => {
-            eprintln!(
-                "Frame native capture worker could not finalize and verify the WebM recording: {error}"
-            );
-            let teardown_confirmed = recording_finish_teardown_confirmed(&error);
-            WorkerOutcome::Failed {
-                error: map_recording_error(error),
-                teardown_confirmed,
-            }
-        }
-    }
-}
-
-fn fail_worker_after_capture_stop(
-    recording: ScreenRecording,
-    primary_error: NativeDesktopBackendError,
-    capture_teardown_confirmed: bool,
-) -> WorkerOutcome {
-    let recording_teardown_confirmed = match recording.abort() {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!("Frame native capture worker could not abort the recorder graph: {error}");
-            false
-        }
-    };
-    WorkerOutcome::Failed {
-        error: primary_error,
-        teardown_confirmed: capture_teardown_confirmed && recording_teardown_confirmed,
-    }
-}
-
 const fn recording_finish_teardown_confirmed(error: &ScreenRecordingError) -> bool {
     !matches!(
         error,
         ScreenRecordingError::TeardownUnconfirmed(_)
             | ScreenRecordingError::OperationAndTeardown { .. }
     )
-}
-
-fn push_capture_frame(
-    recording: &mut ScreenRecording,
-    frame: frame_macos_screen_capture::MacOsCaptureFrame,
-) -> Result<(), ScreenRecordingError> {
-    let sequence = frame.sequence();
-    let timestamp = frame.timestamp();
-    let pixels = frame.into_pixels();
-    let frame = BgraScreenFrame::new(sequence, timestamp, pixels)?;
-    recording.push_frame(frame).map(|_| ())
-}
-
-fn cancel_worker_recording(
-    source: &mut MacOsScreenCaptureSource,
-    recording: ScreenRecording,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
-) -> WorkerOutcome {
-    let stopped = source.stop_and_drain_frames().map(drop);
-    let recording_stopped = recording.abort();
-    if let Err(error) = stopped {
-        return capture_stop_failure_outcome(error, recording_stopped.is_ok());
-    }
-    if let Err(error) = recording_stopped {
-        return WorkerOutcome::Failed {
-            error: map_recording_error(error),
-            teardown_confirmed: false,
-        };
-    }
-    if diagnostics_failed(diagnostic_baseline, source.diagnostics()) {
-        WorkerOutcome::Failed {
-            error: NativeDesktopBackendError::Internal,
-            teardown_confirmed: true,
-        }
-    } else {
-        WorkerOutcome::Cancelled
-    }
-}
-
-fn fail_worker_recording(
-    source: &mut MacOsScreenCaptureSource,
-    recording: ScreenRecording,
-    diagnostic_baseline: MacOsCaptureDiagnostics,
-    primary_error: NativeDesktopBackendError,
-) -> WorkerOutcome {
-    let stopped = source.stop_and_drain_frames().map(drop);
-    let recording_stopped = recording.abort();
-    if let Err(error) = diagnostic_delta(diagnostic_baseline, source.diagnostics()) {
-        eprintln!(
-            "Frame native capture worker diagnostics failed while preserving primary error {primary_error}: {error}"
-        );
-    }
-    failed_worker_teardown_outcome(primary_error, stopped, recording_stopped)
 }
 
 fn diagnostic_delta(
@@ -1616,28 +1568,81 @@ fn target_summary(
     token: String,
     ordinal: u16,
     target: &ScreenTargetDescriptor,
+    targets: &[ScreenTargetDescriptor],
 ) -> Result<CaptureTargetSummary, NativeDesktopBackendError> {
-    let transform = target
-        .display_transform()
-        .ok_or(NativeDesktopBackendError::Internal)?;
-    let physical = transform.physical_bounds();
-    let scale = transform.scale();
+    let kind = match target.kind() {
+        ScreenTargetKind::Display => CaptureTargetKind::Display,
+        ScreenTargetKind::Window => CaptureTargetKind::Window,
+        ScreenTargetKind::Region => CaptureTargetKind::Region,
+    };
+    let (width_pixels, height_pixels, scale_numerator, scale_denominator, rotation_degrees) =
+        match target.kind() {
+            ScreenTargetKind::Display => {
+                let transform = target
+                    .display_transform()
+                    .ok_or(NativeDesktopBackendError::Internal)?;
+                let physical = transform.physical_bounds();
+                let scale = transform.scale();
+                (
+                    physical.width(),
+                    physical.height(),
+                    u16::try_from(scale.numerator())
+                        .map_err(|_| NativeDesktopBackendError::Internal)?,
+                    u16::try_from(scale.denominator())
+                        .map_err(|_| NativeDesktopBackendError::Internal)?,
+                    rotation_degrees(transform),
+                )
+            }
+            ScreenTargetKind::Window => {
+                let logical = target.logical_bounds();
+                (logical.width(), logical.height(), 1, 1, 0)
+            }
+            ScreenTargetKind::Region => {
+                let display_binding = target
+                    .containing_display_binding()
+                    .ok_or(NativeDesktopBackendError::Internal)?;
+                let transform = targets
+                    .iter()
+                    .find(|candidate| candidate.binding() == display_binding)
+                    .and_then(ScreenTargetDescriptor::display_transform)
+                    .ok_or(NativeDesktopBackendError::Internal)?;
+                let physical = transform
+                    .logical_rect_to_physical(target.logical_bounds())
+                    .map_err(|_| NativeDesktopBackendError::Internal)?;
+                let scale = transform.scale();
+                (
+                    physical.width(),
+                    physical.height(),
+                    u16::try_from(scale.numerator())
+                        .map_err(|_| NativeDesktopBackendError::Internal)?,
+                    u16::try_from(scale.denominator())
+                        .map_err(|_| NativeDesktopBackendError::Internal)?,
+                    rotation_degrees(transform),
+                )
+            }
+        };
     let summary = CaptureTargetSummary {
         token,
-        kind: CaptureTargetKind::Display,
+        kind,
         ordinal,
-        width_pixels: physical.width(),
-        height_pixels: physical.height(),
-        scale_numerator: u16::try_from(scale.numerator())
-            .map_err(|_| NativeDesktopBackendError::Internal)?,
-        scale_denominator: u16::try_from(scale.denominator())
-            .map_err(|_| NativeDesktopBackendError::Internal)?,
-        rotation_degrees: rotation_degrees(transform),
+        width_pixels,
+        height_pixels,
+        scale_numerator,
+        scale_denominator,
+        rotation_degrees,
     };
     summary
         .validate()
         .map_err(|_| NativeDesktopBackendError::Internal)?;
     Ok(summary)
+}
+
+const fn target_token_prefix(kind: ScreenTargetKind) -> &'static str {
+    match kind {
+        ScreenTargetKind::Display => "display",
+        ScreenTargetKind::Window => "window",
+        ScreenTargetKind::Region => "region",
+    }
 }
 
 const fn rotation_degrees(transform: DisplayGeometryTransform) -> u16 {
@@ -1889,6 +1894,7 @@ fn new_session_source(
         source,
         system_audio,
         observed_topology_generation: None,
+        snapshot: None,
     })
 }
 
@@ -1914,7 +1920,9 @@ fn map_capture_error(error: MacOsCaptureError) -> NativeDesktopBackendError {
         MacOsCaptureError::PermissionDenied => NativeDesktopBackendError::PermissionDenied,
         MacOsCaptureError::AlreadyRunning => NativeDesktopBackendError::Busy,
         MacOsCaptureError::StaleOrForeignTarget => NativeDesktopBackendError::StaleCatalog,
-        MacOsCaptureError::TargetNoLongerAvailable => NativeDesktopBackendError::TargetUnavailable,
+        MacOsCaptureError::TargetNoLongerAvailable | MacOsCaptureError::ContentUnavailable => {
+            NativeDesktopBackendError::TargetUnavailable
+        }
         MacOsCaptureError::DisplayCatalogUnavailable
         | MacOsCaptureError::ShareableContentUnavailable => NativeDesktopBackendError::Unavailable,
         _ => NativeDesktopBackendError::Internal,
@@ -1983,22 +1991,6 @@ fn abort_unowned_recording(
     }
 }
 
-fn abort_pending_recording(
-    recording: PendingRecordingGraph,
-    primary_error: NativeDesktopBackendError,
-    context: &str,
-) -> bool {
-    match recording.abort() {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!(
-                "Frame recorder teardown failed after {context} while preserving primary error {primary_error}: {error}"
-            );
-            false
-        }
-    }
-}
-
 fn stop_unowned_system_audio(system_audio: &mut MacOsSystemAudioSource, context: &str) -> bool {
     match system_audio.stop_and_drain_chunks() {
         Ok(_) => true,
@@ -2017,12 +2009,13 @@ fn teardown_worker_start(
 ) -> bool {
     match worker_start {
         WorkerStart::ScreenOnly(start) => {
-            let ScreenWorkerStart {
-                mut source,
-                recording,
-                ..
-            } = *start;
-            teardown_unowned_started_recording(&mut source, recording, primary_error, context)
+            let teardown_confirmed = start.teardown();
+            if !teardown_confirmed {
+                eprintln!(
+                    "Frame normalized worker teardown failed after {context} while preserving primary error {primary_error}"
+                );
+            }
+            teardown_confirmed
         }
         WorkerStart::ScreenAudio(start) => {
             let ScreenAudioWorkerStart {
@@ -2045,26 +2038,7 @@ fn teardown_worker_start(
     }
 }
 
-fn teardown_unowned_started_recording(
-    source: &mut MacOsScreenCaptureSource,
-    recording: ScreenRecording,
-    primary_error: NativeDesktopBackendError,
-    context: &str,
-) -> bool {
-    let capture_teardown_confirmed = match source.stop_and_drain_frames() {
-        Ok(_) => true,
-        Err(error) => {
-            let teardown_confirmed = error.capture_teardown_confirmed();
-            eprintln!(
-                "Frame capture teardown failed after {context} while preserving primary error {primary_error}: {error}"
-            );
-            teardown_confirmed
-        }
-    };
-    let recorder_teardown_confirmed = abort_unowned_recording(recording, primary_error, context);
-    capture_teardown_confirmed && recorder_teardown_confirmed
-}
-
+#[cfg(test)]
 fn map_capture_stop_error(error: MacOsCaptureStopError) -> (NativeDesktopBackendError, bool) {
     let teardown_confirmed = error.capture_teardown_confirmed();
     (
@@ -2073,6 +2047,7 @@ fn map_capture_stop_error(error: MacOsCaptureStopError) -> (NativeDesktopBackend
     )
 }
 
+#[cfg(test)]
 fn failed_worker_teardown_outcome(
     primary_error: NativeDesktopBackendError,
     capture_stopped: Result<(), MacOsCaptureStopError>,
@@ -2103,6 +2078,7 @@ fn failed_worker_teardown_outcome(
     }
 }
 
+#[cfg(test)]
 fn capture_stop_failure_outcome(
     error: MacOsCaptureStopError,
     recording_teardown_confirmed: bool,
