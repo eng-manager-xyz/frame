@@ -429,8 +429,8 @@ jobs:
       - name: Compile the Windows native adapters
         if: runner.os == 'Windows'
         env:
-          # cargo check does not link; this skips native GStreamer probing while
-          # still type-checking every Windows-only Rust/Win32 code path.
+          # Skip native GStreamer probing while compiling, testing, and linting
+          # every Windows-only Rust/Win32 library path on the Windows runner.
           DOCS_RS: "1"
         run: |
           cargo test --locked -p frame-windows-secure-spool
@@ -438,8 +438,8 @@ jobs:
           cargo check --locked -p frame-media --all-targets
           cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
           cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings
-          cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests
-          cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests --no-deps -- -D warnings
+          cargo test --locked -p frame-desktop-core --features windows-native,custom-protocol --lib
+          cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --no-deps -- -D warnings
 
   desktop_shell:
     name: Portable Tauri desktop shell on ${{ matrix.os }}

@@ -477,9 +477,9 @@ def main() -> int:
         errors,
     )
     require(
-        "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests"
+        "cargo test --locked -p frame-desktop-core --features windows-native,custom-protocol --lib"
         in portability
-        and "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests --no-deps -- -D warnings"
+        and "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --no-deps -- -D warnings"
         in portability,
         "quality-gates.yml: the Windows capture library and tests must compile and lint natively",
         errors,

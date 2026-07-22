@@ -799,26 +799,23 @@ impl NativeScreenSource for WindowsNormalizedScreenCaptureSource {
         let terminal_delta = current
             .dropped_callback_frames
             .checked_sub(baseline.dropped_callback_frames)
-            .and_then(|dropped| {
+            .zip(
                 current
                     .invalid_native_frames
-                    .checked_sub(baseline.invalid_native_frames)
-                    .map(|invalid| (dropped, invalid))
-            })
-            .and_then(|(dropped, invalid)| {
+                    .checked_sub(baseline.invalid_native_frames),
+            )
+            .zip(
                 current
                     .target_closed_events
-                    .checked_sub(baseline.target_closed_events)
-                    .map(|closed| (dropped, invalid, closed))
-            })
-            .and_then(|(dropped, invalid, closed)| {
+                    .checked_sub(baseline.target_closed_events),
+            )
+            .zip(
                 current
                     .unexpected_native_stops
-                    .checked_sub(baseline.unexpected_native_stops)
-                    .map(|stops| (dropped, invalid, closed, stops))
-            });
+                    .checked_sub(baseline.unexpected_native_stops),
+            );
         terminal_delta
-            .map(|(dropped, invalid, closed, stops)| {
+            .map(|(((dropped, invalid), closed), stops)| {
                 dropped > 0 || invalid > 0 || closed > 0 || stops > 0
             })
             .unwrap_or(true)

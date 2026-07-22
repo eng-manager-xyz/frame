@@ -324,8 +324,8 @@ def main() -> int:
             ),
             (
                 quality,
-                "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --lib --tests",
-                "cargo check --locked -p frame-desktop-core --features tauri-app,custom-protocol --lib --tests",
+                "cargo test --locked -p frame-desktop-core --features windows-native,custom-protocol --lib",
+                "cargo test --locked -p frame-desktop-core --features tauri-app,custom-protocol --lib",
                 "Windows native desktop library check omitted",
             ),
             (
