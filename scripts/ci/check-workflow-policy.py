@@ -468,7 +468,7 @@ def main() -> int:
     require(
         "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets"
         in quality
-        and "cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets -- -D warnings"
+        and "cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings"
         in quality,
         "quality-gates.yml: Windows native capture boundaries must be checked and linted on Windows",
         errors,

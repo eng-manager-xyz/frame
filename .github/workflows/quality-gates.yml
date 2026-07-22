@@ -437,7 +437,7 @@ jobs:
           cargo clippy --locked -p frame-windows-secure-spool --all-targets -- -D warnings
           cargo check --locked -p frame-media --all-targets
           cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
-          cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets -- -D warnings
+          cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings
 
   desktop_shell:
     name: Portable Tauri desktop shell on ${{ matrix.os }}

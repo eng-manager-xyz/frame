@@ -303,7 +303,7 @@ fn bgra_frame_bytes(width: u32, height: u32) -> Result<usize, WindowsCaptureErro
         .ok_or(WindowsCaptureError::FrameAllocationExceedsLimit)
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn copy_bgra_rows(
     bytes: &[u8],
     width: usize,

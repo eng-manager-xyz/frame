@@ -228,7 +228,7 @@ cargo check --locked \
   -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
 cargo clippy --locked \
   -p frame-windows-capture-ffi -p frame-windows-screen-capture \
-  --all-targets -- -D warnings
+  --all-targets --no-deps -- -D warnings
 ```
 
 The complete media test suite remains the integration gate because this module
