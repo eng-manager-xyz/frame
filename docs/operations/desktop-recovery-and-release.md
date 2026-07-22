@@ -2,7 +2,7 @@
 
 ## Build modes and current boundary
 
-The portable Tauri shell and the native macOS target-capture slice are different
+The portable Tauri shell and the native OS target-capture slices are different
 release-mode builds. Build and smoke them separately from the repository root:
 
 ```sh
@@ -17,18 +17,26 @@ python3 scripts/ci/desktop-shell-smoke.py --expected-adapter unavailable
 cargo build --locked --release -p frame-desktop-core \
   --features tauri-app,custom-protocol,macos-native --bin frame-desktop
 python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
+
+# Windows only; requests NativeWindowsDisplayWindowRegion after protecting
+# Frame's main WebView from public capture.
+cargo build --locked --release -p frame-desktop-core \
+  --features windows-native,custom-protocol --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py \
+  --expected-adapter native_windows_display_window_region
 ```
 
-The native slice records one selected display, non-Frame window, or bounded
+Each native slice records one selected display, non-Frame window, or bounded
 single-display region as VP8/WebM and embeds the cursor. Display/region capture
-excludes Frame's whole application; Frame windows are absent from the window
-catalog. Screen-only recording uses the normalized capture ingress/pump. The
-separate direct A/V worker can optionally mux exact 48 kHz stereo system audio
-as Opus while excluding Frame's own process audio. The slice supports stop,
-cancel, and artifact-bound Editable WebM publication. It does not support
-microphone, camera, pause/resume, multitrack or edit-aware Studio export, MP4,
-persisted recording recovery, native tray/hotkey/overlay lifecycle, or updater
-installation.
+excludes Frame's whole application on macOS; Windows construction requires
+Tauri's main-window content protection, and both catalogs omit Frame windows.
+Screen-only recording uses the shared normalized capture ingress/pump. The
+direct A/V worker can optionally mux exact 48 kHz stereo system audio as Opus
+on macOS while excluding Frame's own process audio. Windows rejects all
+audio. Both slices support stop, cancel, and artifact-bound Editable WebM
+publication. They do not support microphone, camera, pause/resume, multitrack
+or edit-aware Studio export, MP4, persisted recording recovery, native
+tray/hotkey/overlay lifecycle, or updater installation.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
 coherent adapter truth. A successful smoke is not capture, playback, recovery,

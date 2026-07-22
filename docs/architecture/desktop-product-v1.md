@@ -1,8 +1,8 @@
 # Desktop product contract v1
 
 Issue 33 owns the Leptos/Tauri recorder and editor boundary, while issues 24–27
-own capture and media behavior. The portable contract now composes one bounded
-macOS display/window/region video adapter without allowing the WebView to
+own capture and media behavior. The portable contract now composes bounded
+macOS and Windows display/window/region video adapters without allowing the WebView to
 acquire filesystem, shell, device, tray, updater, or arbitrary Tauri authority.
 That slice is not the complete recorder or editor required to close any of
 those issues.
@@ -37,15 +37,21 @@ Adapter truth is a build- and startup-time property, not a UI inference:
 - a macOS release build that also enables `macos-native` requests
   `DesktopAdapterKind::NativeMacOs`, runs the trusted GStreamer bootstrap, and
   constructs `MacOsNativeDesktopBackend`; failed construction degrades to
-  `Unavailable` before the runtime is exposed to the WebView; and
+  `Unavailable` before the runtime is exposed to the WebView;
+- a Windows release build that enables `windows-native` requests
+  `DesktopAdapterKind::NativeWindows`, protects Frame's main WebView from
+  public capture before constructing `WindowsNativeDesktopBackend`, and
+  degrades to `Unavailable` if either operation fails; and
 - only a debug build with `FRAME_DESKTOP_FAKE_PIPELINE=1` selects
   `DeterministicFake`.
 
 `bootstrap_main` derives `RecorderAdapterState` from the runtime snapshot, so
-the WebView observes `Unavailable`, `DeterministicFake`, or
-`NativeMacOsDisplay` consistently with `bootstrap_desktop`. Native commands use
+the WebView observes `Unavailable`, `DeterministicFake`,
+`NativeMacOsDisplay`, or `NativeWindowsDisplayWindowRegion` consistently with
+`bootstrap_desktop`. Native commands use
 `dispatch_native_json` only while that same runtime snapshot names
-`NativeMacOs`; the portable shell continues through the non-native dispatcher.
+`NativeMacOs` or `NativeWindows`; the portable shell continues through the
+non-native dispatcher.
 
 The native macOS implementation performs GStreamer factory preflight before
 backend construction, uses ScreenCaptureKit permission preflight/request, and
@@ -73,6 +79,17 @@ is capped at four hours, 2 GB, and a 512 MB filesystem reserve. It
 rejects microphone, camera, pause/resume, and MP4 paths. Its
 export is artifact-backed screen-plus-optional-system-audio WebM, not the
 canonical Studio edit plan or a multitrack/distribution-master render.
+
+The native Windows implementation uses Windows Graphics Capture permission
+availability and bounded privacy-safe display/non-Frame-window enumeration.
+The user may select a display/window or define a single-display region. It
+records CPU BGRA/sRGB frames through the same normalized
+`ScreenCaptureSource`/ingress/pump path and VP8/WebM graph. Construction fails
+closed unless Tauri successfully protects Frame's own WebView; the WGC source
+uses the operating system's public-capture redaction policy for protected
+content. Recording and export use private DACL roots, reparse-point-safe opens,
+verified hashes, and atomic publication. The current Windows slice rejects all
+audio, microphone, camera, pause/resume, MP4, recovery, and Studio operations.
 
 ## Window ownership
 
@@ -116,10 +133,12 @@ phase/progress/retry/error DTO. Active work has determinate or indeterminate
 progress, terminal states remove the opaque WebView handle, and stable error
 copy is announced without exposing credentials or recording identity.
 
-Representation is not implementation. `NativeMacOsDisplay` currently enables
+Representation is not implementation. `NativeMacOsDisplay` and
+`NativeWindowsDisplayWindowRegion` currently enable
 permission preparation, display/window refresh and selection, bounded region
 definition and selection, target-video start, stop, cancel, and Editable WebM
-export. The remaining represented operations continue to return unavailable
+export. macOS alone optionally supports exact 48 kHz stereo system audio; the
+Windows composition rejects audio. The remaining represented operations continue to return unavailable
 or stay disabled. In particular, a sealed native
 recording is not a Studio project, export progress is not a cancellable
 edit-aware render, and no native recording journal/recovery owner is wired.
@@ -135,8 +154,9 @@ focus restoration, and Escape dismissal.
 
 Lifecycle transitions are typed and backend-owned. The fake adapter proves ownership and state
 reconstruction without pretending to call OS APIs. The portable release shell
-selects `Unavailable`; the `macos-native` release composition selects the narrow
-display adapter when backend construction succeeds; and only a debug build with
+selects `Unavailable`; the `macos-native` and `windows-native` release
+compositions select their narrow target adapters when backend construction
+succeeds; and only a debug build with
 `FRAME_DESKTOP_FAKE_PIPELINE=1` can select the deterministic fake. Native global
 hotkey registration, tray actions, overlay placement, target-picker placement, real updater install,
 and cross-platform window-exclusion integration remain blocked until the
@@ -169,7 +189,7 @@ not rewrite projects produced by either desktop.
 ## Production-mode build and smoke
 
 From the repository root, build and smoke the portable shell separately from
-the native macOS composition:
+the native OS composition:
 
 ```sh
 # Cross-platform portable shell; recorder truth is Unavailable.
@@ -182,6 +202,13 @@ python3 scripts/ci/desktop-shell-smoke.py --expected-adapter unavailable
 cargo build --locked --release -p frame-desktop-core \
   --features tauri-app,custom-protocol,macos-native --bin frame-desktop
 python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_display
+
+# Windows only; recorder truth is NativeWindowsDisplayWindowRegion if
+# WebView protection and backend construction succeed.
+cargo build --locked --release -p frame-desktop-core \
+  --features windows-native,custom-protocol --bin frame-desktop
+python3 scripts/ci/desktop-shell-smoke.py \
+  --expected-adapter native_windows_display_window_region
 ```
 
 The smoke proves the production-CSP WebView reaches the allowlisted Rust

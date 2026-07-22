@@ -529,7 +529,9 @@ impl NativeDesktopBackend for WindowsNativeDesktopBackend {
             }
         };
         let (control, receiver) = sync_channel(WORKER_CONTROL_CAPACITY);
-        let (start_sender, start_receiver) = sync_channel(WORKER_START_CAPACITY);
+        let (start_sender, start_receiver) = sync_channel::<
+            ScreenWorkerStart<WindowsNormalizedScreenCaptureSource>,
+        >(WORKER_START_CAPACITY);
         let worker = thread::Builder::new()
             .name("frame-windows-screen-recorder".into())
             .spawn(move || {
