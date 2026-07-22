@@ -347,10 +347,11 @@ fn capabilities(
         topology_events: false,
         target_recovery: false,
         protected_content_events: false,
-        // WGC redacts some protected surfaces but exposes no exact signal.
-        // Keep negotiation closed until the shared contract represents that
-        // distinct OS-redaction policy without inventing an event.
+        // WGC redacts protected surfaces but exposes no exact transition
+        // signal. FailSession therefore remains unavailable; callers must
+        // explicitly require the platform-redaction contract.
         content_unavailable_failures: false,
+        platform_protected_content_redaction: true,
         window_exclusion: false,
         max_excluded_windows: 0,
         bounded_appsrc_ingress: true,
@@ -425,7 +426,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wgc_capability_does_not_invent_a_protected_content_signal() {
+    fn wgc_requires_explicit_platform_redaction_without_inventing_an_event() {
         let source_instance = ScreenSourceInstanceId::new([1; 16]).expect("source");
         let binding = ScreenTargetBinding::new(
             source_instance,
@@ -483,5 +484,32 @@ mod tests {
             negotiate_screen_capture(bound.capabilities(), &catalog, request),
             Err(ScreenCaptureError::ProtectedContentSignalUnavailable)
         );
+
+        let target = catalog.targets()[0].clone();
+        let request = ScreenCaptureRequest::new(ScreenCaptureRequestSpec {
+            target,
+            output: VideoFrameSpec {
+                width: 320,
+                height: 180,
+                pixel_format: PixelFormat::Bgra8,
+                color_space: ColorSpace::Srgb,
+                nominal_frame_duration_ns: 33_333_333,
+                memory: FrameMemory::Cpu,
+            },
+            cursor: CursorPolicy::new(CursorCaptureMode::EmbeddedInFrame, false, false)
+                .expect("cursor"),
+            excluded_windows: Vec::new(),
+            queue: ScreenCaptureQueuePolicy::new(
+                3,
+                320 * 180 * 4 * 3,
+                500_000_000,
+                CaptureQueueOverflow::DropOldest,
+            )
+            .expect("queue"),
+            recovery: TargetRecoveryPolicy::FailClosed,
+            protected_content: ProtectedContentPolicy::RequirePlatformRedaction,
+        })
+        .expect("request");
+        assert!(negotiate_screen_capture(bound.capabilities(), &catalog, request).is_ok());
     }
 }

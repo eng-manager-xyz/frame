@@ -324,6 +324,12 @@ def main() -> int:
             ),
             (
                 quality,
+                "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --all-targets",
+                "cargo check --locked -p frame-desktop-core --features tauri-app,custom-protocol --all-targets",
+                "Windows native desktop composition check omitted",
+            ),
+            (
+                quality,
                 "\n  macos_native_capture:\n",
                 "\n  macos_native_capture_disabled:\n",
                 "required macOS native-capture job removed",

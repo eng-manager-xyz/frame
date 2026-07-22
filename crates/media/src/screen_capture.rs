@@ -1767,6 +1767,10 @@ pub struct ScreenSourceCapabilitySpec {
     /// native capture reports blank, suspended, or otherwise unavailable
     /// content. This satisfies only `FailSession`, never suspend-and-resume.
     pub content_unavailable_failures: bool,
+    /// The platform capture API guarantees that protected surfaces are
+    /// redacted from delivered frames even though it does not expose exact
+    /// protected-content events.
+    pub platform_protected_content_redaction: bool,
     pub window_exclusion: bool,
     pub max_excluded_windows: u8,
     pub bounded_appsrc_ingress: bool,
@@ -1792,6 +1796,10 @@ impl fmt::Debug for ScreenSourceCapabilitySpec {
             .field(
                 "content_unavailable_failures",
                 &self.content_unavailable_failures,
+            )
+            .field(
+                "platform_protected_content_redaction",
+                &self.platform_protected_content_redaction,
             )
             .field("window_exclusion", &self.window_exclusion)
             .field("max_excluded_windows", &self.max_excluded_windows)
@@ -1922,6 +1930,11 @@ impl ScreenSourceCapabilities {
     #[must_use]
     pub const fn content_unavailable_failures(&self) -> bool {
         self.spec.content_unavailable_failures
+    }
+
+    #[must_use]
+    pub const fn platform_protected_content_redaction(&self) -> bool {
+        self.spec.platform_protected_content_redaction
     }
 
     #[must_use]
@@ -2056,6 +2069,10 @@ impl TargetRecoveryPolicy {
 pub enum ProtectedContentPolicy {
     SuspendUntilClear,
     FailSession,
+    /// Require platform-enforced redaction when an exact transition signal is
+    /// unavailable. Negotiation rejects sources that do not advertise this
+    /// capability.
+    RequirePlatformRedaction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2299,10 +2316,16 @@ pub fn negotiate_screen_capture(
     {
         return Err(ScreenCaptureError::UnsupportedRecoveryPolicy);
     }
-    if !(spec.protected_content_events
-        || request.protected_content() == ProtectedContentPolicy::FailSession
-            && spec.content_unavailable_failures)
-    {
+    let protected_content_supported = match request.protected_content() {
+        ProtectedContentPolicy::SuspendUntilClear => spec.protected_content_events,
+        ProtectedContentPolicy::FailSession => {
+            spec.protected_content_events || spec.content_unavailable_failures
+        }
+        ProtectedContentPolicy::RequirePlatformRedaction => {
+            spec.platform_protected_content_redaction
+        }
+    };
+    if !protected_content_supported {
         return Err(ScreenCaptureError::ProtectedContentSignalUnavailable);
     }
 
@@ -4826,7 +4849,8 @@ impl ScreenCaptureSession {
                                 .ok_or(ScreenCaptureError::InvalidSessionTransition)?;
                             (phase, action, ScreenDiagnosticEventCode::ProtectedContent)
                         }
-                        ProtectedContentPolicy::FailSession => {
+                        ProtectedContentPolicy::FailSession
+                        | ProtectedContentPolicy::RequirePlatformRedaction => {
                             self.desired_running = false;
                             (
                                 ScreenCapturePhase::Failed(

@@ -1331,6 +1331,8 @@ dependencies = [
  "frame-macos-av-capture",
  "frame-macos-screen-capture",
  "frame-media",
+ "frame-windows-screen-capture",
+ "frame-windows-secure-spool",
  "reqwest",
  "ring",
  "rustix",

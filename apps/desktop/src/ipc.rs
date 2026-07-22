@@ -24,6 +24,7 @@ pub enum RecorderAdapterState {
     Unavailable,
     DeterministicFake,
     NativeMacOsDisplay,
+    NativeWindowsDisplayWindowRegion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

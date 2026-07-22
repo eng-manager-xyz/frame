@@ -1,6 +1,9 @@
-//! Pre-thread GStreamer bootstrap for the native macOS desktop binary.
+//! Pre-thread GStreamer bootstrap for native desktop binaries.
 
-use std::{os::unix::process::CommandExt, process::Command};
+use std::process::Command;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use frame_media::{DesktopRuntimeLaunchPlan, MediaError, desktop_runtime_launch_plan};
 use thiserror::Error;
@@ -25,7 +28,20 @@ pub fn bootstrap_desktop_gstreamer() -> Result<(), DesktopGStreamerBootstrapErro
             let mut command = Command::new(plan.executable());
             command.args(std::env::args_os().skip(1));
             plan.apply_to(&mut command);
-            Err(DesktopGStreamerBootstrapError::Reexec(command.exec()))
+            #[cfg(unix)]
+            {
+                Err(DesktopGStreamerBootstrapError::Reexec(command.exec()))
+            }
+            #[cfg(windows)]
+            {
+                command
+                    .spawn()
+                    .map_err(DesktopGStreamerBootstrapError::Reexec)?;
+                // The child inherited only the audited launch environment and
+                // will observe `Ready`. This occurs before Tauri starts any
+                // threads, so the original image owns no application state.
+                std::process::exit(0);
+            }
         }
     }
 }

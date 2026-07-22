@@ -18,6 +18,12 @@ macos-native = [
     "dep:frame-macos-screen-capture",
     "dep:rustix",
 ]
+windows-native = [
+    "tauri-app",
+    "dep:frame-media",
+    "dep:frame-windows-screen-capture",
+    "dep:frame-windows-secure-spool",
+]
 custom-protocol = ["tauri-app", "tauri/custom-protocol"]
 
 [[bin]]
@@ -46,6 +52,10 @@ tauri = { version = "=2.11.5", optional = true , features = [] }
 frame-macos-av-capture = { path = "../../crates/macos-av-capture", optional = true }
 frame-macos-screen-capture = { path = "../../crates/macos-screen-capture", optional = true }
 rustix = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+frame-windows-screen-capture = { path = "../../crates/windows-screen-capture", optional = true }
+frame-windows-secure-spool = { path = "../../crates/windows-secure-spool", optional = true }
 
 [build-dependencies]
 tauri-build = "=2.6.3"

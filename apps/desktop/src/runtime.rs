@@ -48,6 +48,7 @@ pub enum DesktopAdapterKind {
     Unavailable,
     DeterministicFake,
     NativeMacOs,
+    NativeWindows,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -437,8 +438,14 @@ impl DesktopRuntime {
                 revision: 1,
                 mode: RecorderMode::Instant,
                 frame_rate: 30,
-                microphone_enabled: adapter != DesktopAdapterKind::NativeMacOs,
-                system_audio_enabled: adapter != DesktopAdapterKind::NativeMacOs,
+                microphone_enabled: !matches!(
+                    adapter,
+                    DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+                ),
+                system_audio_enabled: !matches!(
+                    adapter,
+                    DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+                ),
                 camera_enabled: false,
                 reduced_motion: false,
             },
@@ -461,6 +468,9 @@ impl DesktopRuntime {
                 }
                 DesktopAdapterKind::NativeMacOs => {
                     "Native macOS display capture is ready for permission setup.".into()
+                }
+                DesktopAdapterKind::NativeWindows => {
+                    "Native Windows display, window, and region capture is ready.".into()
                 }
             },
         })
@@ -671,7 +681,10 @@ impl DesktopRuntime {
         let accepted = self.registry.accept(request)?;
         let owner = self.owner_for(&accepted.request)?;
         let mut candidate = self.clone();
-        let result = if candidate.adapter == DesktopAdapterKind::NativeMacOs {
+        let result = if matches!(
+            candidate.adapter,
+            DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+        ) {
             candidate.execute_native(
                 owner,
                 &accepted.request.command,
@@ -863,7 +876,8 @@ impl DesktopRuntime {
                         self.selected_sources.target = None;
                         self.selected_sources.display_selected = false;
                         self.announcement =
-                            "Screen recording permission was denied by macOS.".into();
+                            "Screen recording permission was denied by the operating system."
+                                .into();
                         let event = BackendEvent::DevicePermissionDenied;
                         self.apply_unsolicited(std::slice::from_ref(&event))
                             .map_err(|_| ExecutionFailure::internal())?;
@@ -1068,7 +1082,7 @@ impl DesktopRuntime {
             IpcCommand::RecorderStart { intent_id } => {
                 if self.permission != PermissionState::Granted {
                     return Err(ExecutionFailure::invalid(
-                        "Confirm macOS screen recording permission before recording.",
+                        "Confirm screen recording permission before recording.",
                     ));
                 }
                 if self.settings.microphone_enabled
@@ -1311,7 +1325,10 @@ impl DesktopRuntime {
                 camera_enabled,
                 reduced_motion,
             } => {
-                if *microphone_enabled || *camera_enabled {
+                if *microphone_enabled
+                    || *camera_enabled
+                    || (self.adapter == DesktopAdapterKind::NativeWindows && *system_audio_enabled)
+                {
                     return Err(ExecutionFailure::unavailable());
                 }
                 if self.settings.revision != *expected_revision {

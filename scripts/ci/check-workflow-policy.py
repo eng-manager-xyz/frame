@@ -473,6 +473,14 @@ def main() -> int:
         "quality-gates.yml: Windows native capture boundaries must be checked and linted on Windows",
         errors,
     )
+    require(
+        "cargo check --locked -p frame-desktop-core --features windows-native,custom-protocol --all-targets"
+        in quality
+        and "cargo clippy --locked -p frame-desktop-core --features windows-native,custom-protocol --all-targets --no-deps -- -D warnings"
+        in quality,
+        "quality-gates.yml: the production Windows capture composition must compile and lint natively",
+        errors,
+    )
     require("desktop_shell:" in quality and "trunk --version 0.21.14 --locked" in quality
             and "build-desktop-ui.py" in quality
             and "--no-color=false" not in quality

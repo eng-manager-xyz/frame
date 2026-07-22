@@ -55,6 +55,7 @@ def main() -> int:
     macos_normalized_worker = text(
         "apps/desktop/src/macos_native_backend/normalized_worker.rs"
     )
+    windows_backend = text("apps/desktop/src/windows_native_backend.rs")
     rooted_io = text("apps/desktop/src/rooted_io.rs")
     gstreamer_bootstrap = text("apps/desktop/src/gstreamer_bootstrap.rs")
     macos_capture = text("crates/macos-screen-capture/src/lib.rs") + text(
@@ -62,6 +63,9 @@ def main() -> int:
     )
     macos_normalized_capture = text(
         "crates/macos-screen-capture/src/normalized.rs"
+    )
+    windows_normalized_capture = text(
+        "crates/windows-screen-capture/src/normalized.rs"
     )
     screen_capture = text("crates/media/src/screen_capture.rs")
     screen_pump = text("crates/media/src/screen_recording/pump.rs")
@@ -116,6 +120,7 @@ def main() -> int:
             "DesktopAdapterKind::Unavailable",
             "DesktopAdapterKind::DeterministicFake",
             "DesktopAdapterKind::NativeMacOs",
+            "DesktopAdapterKind::NativeWindows",
             "pub fn dispatch_json",
             "pub fn dispatch_native_json",
             "pub fn advance_fake",
@@ -147,6 +152,7 @@ def main() -> int:
             'cfg!(all(target_os = "macos", feature = "macos-native"))',
             "bootstrap_desktop_gstreamer()",
             "RecorderAdapterState::NativeMacOsDisplay",
+            "RecorderAdapterState::NativeWindowsDisplayWindowRegion",
             "DesktopAdapterKind::NativeMacOs",
             "DesktopAdapterKind::Unavailable",
             "(DesktopAdapterKind::Unavailable, None)",
@@ -158,6 +164,7 @@ def main() -> int:
         (
             'tauri-app = ["dep:tauri"]',
             'macos-native = [',
+            'windows-native = [',
             '"dep:frame-media"',
             '"dep:frame-macos-av-capture"',
             '"dep:frame-macos-screen-capture"',
@@ -218,16 +225,42 @@ def main() -> int:
     require(
         macos_normalized_worker,
         (
-            "Owner-bound screen-only production worker",
-            "MacOsNormalizedScreenCaptureSource::new",
+            "platform-neutral screen-only production worker",
+            "pub(crate) trait NativeScreenSource",
             "BoundScreenCaptureSource::new",
             "ScreenCaptureIngress::new",
             "negotiate_screen_capture",
             "ScreenRecordingPump::new",
-            "ProtectedContentPolicy::FailSession",
+            "S::protected_content_policy()",
             "ScreenSourceFailureCode::ContentUnavailable",
         ),
-        "macOS normalized production worker",
+        "shared normalized production worker",
+    )
+    require(
+        windows_backend,
+        (
+            "pub struct WindowsNativeDesktopBackend",
+            "WindowsNormalizedScreenCaptureSource",
+            "ScreenWorkerStart::<WindowsNormalizedScreenCaptureSource>::prepare",
+            "ProtectedContentPolicy::RequirePlatformRedaction",
+            "frame_windows_excluded",
+            "create_private_file",
+            "publish_file",
+            "metadata_is_indirect",
+            "fn poll_recording_terminal_failure",
+            "fn export_editable_webm",
+        ),
+        "Windows native desktop composition",
+    )
+    require(
+        windows_normalized_capture,
+        (
+            "pub struct WindowsNormalizedScreenCaptureSource",
+            "impl ScreenCaptureSource for WindowsNormalizedScreenCaptureSource",
+            "platform_protected_content_redaction: true",
+            "fn poll_stopped_event",
+        ),
+        "Windows normalized capture source",
     )
     require(
         macos_av_worker,
@@ -262,6 +295,7 @@ def main() -> int:
             "desktop_runtime_launch_plan()?",
             "plan.apply_to(&mut command)",
             "command.exec()",
+            ".spawn()",
         ),
         "trusted desktop GStreamer bootstrap",
     )
@@ -371,6 +405,7 @@ def main() -> int:
             'instant_progress_announcement',
             'instant_error_message',
             "RecorderAdapterState::NativeMacOsDisplay",
+            "RecorderAdapterState::NativeWindowsDisplayWindowRegion",
             "ExportProfile::EditableWebm",
             "Native macOS capture records the selected target and can optionally include system audio.",
             '<Progress',
@@ -594,10 +629,12 @@ def main() -> int:
         "apps/desktop/src/native_backend.rs",
         "apps/desktop/src/macos_native_backend.rs",
         "apps/desktop/src/macos_native_backend/normalized_worker.rs",
+        "apps/desktop/src/windows_native_backend.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
         "crates/macos-screen-capture/src/lib.rs",
         "crates/macos-screen-capture/src/platform.rs",
         "crates/macos-screen-capture/src/normalized.rs",
+        "crates/windows-screen-capture/src/normalized.rs",
         "crates/media/src/screen_capture.rs",
         "crates/media/src/screen_recording/pump.rs",
         "crates/media/src/screen_recording.rs",
@@ -638,6 +675,8 @@ def main() -> int:
             "portable_unavailable_shell_source": True,
             "macos_native_target_source_contract": True,
             "macos_normalized_screen_only_worker": True,
+            "windows_normalized_screen_only_worker": True,
+            "windows_native_target_source_contract": True,
             "macos_window_region_selection": True,
             "bounded_native_stop_tail": True,
             "explicit_tauri_capabilities": True,

@@ -346,6 +346,7 @@ fn capabilities(
         target_recovery: false,
         protected_content_events: false,
         content_unavailable_failures: true,
+        platform_protected_content_redaction: false,
         window_exclusion: false,
         max_excluded_windows: 0,
         bounded_appsrc_ingress: true,

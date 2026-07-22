@@ -130,6 +130,7 @@ fn capability_spec(
         target_recovery: true,
         protected_content_events: true,
         content_unavailable_failures: false,
+        platform_protected_content_redaction: false,
         window_exclusion: true,
         max_excluded_windows: 8,
         bounded_appsrc_ingress: true,
@@ -1128,6 +1129,51 @@ fn content_unavailable_fallback_is_fail_closed_and_never_claims_reversible_prote
             ),
         ),
         Err(ScreenCaptureError::ProtectedContentSignalUnavailable)
+    );
+}
+
+#[test]
+fn platform_redaction_requires_an_explicit_source_capability() {
+    let source = source_instance(1);
+    let selected = display_target(source, 1, 1);
+    let catalog = ScreenTargetSnapshot::new(source, 1, vec![selected.clone()]).expect("catalog");
+    let embedded = cursor_policy(CursorCaptureMode::EmbeddedInFrame, false, false);
+    let mut spec = capability_spec(source, 1, 1);
+    spec.protected_content_events = false;
+    spec.platform_protected_content_redaction = false;
+    let unsupported = ScreenSourceCapabilities::new(spec.clone()).expect("capabilities");
+    assert_eq!(
+        negotiate_screen_capture(
+            &unsupported,
+            &catalog,
+            request(
+                selected.clone(),
+                vec![],
+                embedded,
+                default_queue(),
+                TargetRecoveryPolicy::FailClosed,
+                ProtectedContentPolicy::RequirePlatformRedaction,
+            ),
+        ),
+        Err(ScreenCaptureError::ProtectedContentSignalUnavailable)
+    );
+
+    spec.platform_protected_content_redaction = true;
+    let supported = ScreenSourceCapabilities::new(spec).expect("redaction capabilities");
+    assert!(
+        negotiate_screen_capture(
+            &supported,
+            &catalog,
+            request(
+                selected,
+                vec![],
+                embedded,
+                default_queue(),
+                TargetRecoveryPolicy::FailClosed,
+                ProtectedContentPolicy::RequirePlatformRedaction,
+            ),
+        )
+        .is_ok()
     );
 }
 

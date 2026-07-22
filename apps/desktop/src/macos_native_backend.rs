@@ -10,7 +10,6 @@
 #![forbid(unsafe_code)]
 
 mod av_worker;
-mod normalized_worker;
 
 use std::{
     collections::BTreeMap,
@@ -33,13 +32,15 @@ use frame_macos_av_capture::{
 #[cfg(test)]
 use frame_macos_screen_capture::MacOsCaptureStopError;
 use frame_macos_screen_capture::{
-    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError, MacOsRegionSelection,
-    MacOsScreenCaptureSource,
+    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError,
+    MacOsNormalizedScreenCaptureSource, MacOsRegionSelection, MacOsScreenCaptureSource,
 };
+#[cfg(test)]
+use frame_media::ScreenRecordingArtifact;
 use frame_media::{
     ColorSpace, CursorCaptureMode, DisplayGeometryTransform, FrameMemory, LogicalRect,
-    PermissionPreflight, PixelFormat, Rotation, ScreenAudioRecording, ScreenAudioRecordingArtifact,
-    ScreenRecording, ScreenRecordingArtifact, ScreenRecordingError, ScreenRecordingSpec,
+    PermissionPreflight, PixelFormat, ProtectedContentPolicy, Rotation, ScreenAudioRecording,
+    ScreenAudioRecordingArtifact, ScreenRecording, ScreenRecordingError, ScreenRecordingSpec,
     ScreenSessionId, ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetDescriptor,
     ScreenTargetKind, ScreenTargetSnapshot, SystemAudioRecordingSpec, VideoFrameSpec,
     preflight_screen_recording_runtime,
@@ -49,7 +50,10 @@ use self::av_worker::{
     AvWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup, classify_audio_stop,
     classify_screen_stop, run_av_capture_worker,
 };
-use self::normalized_worker::ScreenWorkerStart;
+use crate::native_screen_worker::{
+    CompletedRecordingArtifact, NativeScreenSource, ScreenWorkerStart, WorkerCompletion,
+    WorkerControl, WorkerOutcome,
+};
 use ring::{
     digest::{Context as Sha256Context, SHA256},
     rand::{SecureRandom, SystemRandom},
@@ -164,44 +168,6 @@ impl fmt::Debug for StoredArtifact {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkerControl {
-    Stop,
-    Cancel,
-}
-
-struct WorkerCompletion {
-    outcome: WorkerOutcome,
-}
-
-enum WorkerOutcome {
-    Finished(CompletedRecordingArtifact),
-    Cancelled,
-    Failed {
-        error: NativeDesktopBackendError,
-        teardown_confirmed: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CompletedRecordingArtifact {
-    path: PathBuf,
-    bytes: u64,
-    sha256: String,
-    duration_ns: u64,
-}
-
-impl From<ScreenRecordingArtifact> for CompletedRecordingArtifact {
-    fn from(artifact: ScreenRecordingArtifact) -> Self {
-        Self {
-            path: artifact.path,
-            bytes: artifact.bytes,
-            sha256: artifact.sha256,
-            duration_ns: artifact.end_pts_ns.saturating_sub(artifact.first_pts_ns),
-        }
-    }
-}
-
 impl From<ScreenAudioRecordingArtifact> for CompletedRecordingArtifact {
     fn from(artifact: ScreenAudioRecordingArtifact) -> Self {
         Self {
@@ -213,8 +179,36 @@ impl From<ScreenAudioRecordingArtifact> for CompletedRecordingArtifact {
     }
 }
 
+impl NativeScreenSource for MacOsNormalizedScreenCaptureSource {
+    type RawSource = MacOsScreenCaptureSource;
+    type Diagnostics = MacOsCaptureDiagnostics;
+
+    fn normalize(
+        source: Self::RawSource,
+        snapshot: ScreenTargetSnapshot,
+    ) -> Result<Self, NativeDesktopBackendError> {
+        Self::new(source, snapshot).map_err(map_capture_error)
+    }
+
+    fn native_is_running(&self) -> bool {
+        self.raw_source().is_running()
+    }
+
+    fn diagnostics(&self) -> Self::Diagnostics {
+        self.raw_source().diagnostics()
+    }
+
+    fn diagnostics_failed(baseline: Self::Diagnostics, current: Self::Diagnostics) -> bool {
+        diagnostics_failed(baseline, current)
+    }
+
+    fn protected_content_policy() -> ProtectedContentPolicy {
+        ProtectedContentPolicy::FailSession
+    }
+}
+
 enum WorkerStart {
-    ScreenOnly(Box<ScreenWorkerStart>),
+    ScreenOnly(Box<ScreenWorkerStart<MacOsNormalizedScreenCaptureSource>>),
     ScreenAudio(Box<ScreenAudioWorkerStart>),
 }
 
@@ -230,17 +224,6 @@ struct ScreenAudioWorkerStart {
 enum PendingRecordingGraph {
     ScreenOnly(ScreenRecording),
     ScreenAudio(ScreenAudioRecording),
-}
-
-impl WorkerOutcome {
-    const fn teardown_confirmed(&self) -> bool {
-        match self {
-            Self::Finished(_) | Self::Cancelled => true,
-            Self::Failed {
-                teardown_confirmed, ..
-            } => *teardown_confirmed,
-        }
-    }
 }
 
 /// Production native backend selected by the release macOS composition root.
@@ -999,7 +982,6 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     target.descriptor,
                     frame_spec,
                     recording,
-                    screen_diagnostic_baseline,
                     screen_session_id,
                 ) {
                     Ok(start) => WorkerStart::ScreenOnly(Box::new(start)),
