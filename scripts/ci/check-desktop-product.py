@@ -71,6 +71,9 @@ def main() -> int:
     screen_capture = text("crates/media/src/screen_capture.rs")
     screen_pump = text("crates/media/src/screen_recording/pump.rs")
     screen_recording = text("crates/media/src/screen_recording.rs")
+    macos_cursor = text("crates/macos-screen-capture/src/cursor.rs")
+    windows_cursor = text("crates/windows-screen-capture/src/cursor.rs")
+    windows_cursor_ffi = text("crates/windows-capture-ffi/src/cursor.rs")
     ui = text("apps/desktop/ui/src/main.rs")
     region_picker = text("apps/desktop/ui/src/browser/region_picker.rs")
     css = text("crates/ui/styles/tailwind.css")
@@ -551,6 +554,8 @@ def main() -> int:
             "MacOsNormalizedScreenCaptureSource",
             "Native Windows target source evidence",
             "WindowsNormalizedScreenCaptureSource",
+            "metadata-mode cursor sampling",
+            "Image updates precede referencing frames",
             "NativeWindowsDisplayWindowRegion",
             "optional exact 48 kHz stereo system audio",
             "display/window/region screen-only source wired; physical run pending",
@@ -559,6 +564,39 @@ def main() -> int:
             "--expected-adapter native_windows_display_window_region",
         ),
         "screen capture evidence",
+    )
+    require(
+        macos_cursor,
+        (
+            "CursorMetadataSession",
+            "CGCursorIsVisible",
+            "MAX_CURSOR_DIMENSION",
+            "ScreenSourceEvent::CursorImage",
+            "stopped_frame",
+        ),
+        "macOS cursor metadata",
+    )
+    require(
+        windows_cursor,
+        (
+            "CursorMetadataSession",
+            "WindowsCursorSampler",
+            "ScreenTargetKind::Region",
+            "ScreenSourceEvent::CursorImage",
+            "stopped_frame",
+        ),
+        "Windows cursor metadata",
+    )
+    require(
+        windows_cursor_ffi,
+        (
+            "MAX_CURSOR_DIMENSION",
+            "GetCursorInfo",
+            "GetAsyncKeyState",
+            "capture_cursor_image",
+            "delete_bitmap",
+        ),
+        "Windows cursor FFI",
     )
     require(
         studio_evidence,
@@ -648,8 +686,11 @@ def main() -> int:
         "apps/desktop/src/windows_native_backend.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
         "crates/macos-screen-capture/src/lib.rs",
+        "crates/macos-screen-capture/src/cursor.rs",
         "crates/macos-screen-capture/src/platform.rs",
         "crates/macos-screen-capture/src/normalized.rs",
+        "crates/windows-capture-ffi/src/cursor.rs",
+        "crates/windows-screen-capture/src/cursor.rs",
         "crates/windows-screen-capture/src/normalized.rs",
         "crates/media/src/screen_capture.rs",
         "crates/media/src/screen_recording/pump.rs",
@@ -693,6 +734,7 @@ def main() -> int:
             "macos_normalized_screen_only_worker": True,
             "windows_normalized_screen_only_worker": True,
             "windows_native_target_source_contract": True,
+            "native_cursor_metadata_contract": True,
             "macos_window_region_selection": True,
             "bounded_native_stop_tail": True,
             "explicit_tauri_capabilities": True,

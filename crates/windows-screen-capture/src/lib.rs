@@ -15,6 +15,8 @@ use frame_media::{
 use thiserror::Error;
 
 #[cfg(target_os = "windows")]
+mod cursor;
+#[cfg(target_os = "windows")]
 mod normalized;
 #[cfg(target_os = "windows")]
 mod platform;
@@ -117,7 +119,9 @@ impl WindowsCaptureConfig {
         }
         if !matches!(
             cursor,
-            CursorCaptureMode::Hidden | CursorCaptureMode::EmbeddedInFrame
+            CursorCaptureMode::Hidden
+                | CursorCaptureMode::EmbeddedInFrame
+                | CursorCaptureMode::Metadata
         ) {
             return Err(WindowsCaptureError::UnsupportedCursorMode);
         }
@@ -233,8 +237,14 @@ pub enum WindowsCaptureError {
     UnsupportedOutputProfile,
     #[error("the nominal frame duration is outside 1 ms..=1 s")]
     InvalidFrameDuration,
-    #[error("only hidden or frame-embedded cursor capture is supported")]
+    #[error("the requested cursor capture mode is unsupported")]
     UnsupportedCursorMode,
+    #[error("cursor metadata could not be sampled")]
+    CursorMetadataUnavailable,
+    #[error("the cursor image exceeds the 256-by-256 metadata bound")]
+    CursorImageExceedsLimit,
+    #[error("the cursor image revision exhausted its range")]
+    CursorRevisionExhausted,
     #[error("Windows Graphics Capture is unavailable")]
     AdapterUnavailable,
     #[error("the display target is stale or did not come from this adapter")]
@@ -438,17 +448,14 @@ mod tests {
     }
 
     #[test]
-    fn configuration_rejects_unimplemented_profiles_and_cursor_metadata() {
+    fn configuration_rejects_unimplemented_profiles_and_accepts_cursor_metadata() {
         let mut output = spec();
         output.pixel_format = PixelFormat::Nv12;
         assert_eq!(
             WindowsCaptureConfig::new(target(), output, CursorCaptureMode::Hidden),
             Err(WindowsCaptureError::UnsupportedOutputProfile)
         );
-        assert_eq!(
-            WindowsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata),
-            Err(WindowsCaptureError::UnsupportedCursorMode)
-        );
+        assert!(WindowsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata).is_ok());
     }
 
     #[test]
