@@ -13,9 +13,10 @@ file does not reclassify any checkbox. The macOS and Windows sources and
 screen-only desktop compositions now implement display, privacy-filtered
 window, and single-display-region targets through the normalized
 provider-neutral ingress.
-The issue acceptance criteria still require cursor-metadata and lifecycle
-parity, a Linux adapter, representative hardware, performance,
-protected-content observations, and an issue-04 parity recording.
+The issue acceptance criteria still require lifecycle parity, representative
+hardware, performance, protected-content observations, and an issue-04 parity
+recording. Linux is a chartered preview rather than an initial release target,
+so its absent adapter is not used to weaken the macOS/Windows release claim.
 
 The provider-neutral tests below still compile a dummy `ScreenCaptureSource`
 using only the exported API. Their simulated frames, permission events,
@@ -160,6 +161,19 @@ instead advertises a content-unavailable failure and negotiates only the
 fail-session policy; the production screen-only worker aborts rather than
 mislabeling or silently encoding ambiguous content.
 
+The macOS adapter also implements metadata-mode cursor sampling without adding
+an input-monitoring package: Core Graphics supplies checked visibility,
+desktop-logical position, and primary/secondary button state; AppKit supplies
+the current image and hotspot. Image changes are fingerprinted, decoded into
+one exact bounded RGBA allocation, and emitted before the first frame that
+references the new revision. Window coordinates are converted to frame-local
+physical coordinates, display/region coordinates use the canonical geometry
+transform, activity outside the selected target becomes a fully hidden sample,
+and retained stop-tail frames fail closed to hidden cursor metadata rather than
+inventing a stale image or position. The default production recording request
+continues to use an embedded cursor until Studio persists the separate cursor
+track.
+
 These facts do not prove that ScreenCaptureKit returned a display or frame on a
 real machine, that the permission prompt behaved correctly, that Frame windows
 were absent from recorded pixels, that a written WebM was viewed or decoded in
@@ -202,8 +216,19 @@ facts, not Windows hardware results:
   verified artifact hashes, and atomic publication before a completed export
   is reported.
 
-The adapter deliberately advertises neither cursor metadata nor topology
-recovery. Its explicit protected-content policy relies on the operating
+The adapter advertises bounded cursor metadata but deliberately does not
+advertise topology recovery. The existing audited Win32 FFI boundary samples
+cursor visibility, physical desktop position, primary/secondary button state,
+image changes, and hotspot without exposing an `HCURSOR` or pointer identity.
+Only changed images cross into the safe adapter as exact bounded BGRA
+allocations; display, DWM-window, and region geometry are converted to
+frame-local coordinates before the provider-neutral privacy clipping and
+revision rules run. Image updates precede referencing frames, and stop-tail
+metadata fails closed to hidden for the same reason as macOS. The default
+production recording request remains embedded-cursor until Studio owns a
+separate cursor track.
+
+Its explicit protected-content policy relies on the operating
 system's public-capture redaction contract rather than inventing a detection
 event, and the composition refuses to start unless Frame's own window has been
 placed behind Tauri's content-protection boundary. Those are source and
@@ -278,11 +303,11 @@ composition, not the complete issue-24 or Studio contracts.
 
 | Gate | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Native source and release composition | display/window/region screen-only source wired; physical run pending | display/window/region screen-only source wired; physical run pending | pending |
+| Native source and release composition | display/window/region screen-only source wired; physical run pending | display/window/region screen-only source wired; physical run pending | preview; outside the initial release matrix |
 | Permission preflight, prompt, denial, settings, revocation | preflight source wired; observed flow pending | WGC availability preflight implemented; observed flow, settings, and revocation pending | pending |
 | Physical display/window/region samples | pending | pending | pending |
 | Multi-monitor negative origins, mixed/fractional DPI, rotations | pending | pending | pending |
-| Cursor image/position/click parity and clipping | pending | pending | pending |
+| Cursor image/position/click parity and clipping | metadata adapter wired; physical parity pending | metadata adapter wired; physical parity pending | preview |
 | Frame UI/window exclusion recording | pending | pending | pending |
 | Unplug, close/minimize, hotplug, sleep/wake, protected content | pending | pending | pending |
 | Native-memory zero-copy lifetime and latency/CPU/GPU/memory measurements | pending | pending | pending |
@@ -291,8 +316,7 @@ composition, not the complete issue-24 or Studio contracts.
 No pending row in this table may be inferred from a unit test or an
 enum-to-source mapping. Before the OS/architecture/device matrix can produce
 valid acceptance evidence, Frame must exercise the wired macOS and Windows
-targets, implement Linux plus missing cursor metadata and lifecycle/recovery
-behavior, and complete the performance
+targets, implement the missing lifecycle/recovery behavior, and complete the performance
 and parity work represented by checkboxes 1–10. Recorded samples, probes,
 measurements, operational documentation, and rollout evidence remain subsequent
 gates rather than substitutes for that code.
