@@ -8,11 +8,12 @@ window title, process identity, or platform certification.
 
 ## Closure ledger boundary
 
-Issue 24 checkboxes 1–10 remain unclosed in the closure ledger. This evidence
-file does not reclassify any checkbox. The macOS and Windows sources and
-screen-only desktop compositions now implement display, privacy-filtered
-window, and single-display-region targets through the normalized
-provider-neutral ingress.
+The semantic closure audit classifies Issue 24 checkboxes 1–3 as locally
+satisfied, checkboxes 5–7 and 9–10 as protected pending, and checkboxes 4 and 8
+as true local gaps. Local satisfaction is repository evidence, not production
+sign-off. The macOS and Windows sources and screen-only desktop compositions
+implement display, privacy-filtered window, and single-display-region targets
+through the normalized provider-neutral ingress.
 The issue acceptance criteria still require lifecycle parity, representative
 hardware, performance, protected-content observations, and an issue-04 parity
 recording. Linux is a chartered preview rather than an initial release target,

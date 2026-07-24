@@ -549,7 +549,8 @@ def main() -> int:
     require(
         screen_evidence,
         (
-            "does not reclassify any checkbox",
+            "checkboxes 1–3 as locally",
+            "checkboxes 4 and 8",
             "Native macOS target source evidence",
             "MacOsNormalizedScreenCaptureSource",
             "Native Windows target source evidence",

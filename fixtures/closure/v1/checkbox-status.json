@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 352,
-    "protected_pending": 171,
-    "local_gap": 31
+    "local_satisfied": 355,
+    "protected_pending": 176,
+    "local_gap": 23
   },
   "issues": {
     "01": {
@@ -176,9 +176,12 @@
     "24": {
       "count": 10,
       "digest": "72b5f8f1d6d028c4d88b54c28f144aecad0995064ea78bbc0fe5c1cfb31cf5d7",
-      "evidence": ["docs/evidence/screen-capture-local.md", "docs/architecture/screen-capture-contracts.md", "crates/media/tests/screen_capture_contract.rs"],
-      "protected": [],
-      "local_gaps": [{"ordinals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "reason": "A real macOS full-display source, bounded GStreamer/WebM graph, and provider-neutral appsrc pump exist, but production still bypasses the shared capture contract; Windows/Linux adapters, window/region and cursor-metadata paths, lossless stop-tail integration, complete lifecycle handling, and recorded parity remain unwired."}]
+      "evidence": ["docs/evidence/screen-capture-local.md", "docs/architecture/screen-capture-contracts.md", "crates/media/tests/screen_capture_contract.rs", "crates/macos-screen-capture/src/cursor.rs", "crates/windows-screen-capture/src/cursor.rs", "crates/windows-capture-ffi/src/cursor.rs"],
+      "protected": [
+        {"ordinals": [5, 6, 7, 10], "classes": ["hardware_execution"], "reason": "Issue-04 capture parity, physical geometry and cursor fidelity, and proof that Frame pixels are excluded require representative macOS and Windows recordings."},
+        {"ordinals": [9], "classes": ["hardware_execution", "production_scale_data"], "reason": "Copy, latency, CPU, GPU, and retained-memory budgets require measured native recordings on the supported hardware matrix."}
+      ],
+      "local_gaps": [{"ordinals": [4, 8], "reason": "The release adapters fail closed on native target loss and content unavailability, but exact topology/change signaling plus permission, sleep/wake, unplug, minimize, and reconnection behavior still need repository-local platform integration."}]
     },
     "25": {
       "count": 10,
