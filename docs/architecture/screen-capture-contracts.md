@@ -161,6 +161,16 @@ provide frame-local coordinates: proportional conversion from desktop logical
 coordinates would be incorrect for a window spanning mixed-DPI displays and is
 rejected.
 
+The production macOS adapter supplies global logical coordinates for display
+and region targets and converts an enumerated window's point-space bounds to
+frame-local coordinates. The production Windows adapter treats WGC/DWM and
+`GetCursorInfo` values as one physical desktop coordinate space and converts
+display, region, and window selections to frame-local coordinates before
+normalization. Both adapters keep the native cursor hidden in metadata mode,
+emit a changed bounded image before a referencing frame, suppress all fields
+outside the selected target, and hide cursor metadata on a retained stop tail
+when a new image update can no longer be admitted.
+
 Cursor image changes use a separately owned, release-on-drop update with a
 nonzero revision, BGRA/RGBA format, bounded dimensions/bytes, and a validated
 hotspot. Frame and cursor-image payload types are sealed to exact-capacity

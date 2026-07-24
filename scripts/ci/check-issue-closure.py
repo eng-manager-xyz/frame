@@ -36,7 +36,7 @@ ALLOWED_CLASSES = {
 # implementation or infer closure; changing one of these sets requires a fresh
 # human audit rather than compensating with an unrelated total adjustment.
 AUDITED_LOCAL_GAPS = {
-    "24": frozenset(range(1, 11)),
+    "24": frozenset({4, 8}),
     "25": frozenset({1, 4, 5, 6, 7, 8}),
     "27": frozenset({2, 3, 4, 5, 8, 9, 10, 11}),
     "33": frozenset({3, 4, 5, 6, 8, 9, 10}),

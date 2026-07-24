@@ -8,6 +8,9 @@
 
 use std::fmt;
 
+#[cfg(target_os = "windows")]
+mod cursor;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowsCaptureFfiError;
 
@@ -407,6 +410,8 @@ mod windows {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub use cursor::{WindowsCursorImage, WindowsCursorSample, WindowsCursorSampler};
 #[cfg(target_os = "windows")]
 pub use windows::{
     NativeDisplay, NativeWindow, capture_item_for_monitor, capture_item_for_window,
