@@ -774,6 +774,9 @@ def main() -> int:
     require("test-release-change-plan.py" in production_untrusted
             and "test-release-change-plan.py" in quality,
             "release-change-plan compile-time fixture behavior must be tested before release", errors)
+    require("test-web-hydration-browser-launch.py" in production_untrusted
+            and "test-web-hydration-browser-launch.py" in quality,
+            "bounded loopback-only browser startup behavior must be tested before release", errors)
     require(
         production_untrusted.count(parity_runner) == 1
         and production_untrusted.count(parity_runner_test) == 1
