@@ -8,15 +8,18 @@ use frame_media::{
     ScreenControlStamp, ScreenCursorModes, ScreenFrame, ScreenFrameEnvelope, ScreenFrameProfile,
     ScreenOperationBudget, ScreenOperationKind, ScreenOperationTicket, ScreenPermissionObservation,
     ScreenSourceCallTicket, ScreenSourceCapabilities, ScreenSourceCapabilitySpec,
-    ScreenSourceFailure, ScreenSourceFailureCode, ScreenSourceInstanceId, ScreenSourcePollResult,
-    ScreenSourceSessionBinding, ScreenSourceSessionTicket, ScreenTargetKind, ScreenTargetKinds,
-    ScreenTargetSnapshot,
+    ScreenSourceEvent, ScreenSourceFailure, ScreenSourceFailureCode, ScreenSourceInstanceId,
+    ScreenSourcePollResult, ScreenSourceSessionBinding, ScreenSourceSessionTicket,
+    ScreenTargetKind, ScreenTargetKinds, ScreenTargetSnapshot,
 };
 
+use crate::cursor::CursorMetadataSession;
 use crate::{
     CALLBACK_QUEUE_CAPACITY, MAX_CAPTURE_HEIGHT, MAX_CAPTURE_WIDTH, MacOsCaptureConfig,
     MacOsCaptureError, MacOsCaptureFrame, MacOsRegionSelection, MacOsScreenCaptureSource,
 };
+
+type NormalizedEvent = ScreenSourceEvent<Box<[u8]>, Box<[u8]>>;
 
 /// ScreenCaptureKit source bound to the normalized capture session contract.
 ///
@@ -30,6 +33,8 @@ pub struct MacOsNormalizedScreenCaptureSource {
     capabilities: ScreenSourceCapabilities,
     binding: Option<ScreenSourceSessionBinding>,
     active_stream: Option<frame_media::ScreenStreamStamp>,
+    active_cursor: Option<CursorMetadataSession>,
+    pending_events: VecDeque<NormalizedEvent>,
     stopped_tail: VecDeque<ScreenFrame<Box<[u8]>>>,
     next_control_sequence: u64,
 }
@@ -65,6 +70,8 @@ impl MacOsNormalizedScreenCaptureSource {
             capabilities,
             binding: None,
             active_stream: None,
+            active_cursor: None,
+            pending_events: VecDeque::with_capacity(2),
             stopped_tail: VecDeque::with_capacity(CALLBACK_QUEUE_CAPACITY),
             next_control_sequence,
         })
@@ -217,6 +224,18 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
             return Err(ticket.failure(ScreenSourceFailureCode::NativeOperationFailed, false));
         }
         let request = ticket.negotiated().request();
+        let cursor = if request.cursor().mode() == CursorCaptureMode::Metadata {
+            Some(
+                CursorMetadataSession::new(
+                    request.target().clone(),
+                    request.output(),
+                    request.cursor(),
+                )
+                .map_err(|error| ticket.failure(source_failure_code(error).0, false))?,
+            )
+        } else {
+            None
+        };
         let config = MacOsCaptureConfig::new(
             request.target().binding(),
             request.output(),
@@ -228,6 +247,7 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
             ticket.failure(code, retryable)
         })?;
         self.active_stream = Some(ticket.stream());
+        self.active_cursor = cursor;
         Ok(())
     }
 
@@ -249,12 +269,22 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
         let stream = self.active_stream.ok_or_else(|| {
             ScreenSourceFailure::new(ScreenSourceFailureCode::NativeOperationFailed, false)
         })?;
-        self.source
-            .poll_frame()
-            .map_err(source_failure)?
-            .map(|frame| normalized_frame(stream, frame))
-            .transpose()
-            .map(|frame| frame.map(frame_media::ScreenSourceEvent::Frame))
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(Some(event));
+        }
+        let Some(frame) = self.source.poll_frame().map_err(source_failure)? else {
+            return Ok(None);
+        };
+        if let Some(cursor) = self.active_cursor.as_mut() {
+            self.pending_events = cursor
+                .active_events(stream, frame)
+                .map_err(source_failure)?
+                .into();
+            return Ok(self.pending_events.pop_front());
+        }
+        normalized_frame(stream, frame)
+            .map(frame_media::ScreenSourceEvent::Frame)
+            .map(Some)
             .map_err(source_failure)
     }
 
@@ -294,12 +324,17 @@ impl ScreenCaptureSource for MacOsNormalizedScreenCaptureSource {
         // malformed. Clear the active stream before converting the finite tail
         // so a conversion failure cannot make a stopped source look live.
         self.active_stream = None;
+        self.pending_events.clear();
         if frames.len() > CALLBACK_QUEUE_CAPACITY {
             return Err(ticket.failure(ScreenSourceFailureCode::NativeOperationFailed, false));
         }
+        let cursor = self.active_cursor.take();
         let tail = frames
             .into_iter()
-            .map(|frame| normalized_frame(stream, frame))
+            .map(|frame| match &cursor {
+                Some(cursor) => cursor.stopped_frame(stream, frame),
+                None => normalized_frame(stream, frame),
+            })
             .collect::<Result<VecDeque<_>, _>>()
             .map_err(|error| {
                 let (code, retryable) = source_failure_code(error);
@@ -328,11 +363,12 @@ fn capabilities(
             .with(ScreenTargetKind::Region),
         cursor_modes: ScreenCursorModes::none()
             .with(CursorCaptureMode::Hidden)
-            .with(CursorCaptureMode::EmbeddedInFrame),
-        cursor_image_metadata: false,
-        cursor_click_metadata: false,
-        cursor_desktop_logical_coordinates: false,
-        cursor_frame_physical_coordinates: false,
+            .with(CursorCaptureMode::EmbeddedInFrame)
+            .with(CursorCaptureMode::Metadata),
+        cursor_image_metadata: true,
+        cursor_click_metadata: true,
+        cursor_desktop_logical_coordinates: true,
+        cursor_frame_physical_coordinates: true,
         frame_profiles: vec![ScreenFrameProfile {
             pixel_format: PixelFormat::Bgra8,
             color_space: frame_media::ColorSpace::Srgb,
@@ -402,7 +438,10 @@ const fn source_failure_code(error: MacOsCaptureError) -> (ScreenSourceFailureCo
         | MacOsCaptureError::PixelBufferTooShort
         | MacOsCaptureError::PixelBufferLockFailed
         | MacOsCaptureError::InvalidTimestamp
-        | MacOsCaptureError::SequenceExhausted => {
+        | MacOsCaptureError::SequenceExhausted
+        | MacOsCaptureError::CursorMetadataUnavailable
+        | MacOsCaptureError::CursorImageExceedsLimit
+        | MacOsCaptureError::CursorRevisionExhausted => {
             (ScreenSourceFailureCode::InvalidNativeFrame, false)
         }
         MacOsCaptureError::NativeOperationTimedOut => {
@@ -501,8 +540,8 @@ mod tests {
 
         assert!(!capabilities.spec().protected_content_events);
         assert!(capabilities.spec().content_unavailable_failures);
-        assert!(!capabilities.spec().cursor_image_metadata);
-        assert!(!capabilities.spec().cursor_click_metadata);
+        assert!(capabilities.spec().cursor_image_metadata);
+        assert!(capabilities.spec().cursor_click_metadata);
         assert!(
             negotiate_screen_capture(
                 capabilities,

@@ -18,6 +18,8 @@ use thiserror::Error;
 mod target_catalog;
 
 #[cfg(target_os = "macos")]
+mod cursor;
+#[cfg(target_os = "macos")]
 mod normalized;
 #[cfg(target_os = "macos")]
 mod platform;
@@ -130,7 +132,9 @@ impl MacOsCaptureConfig {
         }
         if !matches!(
             cursor,
-            CursorCaptureMode::Hidden | CursorCaptureMode::EmbeddedInFrame
+            CursorCaptureMode::Hidden
+                | CursorCaptureMode::EmbeddedInFrame
+                | CursorCaptureMode::Metadata
         ) {
             return Err(MacOsCaptureError::UnsupportedCursorMode);
         }
@@ -246,8 +250,14 @@ pub enum MacOsCaptureError {
     UnsupportedOutputProfile,
     #[error("the nominal frame duration is outside 1 ms..=1 s")]
     InvalidFrameDuration,
-    #[error("only hidden or frame-embedded cursor capture is supported")]
+    #[error("the requested cursor capture mode is unsupported")]
     UnsupportedCursorMode,
+    #[error("cursor metadata could not be sampled")]
+    CursorMetadataUnavailable,
+    #[error("the cursor image exceeds the 256-by-256 metadata bound")]
+    CursorImageExceedsLimit,
+    #[error("the cursor image revision exhausted its range")]
+    CursorRevisionExhausted,
     #[error("screen-recording permission is not granted")]
     PermissionDenied,
     #[error("the active display catalog could not be read")]
@@ -685,18 +695,16 @@ mod tests {
             MacOsCaptureConfig::new(target(), output, CursorCaptureMode::Hidden),
             Err(MacOsCaptureError::UnsupportedOutputProfile)
         );
-        assert_eq!(
-            MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata),
-            Err(MacOsCaptureError::UnsupportedCursorMode)
-        );
+        assert!(MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata).is_ok());
     }
 
     #[test]
-    fn configuration_accepts_exact_hidden_and_embedded_cursor_modes() {
+    fn configuration_accepts_all_implemented_cursor_modes() {
         assert!(MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Hidden).is_ok());
         assert!(
             MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::EmbeddedInFrame).is_ok()
         );
+        assert!(MacOsCaptureConfig::new(target(), spec(), CursorCaptureMode::Metadata).is_ok());
     }
 
     #[test]
