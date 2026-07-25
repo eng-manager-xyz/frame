@@ -33,7 +33,11 @@ concurrency:
 jobs:
   canonical-smoke:
     name: Canonical domain contract and cache smoke
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    if: >-
+      ${{
+        (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
+        (github.event_name == 'workflow_dispatch' || vars.FRAME_PRODUCTION_SMOKE_ENABLED == 'true')
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

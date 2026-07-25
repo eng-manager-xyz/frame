@@ -20,10 +20,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 
 
 PROFILE_CLEANUP_TIMEOUT_SECONDS = 5.0
 PROFILE_CLEANUP_RETRY_SECONDS = 0.1
+# Hosted runners can spend several seconds starting crashpad and Chrome after a
+# full release build. Keep the wait bounded without treating that variance as a
+# product failure.
+DEVTOOLS_STARTUP_TIMEOUT_SECONDS = 30.0
+DEVTOOLS_STARTUP_POLL_SECONDS = 0.05
 
 
 def fetch(origin: str, path: str) -> tuple[int, dict[str, str], bytes]:
@@ -58,6 +64,49 @@ def cleanup_browser_profile(profile: pathlib.Path) -> None:
                 )
                 return
             time.sleep(PROFILE_CLEANUP_RETRY_SECONDS)
+
+
+def chrome_launch_command(browser: str, profile: pathlib.Path) -> list[str]:
+    """Build the fixed, loopback-only headless browser command."""
+    return [
+        browser,
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-port=0",
+        f"--user-data-dir={profile}",
+        "about:blank",
+    ]
+
+
+def wait_for_devtools_port(
+    process: subprocess.Popen[bytes],
+    devtools_port_file: pathlib.Path,
+    *,
+    timeout_seconds: float = DEVTOOLS_STARTUP_TIMEOUT_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> int:
+    """Wait within a fixed deadline for Chrome's loopback DevTools port."""
+    require(timeout_seconds > 0, "Chrome startup timeout must be positive")
+    deadline = monotonic() + timeout_seconds
+    while True:
+        if devtools_port_file.is_file():
+            lines = devtools_port_file.read_text(encoding="utf-8").splitlines()
+            if lines and lines[0].isdigit():
+                port = int(lines[0])
+                require(0 < port <= 65_535, "Chrome reported an invalid DevTools port")
+                return port
+        require(process.poll() is None, "Chrome exited before DevTools was ready")
+        if monotonic() >= deadline:
+            raise SystemExit(
+                "web hydration smoke: Chrome DevTools did not start within "
+                f"{timeout_seconds:g} seconds"
+            )
+        pause(DEVTOOLS_STARTUP_POLL_SECONDS)
 
 
 class DevTools:
@@ -298,33 +347,13 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
     ) as profile:
         devtools_port_file = pathlib.Path(profile) / "DevToolsActivePort"
         process = subprocess.Popen(
-            [
-                browser,
-                "--headless=new",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--remote-debugging-port=0",
-                f"--user-data-dir={profile}",
-                "about:blank",
-            ],
+            chrome_launch_command(browser, pathlib.Path(profile)),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         devtools: DevTools | None = None
         try:
-            deadline = time.monotonic() + 10
-            while True:
-                if devtools_port_file.is_file():
-                    lines = devtools_port_file.read_text(encoding="utf-8").splitlines()
-                    if lines and lines[0].isdigit():
-                        port = int(lines[0])
-                        break
-                require(process.poll() is None, "Chrome exited before DevTools was ready")
-                if time.monotonic() >= deadline:
-                    raise SystemExit("web hydration smoke: Chrome DevTools did not start")
-                time.sleep(0.05)
+            port = wait_for_devtools_port(process, devtools_port_file)
             endpoint = f"http://127.0.0.1:{port}"
             with urllib.request.urlopen(f"{endpoint}/json/version", timeout=5):
                 pass

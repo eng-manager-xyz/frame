@@ -136,7 +136,14 @@ changing unrelated portfolio or zone resources.
    portfolio baseline, then move it to normal placement.
 8. Release optional status, handoff, CORS, or embed independently. None is a
    base-launch prerequisite.
-9. Hold the signed observation window. Close critical/high defects and make
+9. After the canonical DNS, Render, Worker, cache, privacy, and release-join
+   checks pass, set the repository Actions variable
+   `FRAME_PRODUCTION_SMOKE_ENABLED` to exactly `true`. Manually dispatch
+   `Canonical production smoke` once before relying on its scheduled and
+   post-release runs. Before this latch is enabled, automatic runs are skipped
+   so an intentionally absent pre-launch hostname does not page responders;
+   manual dispatch remains available for cutover testing.
+10. Hold the signed observation window. Close critical/high defects and make
    explicit post-launch decisions before changing the default Render hostname
    or any legacy path.
 
@@ -179,6 +186,11 @@ resolution, edge certificate, origin certificate, strict-mode validation, or
 route ownership. Return the exact Frame record to DNS-only only after origin
 certificate verification. If necessary, restore/remove that record alone. Do
 not alter apex, `www`, shop/store, portfolio, wildcard, or zone-wide settings.
+Keep `FRAME_PRODUCTION_SMOKE_ENABLED=true` during an unplanned outage so the
+scheduled check continues to alert. Set it to any value other than exact
+lowercase `true` only as part of an authorized rollback or decommission that
+intentionally removes the canonical hostname; manual dispatch remains
+available while the latch is inactive.
 
 On cache/WAF/rate failure, switch the one Frame rule from enforce to observe or
 disable it. A private `HIT`, stale deleted share, or authenticated cookie variant
