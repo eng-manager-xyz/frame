@@ -119,6 +119,12 @@ def main() -> int:
 
         mutations = (
             (
+                smoke,
+                "github.event_name == 'workflow_dispatch' || vars.FRAME_PRODUCTION_SMOKE_ENABLED == 'true'",
+                "github.event_name == 'workflow_dispatch' || true",
+                "automatic canonical smoke enabled before an explicit production launch",
+            ),
+            (
                 production,
                 "on:\n  pull_request:\n  push:",
                 "on:\n  push:",

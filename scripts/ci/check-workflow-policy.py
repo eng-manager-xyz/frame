@@ -897,6 +897,8 @@ def main() -> int:
     require("${{ secrets." not in smoke, "production-smoke.yml: canonical smoke must be secret-free", errors)
     require("https://frame.engmanager.xyz" in smoke and "https://frame-staging.engmanager.xyz" in smoke,
             "production-smoke.yml: smoke origins must be a fixed allowlist", errors)
+    require("github.event_name == 'workflow_dispatch' || vars.FRAME_PRODUCTION_SMOKE_ENABLED == 'true'" in smoke,
+            "production-smoke.yml: automatic smoke must require the exact post-launch activation latch", errors)
 
     ci = texts.get("ci.yml", "")
     require("GST_PLUGIN_SYSTEM_PATH_1_0" in ci and "gstreamer-sanitized-exec" in ci,
