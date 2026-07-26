@@ -16,11 +16,13 @@ macos-native = [
     "dep:frame-media",
     "dep:frame-macos-av-capture",
     "dep:frame-macos-screen-capture",
+    "dep:frame-platform-lifecycle",
     "dep:rustix",
 ]
 windows-native = [
     "tauri-app",
     "dep:frame-media",
+    "dep:frame-platform-lifecycle",
     "dep:frame-windows-screen-capture",
     "dep:frame-windows-secure-spool",
 ]
@@ -46,6 +48,7 @@ ring.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+frame-platform-lifecycle = { path = "../../crates/platform-lifecycle", optional = true }
 tauri = { version = "=2.11.5", optional = true , features = [] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

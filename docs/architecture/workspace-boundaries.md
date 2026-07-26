@@ -26,6 +26,8 @@ domain ──> ports ──> application/adapters       │
 | `frame-web` | native Render process | public client/contracts, Axum, Leptos SSR | Worker SDK, D1/R2 bindings, GStreamer, capture, durable local state |
 | `frame-media` / worker | native | domain/contracts/ports, GStreamer | production D1 credentials, Worker bindings, browser session secrets |
 | `frame-windows-secure-spool` | Windows native FFI | narrowly featured `windows-sys`, `zeroize`, path/metadata primitives | media/domain/application contracts, networking, raw pointers or handles in its public API |
+| `frame-windows-capture-ffi` | Windows native FFI | narrowly featured `windows`, WGC | media/domain/application contracts, networking, raw pointers or handles in its public API |
+| `frame-platform-lifecycle` | macOS + Windows native FFI | narrowly featured AppKit/Foundation and Windows power notifications | media/domain/application contracts, networking, native observer or callback identities in its public API |
 | desktop shell | native + browser WebView | versioned IPC and media application services | broad filesystem/shell APIs or unversioned command payloads |
 
 Adapters convert runtime-specific values at the boundary. JavaScript streams,
@@ -45,12 +47,17 @@ contains no transport or credential storage and is not a portfolio contract.
 - `Cargo.lock` is committed and `--locked` is required for production builds.
 - Features may add a transport or adapter but may not invert dependency
   direction. Core contract builds remain default-feature-light and wasm-safe.
-- Workspace `unsafe_code = "forbid"` applies by default.
-  `frame-windows-secure-spool` is the sole package-level exception: it owns the
-  audited Win32 Credential Manager, ACL/SID, reparse-point, handle-allocation,
-  handle-relative no-replace rename, and file-flush calls behind a pointer-free
-  safe API. No other crate may add an unsafe block or depend directly on
-  `windows-sys` for this boundary.
+- Workspace `unsafe_code = "forbid"` applies by default. Three narrow
+  package-level exceptions own audited platform boundaries:
+  `frame-windows-secure-spool` owns Win32 Credential Manager, ACL/SID,
+  reparse-point, handle-allocation, handle-relative no-replace rename, and
+  file-flush calls; `frame-windows-capture-ffi` owns Win32 display/window
+  enumeration, cursor sampling, WGC item construction, and message-loop
+  control; and `frame-platform-lifecycle` owns process-lifetime macOS
+  notification observers and the Windows suspend/resume callback. All expose
+  safe APIs without raw pointers, handles, observer identities, or callback
+  contexts. No other crate may add an unsafe block or depend directly on
+  `windows-sys` for the secure-spool boundary.
 
 ## Enforced checks
 

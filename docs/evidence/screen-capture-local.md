@@ -8,16 +8,23 @@ window title, process identity, or platform certification.
 
 ## Closure ledger boundary
 
-The semantic closure audit classifies Issue 24 checkboxes 1–3 as locally
-satisfied, checkboxes 5–7 and 9–10 as protected pending, and checkboxes 4 and 8
-as true local gaps. Local satisfaction is repository evidence, not production
-sign-off. The macOS and Windows sources and screen-only desktop compositions
-implement display, privacy-filtered window, and single-display-region targets
-through the normalized provider-neutral ingress.
-The issue acceptance criteria still require lifecycle parity, representative
-hardware, performance, protected-content observations, and an issue-04 parity
-recording. Linux is a chartered preview rather than an initial release target,
-so its absent adapter is not used to weaken the macOS/Windows release claim.
+The original provider-neutral contract established Issue 24 checkboxes 1–3 as locally
+satisfied; this native lifecycle slice additionally establishes checkboxes 4 and 8.
+The semantic closure audit therefore classifies checkboxes 1–4 and 8 as locally
+satisfied and checkboxes 5–7 and 9–10 as protected pending. Local satisfaction
+is repository evidence, not production sign-off. The macOS and Windows sources
+and screen-only desktop compositions implement display, privacy-filtered
+window, and single-display-region targets through the normalized
+provider-neutral ingress. Their release adapters now install process-lifetime
+power observers, poll topology at a bounded one-second cadence, rotate
+authenticated catalogs, and emit exact permission, sleep/wake, hotplug,
+reconfiguration, unplug, close, and minimize observations. The advertised
+reconnection policy remains `FailClosed`; the adapters do not claim lossless
+resume or silently stitch a recording.
+The issue acceptance criteria still require representative hardware,
+performance, protected-content observations, and an issue-04 parity recording.
+Linux is a chartered preview rather than an initial release target, so its
+absent adapter is not used to weaken the macOS/Windows release claim.
 
 The provider-neutral tests below still compile a dummy `ScreenCaptureSource`
 using only the exported API. Their simulated frames, permission events,
@@ -109,6 +116,16 @@ The focused contract gates cover:
   target loss/reconfiguration, sleep, and protected content; fail-closed access
   loss without a preflight action; and privacy-safe diagnostics.
 
+The native lifecycle integration additionally covers a process-wide
+`NSWorkspace` sleep/wake observer on macOS and
+`PowerRegisterSuspendResumeNotification` on Windows. Each session consumes an
+independent monotonic cursor. One complete missed sleep/wake cycle is replayed
+in order; a larger event gap fails closed. Target probes never run more often
+than once per second, region selections are rebound only while their original
+display still exists and contains them, and a complete new catalog accompanies
+one deterministic representative target delta. Selected-target changes take
+precedence over unrelated changes in the same observation.
+
 ## Native macOS target source evidence
 
 Repository inspection and focused checks establish the following local source
@@ -125,7 +142,8 @@ facts, not hardware results:
   windows and a selected non-Frame window is isolated by its exact binding;
 - the `macos-native` desktop feature constructs
   `MacOsNativeDesktopBackend` only after GStreamer recorder preflight, reports
-  `NativeMacOsDisplay`, and degrades to `Unavailable` if construction fails;
+  `NativeMacOsDisplay`, installs the native process power observer on the app
+  main thread, and degrades to `Unavailable` if construction fails;
 - the runtime requires granted permission and a fresh opaque display, window,
   or user-defined region selection; screen-only recording uses the normalized
   owner-bound ingress and pump, while optional exact 48 kHz stereo system audio
@@ -217,8 +235,9 @@ facts, not Windows hardware results:
   verified artifact hashes, and atomic publication before a completed export
   is reported.
 
-The adapter advertises bounded cursor metadata but deliberately does not
-advertise topology recovery. The existing audited Win32 FFI boundary samples
+The adapter advertises bounded cursor metadata and topology events but
+deliberately does not advertise automatic topology recovery. The existing
+audited Win32 FFI boundary samples
 cursor visibility, physical desktop position, primary/secondary button state,
 image changes, and hotspot without exposing an `HCURSOR` or pointer identity.
 Only changed images cross into the safe adapter as exact bounded BGRA
@@ -253,7 +272,8 @@ rustfmt --edition 2024 --check \
 scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media --all-targets
 
 # macOS source and desktop composition checks.
-cargo test --locked -p frame-macos-screen-capture --all-targets
+cargo test --locked \
+  -p frame-platform-lifecycle -p frame-macos-screen-capture --all-targets
 cargo test --locked -p frame-media --test screen_recording_contract
 cargo test --locked -p frame-desktop-core \
   --features tauri-app,macos-native --all-targets
@@ -268,9 +288,11 @@ python3 scripts/ci/desktop-shell-smoke.py --expected-adapter native_macos_displa
 # GStreamer link probe for cargo check; it does not constitute capture evidence.
 export DOCS_RS=1
 cargo check --locked \
-  -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets
+  -p frame-platform-lifecycle -p frame-windows-capture-ffi \
+  -p frame-windows-screen-capture --all-targets
 cargo clippy --locked \
-  -p frame-windows-capture-ffi -p frame-windows-screen-capture \
+  -p frame-platform-lifecycle -p frame-windows-capture-ffi \
+  -p frame-windows-screen-capture \
   --all-targets --no-deps -- -D warnings
 cargo check --locked -p frame-desktop-core \
   --features windows-native,custom-protocol --all-targets
@@ -310,14 +332,14 @@ composition, not the complete issue-24 or Studio contracts.
 | Multi-monitor negative origins, mixed/fractional DPI, rotations | pending | pending | pending |
 | Cursor image/position/click parity and clipping | metadata adapter wired; physical parity pending | metadata adapter wired; physical parity pending | preview |
 | Frame UI/window exclusion recording | pending | pending | pending |
-| Unplug, close/minimize, hotplug, sleep/wake, protected content | pending | pending | pending |
+| Unplug, close/minimize, hotplug, sleep/wake, protected content | event integration wired; physical observation pending | event integration wired; physical observation pending | pending |
 | Native-memory zero-copy lifetime and latency/CPU/GPU/memory measurements | pending | pending | pending |
 | Cap-baseline and issue-04 fixture parity | pending | pending | pending |
 
 No pending row in this table may be inferred from a unit test or an
 enum-to-source mapping. Before the OS/architecture/device matrix can produce
 valid acceptance evidence, Frame must exercise the wired macOS and Windows
-targets, implement the missing lifecycle/recovery behavior, and complete the performance
-and parity work represented by checkboxes 1–10. Recorded samples, probes,
-measurements, operational documentation, and rollout evidence remain subsequent
-gates rather than substitutes for that code.
+targets and complete the protected performance and parity work represented by
+checkboxes 5–7 and 9–10. Recorded samples, probes, measurements, operational
+documentation, and rollout evidence remain subsequent gates rather than
+substitutes for that code.

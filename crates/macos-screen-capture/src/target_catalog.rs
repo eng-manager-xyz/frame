@@ -126,6 +126,39 @@ pub(crate) struct ResolvedRegionSelection {
     logical_bounds: LogicalRect,
 }
 
+impl ResolvedRegionSelection {
+    pub(crate) const fn display(self) -> NativeDisplayRecord {
+        self.display
+    }
+
+    pub(crate) const fn logical_bounds(self) -> LogicalRect {
+        self.logical_bounds
+    }
+}
+
+pub(crate) fn refresh_region_selections(
+    displays: &[NativeDisplayRecord],
+    regions: &[ResolvedRegionSelection],
+) -> Vec<ResolvedRegionSelection> {
+    regions
+        .iter()
+        .filter_map(|region| {
+            let display = displays
+                .iter()
+                .copied()
+                .find(|display| display.display_id() == region.display().display_id())?;
+            display
+                .transform()
+                .logical_bounds()
+                .contains_rect(region.logical_bounds())
+                .then_some(ResolvedRegionSelection {
+                    display,
+                    logical_bounds: region.logical_bounds(),
+                })
+        })
+        .collect()
+}
+
 pub(crate) fn resolve_region_selections(
     target_map: &BTreeMap<ScreenTargetBinding, NativeTargetRecord>,
     regions: &[MacOsRegionSelection],
@@ -586,6 +619,17 @@ mod tests {
             assemble_records(vec![display(7, 0)], vec![], &[region, region]),
             MacOsCaptureError::DuplicateNativeTarget,
         );
+    }
+
+    #[test]
+    fn topology_refresh_rebinds_only_regions_still_inside_the_same_display() {
+        let region = ResolvedRegionSelection {
+            display: display(7, 0),
+            logical_bounds: LogicalRect::new(10, 20, 100, 80).expect("region"),
+        };
+        assert!(refresh_region_selections(&[display(7, 0)], &[region]) == vec![region]);
+        assert!(refresh_region_selections(&[display(8, 0)], &[region]).is_empty());
+        assert!(refresh_region_selections(&[display(7, 500)], &[region]).is_empty());
     }
 
     #[test]

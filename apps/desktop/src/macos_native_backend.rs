@@ -45,6 +45,7 @@ use frame_media::{
     ScreenTargetKind, ScreenTargetSnapshot, SystemAudioRecordingSpec, VideoFrameSpec,
     preflight_screen_recording_runtime,
 };
+use frame_platform_lifecycle::SystemPowerMonitor;
 
 use self::av_worker::{
     AvWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup, classify_audio_stop,
@@ -1868,8 +1869,13 @@ fn new_session_source(
     let source_instance = ScreenSourceInstanceId::new(random_array(&random)?)
         .map_err(|_| NativeDesktopBackendError::Internal)?;
     let source_secret = Zeroizing::new(random_array(&random)?);
-    let source = MacOsScreenCaptureSource::new(source_instance, *source_secret)
-        .map_err(map_capture_error)?;
+    let power_monitor = session_power_monitor()?;
+    let source = MacOsScreenCaptureSource::new_with_power_monitor(
+        source_instance,
+        *source_secret,
+        &power_monitor,
+    )
+    .map_err(map_capture_error)?;
     let system_audio =
         MacOsSystemAudioSource::new(*installation_secret).map_err(map_system_audio_error)?;
     Ok(SessionSource {
@@ -1878,6 +1884,16 @@ fn new_session_source(
         observed_topology_generation: None,
         snapshot: None,
     })
+}
+
+#[cfg(test)]
+fn session_power_monitor() -> Result<SystemPowerMonitor, NativeDesktopBackendError> {
+    Ok(SystemPowerMonitor::detached())
+}
+
+#[cfg(not(test))]
+fn session_power_monitor() -> Result<SystemPowerMonitor, NativeDesktopBackendError> {
+    SystemPowerMonitor::install().map_err(|_| NativeDesktopBackendError::Unavailable)
 }
 
 fn random_array<const N: usize>(

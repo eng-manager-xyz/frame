@@ -369,8 +369,8 @@ def main() -> int:
         macos_native_capture, "Test and lint both macOS capture adapters"
     )
     for command in (
-        "scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-macos-screen-capture -p frame-macos-av-capture",
-        "scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-macos-screen-capture -p frame-macos-av-capture --all-targets -- -D warnings",
+        "scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-platform-lifecycle -p frame-macos-screen-capture -p frame-macos-av-capture",
+        "scripts/ci/gstreamer-sanitized-exec cargo clippy --locked -p frame-platform-lifecycle -p frame-macos-screen-capture -p frame-macos-av-capture --all-targets -- -D warnings",
     ):
         require(
             macos_adapter_step.count(command) == 1,
@@ -469,9 +469,9 @@ def main() -> int:
         "\n  desktop_shell:\n", maxsplit=1
     )[0]
     require(
-        "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets"
+        "cargo check --locked -p frame-platform-lifecycle -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets"
         in quality
-        and "cargo clippy --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings"
+        and "cargo clippy --locked -p frame-platform-lifecycle -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets --no-deps -- -D warnings"
         in quality,
         "quality-gates.yml: Windows native capture boundaries must be checked and linted on Windows",
         errors,
@@ -541,7 +541,7 @@ def main() -> int:
         bool(dependency_step)
         and "cargo tree --locked -p frame-desktop-core" in dependency_step
         and "--features tauri-app,custom-protocol --edges normal" in dependency_step
-        and "frame-media|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer"
+        and "frame-media|frame-platform-lifecycle|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer"
         in dependency_step,
         "quality-gates.yml: the portable desktop dependency graph must reject native media crates",
         errors,

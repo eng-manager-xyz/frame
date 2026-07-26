@@ -294,6 +294,8 @@ pub enum MacOsCaptureError {
     NativeOperationCapacityUnavailable,
     #[error("the bounded ScreenCaptureKit operation worker could not be started")]
     NativeOperationWorkerUnavailable,
+    #[error("the native suspend/resume event stream is unavailable")]
+    SystemPowerEventUnavailable,
     #[error("the ScreenCaptureKit operation did not complete before the native-call deadline")]
     NativeOperationTimedOut,
     #[error("the selected display is no longer shareable")]

@@ -7,10 +7,10 @@ or X11 works on physical hardware. Platform FFI and permission UI remain in
 separate native adapters behind `ScreenCaptureSource`.
 
 The current Windows slice follows that boundary with an unsafe-free normalized
-adapter over a separately audited, target-gated Win32 crate. It implements
-bounded CPU BGRA display/window/region capture but intentionally remains out of
-the desktop release composition until protected-content semantics, lifecycle
-recovery, and physical Windows evidence can satisfy this contract.
+adapter over separately audited, target-gated Win32 crates. It implements
+bounded CPU BGRA display/window/region capture and participates in the explicit
+`windows-native` desktop composition. Default rollout remains gated on
+protected-content and physical Windows evidence.
 
 ```text
 native adapter
@@ -358,6 +358,26 @@ The deterministic session state machine covers:
 - protected content latched even while another nonterminal blocker is active,
   with either suspend-until-clear or terminal failure; and
 - idempotent cancellation plus bounded, low-cardinality diagnostics.
+
+The release adapters connect those state transitions to native observations,
+not timers that invent state. A process-lifetime macOS `NSWorkspace` observer
+and Windows suspend/resume callback publish only monotonic asleep/awake state;
+each capture source owns an independent bounded cursor. Duplicate callbacks
+are suppressed, one missed sleep/wake cycle is replayed in order, and a larger
+gap is terminal. The normalized adapters compare permission state and refresh
+the privacy-filtered target catalog at most once per second. Opaque target
+identity is stable while every changed catalog rotates bindings and epochs.
+The selected target is diffed first, then unrelated target identities in
+deterministic order, and the event always carries the complete authoritative
+catalog. Native loss probes distinguish display disconnect, window close, and
+window minimize without exporting a native handle or title.
+
+Both production adapters advertise topology events but not automatic target
+recovery. Their negotiated policy is `FailClosed`: permission revocation,
+sleep, selected-target loss, or capture-semantic reconfiguration flushes the
+old epoch and stops the native source. Wake and target return do not silently
+append to the old artifact. Lossless resume remains unavailable until Studio
+owns a durable segment journal and explicit user-visible recovery policy.
 
 Cancellation is a session transition, not a queue utility. The required
 ingress API moves the session to `Cancelled`, advances the epoch, atomically
