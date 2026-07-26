@@ -1331,6 +1331,7 @@ dependencies = [
  "frame-macos-av-capture",
  "frame-macos-screen-capture",
  "frame-media",
+ "frame-platform-lifecycle",
  "frame-windows-screen-capture",
  "frame-windows-secure-spool",
  "reqwest",
@@ -1395,6 +1396,7 @@ dependencies = [
  "apple-metal",
  "core-graphics",
  "frame-media",
+ "frame-platform-lifecycle",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -1443,6 +1445,17 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "frame-platform-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "thiserror 2.0.18",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1499,6 +1512,7 @@ name = "frame-windows-screen-capture"
 version = "0.1.0"
 dependencies = [
  "frame-media",
+ "frame-platform-lifecycle",
  "frame-windows-capture-ffi",
  "ring",
  "thiserror 2.0.18",

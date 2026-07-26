@@ -48,7 +48,8 @@ mod windows {
             UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             UI::WindowsAndMessaging::{
                 EnumWindows, GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, GetWindowThreadProcessId,
-                IsWindowVisible, PostThreadMessageW, WM_QUIT, WS_CHILD, WS_EX_TOOLWINDOW,
+                IsIconic, IsWindow, IsWindowVisible, PostThreadMessageW, WM_QUIT, WS_CHILD,
+                WS_EX_TOOLWINDOW,
             },
         },
         core::BOOL,
@@ -58,6 +59,13 @@ mod windows {
 
     const MAX_ENUMERATED_DISPLAYS: usize = 257;
     const MAX_ENUMERATED_WINDOWS: usize = 257;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum NativeWindowState {
+        Available,
+        Minimized,
+        Missing,
+    }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct NativeDisplay {
@@ -396,6 +404,25 @@ mod windows {
             .map_err(|_| WindowsCaptureFfiError)
     }
 
+    pub fn native_window_state(
+        native_id: u64,
+    ) -> Result<NativeWindowState, WindowsCaptureFfiError> {
+        let address = usize::try_from(native_id).map_err(|_| WindowsCaptureFfiError)?;
+        let window = HWND(address as *mut std::ffi::c_void);
+        // SAFETY: the opaque identity originated from a prior synchronous
+        // EnumWindows call. These predicates neither dereference nor retain it,
+        // and IsWindow distinguishes a destroyed/reused-invalid handle.
+        if !unsafe { IsWindow(Some(window)).as_bool() } {
+            return Ok(NativeWindowState::Missing);
+        }
+        // SAFETY: IsIconic is a side-effect-free query on the validated HWND.
+        if unsafe { IsIconic(window).as_bool() } {
+            Ok(NativeWindowState::Minimized)
+        } else {
+            Ok(NativeWindowState::Available)
+        }
+    }
+
     pub fn request_worker_stop<T>(worker: &JoinHandle<T>) -> Result<(), WindowsCaptureFfiError> {
         let raw = worker.as_raw_handle();
         // SAFETY: the borrowed JoinHandle keeps its OS thread handle alive.
@@ -414,6 +441,7 @@ mod windows {
 pub use cursor::{WindowsCursorImage, WindowsCursorSample, WindowsCursorSampler};
 #[cfg(target_os = "windows")]
 pub use windows::{
-    NativeDisplay, NativeWindow, capture_item_for_monitor, capture_item_for_window,
-    enumerate_displays, enumerate_non_frame_windows, request_worker_stop,
+    NativeDisplay, NativeWindow, NativeWindowState, capture_item_for_monitor,
+    capture_item_for_window, enumerate_displays, enumerate_non_frame_windows, native_window_state,
+    request_worker_stop,
 };

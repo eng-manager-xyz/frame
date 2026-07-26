@@ -26,6 +26,7 @@ use frame_media::{
     ScreenTargetDescriptor, ScreenTargetKind, ScreenTargetSnapshot, VideoFrameSpec,
     preflight_screen_recording_runtime,
 };
+use frame_platform_lifecycle::SystemPowerMonitor;
 use frame_windows_screen_capture::{
     WindowsCaptureDiagnostics, WindowsCaptureError, WindowsNormalizedScreenCaptureSource,
     WindowsRegionSelection, WindowsScreenCaptureSource,
@@ -849,13 +850,28 @@ fn new_session_source(secret: &[u8; 32]) -> Result<SessionSource, NativeDesktopB
     for (index, byte) in derived.iter_mut().enumerate() {
         *byte = per_session_secret[index] ^ secret[index];
     }
-    let source =
-        WindowsScreenCaptureSource::new(source_instance, derived).map_err(map_capture_error)?;
+    let power_monitor = session_power_monitor()?;
+    let source = WindowsScreenCaptureSource::new_with_power_monitor(
+        source_instance,
+        derived,
+        &power_monitor,
+    )
+    .map_err(map_capture_error)?;
     Ok(SessionSource {
         source,
         observed_topology_generation: None,
         snapshot: None,
     })
+}
+
+#[cfg(test)]
+fn session_power_monitor() -> Result<SystemPowerMonitor, NativeDesktopBackendError> {
+    Ok(SystemPowerMonitor::detached())
+}
+
+#[cfg(not(test))]
+fn session_power_monitor() -> Result<SystemPowerMonitor, NativeDesktopBackendError> {
+    SystemPowerMonitor::install().map_err(|_| NativeDesktopBackendError::Unavailable)
 }
 
 fn target_summary(

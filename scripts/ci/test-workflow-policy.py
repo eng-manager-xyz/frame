@@ -318,13 +318,13 @@ def main() -> int:
             ),
             (
                 quality,
-                "frame-media|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer",
+                "frame-media|frame-platform-lifecycle|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer",
                 "frame-unrelated|frame-macos-unrelated|not-gstreamer",
                 "portable desktop native-media dependency rejection removed",
             ),
             (
                 quality,
-                "cargo check --locked -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets",
+                "cargo check --locked -p frame-platform-lifecycle -p frame-windows-capture-ffi -p frame-windows-screen-capture --all-targets",
                 "cargo check --locked -p frame-windows-secure-spool --all-targets",
                 "Windows native capture check omitted",
             ),
@@ -354,9 +354,15 @@ def main() -> int:
             ),
             (
                 quality,
-                "cargo test --locked -p frame-macos-screen-capture -p frame-macos-av-capture",
-                "cargo test --locked -p frame-macos-screen-capture",
+                "cargo test --locked -p frame-platform-lifecycle -p frame-macos-screen-capture -p frame-macos-av-capture",
+                "cargo test --locked -p frame-platform-lifecycle -p frame-macos-screen-capture",
                 "native A/V capture crate omitted from macOS tests",
+            ),
+            (
+                quality,
+                "cargo test --locked -p frame-platform-lifecycle -p frame-macos-screen-capture -p frame-macos-av-capture",
+                "cargo test --locked -p frame-macos-screen-capture -p frame-macos-av-capture",
+                "native lifecycle FFI crate omitted from macOS tests",
             ),
             (
                 quality,

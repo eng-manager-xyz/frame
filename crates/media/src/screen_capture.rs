@@ -994,6 +994,51 @@ impl ScreenTargetSnapshot {
             .iter()
             .find(|target| target.binding() == binding)
     }
+
+    /// Select one deterministic representative delta from a newer snapshot.
+    ///
+    /// The full newer snapshot remains authoritative. The preferred target is
+    /// inspected first so a selected-target loss or reconfiguration cannot be
+    /// hidden by an unrelated hotplug in the same native observation. If
+    /// several unrelated targets changed together, the lowest opaque target
+    /// identity is reported; consumers still receive the complete catalog.
+    pub fn first_delta_from(
+        &self,
+        previous: &Self,
+        preferred: ScreenTargetId,
+    ) -> Result<Option<ScreenTargetDelta>, ScreenCaptureError> {
+        if self.source_instance != previous.source_instance {
+            return Err(ScreenCaptureError::CrossSourceEvent);
+        }
+        if self.generation < previous.generation {
+            return Err(ScreenCaptureError::StaleTopologyEvent);
+        }
+        if self.generation == previous.generation {
+            return if self == previous {
+                Ok(None)
+            } else {
+                Err(ScreenCaptureError::InvalidTopologyEvent)
+            };
+        }
+
+        if let Some(delta) = target_delta(previous, self, preferred) {
+            return Ok(Some(delta));
+        }
+        let identities = previous
+            .targets
+            .iter()
+            .chain(&self.targets)
+            .map(ScreenTargetDescriptor::id)
+            .collect::<BTreeSet<_>>();
+        for identity in identities {
+            if identity != preferred
+                && let Some(delta) = target_delta(previous, self, identity)
+            {
+                return Ok(Some(delta));
+            }
+        }
+        Err(ScreenCaptureError::InvalidTopologyEvent)
+    }
 }
 
 impl fmt::Debug for ScreenTargetSnapshot {
@@ -1004,6 +1049,82 @@ impl fmt::Debug for ScreenTargetSnapshot {
             .field("generation", &"<redacted>")
             .field("target_count", &self.targets.len())
             .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenTargetDelta {
+    Added(ScreenTargetDescriptor),
+    Removed(ScreenTargetDescriptor),
+    Reconfigured(ScreenTargetDescriptor),
+}
+
+impl ScreenTargetDelta {
+    #[must_use]
+    pub const fn target(&self) -> &ScreenTargetDescriptor {
+        match self {
+            Self::Added(target) | Self::Removed(target) | Self::Reconfigured(target) => target,
+        }
+    }
+}
+
+fn target_delta(
+    previous: &ScreenTargetSnapshot,
+    current: &ScreenTargetSnapshot,
+    identity: ScreenTargetId,
+) -> Option<ScreenTargetDelta> {
+    match (previous.find(identity), current.find(identity)) {
+        (None, Some(target)) => Some(ScreenTargetDelta::Added(target.clone())),
+        (Some(target), None) => Some(ScreenTargetDelta::Removed(target.clone())),
+        (Some(previous), Some(current)) if !same_target_semantics(previous, current) => {
+            Some(ScreenTargetDelta::Reconfigured(current.clone()))
+        }
+        (None, None) | (Some(_), Some(_)) => None,
+    }
+}
+
+fn same_target_semantics(
+    previous: &ScreenTargetDescriptor,
+    current: &ScreenTargetDescriptor,
+) -> bool {
+    if previous.id() != current.id() || previous.kind() != current.kind() {
+        return false;
+    }
+    match (&previous.geometry, &current.geometry) {
+        (ScreenTargetGeometry::Display(previous), ScreenTargetGeometry::Display(current)) => {
+            previous == current
+        }
+        (ScreenTargetGeometry::Window(previous), ScreenTargetGeometry::Window(current)) => {
+            previous == current
+        }
+        (
+            ScreenTargetGeometry::Region {
+                display: previous_display,
+                bounds: previous_bounds,
+                transform: previous_transform,
+            },
+            ScreenTargetGeometry::Region {
+                display: current_display,
+                bounds: current_bounds,
+                transform: current_transform,
+            },
+        ) => {
+            previous_display.id() == current_display.id()
+                && previous_bounds == current_bounds
+                && previous_transform == current_transform
+        }
+        (
+            ScreenTargetGeometry::Display(_) | ScreenTargetGeometry::Window(_),
+            ScreenTargetGeometry::Region { .. },
+        )
+        | (
+            ScreenTargetGeometry::Display(_) | ScreenTargetGeometry::Region { .. },
+            ScreenTargetGeometry::Window(_),
+        )
+        | (
+            ScreenTargetGeometry::Window(_) | ScreenTargetGeometry::Region { .. },
+            ScreenTargetGeometry::Display(_),
+        ) => false,
     }
 }
 

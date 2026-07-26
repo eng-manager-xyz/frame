@@ -11,11 +11,12 @@ use std::{
 
 use frame_media::{
     DisplayGeometryTransform, DpiScale, LogicalRect, PermissionPreflight, PhysicalRect, Rotation,
-    ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetSnapshot,
+    ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetSnapshot, TargetLossReason,
 };
+use frame_platform_lifecycle::{SystemPowerCursor, SystemPowerEvent, SystemPowerMonitor};
 use frame_windows_capture_ffi::{
-    capture_item_for_monitor, capture_item_for_window, enumerate_displays,
-    enumerate_non_frame_windows, request_worker_stop,
+    NativeWindowState, capture_item_for_monitor, capture_item_for_window, enumerate_displays,
+    enumerate_non_frame_windows, native_window_state, request_worker_stop,
 };
 use wgc::{Frame, FrameSize, PixelFormat as WgcPixelFormat, Wgc, WgcSettings};
 use zeroize::Zeroizing;
@@ -26,7 +27,7 @@ use crate::{
     WindowsRegionSelection,
     target_catalog::{
         NativeDisplayRecord, NativeTargetRecord, NativeWindowRecord, assemble_records,
-        build_catalog, resolve_region_selections,
+        build_catalog, refresh_region_selections, resolve_region_selections,
     },
 };
 
@@ -124,6 +125,7 @@ pub struct WindowsScreenCaptureSource {
     topology_generation: u64,
     catalog_records: Option<Vec<NativeTargetRecord>>,
     target_map: BTreeMap<ScreenTargetBinding, NativeTargetRecord>,
+    power_events: SystemPowerCursor,
     diagnostics: Arc<DiagnosticCounters>,
     capture: CaptureLifecycle,
 }
@@ -132,6 +134,18 @@ impl WindowsScreenCaptureSource {
     pub fn new(
         source_instance: ScreenSourceInstanceId,
         session_secret: [u8; 32],
+    ) -> Result<Self, WindowsCaptureError> {
+        Self::new_with_power_monitor(
+            source_instance,
+            session_secret,
+            &SystemPowerMonitor::detached(),
+        )
+    }
+
+    pub fn new_with_power_monitor(
+        source_instance: ScreenSourceInstanceId,
+        session_secret: [u8; 32],
+        power_monitor: &SystemPowerMonitor,
     ) -> Result<Self, WindowsCaptureError> {
         if session_secret.iter().all(|byte| *byte == 0) {
             return Err(WindowsCaptureError::InvalidSessionSecret);
@@ -142,6 +156,7 @@ impl WindowsScreenCaptureSource {
             topology_generation: 0,
             catalog_records: None,
             target_map: BTreeMap::new(),
+            power_events: power_monitor.cursor(),
             diagnostics: Arc::new(DiagnosticCounters::default()),
             capture: CaptureLifecycle::Ready,
         })
@@ -152,7 +167,16 @@ impl WindowsScreenCaptureSource {
         self.source_instance
     }
 
+    pub fn poll_power_event(&mut self) -> Result<Option<SystemPowerEvent>, WindowsCaptureError> {
+        self.power_events
+            .poll()
+            .map_err(|_| WindowsCaptureError::SystemPowerEventUnavailable)
+    }
+
     pub fn preflight_permission(&mut self) -> Result<PermissionPreflight, WindowsCaptureError> {
+        if self.power_events.is_asleep() {
+            return Ok(PermissionPreflight::Restricted);
+        }
         if wgc::is_wgc_supported().map_err(|_| WindowsCaptureError::AdapterUnavailable)? {
             Ok(PermissionPreflight::Granted)
         } else {
@@ -172,19 +196,60 @@ impl WindowsScreenCaptureSource {
     ) -> Result<ScreenTargetSnapshot, WindowsCaptureError> {
         self.ensure_catalog_mutable()?;
         let regions = resolve_region_selections(&self.target_map, regions)?;
-        let displays = active_display_records()?;
-        let windows = enumerate_non_frame_windows()
-            .map_err(|_| WindowsCaptureError::AdapterUnavailable)?
-            .into_iter()
-            .map(|window| {
-                let bounds =
-                    LogicalRect::new(window.x(), window.y(), window.width(), window.height())
-                        .map_err(|_| WindowsCaptureError::MediaCatalogRejected)?;
-                Ok(NativeWindowRecord::new(window.native_id(), bounds))
-            })
-            .collect::<Result<Vec<_>, WindowsCaptureError>>()?;
-        let records = assemble_records(displays, windows, &regions)?;
+        let records = target_records(&regions, false)?;
         self.install_catalog(records)
+    }
+
+    /// Refresh topology while a native stream is active.
+    ///
+    /// The active capture item remains unchanged. This only rotates the
+    /// authenticated catalog so the normalized adapter can emit a fail-closed
+    /// topology event and prepare a later restart.
+    pub fn observe_targets(
+        &mut self,
+        regions: &[WindowsRegionSelection],
+    ) -> Result<ScreenTargetSnapshot, WindowsCaptureError> {
+        match self.capture {
+            CaptureLifecycle::Ready | CaptureLifecycle::Running(_) => {}
+            CaptureLifecycle::TeardownUnconfirmed(_) => {
+                return Err(WindowsCaptureError::CaptureTeardownUnconfirmed);
+            }
+        }
+        let regions = resolve_region_selections(&self.target_map, regions)?;
+        let records = target_records(&regions, true)?;
+        self.install_catalog(records)
+    }
+
+    pub fn target_loss_reason(
+        &self,
+        target: ScreenTargetBinding,
+    ) -> Result<TargetLossReason, WindowsCaptureError> {
+        let record = self
+            .target_map
+            .get(&target)
+            .copied()
+            .ok_or(WindowsCaptureError::StaleOrForeignTarget)?;
+        match record {
+            NativeTargetRecord::Display(display) | NativeTargetRecord::Region { display, .. } => {
+                let connected = active_display_records()?
+                    .iter()
+                    .any(|candidate| candidate.native_id() == display.native_id());
+                Ok(if connected {
+                    TargetLossReason::SourceUnavailable
+                } else {
+                    TargetLossReason::DisplayDisconnected
+                })
+            }
+            NativeTargetRecord::Window(window) => {
+                let state = native_window_state(window.native_id())
+                    .map_err(|_| WindowsCaptureError::AdapterUnavailable)?;
+                Ok(match state {
+                    NativeWindowState::Available => TargetLossReason::SourceUnavailable,
+                    NativeWindowState::Minimized => TargetLossReason::WindowMinimized,
+                    NativeWindowState::Missing => TargetLossReason::WindowClosed,
+                })
+            }
+        }
     }
 
     pub fn start(
@@ -759,6 +824,30 @@ fn active_display_records() -> Result<Vec<NativeDisplayRecord>, WindowsCaptureEr
             ))
         })
         .collect()
+}
+
+fn target_records(
+    regions: &[crate::target_catalog::ResolvedRegionSelection],
+    refresh_regions: bool,
+) -> Result<Vec<NativeTargetRecord>, WindowsCaptureError> {
+    let displays = active_display_records()?;
+    let windows = enumerate_non_frame_windows()
+        .map_err(|_| WindowsCaptureError::AdapterUnavailable)?
+        .into_iter()
+        .map(|window| {
+            let bounds = LogicalRect::new(window.x(), window.y(), window.width(), window.height())
+                .map_err(|_| WindowsCaptureError::MediaCatalogRejected)?;
+            Ok(NativeWindowRecord::new(window.native_id(), bounds))
+        })
+        .collect::<Result<Vec<_>, WindowsCaptureError>>()?;
+    let refreshed;
+    let regions = if refresh_regions {
+        refreshed = refresh_region_selections(&displays, regions);
+        refreshed.as_slice()
+    } else {
+        regions
+    };
+    assemble_records(displays, windows, regions)
 }
 
 fn display_transform(

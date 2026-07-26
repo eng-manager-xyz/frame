@@ -247,6 +247,8 @@ pub enum WindowsCaptureError {
     CursorRevisionExhausted,
     #[error("Windows Graphics Capture is unavailable")]
     AdapterUnavailable,
+    #[error("the native suspend/resume event stream is unavailable")]
+    SystemPowerEventUnavailable,
     #[error("the display target is stale or did not come from this adapter")]
     StaleOrForeignTarget,
     #[error("a region selection must reference an opaque display target")]

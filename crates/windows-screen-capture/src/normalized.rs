@@ -1,6 +1,9 @@
 //! Provider-neutral ownership and event adapter for Windows Graphics Capture.
 
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use frame_media::{
     CursorCaptureMode, PermissionPreflight, PixelFormat, PlatformScreenSource,
@@ -10,8 +13,10 @@ use frame_media::{
     ScreenSourceCallTicket, ScreenSourceCapabilities, ScreenSourceCapabilitySpec,
     ScreenSourceEvent, ScreenSourceFailure, ScreenSourceFailureCode, ScreenSourceInstanceId,
     ScreenSourcePollResult, ScreenSourceSessionBinding, ScreenSourceSessionTicket,
-    ScreenTargetKind, ScreenTargetKinds, ScreenTargetSnapshot,
+    ScreenTargetBinding, ScreenTargetChange, ScreenTargetDelta, ScreenTargetKind,
+    ScreenTargetKinds, ScreenTargetSnapshot, ScreenTopologyStamp, TargetLossReason,
 };
+use frame_platform_lifecycle::SystemPowerEvent;
 
 use crate::cursor::CursorMetadataSession;
 use crate::{
@@ -20,6 +25,7 @@ use crate::{
 };
 
 type NormalizedEvent = ScreenSourceEvent<Box<[u8]>, Box<[u8]>>;
+const TOPOLOGY_PROBE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// WGC source bound to Frame's normalized capture-session contract.
 pub struct WindowsNormalizedScreenCaptureSource {
@@ -33,6 +39,10 @@ pub struct WindowsNormalizedScreenCaptureSource {
     pending_events: VecDeque<NormalizedEvent>,
     stopped_tail: VecDeque<ScreenFrame<Box<[u8]>>>,
     next_control_sequence: u64,
+    next_topology_sequence: u64,
+    next_topology_probe: Instant,
+    last_permission: Option<PermissionPreflight>,
+    active_target: Option<ScreenTargetBinding>,
 }
 
 impl WindowsNormalizedScreenCaptureSource {
@@ -43,20 +53,8 @@ impl WindowsNormalizedScreenCaptureSource {
         if source.source_instance() != snapshot.source_instance() {
             return Err(WindowsCaptureError::StaleOrForeignTarget);
         }
-        let regions = snapshot
-            .targets()
-            .iter()
-            .filter(|target| target.kind() == ScreenTargetKind::Region)
-            .map(|target| {
-                WindowsRegionSelection::new(
-                    target
-                        .containing_display_binding()
-                        .ok_or(WindowsCaptureError::InvalidRegionGeometry)?,
-                    target.logical_bounds(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let capabilities = capabilities(source.source_instance(), snapshot.generation())?;
+        let regions = regions_from_snapshot(&snapshot)?;
+        let capabilities = capabilities(source.source_instance(), snapshot.generation(), 1)?;
         let next_control_sequence = capabilities
             .control_sequence()
             .checked_add(1)
@@ -72,6 +70,10 @@ impl WindowsNormalizedScreenCaptureSource {
             pending_events: VecDeque::with_capacity(2),
             stopped_tail: VecDeque::with_capacity(CALLBACK_QUEUE_CAPACITY),
             next_control_sequence,
+            next_topology_sequence: 1,
+            next_topology_probe: Instant::now(),
+            last_permission: None,
+            active_target: None,
         })
     }
 
@@ -99,29 +101,140 @@ impl WindowsNormalizedScreenCaptureSource {
         &mut self,
         permission: PermissionPreflight,
     ) -> Result<ScreenPermissionObservation, ScreenSourceFailure> {
+        let stamp = self.control_stamp()?;
+        self.last_permission = Some(permission);
+        Ok(ScreenPermissionObservation { stamp, permission })
+    }
+
+    fn control_stamp(&mut self) -> Result<ScreenControlStamp, ScreenSourceFailure> {
         let sequence = self.next_control_sequence;
-        self.next_control_sequence = sequence.checked_add(1).ok_or_else(|| {
-            ScreenSourceFailure::new(ScreenSourceFailureCode::NativeOperationFailed, false)
-        })?;
-        let stamp = ScreenControlStamp::new(
+        self.next_control_sequence = sequence.checked_add(1).ok_or_else(contract_failure)?;
+        ScreenControlStamp::new(
             self.source.source_instance(),
             self.capabilities.control_epoch(),
             sequence,
         )
-        .map_err(|_| {
-            ScreenSourceFailure::new(ScreenSourceFailureCode::NativeOperationFailed, false)
-        })?;
-        Ok(ScreenPermissionObservation { stamp, permission })
+        .map_err(|_| contract_failure())
     }
 
     fn update_catalog(
         &mut self,
         snapshot: ScreenTargetSnapshot,
     ) -> Result<ScreenTargetSnapshot, ScreenSourceFailure> {
-        self.capabilities = capabilities(self.source.source_instance(), snapshot.generation())
-            .map_err(source_failure)?;
+        let regions = regions_from_snapshot(&snapshot).map_err(source_failure)?;
+        let active_target = self
+            .active_target
+            .and_then(|target| snapshot.find(target.id()))
+            .map(|target| target.binding());
+        self.capabilities = capabilities(
+            self.source.source_instance(),
+            snapshot.generation(),
+            self.next_control_sequence.saturating_sub(1),
+        )
+        .map_err(source_failure)?;
+        self.regions = regions;
+        self.active_target = active_target;
         self.snapshot = snapshot;
         Ok(self.snapshot.clone())
+    }
+
+    fn poll_control_or_topology(&mut self) -> Result<Option<NormalizedEvent>, ScreenSourceFailure> {
+        if let Some(event) = self.source.poll_power_event().map_err(source_failure)? {
+            let stamp = self.control_stamp()?;
+            return Ok(Some(match event {
+                SystemPowerEvent::WillSleep => ScreenSourceEvent::Sleep(stamp),
+                SystemPowerEvent::DidWake => ScreenSourceEvent::Wake(stamp),
+            }));
+        }
+
+        let now = Instant::now();
+        if now < self.next_topology_probe {
+            return Ok(None);
+        }
+        self.next_topology_probe = now
+            .checked_add(TOPOLOGY_PROBE_INTERVAL)
+            .ok_or_else(contract_failure)?;
+
+        let permission = self.source.preflight_permission().map_err(source_failure)?;
+        match self.last_permission.replace(permission) {
+            Some(previous) if previous != permission => {
+                return self
+                    .permission_observation(permission)
+                    .map(ScreenSourceEvent::PermissionChanged)
+                    .map(Some);
+            }
+            None | Some(_) => {}
+        }
+        if permission != PermissionPreflight::Granted {
+            return Ok(None);
+        }
+
+        let Some(active_target) = self.active_target else {
+            return Ok(None);
+        };
+        let preferred = active_target.id();
+        let loss_reason = self
+            .source
+            .target_loss_reason(active_target)
+            .or_else(|error| {
+                if error == WindowsCaptureError::StaleOrForeignTarget {
+                    Ok(TargetLossReason::SourceUnavailable)
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(source_failure)?;
+        let previous = self.snapshot.clone();
+        let regions = self.regions.clone();
+        let snapshot = self
+            .source
+            .observe_targets(&regions)
+            .map_err(source_failure)?;
+        let Some(delta) = snapshot
+            .first_delta_from(&previous, preferred)
+            .map_err(|_| contract_failure())?
+        else {
+            return Ok(None);
+        };
+
+        let sequence = self.next_topology_sequence;
+        self.next_topology_sequence = sequence.checked_add(1).ok_or_else(contract_failure)?;
+        let capabilities = capabilities(
+            self.source.source_instance(),
+            snapshot.generation(),
+            self.next_control_sequence.saturating_sub(1),
+        )
+        .map_err(source_failure)?;
+        let stamp = ScreenTopologyStamp::new(
+            self.source.source_instance(),
+            snapshot.generation(),
+            sequence,
+        )
+        .map_err(|_| contract_failure())?;
+        let change = match delta {
+            ScreenTargetDelta::Added(target) => {
+                ScreenTargetChange::added(stamp, target, capabilities.clone(), snapshot.clone())
+            }
+            ScreenTargetDelta::Removed(target) => ScreenTargetChange::removed(
+                stamp,
+                target.binding(),
+                loss_reason,
+                capabilities.clone(),
+                snapshot.clone(),
+            ),
+            ScreenTargetDelta::Reconfigured(target) => ScreenTargetChange::reconfigured(
+                stamp,
+                target,
+                capabilities.clone(),
+                snapshot.clone(),
+            ),
+        }
+        .map_err(|_| contract_failure())?;
+        self.capabilities = capabilities;
+        self.regions = regions_from_snapshot(&snapshot).map_err(source_failure)?;
+        self.active_target = snapshot.find(preferred).map(|target| target.binding());
+        self.snapshot = snapshot;
+        Ok(Some(ScreenSourceEvent::TargetChanged(Box::new(change))))
     }
 
     fn validate_operation(
@@ -201,10 +314,12 @@ impl ScreenCaptureSource for WindowsNormalizedScreenCaptureSource {
     ) -> Result<ScreenTargetSnapshot, ScreenSourceFailure> {
         self.validate_call(ticket, budget)?;
         let regions = self.regions.clone();
-        let snapshot = self
-            .source
-            .enumerate_targets(&regions)
-            .map_err(source_failure)?;
+        let snapshot = if self.active_stream.is_some() {
+            self.source.observe_targets(&regions)
+        } else {
+            self.source.enumerate_targets(&regions)
+        }
+        .map_err(source_failure)?;
         self.update_catalog(snapshot)
     }
 
@@ -251,6 +366,7 @@ impl ScreenCaptureSource for WindowsNormalizedScreenCaptureSource {
                 ticket.failure(code, retryable)
             })?;
         self.active_stream = Some(ticket.stream());
+        self.active_target = Some(request.target().binding());
         self.active_cursor = cursor;
         Ok(())
     }
@@ -274,6 +390,9 @@ impl ScreenCaptureSource for WindowsNormalizedScreenCaptureSource {
             ScreenSourceFailure::new(ScreenSourceFailureCode::NativeOperationFailed, false)
         })?;
         if let Some(event) = self.pending_events.pop_front() {
+            return Ok(Some(event));
+        }
+        if let Some(event) = self.poll_control_or_topology()? {
             return Ok(Some(event));
         }
         let Some(frame) = self.source.poll_frame().map_err(source_failure)? else {
@@ -328,6 +447,7 @@ impl ScreenCaptureSource for WindowsNormalizedScreenCaptureSource {
                 ticket.failure(code, retryable)
             })?;
         self.active_stream = None;
+        self.active_target = None;
         self.pending_events.clear();
         if frames.len() > CALLBACK_QUEUE_CAPACITY {
             return Err(ticket.failure(ScreenSourceFailureCode::NativeOperationFailed, false));
@@ -348,9 +468,32 @@ impl ScreenCaptureSource for WindowsNormalizedScreenCaptureSource {
     }
 }
 
+fn regions_from_snapshot(
+    snapshot: &ScreenTargetSnapshot,
+) -> Result<Vec<WindowsRegionSelection>, WindowsCaptureError> {
+    snapshot
+        .targets()
+        .iter()
+        .filter(|target| target.kind() == ScreenTargetKind::Region)
+        .map(|target| {
+            WindowsRegionSelection::new(
+                target
+                    .containing_display_binding()
+                    .ok_or(WindowsCaptureError::InvalidRegionGeometry)?,
+                target.logical_bounds(),
+            )
+        })
+        .collect()
+}
+
+const fn contract_failure() -> ScreenSourceFailure {
+    ScreenSourceFailure::new(ScreenSourceFailureCode::NativeOperationFailed, false)
+}
+
 fn capabilities(
     source_instance: ScreenSourceInstanceId,
     topology_generation: u64,
+    control_sequence: u64,
 ) -> Result<ScreenSourceCapabilities, WindowsCaptureError> {
     ScreenSourceCapabilities::new(ScreenSourceCapabilitySpec {
         contract_version: SCREEN_CAPTURE_CONTRACT_VERSION,
@@ -359,7 +502,7 @@ fn capabilities(
         topology_generation,
         control_epoch: ScreenControlEpoch::new(1)
             .map_err(|_| WindowsCaptureError::MediaCatalogRejected)?,
-        control_sequence: 1,
+        control_sequence,
         targets: ScreenTargetKinds::none()
             .with(ScreenTargetKind::Display)
             .with(ScreenTargetKind::Window)
@@ -381,7 +524,7 @@ fn capabilities(
             max_frames_per_second: 60,
         }],
         permission_preflight: true,
-        topology_events: false,
+        topology_events: true,
         target_recovery: false,
         protected_content_events: false,
         // WGC redacts protected surfaces but exposes no exact transition
@@ -496,6 +639,8 @@ mod tests {
             ScreenSessionId::from_csprng([4; 16]).expect("session"),
         )
         .expect("bound");
+        assert!(bound.capabilities().spec().topology_events);
+        assert!(!bound.capabilities().spec().target_recovery);
         let request = ScreenCaptureRequest::new(ScreenCaptureRequestSpec {
             target,
             output: VideoFrameSpec {

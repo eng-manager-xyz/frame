@@ -10,12 +10,17 @@ use std::{
 };
 
 use apple_cf::dispatch_queue::{DispatchQoS, DispatchQueue, dispatch_async_and_wait};
-use core_graphics::{access::ScreenCaptureAccess, display::CGDisplay};
+use core_graphics::{
+    access::ScreenCaptureAccess,
+    display::CGDisplay,
+    window::{create_window_list, kCGWindowListOptionIncludingWindow},
+};
 use frame_media::{
     DisplayGeometryTransform, DpiScale, LogicalRect, MAX_SCREEN_TARGETS, PermissionPreflight,
     PhysicalRect, Rotation, ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetSnapshot,
-    SettingsGuidance,
+    SettingsGuidance, TargetLossReason,
 };
+use frame_platform_lifecycle::{SystemPowerCursor, SystemPowerEvent, SystemPowerMonitor};
 use screencapturekit::{
     cm::{CMSampleBuffer, CMSampleBufferExt, CMSampleBufferSCExt, CMTime, SCFrameStatus},
     cv::CVPixelBufferLockFlags,
@@ -32,7 +37,8 @@ use crate::{
     MacOsCaptureFrame, MacOsCaptureStopError, MacOsRegionSelection, RawMediaTime, copy_bgra_rows,
     target_catalog::{
         NativeDisplayRecord, NativeTargetRecord, NativeWindowRecord, assemble_records,
-        build_catalog, exclude_current_process_windows, resolve_region_selections,
+        build_catalog, exclude_current_process_windows, refresh_region_selections,
+        resolve_region_selections,
     },
 };
 
@@ -256,6 +262,7 @@ pub struct MacOsScreenCaptureSource {
     target_map: BTreeMap<ScreenTargetBinding, NativeTargetRecord>,
     permission_requested: bool,
     permission_was_granted: bool,
+    power_events: SystemPowerCursor,
     diagnostics: Arc<DiagnosticCounters>,
     capture: NativeCaptureLifecycle<ActiveCapture>,
 }
@@ -264,6 +271,18 @@ impl MacOsScreenCaptureSource {
     pub fn new(
         source_instance: ScreenSourceInstanceId,
         session_secret: [u8; 32],
+    ) -> Result<Self, MacOsCaptureError> {
+        Self::new_with_power_monitor(
+            source_instance,
+            session_secret,
+            &SystemPowerMonitor::detached(),
+        )
+    }
+
+    pub fn new_with_power_monitor(
+        source_instance: ScreenSourceInstanceId,
+        session_secret: [u8; 32],
+        power_monitor: &SystemPowerMonitor,
     ) -> Result<Self, MacOsCaptureError> {
         if session_secret.iter().all(|byte| *byte == 0) {
             return Err(MacOsCaptureError::InvalidSessionSecret);
@@ -276,6 +295,7 @@ impl MacOsScreenCaptureSource {
             target_map: BTreeMap::new(),
             permission_requested: false,
             permission_was_granted: false,
+            power_events: power_monitor.cursor(),
             diagnostics: Arc::new(DiagnosticCounters::default()),
             capture: NativeCaptureLifecycle::Ready,
         })
@@ -286,8 +306,17 @@ impl MacOsScreenCaptureSource {
         self.source_instance
     }
 
+    pub fn poll_power_event(&mut self) -> Result<Option<SystemPowerEvent>, MacOsCaptureError> {
+        self.power_events
+            .poll()
+            .map_err(|_| MacOsCaptureError::SystemPowerEventUnavailable)
+    }
+
     /// Read permission without triggering the system prompt.
     pub fn preflight_permission(&mut self) -> PermissionPreflight {
+        if self.power_events.is_asleep() {
+            return PermissionPreflight::Restricted;
+        }
         if ScreenCaptureAccess.preflight() {
             self.permission_was_granted = true;
             PermissionPreflight::Granted
@@ -334,6 +363,69 @@ impl MacOsScreenCaptureSource {
     ) -> Result<ScreenTargetSnapshot, MacOsCaptureError> {
         self.ensure_catalog_mutable()?;
         let regions = resolve_region_selections(&self.target_map, regions)?;
+        let records = self.target_records(&regions, false)?;
+        self.install_catalog(records)
+    }
+
+    /// Refresh topology while a native stream is active.
+    ///
+    /// The active stream owns its native filter independently from the catalog.
+    /// Updating opaque bindings here prepares an authenticated topology event
+    /// and a later restart without mutating that live filter.
+    pub fn observe_targets(
+        &mut self,
+        regions: &[MacOsRegionSelection],
+    ) -> Result<ScreenTargetSnapshot, MacOsCaptureError> {
+        match &self.capture {
+            NativeCaptureLifecycle::Ready | NativeCaptureLifecycle::Running(_) => {}
+            NativeCaptureLifecycle::StopUnconfirmed { .. }
+            | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => {
+                return Err(MacOsCaptureError::CaptureTeardownUnconfirmed);
+            }
+        }
+        let regions = resolve_region_selections(&self.target_map, regions)?;
+        let records = self.target_records(&regions, true)?;
+        self.install_catalog(records)
+    }
+
+    pub fn target_loss_reason(
+        &self,
+        target: ScreenTargetBinding,
+    ) -> Result<TargetLossReason, MacOsCaptureError> {
+        let record = self
+            .target_map
+            .get(&target)
+            .copied()
+            .ok_or(MacOsCaptureError::StaleOrForeignTarget)?;
+        match record {
+            NativeTargetRecord::Display(display) | NativeTargetRecord::Region { display, .. } => {
+                let connected = active_display_records()?
+                    .iter()
+                    .any(|candidate| candidate.display_id() == display.display_id());
+                Ok(if connected {
+                    TargetLossReason::SourceUnavailable
+                } else {
+                    TargetLossReason::DisplayDisconnected
+                })
+            }
+            NativeTargetRecord::Window(window) => {
+                let exists =
+                    create_window_list(kCGWindowListOptionIncludingWindow, window.window_id())
+                        .is_some_and(|windows| !windows.is_empty());
+                Ok(if exists {
+                    TargetLossReason::WindowMinimized
+                } else {
+                    TargetLossReason::WindowClosed
+                })
+            }
+        }
+    }
+
+    fn target_records(
+        &mut self,
+        regions: &[crate::target_catalog::ResolvedRegionSelection],
+        refresh_regions: bool,
+    ) -> Result<Vec<NativeTargetRecord>, MacOsCaptureError> {
         if !ScreenCaptureAccess.preflight() {
             return Err(MacOsCaptureError::PermissionDenied);
         }
@@ -346,8 +438,15 @@ impl MacOsScreenCaptureSource {
             application.process_id()
         })?;
         let windows = shareable_window_records(&content, current_pid);
-        let records = assemble_records(active_display_records()?, windows, &regions)?;
-        self.install_catalog(records)
+        let displays = active_display_records()?;
+        let refreshed;
+        let regions = if refresh_regions {
+            refreshed = refresh_region_selections(&displays, regions);
+            refreshed.as_slice()
+        } else {
+            regions
+        };
+        assemble_records(displays, windows, regions)
     }
 
     fn ensure_catalog_mutable(&self) -> Result<(), MacOsCaptureError> {
