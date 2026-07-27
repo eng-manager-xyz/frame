@@ -146,6 +146,7 @@ struct FakeState {
     mutate_catalog_on_execute: bool,
     reconciliations: usize,
     terminal_applied: Option<AvTerminalId>,
+    terminal_tail: Vec<NativeAvTerminalBuffer>,
     native_release_count: usize,
     last_native_timeout: Option<std::time::Duration>,
 }
@@ -257,6 +258,11 @@ impl NativeAvBridge for FakeBridge {
         Ok(if state.terminal_applied == Some(ticket.terminal_id()) {
             AvTerminalPostcondition::Applied {
                 terminal_id: ticket.terminal_id(),
+                terminal_tail: if ticket.kind() == AvOperationKind::Stop {
+                    state.terminal_tail.clone()
+                } else {
+                    Vec::new()
+                },
             }
         } else {
             AvTerminalPostcondition::NotApplied
@@ -281,10 +287,11 @@ impl NativeAvBridge for FakeBridge {
             state.terminal_applied = ticket.terminal_id();
             state.native_release_count += 1;
         }
-        Ok(ticket.acknowledge(matches!(
-            request,
-            AvNativeRequest::Stop | AvNativeRequest::Cancel
-        )))
+        if matches!(request, AvNativeRequest::Stop) {
+            Ok(ticket.acknowledge_with_terminal_tail(true, state.terminal_tail.clone()))
+        } else {
+            Ok(ticket.acknowledge(matches!(request, AvNativeRequest::Cancel)))
+        }
     }
 
     fn poll(
@@ -523,6 +530,188 @@ fn local_appsrc_receives_bytes_and_opaque_handles_and_releases_each_exactly_once
     assert_eq!(released.load(Ordering::SeqCst), 1);
     drop(appsrc);
     assert_eq!(released.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn stop_authenticates_queued_and_replayed_callback_tail_before_terminal_completion() {
+    let (mut source, handle, mut session) = setup_started(58);
+    let stamp = session
+        .source_stamp(AvSourceClass::Microphone)
+        .expect("microphone stamp");
+    let released = Arc::new(AtomicUsize::new(0));
+    handle
+        .lock()
+        .expect("fake state")
+        .events
+        .push_back(NativeAvEvent::Buffer(
+            NativeAvBuffer::new(
+                stamp,
+                native_timing(1, 70_000_000, 10_000_000, 175_000_000),
+                audio_format(48_000, 1),
+                lease(4, &released),
+            )
+            .expect("queued native buffer"),
+        ));
+    session
+        .poll_source(&mut source)
+        .expect("poll queued buffer")
+        .expect("queued buffer event");
+    handle.lock().expect("fake state").terminal_tail = vec![
+        NativeAvTerminalBuffer::new(
+            stamp,
+            native_timing(2, 80_000_000, 10_000_000, 185_000_000),
+            audio_format(48_000, 1),
+            vec![9, 8, 7, 6],
+        )
+        .expect("terminal callback buffer"),
+    ];
+
+    let first = session
+        .request_stop()
+        .expect("stop request")
+        .expect("stop action");
+    let AvActionExecution::Acknowledged(delayed_acknowledgement) = first
+        .execute_source(&mut session, &mut source)
+        .expect("first stop dispatch")
+    else {
+        panic!("stop must acknowledge");
+    };
+    let retry = session
+        .retry_teardown()
+        .expect("retry lost acknowledgement");
+    let AvActionExecution::Acknowledged(reconciled) = retry
+        .execute_source(&mut session, &mut source)
+        .expect("reconciled stop dispatch")
+    else {
+        panic!("reconciled stop must acknowledge");
+    };
+    let terminal = session.complete(reconciled).expect("terminal completion");
+    drop(delayed_acknowledgement);
+
+    assert_eq!(session.state(), AvSessionState::Stopped);
+    assert_eq!(terminal.len(), 2);
+    assert_eq!(terminal[0].sequence(), 1);
+    assert_eq!(terminal[1].sequence(), 2);
+    let first_timestamp = terminal[0].timestamp().expect("first corrected timestamp");
+    let second_timestamp = terminal[1].timestamp().expect("tail corrected timestamp");
+    assert!(second_timestamp.pts_ns >= first_timestamp.end_ns());
+    let mut appsrc = HoldingAppSrc::default();
+    for buffer in terminal {
+        appsrc
+            .push(buffer.into_appsrc_input().expect("terminal appsrc input"))
+            .expect("terminal appsrc push");
+    }
+    assert_eq!(appsrc.inputs[1].payload().bytes(), Some(&[9, 8, 7, 6][..]));
+    assert_eq!(handle.lock().expect("fake state").native_release_count, 1);
+}
+
+#[test]
+fn callback_tail_over_the_negotiated_source_budget_fails_closed() {
+    let (mut source, handle, mut session) = setup_started(59);
+    let stamp = session
+        .source_stamp(AvSourceClass::Microphone)
+        .expect("microphone stamp");
+    let limit = session
+        .source_ingress_queue_spec(AvSourceClass::Microphone)
+        .expect("microphone ingress queue")
+        .max_buffers;
+    let terminal_tail = (1..=u64::from(limit) + 1)
+        .map(|sequence| {
+            NativeAvTerminalBuffer::new(
+                stamp,
+                native_timing(
+                    sequence,
+                    60_000_000 + sequence * 10_000_000,
+                    10_000_000,
+                    165_000_000 + sequence * 10_000_000,
+                ),
+                audio_format(48_000, 1),
+                vec![0; 4],
+            )
+            .expect("bounded individual terminal buffer")
+        })
+        .collect();
+    handle.lock().expect("fake state").terminal_tail = terminal_tail;
+    let stop = session
+        .request_stop()
+        .expect("stop request")
+        .expect("stop action");
+    let AvActionExecution::Acknowledged(acknowledgement) = stop
+        .execute_source(&mut session, &mut source)
+        .expect("stop dispatch")
+    else {
+        panic!("stop must acknowledge");
+    };
+    assert!(matches!(
+        session.complete(acknowledgement),
+        Err(AvCaptureError::QueueCapacityExceeded)
+    ));
+    assert_eq!(session.state(), AvSessionState::Stopping);
+    assert_eq!(handle.lock().expect("fake state").native_release_count, 1);
+}
+
+#[test]
+fn queued_buffers_and_callback_tail_share_one_session_stage_budget() {
+    let (mut source, handle, mut session) = setup_started(60);
+    let stamp = session
+        .source_stamp(AvSourceClass::Microphone)
+        .expect("microphone stamp");
+    let released = Arc::new(AtomicUsize::new(0));
+    handle
+        .lock()
+        .expect("fake state")
+        .events
+        .push_back(NativeAvEvent::Buffer(
+            NativeAvBuffer::new(
+                stamp,
+                native_timing(1, 70_000_000, 10_000_000, 175_000_000),
+                audio_format(48_000, 1),
+                lease(4, &released),
+            )
+            .expect("queued native buffer"),
+        ));
+    session
+        .poll_source(&mut source)
+        .expect("poll queued buffer")
+        .expect("queued buffer event");
+
+    let limit = session
+        .source_ingress_queue_spec(AvSourceClass::Microphone)
+        .expect("microphone ingress queue")
+        .max_buffers;
+    handle.lock().expect("fake state").terminal_tail = (2..=u64::from(limit) + 1)
+        .map(|sequence| {
+            NativeAvTerminalBuffer::new(
+                stamp,
+                native_timing(
+                    sequence,
+                    70_000_000 + sequence * 10_000_000,
+                    10_000_000,
+                    175_000_000 + sequence * 10_000_000,
+                ),
+                audio_format(48_000, 1),
+                vec![0; 4],
+            )
+            .expect("bounded individual terminal buffer")
+        })
+        .collect();
+    let stop = session
+        .request_stop()
+        .expect("stop request")
+        .expect("stop action");
+    let AvActionExecution::Acknowledged(acknowledgement) = stop
+        .execute_source(&mut session, &mut source)
+        .expect("stop dispatch")
+    else {
+        panic!("stop must acknowledge");
+    };
+
+    assert!(matches!(
+        session.complete(acknowledgement),
+        Err(AvCaptureError::QueueCapacityExceeded)
+    ));
+    assert_eq!(session.state(), AvSessionState::Stopping);
+    assert_eq!(handle.lock().expect("fake state").native_release_count, 1);
 }
 
 #[test]

@@ -59,10 +59,13 @@ and device identities have no field in the event.
 
 The normalized A/V runtime now has a recording mode that returns bounded,
 typed mixed-audio/camera samples and holds EOS completion until every recording
-sink is drained. It still discards its unauthenticated native callback tail and
-does not connect those samples to the desktop mux, so it cannot claim a
-complete artifact. Shared screen/A/V runtime ownership, lossless tail/mux,
-continuous mixed-source controls, and product recovery remain absent.
+sink is drained. Stop now authenticates every retained session buffer and the
+complete replayable native callback tail, pushes them before graph EOS, and
+replays the identical tail after a lost acknowledgement without a second
+native release. Those mixed-audio/camera outputs are still not connected to
+the desktop mux, so this does not claim a complete artifact. Shared screen/A/V
+runtime ownership, lossless desktop mux proof, continuous mixed-source
+controls, and product recovery remain absent.
 GStreamer-version-specific incomplete terminal `GAP` sentinels are consumed
 without being exposed as media, every consumed sentinel counts against the
 same bounded pull budget, and incomplete non-`GAP` samples still fail closed.
@@ -87,7 +90,9 @@ satisfy checkboxes 6–8.
   discontinuity, fair bounded runtime polling, source calibration, distinct
   dropping preview and non-leaky/non-dropping recording output branches,
   bounded typed mixed-audio/camera output pulls, retained over-budget samples,
-  an attach-time progress budget, an EOS output-drain barrier,
+  an attach-time progress budget, replayable bounded CPU-byte terminal tails,
+  transactional stamp/sequence/format/timebase authentication, queued-plus-tail
+  appsrc delivery before EOS, an EOS output-drain barrier,
   deadline-bounded EOS-to-`Null` completion, serialized empty-source
   TIME-segment/EOS ordering, and
   fail-closed attach/poll teardown plus one-attempt abandonment cleanup;
@@ -166,10 +171,13 @@ three-stage ingress partition, pushes owned CPU buffers through real
 GStreamer appsinks, proves pre-transfer rejection versus post-transfer
 failure, observes bounded appsrc/queue overload and next-buffer discontinuity,
 rotates hostile one-buffer polls fairly, reconciles a lost Stop acknowledgement
-without double release, and confirms deadline-bounded EOS/`Null` teardown. The
-recording-mode cases prove that recording sinks cannot silently switch to
-drop, one over-budget output remains recoverable, poll output stays inside
-sample/byte limits with monotonic per-branch sequences, an undersized fixed
+without double release, replays and authenticates the identical callback tail,
+observes that tail on appsrc before EOS, rejects a tail beyond its negotiated
+source budget, proves queued buffers and the tail share that same stage budget,
+and confirms deadline-bounded EOS/`Null` teardown. The recording-mode cases
+prove that recording sinks cannot silently switch to drop, one over-budget
+output remains recoverable, poll output stays inside sample/byte limits with
+monotonic per-branch sequences, an undersized fixed
 budget is rejected at attach, and `Null` is refused until queued EOS output is
 drained. Running and EOS-requested abandonment tests prove that Drop attempts
 native quiescence and confirms the graph `Null` without a second release. A
@@ -254,7 +262,7 @@ be inferred from local tests:
   continues; and
 - product, media, privacy, accessibility, and release-owner signoff.
 
-Until shared-clock screen/audio composition, lossless tail/mux proof,
+Until shared-clock screen/audio composition, lossless desktop mux proof,
 continuous mixed-source controls, and physical device recovery integration
 exist, this slice is suitable for native adapter development and local
 conformance only. Later hardware records cannot repair the absent release code

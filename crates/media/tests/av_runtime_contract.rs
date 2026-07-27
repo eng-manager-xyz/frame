@@ -152,6 +152,7 @@ struct FakeState {
     fail_stop_after_release_once: bool,
     panic_terminal_execute_once: bool,
     calibration_stamp_override: Option<AvSourceStamp>,
+    terminal_tail: Vec<NativeAvTerminalBuffer>,
 }
 
 struct FakeBridge {
@@ -238,6 +239,11 @@ impl NativeAvBridge for FakeBridge {
         Ok(if state.terminal == Some(ticket.terminal_id()) {
             AvTerminalPostcondition::Applied {
                 terminal_id: ticket.terminal_id(),
+                terminal_tail: if ticket.kind() == AvOperationKind::Stop {
+                    state.terminal_tail.clone()
+                } else {
+                    Vec::new()
+                },
             }
         } else {
             AvTerminalPostcondition::NotApplied
@@ -271,10 +277,12 @@ impl NativeAvBridge for FakeBridge {
         } else if matches!(request, AvNativeRequest::Start(_)) {
             self.state.lock().expect("fake state").native_authority_live = true;
         }
-        Ok(ticket.acknowledge(matches!(
-            request,
-            AvNativeRequest::Stop | AvNativeRequest::Cancel
-        )))
+        if matches!(request, AvNativeRequest::Stop) {
+            let terminal_tail = self.state.lock().expect("fake state").terminal_tail.clone();
+            Ok(ticket.acknowledge_with_terminal_tail(true, terminal_tail))
+        } else {
+            Ok(ticket.acknowledge(matches!(request, AvNativeRequest::Cancel)))
+        }
     }
 
     fn poll(
@@ -1096,6 +1104,87 @@ fn runtime_poll_is_bounded_coalesced_and_reaches_eos_then_null() {
     );
     assert_eq!(runtime.state(), NativeAvRuntimeState::NullConfirmed);
     assert_eq!(released.load(Ordering::SeqCst), 3);
+    assert_eq!(state.lock().expect("fake state").native_release_count, 1);
+}
+
+#[test]
+fn runtime_pushes_authenticated_callback_tail_before_graph_eos() {
+    let (source, session, state, live_catalog) = started_session(58);
+    let stamp = session
+        .source_stamp(AvSourceClass::SystemAudio)
+        .expect("source stamp");
+    let tail_bytes = vec![7_u8; 8 * 480];
+    state.lock().expect("fake state").terminal_tail = vec![
+        NativeAvTerminalBuffer::new(
+            stamp,
+            NativeAvBufferTiming {
+                sequence: 1,
+                source_pts_ns: 70_000_000,
+                duration_ns: 10_000_000,
+                arrival: MonotonicTimeNs::new(175_000_000),
+                latency: SourceLatency {
+                    reported_ns: 5_000_000,
+                    confidence: LatencyConfidence::Measured,
+                },
+                discontinuity: false,
+            },
+            audio_format(),
+            tail_bytes.clone(),
+        )
+        .expect("terminal callback buffer"),
+    ];
+    let graph = NativeAvGstreamerGraph::build(&graph_spec(&live_catalog)).expect("native graph");
+    let mut runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+    let observed = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let observed_probe = Arc::clone(&observed);
+    let appsrc_pad = runtime
+        .graph()
+        .source_appsrc(AvSourceClass::SystemAudio)
+        .expect("system appsrc")
+        .static_pad("src")
+        .expect("appsrc source pad");
+    let probe = appsrc_pad
+        .add_probe(gst::PadProbeType::BUFFER, move |_, information| {
+            if let Some(gst::PadProbeData::Buffer(buffer)) = information.data.as_ref() {
+                observed_probe.lock().expect("observed tail").push(
+                    buffer
+                        .map_readable()
+                        .expect("readable callback tail")
+                        .as_slice()
+                        .to_vec(),
+                );
+            }
+            gst::PadProbeReturn::Ok
+        })
+        .expect("tail observation probe");
+
+    runtime
+        .request_stop(MonotonicTimeNs::new(200_000_000))
+        .expect("bounded stop request");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let report = runtime
+            .poll(MonotonicTimeNs::new(205_000_000))
+            .expect("terminal poll");
+        if let Some(termination) = report.termination {
+            assert_eq!(termination.outcome, NativeAvRuntimeOutcome::Completed);
+            break;
+        }
+        assert!(Instant::now() < deadline, "bounded EOS completion");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    appsrc_pad.remove_probe(probe);
+    assert_eq!(
+        observed.lock().expect("observed tail").as_slice(),
+        &[tail_bytes]
+    );
     assert_eq!(state.lock().expect("fake state").native_release_count, 1);
 }
 

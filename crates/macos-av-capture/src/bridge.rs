@@ -17,8 +17,8 @@ use frame_media::{
     AvTerminalPostcondition, AvTerminalReconcileTicket, CalibrationSample, LatencyConfidence,
     MonotonicTimeNs, NativeAvAcknowledgement, NativeAvBridge, NativeAvBridgeCapabilities,
     NativeAvBuffer, NativeAvBufferTiming, NativeAvCalibrationBatch, NativeAvEvent, NativeAvFailure,
-    NativeAvFailureCode, NativeRouteClass, NativeTimestampKind, PermissionPreflight,
-    PermissionState, SourceLatency,
+    NativeAvFailureCode, NativeAvTerminalBuffer, NativeRouteClass, NativeTimestampKind,
+    PermissionPreflight, PermissionState, SourceLatency,
 };
 #[cfg(target_os = "macos")]
 use frame_platform_lifecycle::{SystemPowerCursor, SystemPowerMonitor};
@@ -147,6 +147,7 @@ struct SystemAudioBridge<S, P> {
     calibration: Option<NativeAvCalibrationBatch>,
     suspended: bool,
     applied_terminal: Option<frame_media::AvTerminalId>,
+    applied_terminal_tail: Option<Vec<NativeAvTerminalBuffer>>,
 }
 
 impl<S: SystemAudioSource, P: PowerEvents> SystemAudioBridge<S, P> {
@@ -169,6 +170,7 @@ impl<S: SystemAudioSource, P: PowerEvents> SystemAudioBridge<S, P> {
             calibration: None,
             suspended: false,
             applied_terminal: None,
+            applied_terminal_tail: None,
         })
     }
 
@@ -244,21 +246,48 @@ impl<S: SystemAudioSource, P: PowerEvents> SystemAudioBridge<S, P> {
     }
 
     fn stop_source(&mut self) -> Result<(), NativeAvFailure> {
+        self.stop_source_with_tail(false).map(drop)
+    }
+
+    fn stop_source_with_tail(
+        &mut self,
+        retain_tail: bool,
+    ) -> Result<Vec<NativeAvTerminalBuffer>, NativeAvFailure> {
         if !self.source.is_running() {
             self.buffered.clear();
             self.calibration = None;
             self.source_origin_ns = None;
             self.output_sequence = 0;
-            return Ok(());
+            return Ok(Vec::new());
         }
         match self.source.stop_and_drain_chunks() {
             Ok(tail) => {
-                drop(tail);
-                self.buffered.clear();
+                let stamp = self.active_stamp.ok_or_else(capability_changed)?;
+                let mut terminal_tail = Vec::new();
+                if retain_tail {
+                    while let Some(buffered) = self.buffered.pop_front() {
+                        terminal_tail.push(self.terminal_chunk(
+                            stamp,
+                            buffered.chunk,
+                            buffered.source_pts_ns,
+                        )?);
+                    }
+                    for chunk in tail {
+                        let origin = *self.source_origin_ns.get_or_insert(chunk.source_pts_ns());
+                        let source_pts_ns = chunk
+                            .source_pts_ns()
+                            .checked_sub(origin)
+                            .ok_or_else(|| backend_fault(false))?;
+                        terminal_tail.push(self.terminal_chunk(stamp, chunk, source_pts_ns)?);
+                    }
+                } else {
+                    self.buffered.clear();
+                    drop(tail);
+                }
                 self.calibration = None;
                 self.source_origin_ns = None;
                 self.output_sequence = 0;
-                Ok(())
+                Ok(terminal_tail)
             }
             Err(error) if error.capture_teardown_confirmed() => {
                 self.buffered.clear();
@@ -269,6 +298,36 @@ impl<S: SystemAudioSource, P: PowerEvents> SystemAudioBridge<S, P> {
             }
             Err(error) => Err(map_stop_error(error)),
         }
+    }
+
+    fn terminal_chunk(
+        &mut self,
+        stamp: AvSourceStamp,
+        chunk: MacOsSystemAudioChunk,
+        source_pts_ns: u64,
+    ) -> Result<NativeAvTerminalBuffer, NativeAvFailure> {
+        self.output_sequence = self
+            .output_sequence
+            .checked_add(1)
+            .ok_or_else(|| backend_fault(false))?;
+        let timing = NativeAvBufferTiming {
+            sequence: self.output_sequence,
+            source_pts_ns,
+            duration_ns: chunk.duration_ns(),
+            arrival: MonotonicTimeNs::new(chunk.arrival_ns()),
+            latency: SourceLatency {
+                reported_ns: 0,
+                confidence: LatencyConfidence::Unknown,
+            },
+            discontinuity: chunk.discontinuity(),
+        };
+        NativeAvTerminalBuffer::new(
+            stamp,
+            timing,
+            AvFormat::Audio(SYSTEM_AUDIO_FORMAT),
+            chunk.into_samples_f32le(),
+        )
+        .map_err(contract_failure)
     }
 
     fn start_source(&mut self, stamp: AvSourceStamp) -> Result<(), NativeAvFailure> {
@@ -491,13 +550,18 @@ impl<S: SystemAudioSource, P: PowerEvents> NativeAvBridge for SystemAudioBridge<
         ticket: AvTerminalReconcileTicket,
     ) -> Result<AvTerminalPostcondition, NativeAvFailure> {
         self.require_binding(ticket.owner())?;
-        Ok(if self.applied_terminal == Some(ticket.terminal_id()) {
-            AvTerminalPostcondition::Applied {
+        if self.applied_terminal == Some(ticket.terminal_id()) {
+            let terminal_tail = self
+                .applied_terminal_tail
+                .clone()
+                .ok_or_else(|| backend_fault(false))?;
+            Ok(AvTerminalPostcondition::Applied {
                 terminal_id: ticket.terminal_id(),
-            }
+                terminal_tail,
+            })
         } else {
-            AvTerminalPostcondition::NotApplied
-        })
+            Ok(AvTerminalPostcondition::NotApplied)
+        }
     }
 
     fn execute(
@@ -548,13 +612,20 @@ impl<S: SystemAudioSource, P: PowerEvents> NativeAvBridge for SystemAudioBridge<
             }
             AvNativeRequest::Stop | AvNativeRequest::Cancel => {
                 let terminal = ticket.terminal_id().ok_or_else(|| backend_fault(false))?;
-                let stopped = self.stop_source();
+                let retain_tail = matches!(request, AvNativeRequest::Stop);
+                self.applied_terminal_tail = None;
+                let stopped = self.stop_source_with_tail(retain_tail);
                 if !self.source.is_running() {
                     self.active_stamp = None;
                     self.applied_terminal = Some(terminal);
                 }
-                stopped?;
-                Ok(ticket.acknowledge(true))
+                let tail = stopped?;
+                self.applied_terminal_tail = Some(tail.clone());
+                if retain_tail {
+                    Ok(ticket.acknowledge_with_terminal_tail(true, tail))
+                } else {
+                    Ok(ticket.acknowledge(true))
+                }
             }
         }
     }
@@ -1116,22 +1187,24 @@ mod tests {
     fn terminal_reconciliation_does_not_release_native_authority_twice() {
         let (source, source_state) = FakeSource::new(PermissionState::Granted);
         enqueue_calibration(&source_state);
-        source_state.lock().expect("fake source").stop_error =
-            Some(MacOsSystemAudioStopError::CaptureFailedAfterTeardown(
-                MacOsSystemAudioError::OutputHandlerReleaseUnconfirmed,
-            ));
         let (mut bridge, mut session, source_state) =
             started(source, FakePower::default(), source_state, 4);
+        let stamp = session
+            .source_stamp(AvSourceClass::SystemAudio)
+            .expect("system-audio stamp");
+        let calibration = bridge
+            .startup_calibration(stamp)
+            .expect("startup calibration");
+        session
+            .calibrate_source(stamp, AvSyncPolicy::default(), calibration.samples())
+            .expect("install calibration");
         let action = session.request_stop().expect("stop").expect("stop action");
-        let AvActionExecution::Failed(failure) = action
+        let AvActionExecution::Acknowledged(delayed_acknowledgement) = action
             .execute_source(&mut session, &mut bridge)
             .expect("stop dispatch")
         else {
-            panic!("first stop must report the post-teardown fault");
+            panic!("first stop must acknowledge");
         };
-        session
-            .complete_failure(failure)
-            .expect("record terminal failure");
         let retry = session.retry_teardown().expect("retry");
         let AvActionExecution::Acknowledged(ack) = retry
             .execute_source(&mut session, &mut bridge)
@@ -1139,7 +1212,17 @@ mod tests {
         else {
             panic!("reconcile must acknowledge applied terminal");
         };
-        session.complete(ack).expect("complete reconciled stop");
+        let terminal = session.complete(ack).expect("complete reconciled stop");
+        drop(delayed_acknowledgement);
+        assert_eq!(terminal.len(), 2);
+        assert_eq!(terminal[0].sequence(), 1);
+        assert_eq!(terminal[1].sequence(), 2);
+        for buffer in terminal {
+            buffer
+                .into_appsrc_input()
+                .expect("authenticated terminal PCM")
+                .release();
+        }
         assert_eq!(source_state.lock().expect("fake source").stops, 1);
         assert_eq!(session.state(), frame_media::AvSessionState::Stopped);
     }

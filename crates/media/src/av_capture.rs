@@ -8,6 +8,7 @@ use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
+    sync::Arc,
     time::Duration,
 };
 
@@ -2380,6 +2381,107 @@ impl NativeAvBufferTiming {
     }
 }
 
+/// An owned CPU-byte buffer retained by a native adapter after callback
+/// quiescence.
+///
+/// Unlike a live [`NativeAvBuffer`] lease, this value is cloneable so an
+/// adapter can return the identical bounded tail when a terminal
+/// acknowledgement is lost and the session reconciles the stable terminal
+/// request. Clones share one immutable byte allocation; only the final
+/// authenticated appsrc transfer creates its owned payload copy.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeAvTerminalBuffer {
+    stamp: AvSourceStamp,
+    timing: NativeAvBufferTiming,
+    format: AvFormat,
+    bytes: Arc<[u8]>,
+}
+
+impl NativeAvTerminalBuffer {
+    pub fn new(
+        stamp: AvSourceStamp,
+        timing: NativeAvBufferTiming,
+        format: AvFormat,
+        bytes: Vec<u8>,
+    ) -> Result<Self, AvCaptureError> {
+        timing.validate()?;
+        format.validate_for(stamp.class())?;
+        let retained_bytes =
+            u64::try_from(bytes.len()).map_err(|_| AvCaptureError::InvalidBufferLease)?;
+        if retained_bytes == 0 || retained_bytes > MAX_AV_QUEUE_BYTES {
+            return Err(AvCaptureError::InvalidBufferLease);
+        }
+        Ok(Self {
+            stamp,
+            timing,
+            format,
+            bytes: bytes.into(),
+        })
+    }
+
+    #[must_use]
+    pub const fn stamp(&self) -> AvSourceStamp {
+        self.stamp
+    }
+
+    #[must_use]
+    pub const fn timing(&self) -> NativeAvBufferTiming {
+        self.timing
+    }
+
+    #[must_use]
+    pub const fn format(&self) -> AvFormat {
+        self.format
+    }
+
+    #[must_use]
+    pub fn retained_bytes(&self) -> u64 {
+        u64::try_from(self.bytes.len()).unwrap_or(u64::MAX)
+    }
+
+    fn into_native_buffer(self) -> Result<NativeAvBuffer, AvCaptureError> {
+        NativeAvBuffer::new(
+            self.stamp,
+            self.timing,
+            self.format,
+            Box::new(OwnedTerminalBufferLease {
+                bytes: Some(self.bytes.as_ref().to_vec()),
+            }),
+        )
+    }
+}
+
+impl fmt::Debug for NativeAvTerminalBuffer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeAvTerminalBuffer")
+            .field("stamp", &self.stamp)
+            .field("timing", &"<redacted>")
+            .field("format", &self.format)
+            .field("retained_bytes", &self.retained_bytes())
+            .finish()
+    }
+}
+
+struct OwnedTerminalBufferLease {
+    bytes: Option<Vec<u8>>,
+}
+
+impl AvBufferLease for OwnedTerminalBufferLease {
+    fn retained_bytes(&self) -> u64 {
+        self.bytes
+            .as_ref()
+            .and_then(|bytes| u64::try_from(bytes.len()).ok())
+            .unwrap_or(0)
+    }
+
+    fn take_payload(&mut self) -> Option<AvPayloadBody> {
+        self.bytes.take().map(AvPayloadBody::Bytes)
+    }
+
+    fn release(self: Box<Self>) {}
+}
+
 pub struct NativeAvBuffer {
     stamp: AvSourceStamp,
     timing: NativeAvBufferTiming,
@@ -2649,6 +2751,22 @@ impl AvIngressQueue {
         (count, bytes)
     }
 
+    fn take_all(&mut self) -> Vec<NativeAvBuffer> {
+        self.retained_bytes = 0;
+        self.buffers.drain(..).collect()
+    }
+
+    fn commit_terminal_cursor(
+        &mut self,
+        last_sequence: u64,
+        last_corrected_end_ns: u64,
+        last_observed_ns: u64,
+    ) {
+        self.last_sequence = last_sequence;
+        self.last_corrected_end_ns = Some(last_corrected_end_ns);
+        self.last_observed_ns = Some(last_observed_ns);
+    }
+
     fn expire(&mut self, now_ns: u64) {
         while self.buffers.front().is_some_and(|buffer| {
             now_ns.saturating_sub(buffer.arrival().get()) > self.spec.max_age_ns
@@ -2887,6 +3005,31 @@ impl AvOperationTicket {
             predecessor_stamps: self.predecessor_stamps,
             terminal_id: self.terminal_id,
             teardown_complete,
+            terminal_tail: Vec::new(),
+        }
+    }
+
+    /// Acknowledges a terminal stop together with its complete, replayable
+    /// callback tail.
+    ///
+    /// The session validates the operation kind, source ownership, sequence,
+    /// format, byte/count budgets, and corrected timestamps before returning
+    /// these buffers to the graph owner.
+    #[must_use]
+    pub fn acknowledge_with_terminal_tail(
+        self,
+        teardown_complete: bool,
+        terminal_tail: Vec<NativeAvTerminalBuffer>,
+    ) -> NativeAvAcknowledgement {
+        NativeAvAcknowledgement {
+            owner: self.owner,
+            operation: self.operation,
+            kind: self.kind,
+            stamps: self.stamps,
+            predecessor_stamps: self.predecessor_stamps,
+            terminal_id: self.terminal_id,
+            teardown_complete,
+            terminal_tail,
         }
     }
 }
@@ -2915,6 +3058,7 @@ pub struct NativeAvAcknowledgement {
     predecessor_stamps: Vec<AvSourceStamp>,
     terminal_id: Option<AvTerminalId>,
     teardown_complete: bool,
+    terminal_tail: Vec<NativeAvTerminalBuffer>,
 }
 
 pub struct AvTerminalReconcileTicket {
@@ -2972,10 +3116,13 @@ impl fmt::Debug for AvTerminalReconcileTicket {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AvTerminalPostcondition {
     NotApplied,
-    Applied { terminal_id: AvTerminalId },
+    Applied {
+        terminal_id: AvTerminalId,
+        terminal_tail: Vec<NativeAvTerminalBuffer>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3375,6 +3522,7 @@ impl AvSessionAction {
             match source.reconcile_terminal(reconcile) {
                 Ok(AvTerminalPostcondition::Applied {
                     terminal_id: applied,
+                    terminal_tail,
                 }) if applied == terminal_id => {
                     return Ok(AvActionExecution::Acknowledged(OwnedAvAcknowledgement {
                         acknowledgement: NativeAvAcknowledgement {
@@ -3385,6 +3533,7 @@ impl AvSessionAction {
                             predecessor_stamps,
                             terminal_id: Some(terminal_id),
                             teardown_complete: true,
+                            terminal_tail,
                         },
                     }));
                 }
@@ -3993,7 +4142,17 @@ impl AvCaptureSession {
         }))
     }
 
-    pub fn complete(&mut self, owned: OwnedAvAcknowledgement) -> Result<(), AvCaptureError> {
+    /// Completes one native operation and returns every authenticated buffer
+    /// that must be pushed before graph EOS.
+    ///
+    /// The returned vector is non-empty only for a successful Stop. It
+    /// contains already-corrected session-queue buffers followed by the
+    /// replayable callback tail for each source. Cancel deliberately releases
+    /// both queues and any callback tail.
+    pub fn complete(
+        &mut self,
+        owned: OwnedAvAcknowledgement,
+    ) -> Result<Vec<NativeAvBuffer>, AvCaptureError> {
         let acknowledgement = owned.acknowledgement;
         if acknowledgement.owner != self.owner {
             return Err(AvCaptureError::OwnerMismatch);
@@ -4005,10 +4164,13 @@ impl AvCaptureSession {
             || acknowledgement.predecessor_stamps != pending.predecessor_stamps
             || acknowledgement.terminal_id != pending.terminal_id
             || !pending.dispatched
+            || (!acknowledgement.terminal_tail.is_empty()
+                && (pending.kind != AvOperationKind::Stop || !acknowledgement.teardown_complete))
         {
             self.pending = Some(pending);
             return Err(AvCaptureError::InvalidNativeAcknowledgement);
         }
+        let mut terminal_buffers = Vec::new();
         if let Some(catalog) = pending.expected_catalog.clone() {
             self.catalog = Some(catalog);
         }
@@ -4049,7 +4211,28 @@ impl AvCaptureSession {
                     self.state = AvSessionState::TeardownRequired;
                     return Err(AvCaptureError::TeardownNotConfirmed);
                 }
-                self.drain_queues();
+                if pending.kind == AvOperationKind::Stop {
+                    let mut tail_by_class =
+                        match self.authenticate_terminal_tail(acknowledgement.terminal_tail) {
+                            Ok(tail) => tail,
+                            Err(error) => {
+                                self.pending = Some(pending);
+                                return Err(error);
+                            }
+                        };
+                    for (class, active) in &mut self.active {
+                        terminal_buffers.extend(active.queue.take_all());
+                        if let Some(tail) = tail_by_class.remove(class) {
+                            terminal_buffers.extend(tail);
+                        }
+                    }
+                    if !tail_by_class.is_empty() {
+                        self.pending = Some(pending);
+                        return Err(AvCaptureError::StaleSourceStamp);
+                    }
+                } else {
+                    self.drain_queues();
+                }
                 self.active.clear();
                 self.unconfirmed_stamps.clear();
                 self.graph = None;
@@ -4073,7 +4256,120 @@ impl AvCaptureSession {
                 };
             }
         }
-        Ok(())
+        Ok(terminal_buffers)
+    }
+
+    fn authenticate_terminal_tail(
+        &mut self,
+        terminal_tail: Vec<NativeAvTerminalBuffer>,
+    ) -> Result<BTreeMap<AvSourceClass, Vec<NativeAvBuffer>>, AvCaptureError> {
+        let mut grouped = BTreeMap::<AvSourceClass, Vec<NativeAvTerminalBuffer>>::new();
+        for buffer in terminal_tail {
+            grouped
+                .entry(buffer.stamp().class())
+                .or_default()
+                .push(buffer);
+        }
+
+        let mut authenticated = BTreeMap::<AvSourceClass, Vec<NativeAvBuffer>>::new();
+        let mut commits = Vec::with_capacity(grouped.len());
+        for (class, buffers) in grouped {
+            let active = self
+                .active
+                .get(&class)
+                .ok_or(AvCaptureError::StaleSourceStamp)?;
+            let count =
+                u16::try_from(buffers.len()).map_err(|_| AvCaptureError::InvalidQueueSpec)?;
+            let bytes = buffers.iter().try_fold(0_u64, |total, buffer| {
+                total
+                    .checked_add(buffer.retained_bytes())
+                    .ok_or(AvCaptureError::InvalidQueueSpec)
+            })?;
+            let queued_count = u16::try_from(active.queue.buffers.len())
+                .map_err(|_| AvCaptureError::InvalidQueueSpec)?;
+            let total_count = queued_count
+                .checked_add(count)
+                .ok_or(AvCaptureError::InvalidQueueSpec)?;
+            let total_bytes = active
+                .queue
+                .retained_bytes
+                .checked_add(bytes)
+                .ok_or(AvCaptureError::InvalidQueueSpec)?;
+            if total_count > active.queue.spec.max_buffers
+                || total_bytes > active.queue.spec.max_bytes
+            {
+                return Err(AvCaptureError::QueueCapacityExceeded);
+            }
+
+            let mut timebase = active
+                .timebase
+                .clone()
+                .ok_or(AvCaptureError::CalibrationRequired)?;
+            let mut last_sequence = active.queue.last_sequence;
+            let mut last_corrected_end_ns = active.queue.last_corrected_end_ns;
+            let mut last_observed_ns = active.queue.last_observed_ns;
+            let mut converted = Vec::with_capacity(buffers.len());
+            for terminal in buffers {
+                if terminal.stamp() != active.stamp {
+                    return Err(AvCaptureError::StaleSourceStamp);
+                }
+                if terminal.format() != active.format {
+                    return Err(AvCaptureError::FormatRenegotiationRequired);
+                }
+                let expected_sequence = last_sequence
+                    .checked_add(1)
+                    .ok_or(AvCaptureError::BufferSequenceExhausted)?;
+                let timing = terminal.timing();
+                if timing.sequence != expected_sequence {
+                    return Err(AvCaptureError::OutOfOrderBuffer);
+                }
+                if last_observed_ns.is_some_and(|last| timing.arrival.get() < last) {
+                    return Err(AvCaptureError::NonMonotonicMasterClock);
+                }
+                let corrected = timebase.observe(
+                    timing.source_pts_ns,
+                    timing.duration_ns,
+                    timing.arrival,
+                    timing.latency,
+                    timing.discontinuity,
+                )?;
+                if last_corrected_end_ns.is_some_and(|last| corrected.frame.pts_ns < last) {
+                    return Err(AvCaptureError::CorrectedTimestampRollback);
+                }
+                let mut buffer = terminal.into_native_buffer()?;
+                buffer.apply_corrected_timestamp(corrected.frame)?;
+                last_sequence = timing.sequence;
+                last_corrected_end_ns = Some(corrected.frame.end_ns());
+                last_observed_ns = Some(timing.arrival.get());
+                converted.push(buffer);
+            }
+            let last_corrected_end_ns =
+                last_corrected_end_ns.ok_or(AvCaptureError::UncorrectedBuffer)?;
+            let last_observed_ns =
+                last_observed_ns.ok_or(AvCaptureError::NonMonotonicMasterClock)?;
+            commits.push((
+                class,
+                timebase,
+                last_sequence,
+                last_corrected_end_ns,
+                last_observed_ns,
+            ));
+            authenticated.insert(class, converted);
+        }
+
+        for (class, timebase, last_sequence, last_corrected_end_ns, last_observed_ns) in commits {
+            let active = self
+                .active
+                .get_mut(&class)
+                .ok_or(AvCaptureError::StaleSourceStamp)?;
+            active.timebase = Some(timebase);
+            active.queue.commit_terminal_cursor(
+                last_sequence,
+                last_corrected_end_ns,
+                last_observed_ns,
+            );
+        }
+        Ok(authenticated)
     }
 
     pub fn complete_failure(
@@ -4592,6 +4888,8 @@ pub enum AvCaptureError {
     DefaultChangeNeedsConfirmation,
     #[error("A/V queue specification is invalid")]
     InvalidQueueSpec,
+    #[error("native callback tail exceeds the negotiated per-source queue budget")]
+    QueueCapacityExceeded,
     #[error("A/V source latency is invalid")]
     InvalidLatency,
     #[error("startup calibration sample count is invalid")]
