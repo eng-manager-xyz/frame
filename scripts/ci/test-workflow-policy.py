@@ -84,6 +84,7 @@ def main() -> int:
         contract = fixture / ".github/workflows/contract-migrations.yml"
         package = fixture / "scripts/ci/package-release.sh"
         verify = fixture / "scripts/ci/verify-release-bundle.sh"
+        gstreamer_launcher = fixture / "scripts/ci/gstreamer-sanitized-exec"
 
         quality_original = quality.read_text(encoding="utf-8")
         alternate_yaml = quality_original.replace(
@@ -118,6 +119,12 @@ def main() -> int:
             return 1
 
         mutations = (
+            (
+                gstreamer_launcher,
+                "export RUST_TEST_THREADS=1",
+                "export RUST_TEST_THREADS=8",
+                "parallel native media tests reintroduce bounded-slot flakes",
+            ),
             (
                 smoke,
                 "github.event_name == 'workflow_dispatch' || vars.FRAME_PRODUCTION_SMOKE_ENABLED == 'true'",

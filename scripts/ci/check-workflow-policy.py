@@ -136,6 +136,13 @@ def main() -> int:
         errors,
     )
     require(
+        gstreamer_launcher.is_file()
+        and "export RUST_TEST_THREADS=1"
+        in gstreamer_launcher.read_text(encoding="utf-8"),
+        "GStreamer sanitized launcher must serialize native media test binaries",
+        errors,
+    )
+    require(
         cargo_config.is_file()
         and "[target.'cfg(unix)']" in cargo_config.read_text(encoding="utf-8")
         and 'runner = ["scripts/ci/gstreamer-sanitized-exec"]'
