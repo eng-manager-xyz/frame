@@ -150,22 +150,36 @@ GStreamer stages expose bounded overload observations: `appsrc` reports
 conservative pre-push saturation, while the explicit queue reports an exact
 overrun signal. Newly observed pressure or overrun produces one stable,
 privacy-safe `IngressOverload` diagnostic and marks the next accepted source
-buffer discontinuous. Runtime-owned appsinks disable preroll waiting and
-post-EOS buffer draining because this foundation does not yet consume their
-bounded queues; their exact nonblocking properties are revalidated at attach.
+buffer discontinuous. Preview-owned appsinks use bounded dropping queues.
+Recording-owned mixed-audio and camera branches use non-leaky output queues and
+appsinks that do not drop; their output is copied into bounded typed poll
+reports with per-branch monotonic sequences, explicit timestamps, and an
+aggregate byte ceiling. A sample that does not fit the caller's current byte
+budget is retained for a later larger pull. Runtime attachment rejects a fixed
+recording byte budget smaller than the largest active branch bound, preventing
+an EOS drain that can never make progress. Exact queue bounds/leak mode, sink
+mode, and nonblocking EOS properties are revalidated at attach.
+Some GStreamer aggregator versions append an empty or incompletely timestamped
+`GAP` sentinel while reaching EOS. The output boundary consumes only those
+incomplete `GAP` sentinels, counts each against the bounded pull budget, and
+continues to reject incomplete non-`GAP` media.
 Stop queues EOS through each `appsrc` element rather than calling the direct
 end-of-stream shortcut. GstBaseSrc therefore serializes stream-start, the exact
 caps, a TIME segment, and EOS even when a source produced no buffers. Terminal
 EOS is accepted only when those sticky events still match the negotiated
-source contract; the empty path creates no sample and occupies no queue slot.
+source contract. A recording graph will not confirm `Null` after terminal EOS
+until every recording appsink reports EOS with no queued sample and the
+runtime-owned pending sample is empty.
 
 `NativeAvRuntime` binds a recording-state session, exact negotiated graph, and
 native bridge. It installs one authenticated startup calibration per source
 epoch, moves the graph to `Playing`, polls bounded native events and bus
-messages, pushes at most the configured number of buffers, and coalesces only
-privacy-safe status/timing events. Attach and poll contract failures attempt
-native terminal reconciliation and confirm GStreamer `Null`; EOS completion is
-reported only after `Null`. The runtime owns a validated bounded EOS deadline,
+messages, pushes at most the configured number of buffers, returns at most the
+configured recording-output samples and bytes, and coalesces only privacy-safe
+status/timing events. Attach and poll contract failures attempt native terminal
+reconciliation and confirm GStreamer `Null`; successful recording EOS is
+reported only after output drain and `Null`. The runtime owns a validated
+bounded EOS deadline,
 rejects a regressing caller clock, and rotates its first-polled source so a
 one-buffer poll budget cannot starve later sources. This runtime is currently a
 preview/execution foundation. Explicit `quiesce` makes one terminal
@@ -178,9 +192,9 @@ does not wait for EOS and does not claim a completed artifact. Native calls are
 bounded by their operation-ticket timeout contract, but safe Rust cannot
 preempt an adapter that blocks after violating that contract; production
 adapters still need their platform watchdog/process-isolation policy. The
-runtime also does not yet drain mixed-media appsinks, parse `level` messages
-into production meters, or authenticate a lossless native callback tail for a
-recording artifact.
+runtime does not yet parse `level` messages into production meters,
+authenticate a lossless native callback tail, or connect its returned samples
+to the desktop recording mux.
 
 ## Current macOS system-audio primitive
 

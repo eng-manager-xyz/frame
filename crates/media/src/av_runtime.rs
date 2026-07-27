@@ -1,11 +1,12 @@
 //! Bounded native A/V orchestration and the CPU-backed GStreamer appsrc edge.
 //!
-//! This module intentionally supports preview/runtime validation only. The
-//! native stop acknowledgement does not yet authenticate a callback tail, so
-//! callers must not treat this runtime as evidence that audio was losslessly
-//! muxed into a final recording artifact. Poll reports currently coalesce only
-//! privacy-safe source-status and timing events; GStreamer `level` messages and
-//! mixed-audio/camera appsink output are not consumed by this slice.
+//! Recording-mode graphs return bounded mixed-audio and camera samples through
+//! poll reports and do not confirm `Null` after EOS until those outputs drain.
+//! The native stop acknowledgement still does not authenticate a callback
+//! tail, so callers must not treat this runtime as evidence that audio was
+//! losslessly muxed into a final recording artifact. Poll reports coalesce
+//! privacy-safe source-status and timing events; GStreamer `level` messages
+//! are not consumed by this slice.
 
 use std::{
     collections::BTreeMap,
@@ -27,15 +28,18 @@ use crate::{
     AvCaptureError, AvCaptureSession, AvDiagnostic, AvEventOutcome, AvFormat, AvLocalAppSrcAdapter,
     AvQueueSpec, AvSessionState, AvSourceClass, AvSourceStamp, AvStableCode, AvSyncPolicy,
     AvUiEvent, AvUiEventCoalescer, BoundNativeAvBridge, CalibrationConfidence,
-    DEFAULT_UI_EVENT_INTERVAL_NS, MAX_AV_GRAPH_BUS_MESSAGES, MonotonicTimeNs, NativeAvBridge,
-    NativeAvFailure, NativeAvFailureCode, NativeAvGraphFailure, NativeAvGraphState,
-    NativeAvGraphTerminal, NativeAvGstreamerGraph, TimingBucket,
+    DEFAULT_UI_EVENT_INTERVAL_NS, MAX_AV_GRAPH_BUS_MESSAGES, MAX_AV_RECORDING_OUTPUT_BYTES,
+    MAX_AV_RECORDING_OUTPUT_SAMPLES, MonotonicTimeNs, NativeAvBridge, NativeAvFailure,
+    NativeAvFailureCode, NativeAvGraphFailure, NativeAvGraphOutputMode, NativeAvGraphOutputSample,
+    NativeAvGraphState, NativeAvGraphTerminal, NativeAvGstreamerGraph, TimingBucket,
 };
 
 pub const MAX_AV_RUNTIME_NATIVE_EVENTS: u16 = 256;
 pub const MAX_AV_RUNTIME_BUFFERS: u16 = 512;
 pub const MAX_AV_RUNTIME_DIAGNOSTICS: u16 = 256;
 pub const MAX_AV_RUNTIME_UI_EVENTS: usize = 11;
+pub const DEFAULT_AV_RUNTIME_OUTPUT_SAMPLES: u16 = 64;
+pub const DEFAULT_AV_RUNTIME_OUTPUT_BYTES: u64 = MAX_AV_RECORDING_OUTPUT_BYTES;
 pub const DEFAULT_AV_RUNTIME_EOS_TIMEOUT_NS: u64 = 5_000_000_000;
 pub const MAX_AV_RUNTIME_EOS_TIMEOUT_NS: u64 = 30_000_000_000;
 
@@ -45,6 +49,8 @@ pub struct AvRuntimePolicy {
     pub max_buffers_per_poll: u16,
     pub max_bus_messages_per_poll: u16,
     pub max_diagnostics_per_poll: u16,
+    pub max_output_samples_per_poll: u16,
+    pub max_output_bytes_per_poll: u64,
     pub ui_interval_ns: u64,
     pub eos_timeout_ns: u64,
 }
@@ -56,6 +62,8 @@ impl Default for AvRuntimePolicy {
             max_buffers_per_poll: 64,
             max_bus_messages_per_poll: 64,
             max_diagnostics_per_poll: 64,
+            max_output_samples_per_poll: DEFAULT_AV_RUNTIME_OUTPUT_SAMPLES,
+            max_output_bytes_per_poll: DEFAULT_AV_RUNTIME_OUTPUT_BYTES,
             ui_interval_ns: DEFAULT_UI_EVENT_INTERVAL_NS,
             eos_timeout_ns: DEFAULT_AV_RUNTIME_EOS_TIMEOUT_NS,
         }
@@ -72,6 +80,10 @@ impl AvRuntimePolicy {
             || self.max_bus_messages_per_poll > MAX_AV_GRAPH_BUS_MESSAGES
             || self.max_diagnostics_per_poll == 0
             || self.max_diagnostics_per_poll > MAX_AV_RUNTIME_DIAGNOSTICS
+            || self.max_output_samples_per_poll == 0
+            || self.max_output_samples_per_poll > MAX_AV_RECORDING_OUTPUT_SAMPLES
+            || self.max_output_bytes_per_poll == 0
+            || self.max_output_bytes_per_poll > MAX_AV_RECORDING_OUTPUT_BYTES
             || self.eos_timeout_ns == 0
             || self.eos_timeout_ns > MAX_AV_RUNTIME_EOS_TIMEOUT_NS
         {
@@ -134,6 +146,8 @@ pub struct AvRuntimePollReport {
     pub bus_messages_polled: u16,
     pub diagnostics: Vec<AvDiagnostic>,
     pub diagnostics_truncated: bool,
+    pub output_samples: Vec<NativeAvGraphOutputSample>,
+    pub output_bytes: u64,
     pub ui_events: Vec<AvUiEvent>,
     pub more_work_possible: bool,
     pub termination: Option<NativeAvTermination>,
@@ -147,6 +161,8 @@ impl AvRuntimePollReport {
             bus_messages_polled: 0,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
+            output_samples: Vec::new(),
+            output_bytes: 0,
             ui_events: Vec::new(),
             more_work_possible: false,
             termination: None,
@@ -424,6 +440,7 @@ pub struct NativeAvRuntime<B: NativeAvBridge> {
     next_source_index: usize,
     last_time_ns: Option<u64>,
     eos_deadline_ns: Option<u64>,
+    graph_eos_observed: bool,
 }
 
 impl<B: NativeAvBridge> std::fmt::Debug for NativeAvRuntime<B> {
@@ -457,6 +474,7 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
             next_source_index: 0,
             last_time_ns: None,
             eos_deadline_ns: None,
+            graph_eos_observed: false,
         };
         let initialization = runtime.initialize(sync_policy);
         match initialization {
@@ -543,6 +561,24 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
             }
         }
 
+        let outputs_drained = match self.drain_recording_outputs(&mut report) {
+            Ok(drained) => drained,
+            Err(failure) => {
+                report.termination = Some(self.fail(failure));
+                self.finish_report_fail_closed(now, &mut report);
+                return Ok(report);
+            }
+        };
+        if self.graph_eos_observed {
+            if outputs_drained {
+                self.complete_after_graph_eos(now, &mut report);
+            } else {
+                report.more_work_possible = true;
+            }
+            self.finish_report_fail_closed(now, &mut report);
+            return Ok(report);
+        }
+
         match self.graph.poll_bus(self.policy.max_bus_messages_per_poll) {
             Ok(graph_report) => {
                 report.bus_messages_polled = graph_report.messages_polled;
@@ -556,29 +592,12 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
                             self.finish_report_fail_closed(now, &mut report);
                             return Ok(report);
                         }
-                        let teardown = confirm_graph_null(&mut self.graph);
-                        self.eos_deadline_ns = None;
-                        let outcome = if teardown == NativeAvGraphTeardown::NullReached {
-                            self.state = NativeAvRuntimeState::NullConfirmed;
-                            if self.ui.push(now, AvUiEvent::Stopped).is_ok() {
-                                NativeAvRuntimeOutcome::Completed
-                            } else {
-                                self.state = NativeAvRuntimeState::Failed;
-                                NativeAvRuntimeOutcome::Failed(
-                                    NativeAvRuntimeFailure::CaptureContract,
-                                )
-                            }
-                        } else {
-                            self.state = NativeAvRuntimeState::Failed;
-                            NativeAvRuntimeOutcome::Failed(NativeAvRuntimeFailure::Graph(
-                                NativeAvGraphFailure::NullNotReached,
-                            ))
-                        };
-                        report.termination = Some(NativeAvTermination {
-                            outcome,
-                            source_teardown: NativeAvSourceTeardown::Confirmed,
-                            graph_teardown: teardown,
-                        });
+                        self.graph_eos_observed = true;
+                        match self.drain_recording_outputs(&mut report) {
+                            Ok(true) => self.complete_after_graph_eos(now, &mut report),
+                            Ok(false) => report.more_work_possible = true,
+                            Err(failure) => report.termination = Some(self.fail(failure)),
+                        }
                     }
                     Some(NativeAvGraphTerminal::Failed(failure)) => {
                         report.termination =
@@ -595,8 +614,11 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         Ok(report)
     }
 
-    /// Stops the native preview source, then asks every appsrc to emit EOS.
-    /// This is a bounded preview teardown, not a lossless recording-tail proof.
+    /// Stops the native source, then asks every appsrc to emit EOS.
+    ///
+    /// Recording-mode callers must keep polling until the bounded output drain
+    /// and `Null` confirmation complete. This is not a lossless native-tail
+    /// proof.
     pub fn request_stop(&mut self, now: MonotonicTimeNs) -> Result<(), NativeAvRuntimeError> {
         if self.state != NativeAvRuntimeState::Playing {
             return Err(NativeAvRuntimeError::InvalidTransition);
@@ -655,6 +677,7 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         }
         self.state = NativeAvRuntimeState::EosRequested;
         self.eos_deadline_ns = deadline;
+        self.graph_eos_observed = false;
         Ok(())
     }
 
@@ -920,6 +943,71 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         None
     }
 
+    fn drain_recording_outputs(
+        &mut self,
+        report: &mut AvRuntimePollReport,
+    ) -> Result<bool, NativeAvRuntimeFailure> {
+        if self.graph.output_mode() == NativeAvGraphOutputMode::Preview {
+            return Ok(true);
+        }
+        let used_samples = u16::try_from(report.output_samples.len())
+            .map_err(|_| NativeAvRuntimeFailure::CaptureContract)?;
+        let remaining_samples = self
+            .policy
+            .max_output_samples_per_poll
+            .checked_sub(used_samples)
+            .ok_or(NativeAvRuntimeFailure::CaptureContract)?;
+        let remaining_bytes = self
+            .policy
+            .max_output_bytes_per_poll
+            .checked_sub(report.output_bytes)
+            .ok_or(NativeAvRuntimeFailure::CaptureContract)?;
+        if remaining_samples == 0 || remaining_bytes == 0 {
+            report.more_work_possible = true;
+            return Ok(false);
+        }
+        let output = self
+            .graph
+            .pull_recording_outputs(remaining_samples, remaining_bytes)
+            .map_err(NativeAvRuntimeFailure::Graph)?;
+        report.output_bytes = report
+            .output_bytes
+            .checked_add(output.bytes)
+            .filter(|bytes| *bytes <= self.policy.max_output_bytes_per_poll)
+            .ok_or(NativeAvRuntimeFailure::CaptureContract)?;
+        report.output_samples.extend(output.samples);
+        if report.output_samples.len() > usize::from(self.policy.max_output_samples_per_poll) {
+            return Err(NativeAvRuntimeFailure::CaptureContract);
+        }
+        report.more_work_possible |= output.limit_reached;
+        Ok(output.eos_drained)
+    }
+
+    fn complete_after_graph_eos(&mut self, now: MonotonicTimeNs, report: &mut AvRuntimePollReport) {
+        let teardown = confirm_graph_null(&mut self.graph);
+        self.eos_deadline_ns = None;
+        self.graph_eos_observed = false;
+        let outcome = if teardown == NativeAvGraphTeardown::NullReached {
+            self.state = NativeAvRuntimeState::NullConfirmed;
+            if self.ui.push(now, AvUiEvent::Stopped).is_ok() {
+                NativeAvRuntimeOutcome::Completed
+            } else {
+                self.state = NativeAvRuntimeState::Failed;
+                NativeAvRuntimeOutcome::Failed(NativeAvRuntimeFailure::CaptureContract)
+            }
+        } else {
+            self.state = NativeAvRuntimeState::Failed;
+            NativeAvRuntimeOutcome::Failed(NativeAvRuntimeFailure::Graph(
+                NativeAvGraphFailure::NullNotReached,
+            ))
+        };
+        report.termination = Some(NativeAvTermination {
+            outcome,
+            source_teardown: NativeAvSourceTeardown::Confirmed,
+            graph_teardown: teardown,
+        });
+    }
+
     fn finish_report(
         &mut self,
         now: MonotonicTimeNs,
@@ -972,6 +1060,13 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
             return Err(NativeAvRuntimeFailure::CaptureContract);
         }
         if !self.graph.live_contract_is_intact() {
+            return Err(NativeAvRuntimeFailure::CaptureContract);
+        }
+        if self
+            .graph
+            .required_recording_output_byte_budget()
+            .is_some_and(|required| self.policy.max_output_bytes_per_poll < required)
+        {
             return Err(NativeAvRuntimeFailure::CaptureContract);
         }
         self.ui = AvUiEventCoalescer::new(self.policy.ui_interval_ns)

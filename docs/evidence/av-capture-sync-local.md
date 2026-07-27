@@ -57,10 +57,15 @@ retains the last displayed meter rather than reading an unthrottled snapshot.
 Unknown telemetry fields fail deserialization, and raw PCM/video, paths, labels,
 and device identities have no field in the event.
 
-The normalized A/V runtime remains a preview/execution foundation and
-intentionally discards its calibration callbacks and terminal tail rather than
-claiming a complete artifact. Shared screen/A/V runtime ownership, lossless
-mux, continuous mixed-source controls, and product recovery remain absent.
+The normalized A/V runtime now has a recording mode that returns bounded,
+typed mixed-audio/camera samples and holds EOS completion until every recording
+sink is drained. It still discards its unauthenticated native callback tail and
+does not connect those samples to the desktop mux, so it cannot claim a
+complete artifact. Shared screen/A/V runtime ownership, lossless tail/mux,
+continuous mixed-source controls, and product recovery remain absent.
+GStreamer-version-specific incomplete terminal `GAP` sentinels are consumed
+without being exposed as media, every consumed sentinel counts against the
+same bounded pull budget, and incomplete non-`GAP` samples still fail closed.
 Consequently these local results satisfy checkboxes 1 and 5 but do not yet
 satisfy checkboxes 6–8.
 
@@ -79,9 +84,12 @@ satisfy checkboxes 6–8.
 - concrete CPU-byte `NativeAvAppSrc` transfer semantics, one exact ingress
   budget partitioned across the session/appsrc/downstream queues, observable
   appsrc pressure and exact downstream queue overruns with next-buffer
-  discontinuity, fair bounded runtime polling, source calibration,
-  non-draining appsinks that cannot stall EOS, deadline-bounded EOS-to-`Null`
-  completion, serialized empty-source TIME-segment/EOS ordering, and
+  discontinuity, fair bounded runtime polling, source calibration, distinct
+  dropping preview and non-leaky/non-dropping recording output branches,
+  bounded typed mixed-audio/camera output pulls, retained over-budget samples,
+  an attach-time progress budget, an EOS output-drain barrier,
+  deadline-bounded EOS-to-`Null` completion, serialized empty-source
+  TIME-segment/EOS ordering, and
   fail-closed attach/poll teardown plus one-attempt abandonment cleanup;
 - safe macOS ScreenCaptureKit system-audio format/permission/start/stop
   primitives with current-process exclusion, a 1.6-second callback prequeue,
@@ -154,22 +162,28 @@ The external `av_capture_contract` suite covers:
   within the 50 ms policy ceiling.
 
 The native runtime suite constructs the negotiated graph, verifies the exact
-three-stage ingress partition, pushes owned CPU buffers through a real
-GStreamer appsink, proves pre-transfer rejection versus post-transfer failure,
-observes bounded appsrc/queue overload and next-buffer discontinuity, rotates
-hostile one-buffer polls fairly, reconciles a lost Stop acknowledgement without
-double release, and confirms deadline-bounded EOS/`Null` teardown. Running and
-EOS-requested abandonment tests prove that Drop attempts native quiescence and
-confirms the graph `Null` without a second release. A hostile adapter-panic test
+three-stage ingress partition, pushes owned CPU buffers through real
+GStreamer appsinks, proves pre-transfer rejection versus post-transfer
+failure, observes bounded appsrc/queue overload and next-buffer discontinuity,
+rotates hostile one-buffer polls fairly, reconciles a lost Stop acknowledgement
+without double release, and confirms deadline-bounded EOS/`Null` teardown. The
+recording-mode cases prove that recording sinks cannot silently switch to
+drop, one over-budget output remains recoverable, poll output stays inside
+sample/byte limits with monotonic per-branch sequences, an undersized fixed
+budget is rejected at attach, and `Null` is refused until queued EOS output is
+drained. Running and EOS-requested abandonment tests prove that Drop attempts
+native quiescence and confirms the graph `Null` without a second release. A
+hostile adapter-panic test
 proves the unwind is contained, the graph is still confirmed `Null`, and native
 authority remains explicitly unconfirmed; explicit `quiesce` then reconciles
 the same terminal ID on retry. This is a one-attempt destructor safeguard, not
 a hard preemption boundary: an adapter that ignores its operation-ticket
 timeout can still block its caller and needs a platform watchdog or process
-isolation. The suite does not push a physical production device buffer or
-consume the mixed-media sinks as a recording. The desktop suite does exercise
-the production system-audio meter adapter boundary, server-side coalescing,
-strict raw-media-free event shape, and Leptos release compilation. The macOS
+isolation. The suite does not push a physical production device buffer or mux
+the returned mixed-media samples into a desktop recording. The desktop suite
+does exercise the production system-audio meter adapter boundary, server-side
+coalescing, strict raw-media-free event shape, and Leptos release compilation.
+The macOS
 bridge suites push fake-native system-audio, microphone, and camera buffers
 through the exact bridge cores and real GStreamer appsrc runtime; physical
 ScreenCaptureKit, `osxaudiosrc`, and `avfvideosrc` execution remains protected.
