@@ -8,19 +8,30 @@ It does not classify the complete Studio product path as locally implemented.
 
 ## Closure ledger boundary
 
-Issue 27 checkboxes 2, 3, 4, 5, 8, 9, 10, and 11 are repository-local gaps.
-Checkboxes 1 and 6 are locally satisfied by the versioned project format and
-the production filesystem legacy importer. Checkbox 7 alone remains
-`protected_pending`, because the non-mutating importer/reporting path exists
-but still needs a reviewed representative legacy-project corpus.
+Issue 27 checkboxes 3, 4, 5, 8, 9, 10, and 11 are repository-local gaps.
+Checkboxes 1, 2, and 6 are locally satisfied by the versioned project format,
+the production isolated-track recorder, and the production filesystem legacy
+importer. Checkbox 7 alone remains `protected_pending`, because the
+non-mutating importer/reporting path exists but still needs a reviewed
+representative legacy-project corpus.
 
 The remaining tests exercise contracts, synthetic GStreamer sources,
-filesystem components, and a reference renderer, not a production Studio
-service. The `macos-native` release composition now pumps one selected full
-display plus optional exact 48 kHz stereo system audio into a separate
-VP8/Opus WebM recorder, but it does not supply microphone or camera tracks and
-is not connected to the Studio multitrack graph, journal, project, edit plan,
-or recovery stores. Its artifact-backed Editable WebM copy/publication
+filesystem components, and a reference renderer, not a complete Studio
+service. The media crate now owns a production `NativeStudioRecording` graph:
+one common GStreamer clock, one bounded non-leaky appsrc per enabled
+screen/camera/microphone/system-audio source, independent VP8/Opus streamable
+WebM branches, encoded appsink chunks written directly into the durable
+recording session, aggregate EOS, and confirmed `Null`. The native test
+executes all four branches, decodes the isolated video assets, commits all four
+temporary originals, and proves that a no-EOS streamable partial can be
+rehashed, sealed, and decoded after recovery.
+
+The `macos-native` release composition still pumps one selected full display
+plus optional exact 48 kHz stereo system audio into a separate VP8/Opus WebM
+recorder. It is not wired to the new multitrack recorder, Studio journal,
+project, edit plan, or recovery stores, and it does not feed the normalized
+microphone/camera bridge into Studio. Its artifact-backed Editable WebM
+copy/publication
 is not an edit-aware Studio export. A new narrow native adapter does execute
 the shared canonical plan for a clock-aligned screen original plus optional
 microphone/system-audio originals: preview maps an
@@ -30,9 +41,10 @@ the desktop or `StudioRenderCoordinator`, does not assemble arbitrary
 asset-offset ranges, and fails closed for camera, cursor, background,
 camera-only, and side-by-side composition. The reference renderer still writes
 a checksum-bound bundle rather than dispatching that native adapter. Therefore
-these paths cannot yet satisfy the complete Studio native recording/recovery,
-edit-aware compositor, Cloudflare distribution-master, decoded-golden,
-long-project, or hardware-fallback/cancellation checkboxes.
+these paths cannot yet satisfy complete desktop Studio composition, edit-aware
+preview/export, Cloudflare distribution-master, every-boundary production
+recovery, decoded goldens, long-project effects, or
+hardware-fallback/cancellation checkboxes.
 
 ## Executed locally
 
@@ -50,6 +62,12 @@ The external contract suite exercises:
   flattened, or duplicate tracks; the filesystem recording-session adapter
   seals only enabled VP8/Opus WebM originals and reopens a crash state containing
   both partial and already-sealed tracks;
+- the production native isolated-track recorder validates exact graph/session
+  identity, raw payload shape, finite audio, monotonic shared-clock timestamps,
+  and per-source buffer/byte/time ceilings; streams encoded chunks into the
+  durable session; executes all four isolated WebM branches; decodes both video
+  tracks; commits every temporary asset; and recovers and decodes a streamable
+  video partial stopped before EOS;
 - a native-execution test helper that uses GStreamer to record four
   independently playable synthetic VP8/Opus WebM
   screen/camera/microphone/system-audio originals on one pipeline clock,
@@ -145,6 +163,7 @@ Focused command:
 
 ```text
 cargo test -p frame-media --test studio_mode_contract
+cargo test -p frame-media --test studio_native_recording
 
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
 GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
@@ -152,9 +171,9 @@ GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
   studio_ -- --nocapture
 ```
 
-These commands exercise the provider-neutral Studio contract and synthetic
-native-execution helper. Their results must not be reused as evidence that the
-new macOS display source was exercised.
+These commands exercise the provider-neutral Studio contract, production
+isolated-track recorder, and synthetic native-execution helper. Their results
+must not be reused as evidence that the new macOS display source was exercised.
 
 Full media command (using the audited plugin root discovered for this build):
 
@@ -178,7 +197,9 @@ RUSTDOCFLAGS=-Dwarnings cargo doc -p frame-media --no-deps
 rustfmt --edition 2024 --check crates/media/src/studio.rs \
   crates/media/src/studio_edit_executor.rs \
   crates/media/src/studio_native_execution.rs \
-  crates/media/tests/studio_mode_contract.rs
+  crates/media/src/studio_recording_native.rs \
+  crates/media/tests/studio_mode_contract.rs \
+  crates/media/tests/studio_native_recording.rs
 
 python3 scripts/ci/check-secrets.py
 ```
@@ -198,8 +219,10 @@ The contract suite uses deterministic fake native ports alongside production
 filesystem durability components. Its reference renderer writes a canonical
 checksum-bound bundle, while the separate native execution helpers supply
 synthetic tracks, edited preview mapping, aligned A/V WebM, single-source WebM,
-and gated MP4 evidence. The display/window/region desktop recorder is connected
-to the release shell but not to those multitrack helpers or the Studio coordinator.
+and gated MP4 evidence. The production isolated-track recorder uses synthetic
+payloads in local execution because the display/window/region desktop recorder
+is connected to the release shell, but not to the production multitrack
+recorder or the Studio coordinator.
 Most timeline goldens remain mathematical; the decoded edited artifact adds a
 duration/playability check, not a perceptual frame or reference-audio diff.
 The JSON keys and non-fragmented `.mp4`/`.ogg` paths were checked against
