@@ -1016,6 +1016,8 @@ fn runtime_poll_is_bounded_coalesced_and_reaches_eos_then_null() {
         max_buffers_per_poll: 1,
         max_bus_messages_per_poll: 4,
         max_diagnostics_per_poll: 2,
+        max_output_samples_per_poll: DEFAULT_AV_RUNTIME_OUTPUT_SAMPLES,
+        max_output_bytes_per_poll: DEFAULT_AV_RUNTIME_OUTPUT_BYTES,
         ui_interval_ns: 10_000_000,
         eos_timeout_ns: DEFAULT_AV_RUNTIME_EOS_TIMEOUT_NS,
     };
@@ -1094,6 +1096,135 @@ fn runtime_poll_is_bounded_coalesced_and_reaches_eos_then_null() {
     );
     assert_eq!(runtime.state(), NativeAvRuntimeState::NullConfirmed);
     assert_eq!(released.load(Ordering::SeqCst), 3);
+    assert_eq!(state.lock().expect("fake state").native_release_count, 1);
+}
+
+#[test]
+fn recording_runtime_returns_bounded_output_and_drains_it_before_completion() {
+    const SOURCE_BUFFERS: u64 = 6;
+    let (source, session, state, live_catalog) = started_session(43);
+    let stamp = session
+        .source_stamp(AvSourceClass::SystemAudio)
+        .expect("source stamp");
+    let graph = NativeAvGstreamerGraph::build_recording(&graph_spec(&live_catalog))
+        .expect("recording native graph");
+    let policy = AvRuntimePolicy {
+        max_native_events_per_poll: 8,
+        max_buffers_per_poll: 8,
+        max_output_samples_per_poll: 1,
+        max_output_bytes_per_poll: 8 * 1024 * 1024,
+        ..AvRuntimePolicy::default()
+    };
+    let mut runtime =
+        NativeAvRuntime::attach(source, session, graph, AvSyncPolicy::default(), policy)
+            .expect("attached recording runtime");
+    let released = Arc::new(AtomicUsize::new(0));
+    {
+        let mut state = state.lock().expect("fake state");
+        for sequence in 1..=SOURCE_BUFFERS {
+            let bytes = vec![0_u8; 8 * 480];
+            let retained = u64::try_from(bytes.len()).expect("payload length");
+            state.events.push_back(NativeAvEvent::Buffer(buffer(
+                stamp,
+                sequence,
+                AvPayloadBody::Bytes(bytes),
+                retained,
+                &released,
+            )));
+        }
+    }
+
+    let first = runtime
+        .poll(MonotonicTimeNs::new(235_000_000))
+        .expect("initial recording poll");
+    assert_eq!(first.buffers_pushed, SOURCE_BUFFERS as u16);
+    assert!(first.output_samples.len() <= 1);
+    assert_eq!(
+        first.output_bytes,
+        first
+            .output_samples
+            .iter()
+            .map(|sample| u64::try_from(sample.bytes().len()).expect("sample length"))
+            .sum::<u64>()
+    );
+    let mut output_samples = first.output_samples;
+
+    runtime
+        .request_stop(MonotonicTimeNs::new(240_000_000))
+        .expect("recording stop request");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut poll_time_ns = 245_000_000;
+    let termination = loop {
+        let report = runtime
+            .poll(MonotonicTimeNs::new(poll_time_ns))
+            .expect("recording terminal poll");
+        assert!(report.output_samples.len() <= 1, "{report:?}");
+        assert!(report.output_bytes <= policy.max_output_bytes_per_poll);
+        assert_eq!(
+            report.output_bytes,
+            report
+                .output_samples
+                .iter()
+                .map(|sample| u64::try_from(sample.bytes().len()).expect("sample length"))
+                .sum::<u64>()
+        );
+        output_samples.extend(report.output_samples);
+        if let Some(termination) = report.termination {
+            break Some(termination);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        poll_time_ns = poll_time_ns
+            .checked_add(1_000_000)
+            .expect("bounded poll time");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    .expect("recording EOS completion");
+
+    assert_eq!(termination.outcome, NativeAvRuntimeOutcome::Completed);
+    assert_eq!(
+        termination.graph_teardown,
+        NativeAvGraphTeardown::NullReached
+    );
+    assert!(!output_samples.is_empty());
+    for (index, sample) in output_samples.iter().enumerate() {
+        assert_eq!(sample.kind(), NativeAvGraphOutputKind::MixedAudio);
+        assert_eq!(
+            sample.sequence(),
+            u64::try_from(index + 1).expect("sequence")
+        );
+        assert!(sample.timestamp().duration_ns > 0);
+        assert!(!sample.bytes().is_empty());
+    }
+    assert_eq!(runtime.state(), NativeAvRuntimeState::NullConfirmed);
+    wait_for_release_count(
+        &released,
+        usize::try_from(SOURCE_BUFFERS).expect("source count"),
+    );
+    assert_eq!(state.lock().expect("fake state").native_release_count, 1);
+}
+
+#[test]
+fn recording_runtime_rejects_a_byte_budget_that_cannot_release_one_branch_buffer() {
+    let (source, session, state, live_catalog) = started_session(50);
+    let graph = NativeAvGstreamerGraph::build_recording(&graph_spec(&live_catalog))
+        .expect("recording native graph");
+    let policy = AvRuntimePolicy {
+        max_output_bytes_per_poll: 8 * 1024 * 1024 - 1,
+        ..AvRuntimePolicy::default()
+    };
+
+    let error = NativeAvRuntime::attach(source, session, graph, AvSyncPolicy::default(), policy)
+        .expect_err("undersized recording output budget must fail closed");
+    assert!(matches!(
+        error,
+        NativeAvRuntimeError::Attach {
+            failure: NativeAvRuntimeFailure::CaptureContract,
+            source_teardown: NativeAvSourceTeardown::Confirmed,
+            graph_teardown: NativeAvGraphTeardown::NullReached,
+        }
+    ));
     assert_eq!(state.lock().expect("fake state").native_release_count, 1);
 }
 
@@ -1423,6 +1554,22 @@ fn downstream_overruns_emit_one_bounded_privacy_safe_runtime_status() {
 fn lost_eos_expires_on_the_runtime_monotonic_deadline_and_confirms_null() {
     assert!(matches!(
         AvRuntimePolicy {
+            max_output_samples_per_poll: 0,
+            ..AvRuntimePolicy::default()
+        }
+        .validate(),
+        Err(NativeAvRuntimeError::InvalidPolicy)
+    ));
+    assert!(matches!(
+        AvRuntimePolicy {
+            max_output_bytes_per_poll: MAX_AV_RECORDING_OUTPUT_BYTES + 1,
+            ..AvRuntimePolicy::default()
+        }
+        .validate(),
+        Err(NativeAvRuntimeError::InvalidPolicy)
+    ));
+    assert!(matches!(
+        AvRuntimePolicy {
             eos_timeout_ns: 0,
             ..AvRuntimePolicy::default()
         }
@@ -1641,6 +1788,37 @@ fn attach_rejects_a_mutated_live_appsink_eos_contract() {
         AvRuntimePolicy::default(),
     )
     .expect_err("mutated appsink EOS contract must fail closed");
+    assert!(matches!(
+        error,
+        NativeAvRuntimeError::Attach {
+            failure: NativeAvRuntimeFailure::CaptureContract,
+            source_teardown: NativeAvSourceTeardown::Confirmed,
+            graph_teardown: NativeAvGraphTeardown::NullReached,
+        }
+    ));
+    assert_eq!(state.lock().expect("fake state").native_release_count, 1);
+}
+
+#[test]
+fn attach_rejects_a_recording_sink_mutated_to_drop_output() {
+    let (source, session, state, live_catalog) = started_session(51);
+    let graph = NativeAvGstreamerGraph::build_recording(&graph_spec(&live_catalog))
+        .expect("recording native graph");
+    let sink = graph
+        .mixed_audio_sink()
+        .and_then(|sink| sink.downcast::<gst_app::AppSink>().ok())
+        .expect("mixed audio appsink");
+    assert!(!sink.is_drop());
+    sink.set_drop(true);
+
+    let error = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect_err("dropping recording sink must fail closed");
     assert!(matches!(
         error,
         NativeAvRuntimeError::Attach {
