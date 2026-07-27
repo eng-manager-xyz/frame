@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 361,
+    "local_satisfied": 362,
     "protected_pending": 176,
-    "local_gap": 17
+    "local_gap": 16
   },
   "issues": {
     "01": {
@@ -203,9 +203,9 @@
     "27": {
       "count": 11,
       "digest": "244a7013ad0379b0463415960789126a747c13b5d5567bbd666bbd8aefb91a73",
-      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
+      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
       "protected": [{"ordinals": [7], "classes": ["human_approval"], "reason": "The legacy import implementation exists, but acceptance still needs a reviewed corpus of representative Cap projects."}],
-      "local_gaps": [{"ordinals": [3, 4, 5, 8, 9, 10, 11], "reason": "Edit-aware preview/export, distribution audio, full production recovery, decoded goldens, effects, and fallback or cancellation are not connected to the desktop release; the bounded native isolated-track recorder now satisfies the recording-pipeline deliverable without claiming those later paths."}]
+      "local_gaps": [{"ordinals": [4, 5, 8, 9, 10, 11], "reason": "Edit-aware export, distribution audio, full production recovery, decoded goldens, effects parity, and fallback or cancellation are not connected to the desktop release; the source-set-bound native preview engine and isolated-track recorder do not claim those later paths."}]
     },
     "28": {
       "count": 15,

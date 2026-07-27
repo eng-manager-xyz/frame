@@ -8,10 +8,11 @@ It does not classify the complete Studio product path as locally implemented.
 
 ## Closure ledger boundary
 
-Issue 27 checkboxes 3, 4, 5, 8, 9, 10, and 11 are repository-local gaps.
-Checkboxes 1, 2, and 6 are locally satisfied by the versioned project format,
-the production isolated-track recorder, and the production filesystem legacy
-importer. Checkbox 7 alone remains `protected_pending`, because the
+Issue 27 checkboxes 4, 5, 8, 9, 10, and 11 are repository-local gaps.
+Checkboxes 1, 2, 3, and 6 are locally satisfied by the versioned project
+format, production isolated-track recorder, source-set-bound native preview
+engine, and production filesystem legacy importer. Checkbox 7 alone remains
+`protected_pending`, because the
 non-mutating importer/reporting path exists but still needs a reviewed
 representative legacy-project corpus.
 
@@ -41,10 +42,23 @@ the desktop or `StudioRenderCoordinator`, does not assemble arbitrary
 asset-offset ranges, and fails closed for camera, cursor, background,
 camera-only, and side-by-side composition. The reference renderer still writes
 a checksum-bound bundle rather than dispatching that native adapter. Therefore
-these paths cannot yet satisfy complete desktop Studio composition, edit-aware
-preview/export, Cloudflare distribution-master, every-boundary production
+these paths cannot yet satisfy complete desktop Studio composition,
+edit-aware export, Cloudflare distribution-master, every-boundary production
 recovery, decoded goldens, long-project effects, or
 hardware-fallback/cancellation checkboxes.
+
+Separately, `NativeStudioPreviewEngine` opens the complete immutable
+`StudioPreviewGraphSpec`, verifies every original against its durable sidecar
+and content hash, resolves exact asset-local positions across segmented
+originals, and decodes real bounded screen and active-camera RGB frames. Its
+paused/playing/ended transport provides exact seek and deterministic CFR/VFR
+frame stepping, while generation and sequence fences identify stale samples.
+Each sample also binds the source-set and edit-plan digests and carries exact
+microphone/system-audio source, gap, gain, and mute decisions. The local test
+uses two sequential screen assets, camera, and system audio, proves selection
+of the second screen asset at an edited seek, advances playback, rejects a
+cancelled seek without state mutation, and rejects an original path replaced
+after the engine opened.
 
 ## Executed locally
 
@@ -79,6 +93,11 @@ The external contract suite exercises:
   saved edit spec, maps edited output time to exact source time, preserves the
   plan digest and composition/audio state, rejects overflow and excess windows,
   and does not advance its export cursor after cancellation;
+- the production `NativeStudioPreviewEngine` verifies the complete durable
+  source set, selects segmented asset-local positions, decodes real screen and
+  active-camera frames, emits exact audio source/gain/mute decisions, advances
+  a fenced pause/play/seek transport, and rejects cancelled seeks or replaced
+  original identities without publishing stale state;
 - a synthetic native edit execution that combines the isolated screen and
   system-audio originals, applies trim/delete/2× speed and per-window audio gain
   through accurate, shared-sequence GStreamer segments, waits for every aligned
@@ -255,6 +274,6 @@ corresponding repository-local production paths exist:
   release-candidate evidence links.
 
 Absence of a required protected record blocks promotion, but attaching one
-cannot close checkboxes 2–5 or 8–11 while their local integrations remain
+cannot close checkboxes 4–5 or 8–11 while their local integrations remain
 absent. No provider, hardware, user, or release claim is made by this local
 evidence file.

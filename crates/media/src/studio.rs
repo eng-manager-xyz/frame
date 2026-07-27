@@ -241,6 +241,41 @@ impl ExactDuration {
         Self::new(numerator, denominator)
     }
 
+    pub fn checked_sub(self, other: Self) -> Result<Self, StudioError> {
+        let common = gcd_u128(self.denominator, other.denominator);
+        let left_multiplier = other.denominator / common;
+        let right_multiplier = self.denominator / common;
+        let left = self
+            .numerator
+            .checked_mul(left_multiplier)
+            .ok_or(StudioError::TimelineOverflow)?;
+        let right = other
+            .numerator
+            .checked_mul(right_multiplier)
+            .ok_or(StudioError::TimelineOverflow)?;
+        if left < right {
+            return Err(StudioError::TimelineUnderflow);
+        }
+        let denominator = self
+            .denominator
+            .checked_mul(left_multiplier)
+            .ok_or(StudioError::TimelineOverflow)?;
+        Self::new(left - right, denominator)
+    }
+
+    pub fn compare(self, other: Self) -> Result<std::cmp::Ordering, StudioError> {
+        let common = gcd_u128(self.denominator, other.denominator);
+        let left = self
+            .numerator
+            .checked_mul(other.denominator / common)
+            .ok_or(StudioError::TimelineOverflow)?;
+        let right = other
+            .numerator
+            .checked_mul(self.denominator / common)
+            .ok_or(StudioError::TimelineOverflow)?;
+        Ok(left.cmp(&right))
+    }
+
     pub fn scaled(self, numerator: u32, denominator: u32) -> Result<Self, StudioError> {
         if numerator == 0 || denominator == 0 {
             return Err(StudioError::InvalidSpeed);
@@ -5125,6 +5160,27 @@ impl FilesystemStudioOriginalStore {
         result
     }
 
+    /// Resolve one immutable original only after its durable sidecar and media
+    /// bytes exactly match the caller's source-set descriptor.
+    pub fn verified_original_path(
+        &mut self,
+        project_id: StudioProjectId,
+        expected: &StudioAsset,
+    ) -> Result<PathBuf, StudioError> {
+        expected.validate()?;
+        if expected.commit_state != AssetCommitState::DurableOriginal {
+            return Err(StudioError::InvalidAssetCommit);
+        }
+        let actual = self
+            .probe_original(project_id, expected.id)?
+            .ok_or(StudioError::InvalidAssetCommit)?;
+        if actual != *expected {
+            return Err(StudioError::AssetCommitMismatch);
+        }
+        let (media, _) = self.original_paths(project_id, expected.id);
+        fs::canonicalize(media).map_err(|_| StudioError::StorageIo)
+    }
+
     fn project_directory(&self, project_id: StudioProjectId) -> PathBuf {
         self.root.join(opaque_id_hex(project_id.0))
     }
@@ -5910,6 +5966,10 @@ fn verify_asset_file(
     expected_bytes: u64,
     expected_checksum: AssetChecksum,
 ) -> Result<(), StudioError> {
+    let path_metadata = fs::symlink_metadata(path).map_err(|_| StudioError::InvalidAssetCommit)?;
+    if !path_metadata.file_type().is_file() || path_metadata.file_type().is_symlink() {
+        return Err(StudioError::AssetCommitMismatch);
+    }
     let mut file = File::open(path).map_err(|_| StudioError::InvalidAssetCommit)?;
     let metadata = file
         .metadata()
