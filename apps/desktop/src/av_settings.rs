@@ -16,8 +16,8 @@ use std::{
 
 use frame_media::{
     AV_SETTINGS_VERSION, AvCaptureError, AvCaptureSettingsV2, AvDeviceCatalog, AvDeviceId,
-    AvSettingsCodec, AvSourceClass, DeviceSelectionV2, MAX_PERSISTED_AV_SETTINGS_BYTES,
-    SelectionResolution, resolve_selection,
+    AvSettingsCodec, AvSettingsStorage, AvSettingsStorageError, AvSourceClass, DeviceSelectionV2,
+    MAX_PERSISTED_AV_SETTINGS_BYTES, SelectionResolution, resolve_selection,
 };
 use ring::rand::{SecureRandom, SystemRandom};
 use rustix::io::Errno;
@@ -481,6 +481,34 @@ impl fmt::Debug for DurableAvSettingsStore {
     }
 }
 
+impl AvSettingsStorage for DurableAvSettingsStore {
+    fn load(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>, AvSettingsStorageError> {
+        if max_bytes < MAX_PERSISTED_AV_SETTINGS_BYTES {
+            return Err(AvSettingsStorageError);
+        }
+        let snapshot = DurableAvSettingsStore::load(self).map_err(|_| AvSettingsStorageError)?;
+        let encoded =
+            AvSettingsCodec::encode(snapshot.settings()).map_err(|_| AvSettingsStorageError)?;
+        if encoded.len() > max_bytes {
+            return Err(AvSettingsStorageError);
+        }
+        Ok(Some(encoded))
+    }
+
+    fn store(&mut self, encoded: &[u8]) -> Result<(), AvSettingsStorageError> {
+        if encoded.len() > MAX_PERSISTED_AV_SETTINGS_BYTES {
+            return Err(AvSettingsStorageError);
+        }
+        let settings = AvSettingsCodec::decode(encoded).map_err(|_| AvSettingsStorageError)?;
+        let revision = DurableAvSettingsStore::load(self)
+            .map_err(|_| AvSettingsStorageError)?
+            .revision();
+        self.compare_and_swap(revision, settings)
+            .map(|_| ())
+            .map_err(|_| AvSettingsStorageError)
+    }
+}
+
 fn slot_for_revision(revision: u64) -> usize {
     if revision.is_multiple_of(2) { 0 } else { 1 }
 }
@@ -596,6 +624,7 @@ mod tests {
     use frame_media::{
         AudioFormat, AudioSampleFormat, AvAdapterInstanceId, AvDeviceDescriptor,
         AvDeviceGeneration, AvFormat, NativeRouteClass, NativeTimestampKind, PermissionState,
+        load_persisted_av_settings, store_persisted_av_settings,
     };
     use serde_json::json;
 
@@ -743,6 +772,32 @@ mod tests {
         assert_eq!(directory_mode, 0o700);
         assert_eq!(file_mode, PRIVATE_FILE_MODE);
         assert!(!format!("{committed:?}").contains("01010101"));
+    }
+
+    #[test]
+    fn provider_neutral_storage_interface_uses_the_durable_revisioned_store() {
+        let mut fixture = Fixture::new("storage-interface");
+        assert_eq!(
+            load_persisted_av_settings(&mut fixture.store).expect("load baseline"),
+            Some(AvCaptureSettingsV2::screen_only())
+        );
+
+        let settings = pinned_settings(6);
+        store_persisted_av_settings(&mut fixture.store, settings).expect("store settings");
+        assert_eq!(
+            load_persisted_av_settings(&mut fixture.store).expect("load settings"),
+            Some(settings)
+        );
+        assert_eq!(fixture.store.load().expect("durable load").revision(), 2);
+
+        assert!(AvSettingsStorage::load(&mut fixture.store, 64).is_err());
+        assert!(
+            AvSettingsStorage::store(
+                &mut fixture.store,
+                &vec![b'x'; MAX_PERSISTED_AV_SETTINGS_BYTES + 1],
+            )
+            .is_err()
+        );
     }
 
     #[test]

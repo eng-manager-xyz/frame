@@ -200,11 +200,20 @@ capacity-one queue fences and a delegate proof, each with a one-second caller
 deadline, then requires callback-sender disconnection before returning the
 bounded tail. Timeout is sticky and never claims reuse or a complete tail.
 
-The source is deliberately narrower than `NativeAvBridge`: it does not claim
-hotplug/default/sleep-wake events, per-epoch bridge calibration, desktop IPC,
-or recording/mux integration. System audio therefore remains disabled in
-sealed release recordings until those contracts and a shared screen/audio
-clock are connected.
+`MacOsNativeAvBridge` now wraps the source as the selected production
+provider-neutral adapter. It derives a separate secret-bound adapter identity,
+advertises one virtual device, collects five callback-arrival/source-PTS
+samples behind a 750 ms deadline for every stream epoch, transfers subsequent
+owned PCM through `NativeAvAppSrc`, probes permission at most once per second,
+and consumes the process-lifetime power cursor. Calibration callbacks are not
+replayed after the timebase anchor. Pause and sleep confirm native stop;
+resume starts a new epoch and cannot reuse the prior calibration.
+
+Because this ScreenCaptureKit mix is one virtual source, it has no physical
+default-route or hotplug choice; catalog revision advances on permission
+changes. The adapter still does not provide microphone or camera capture, and
+the normalized runtime remains a preview/execution foundation whose terminal
+tail is not yet authenticated into the desktop recording mux.
 
 ## Master clock and declared timeline
 

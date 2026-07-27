@@ -28,6 +28,7 @@ domain ──> ports ──> application/adapters       │
 | `frame-windows-secure-spool` | Windows native FFI | narrowly featured `windows-sys`, `zeroize`, path/metadata primitives | media/domain/application contracts, networking, raw pointers or handles in its public API |
 | `frame-windows-capture-ffi` | Windows native FFI | narrowly featured `windows`, WGC | media/domain/application contracts, networking, raw pointers or handles in its public API |
 | `frame-platform-lifecycle` | macOS + Windows native FFI | narrowly featured AppKit/Foundation and Windows power notifications | media/domain/application contracts, networking, native observer or callback identities in its public API |
+| `frame-macos-av-capture` | macOS native adapter | media capture contracts, platform-lifecycle cursor, safe published ScreenCaptureKit wrappers | desktop IPC, networking, raw Apple handles/types in its public API |
 | desktop shell | native + browser WebView | versioned IPC and media application services | broad filesystem/shell APIs or unversioned command payloads |
 
 Adapters convert runtime-specific values at the boundary. JavaScript streams,

@@ -1,35 +1,42 @@
 # Audio/camera synchronization local evidence
 
 Status: provider-free contracts, a concrete bounded GStreamer appsrc runtime,
-descriptor-rooted macOS settings, and a target-gated ScreenCaptureKit
-system-audio primitive. This record does not claim a production `NativeAvBridge`,
-desktop integration, recorded audio mux, physical permission success,
-Bluetooth recovery, wall-clock soak, or performance completion.
+descriptor-rooted macOS settings, and a production macOS `NativeAvBridge` for
+the target-gated ScreenCaptureKit system-audio primitive. This record does not
+claim microphone/camera adapters, normalized desktop recording integration,
+lossless terminal-tail mux, physical permission success, Bluetooth recovery,
+wall-clock soak, or performance completion.
 
 ## Closure ledger boundary
 
-Issue 25 checkboxes 1, 4, 5, 6, 7, and 8 are repository-local gaps.
-Checkboxes 2, 3, 9, and 10 remain locally satisfied by the executable graph,
-clock/timestamp logic, optional-device negotiation, and privacy-safe diagnostic
-model. No issue-25 checkbox is currently `protected_pending`; the hardware
-portions of checkboxes 1 and 6–8 become meaningful only after the local bridge
-and integration gaps close.
+Issue 25 checkboxes 1, 5, 6, 7, and 8 are repository-local gaps. Checkbox 4 is
+now locally satisfied by the validated V2 codec, migration rules, and the
+revisioned descriptor-rooted `DurableAvSettingsStore` implementation of the
+provider-neutral `AvSettingsStorage` boundary. Checkboxes 2, 3, 9, and 10
+remain locally satisfied by the executable graph, clock/timestamp logic,
+optional-device negotiation, and privacy-safe diagnostic model. No issue-25
+checkbox is currently `protected_pending`; the hardware portions of checkboxes
+1 and 6–8 become meaningful only after the remaining local integration gaps
+close.
 
-`NativeAvBridge` still has no production implementation in this repository.
-`NativeAvAppSrc` is a real CPU-byte adapter and `NativeAvRuntime` executes a
-real bounded graph against hostile bridges, but no production device source
-pumps owned buffers through that bridge. The narrower macOS desktop composition
-does mux `MacOsSystemAudioSource` with selected display/window/region video and
-computes a bounded coarse system-audio peak in its capture worker. That A/V
-worker still owns the direct screen source; only screen-only recording uses the
-normalized capture ingress/pump. The existing one-second recorder poll carries
-only a 0..=10,000 value; raw PCM never crosses IPC. This direct path still stops
-short of the bridge's microphone, camera,
-calibration/hotplug/default/sleep-wake, and coalesced-event contracts.
-`DurableAvSettingsStore` provides strict storage semantics without pretending
-to be the older unversioned `AvSettingsStorage` trait. Consequently these local
-results implement a real narrow system-audio slice but do not satisfy complete
-checkboxes 1 or 4–8.
+`MacOsNativeAvBridge` now pumps the production ScreenCaptureKit source through
+the real owned-byte `NativeAvAppSrc` runtime. It supplies callback-derived
+per-epoch calibration, permission revisions, process sleep/wake, pause/resume,
+and stable terminal reconciliation. Its one virtual system-mix device has no
+physical hotplug/default-route choice. `DurableAvSettingsStore` now implements
+the provider-neutral `AvSettingsStorage` interface on top of its revisioned,
+descriptor-rooted CAS.
+
+The macOS desktop composition still muxes `MacOsSystemAudioSource` with selected
+display/window/region video through the direct worker and computes a bounded
+coarse system-audio peak. Only screen-only recording uses the normalized screen
+ingress/pump. The existing one-second recorder poll carries only a 0..=10,000
+value; raw PCM never crosses IPC. The normalized A/V runtime remains a
+preview/execution foundation and intentionally discards its calibration
+callbacks and terminal tail rather than claiming a complete artifact.
+Microphone and camera native adapters, shared screen/A/V runtime ownership,
+lossless mux, and product recovery remain absent. Consequently these local
+results narrow, but do not yet completely satisfy, checkboxes 1 or 5–8.
 
 ## Contract surface exercised locally
 
@@ -54,6 +61,10 @@ checkboxes 1 or 4–8.
   primitives with current-process exclusion, a 1.6-second callback prequeue,
   stable secret-bound IDs, five-second native-call deadlines, one-second queue
   fence/delegate deadlines, and a confirmed bounded callback tail;
+- a production macOS system-audio `NativeAvBridge` with a separate
+  secret-bound adapter ID, five-sample/750 ms per-epoch calibration, owned PCM
+  appsrc transfer, one-second permission probes, process sleep/wake,
+  pause/resume epoch rotation, and stable terminal reconciliation;
 - one-shot session owner, session-bound native bridge, one-shot operation
   tickets, live catalog
   revalidation, source stamps, stale/replay/cross-session rejection, and
@@ -124,7 +135,9 @@ a hard preemption boundary: an adapter that ignores its operation-ticket
 timeout can still block its caller and needs a platform watchdog or process
 isolation. The suite does not
 push a production device buffer, consume the mixed-media sinks as a recording,
-emit production meters, or connect a UI event consumer.
+emit production meters, or connect a UI event consumer. The macOS bridge suite
+does push fake-native buffers through the exact production bridge and real
+GStreamer appsrc runtime; physical ScreenCaptureKit execution remains protected.
 
 The EOS regression lane executes 500 empty-source stops and 500
 first-buffer-immediate stops, including a one-buffer appsrc budget. Empty stop
@@ -151,7 +164,9 @@ GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   --test av_runtime_contract
 GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media --all-targets
-cargo test --locked -p frame-macos-av-capture
+GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
+  scripts/ci/gstreamer-sanitized-exec cargo test --locked \
+  -p frame-macos-av-capture
 cargo test --locked -p frame-desktop-core --features macos-native av_settings::tests
 cargo clippy -p frame-media --all-targets -- -D warnings
 cargo clippy -p frame-macos-av-capture --all-targets --no-deps -- -D warnings
@@ -185,8 +200,8 @@ be inferred from local tests:
   continues; and
 - product, media, privacy, accessibility, and release-owner signoff.
 
-Until the production bridge, shared-clock screen/audio composition, lossless
-tail/mux proof, UI event connection, and recovery integration exist, this slice
-is suitable for native adapter development and local conformance only. Later
-hardware records cannot repair the absent release code and do not authorize
-production promotion.
+Until shared-clock screen/audio composition, lossless tail/mux proof, UI event
+connection, microphone/camera adapters, and physical device recovery
+integration exist, this slice is suitable for native adapter development and
+local conformance only. Later hardware records cannot repair the absent release
+code and do not authorize production promotion.

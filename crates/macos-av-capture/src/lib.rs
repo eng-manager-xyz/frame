@@ -11,9 +11,13 @@ use frame_media::{AudioFormat, AudioSampleFormat, AvDeviceId, PermissionState};
 use ring::hmac;
 use thiserror::Error;
 
+#[cfg(any(target_os = "macos", test))]
+mod bridge;
 #[cfg(target_os = "macos")]
 mod platform;
 
+#[cfg(target_os = "macos")]
+pub use bridge::{MacOsNativeAvBridge, MacOsNativeAvBridgeCreateError};
 #[cfg(target_os = "macos")]
 pub use platform::MacOsSystemAudioSource;
 
@@ -165,6 +169,7 @@ impl MacOsSystemAudioDevice {
 pub struct MacOsSystemAudioChunk {
     sequence: u64,
     source_pts_ns: u64,
+    arrival_ns: u64,
     duration_ns: u64,
     discontinuity: bool,
     samples_f32le: Vec<u8>,
@@ -179,6 +184,12 @@ impl MacOsSystemAudioChunk {
     #[must_use]
     pub const fn source_pts_ns(&self) -> u64 {
         self.source_pts_ns
+    }
+
+    /// Host-monotonic callback arrival relative to this native stream start.
+    #[must_use]
+    pub const fn arrival_ns(&self) -> u64 {
+        self.arrival_ns
     }
 
     #[must_use]
@@ -213,6 +224,7 @@ impl fmt::Debug for MacOsSystemAudioChunk {
             .debug_struct("MacOsSystemAudioChunk")
             .field("sequence", &self.sequence)
             .field("source_pts_ns", &"<redacted>")
+            .field("arrival_ns", &"<redacted>")
             .field("duration_ns", &self.duration_ns)
             .field("discontinuity", &self.discontinuity)
             .field("retained_bytes", &self.samples_f32le.len())

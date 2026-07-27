@@ -8,11 +8,11 @@ all 554 issue deliverable/acceptance checkboxes to locally satisfied,
 protected-pending, or true local-gap status. Its checker pins the complete
 requirement text and fails on missing evidence or classification drift.
 
-The current exact partition is 352 locally satisfied, 171 protected pending,
-and 31 true repository-local gaps. The audited native-product gaps are issue 24
-checkboxes 1–10, issue 25 checkboxes 1/4/5/6/7/8, issue 27 checkboxes
-2/3/4/5/8/9/10/11, and issue 33 checkboxes 3/4/5/6/8/9/10. Protected rows
-remain pending; this count does not authorize production promotion.
+The current exact partition is 358 locally satisfied, 176 protected pending,
+and 20 true repository-local gaps. The audited native-product gaps are issue 25
+checkboxes 1/5/6/7/8, issue 27 checkboxes 2/3/4/5/8/9/10/11, and issue 33
+checkboxes 3/4/5/6/8/9/10. Protected rows remain pending; this count does not
+authorize production promotion.
 
 Run:
 
