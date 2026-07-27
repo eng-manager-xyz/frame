@@ -2,11 +2,12 @@
 //!
 //! Recording-mode graphs return bounded mixed-audio and camera samples through
 //! poll reports and do not confirm `Null` after EOS until those outputs drain.
-//! The native stop acknowledgement still does not authenticate a callback
-//! tail, so callers must not treat this runtime as evidence that audio was
-//! losslessly muxed into a final recording artifact. Poll reports coalesce
-//! privacy-safe source-status and timing events; GStreamer `level` messages
-//! are not consumed by this slice.
+//! A successful stop authenticates and pushes every retained session buffer
+//! and replayable native callback-tail buffer before graph EOS. Callers still
+//! must not treat this runtime as evidence that the resulting mixed outputs
+//! were muxed into a final desktop artifact. Poll reports coalesce privacy-safe
+//! source-status and timing events; GStreamer `level` messages are not consumed
+//! by this slice.
 
 use std::{
     collections::BTreeMap,
@@ -614,11 +615,11 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         Ok(report)
     }
 
-    /// Stops the native source, then asks every appsrc to emit EOS.
+    /// Stops the native source, authenticates and pushes its complete callback
+    /// tail, then asks every appsrc to emit EOS.
     ///
     /// Recording-mode callers must keep polling until the bounded output drain
-    /// and `Null` confirmation complete. This is not a lossless native-tail
-    /// proof.
+    /// and `Null` confirmation complete.
     pub fn request_stop(&mut self, now: MonotonicTimeNs) -> Result<(), NativeAvRuntimeError> {
         if self.state != NativeAvRuntimeState::Playing {
             return Err(NativeAvRuntimeError::InvalidTransition);
@@ -653,10 +654,25 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
                 });
             }
         };
-        if let Some(action) = action
-            && let Err(error) = execute_action(&mut self.session, &mut self.source, action)
-        {
-            let failure = runtime_error_failure(&error);
+        let terminal_buffers = if let Some(action) = action {
+            match execute_action(&mut self.session, &mut self.source, action) {
+                Ok(buffers) => buffers,
+                Err(error) => {
+                    let failure = runtime_error_failure(&error);
+                    let source_teardown = self.quiesce_native();
+                    let teardown = confirm_graph_null(&mut self.graph);
+                    self.state = NativeAvRuntimeState::Failed;
+                    return Err(NativeAvRuntimeError::SourceControl {
+                        failure,
+                        source_teardown,
+                        teardown,
+                    });
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        if let Err(failure) = self.push_terminal_buffers(terminal_buffers) {
             let source_teardown = self.quiesce_native();
             let teardown = confirm_graph_null(&mut self.graph);
             self.state = NativeAvRuntimeState::Failed;
@@ -678,6 +694,40 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         self.state = NativeAvRuntimeState::EosRequested;
         self.eos_deadline_ns = deadline;
         self.graph_eos_observed = false;
+        Ok(())
+    }
+
+    fn push_terminal_buffers(
+        &mut self,
+        terminal_buffers: Vec<crate::NativeAvBuffer>,
+    ) -> Result<(), NativeAvRuntimeFailure> {
+        for buffer in terminal_buffers {
+            let class = buffer.stamp().class();
+            let input = buffer
+                .into_appsrc_input()
+                .map_err(|_| NativeAvRuntimeFailure::CaptureContract)?;
+            let Some(adapter) = self.appsrc.get_mut(&class) else {
+                input.release();
+                return Err(NativeAvRuntimeFailure::CaptureContract);
+            };
+            match adapter.push(input) {
+                Ok(()) => {}
+                Err(failure) => {
+                    let runtime_failure = match failure.rejection() {
+                        Some(reason) => NativeAvRuntimeFailure::AppSrcRejected(reason),
+                        None => NativeAvRuntimeFailure::AppSrcDownstream(
+                            failure
+                                .downstream_code()
+                                .expect("invariant: appsrc failure has one classified phase"),
+                        ),
+                    };
+                    if let Some(input) = failure.into_rejected_input() {
+                        input.release();
+                    }
+                    return Err(runtime_failure);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1188,11 +1238,10 @@ fn execute_action<B: NativeAvBridge>(
     session: &mut AvCaptureSession,
     source: &mut BoundNativeAvBridge<B>,
     action: crate::AvSessionAction,
-) -> Result<(), NativeAvRuntimeError> {
+) -> Result<Vec<crate::NativeAvBuffer>, NativeAvRuntimeError> {
     match action.execute_source(session, source)? {
         AvActionExecution::Acknowledged(acknowledgement) => {
-            session.complete(acknowledgement)?;
-            Ok(())
+            session.complete(acknowledgement).map_err(Into::into)
         }
         AvActionExecution::Failed(failure) => {
             let failure = session.complete_failure(failure)?;

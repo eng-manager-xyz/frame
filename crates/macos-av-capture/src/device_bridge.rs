@@ -19,7 +19,8 @@ use frame_media::{
     CatalogChangeReason, LatencyConfidence, MonotonicTimeNs, NativeAvAcknowledgement,
     NativeAvBridge, NativeAvBridgeCapabilities, NativeAvBuffer, NativeAvBufferTiming,
     NativeAvCalibrationBatch, NativeAvEvent, NativeAvFailure, NativeAvFailureCode,
-    NativeRouteClass, NativeTimestampKind, PermissionState, PixelFormat, SourceLatency,
+    NativeAvTerminalBuffer, NativeRouteClass, NativeTimestampKind, PermissionState, PixelFormat,
+    SourceLatency,
 };
 use frame_platform_lifecycle::{SystemPowerEvent, SystemPowerMonitorError};
 
@@ -242,6 +243,7 @@ struct DeviceInputBridge<S, P> {
     poll_cursor: usize,
     suspended: bool,
     applied_terminal: Option<frame_media::AvTerminalId>,
+    applied_terminal_tail: Option<Vec<NativeAvTerminalBuffer>>,
 }
 
 impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
@@ -263,6 +265,7 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
             poll_cursor: 0,
             suspended: false,
             applied_terminal: None,
+            applied_terminal_tail: None,
         })
     }
 
@@ -449,13 +452,29 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
     }
 
     fn stop_all(&mut self, clear_active: bool) -> Result<(), NativeAvFailure> {
+        self.stop_all_with_tail(clear_active, false).map(drop)
+    }
+
+    fn stop_all_with_tail(
+        &mut self,
+        clear_active: bool,
+        retain_tail: bool,
+    ) -> Result<Vec<NativeAvTerminalBuffer>, NativeAvFailure> {
         let stopped = self.halt_all();
+        let mut terminal_tail = Vec::new();
         if clear_active
             && self
                 .active
                 .keys()
                 .all(|class| !self.inputs.is_running(*class))
         {
+            if stopped.is_ok() && retain_tail {
+                for active in self.active.values_mut() {
+                    while let Some(buffered) = active.buffered.pop_front() {
+                        terminal_tail.push(terminal_buffer(active, buffered)?);
+                    }
+                }
+            }
             self.active.clear();
         } else if !clear_active {
             for active in self.active.values_mut() {
@@ -465,7 +484,8 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
                 active.calibration = None;
             }
         }
-        stopped
+        stopped?;
+        Ok(terminal_tail)
     }
 
     fn collect_calibration(
@@ -698,6 +718,34 @@ fn buffer_input(active: &mut ActiveInput, input: InputBuffer) -> Result<(), Nati
     Ok(())
 }
 
+fn terminal_buffer(
+    active: &mut ActiveInput,
+    buffered: BufferedInput,
+) -> Result<NativeAvTerminalBuffer, NativeAvFailure> {
+    active.output_sequence = active
+        .output_sequence
+        .checked_add(1)
+        .ok_or_else(|| backend_fault(false))?;
+    let timing = NativeAvBufferTiming {
+        sequence: active.output_sequence,
+        source_pts_ns: buffered.source_pts_ns,
+        duration_ns: buffered.input.duration_ns,
+        arrival: MonotonicTimeNs::new(buffered.input.arrival_ns),
+        latency: SourceLatency {
+            reported_ns: 0,
+            confidence: LatencyConfidence::Unknown,
+        },
+        discontinuity: buffered.input.discontinuity,
+    };
+    NativeAvTerminalBuffer::new(
+        active.stamp,
+        timing,
+        buffered.input.format,
+        buffered.input.bytes,
+    )
+    .map_err(contract_failure)
+}
+
 impl<S: DeviceInputs, P: PowerEvents> NativeAvBridge for DeviceInputBridge<S, P> {
     fn adapter_instance(&self) -> AvAdapterInstanceId {
         self.adapter
@@ -759,13 +807,18 @@ impl<S: DeviceInputs, P: PowerEvents> NativeAvBridge for DeviceInputBridge<S, P>
         ticket: AvTerminalReconcileTicket,
     ) -> Result<AvTerminalPostcondition, NativeAvFailure> {
         self.require_binding(ticket.owner())?;
-        Ok(if self.applied_terminal == Some(ticket.terminal_id()) {
-            AvTerminalPostcondition::Applied {
+        if self.applied_terminal == Some(ticket.terminal_id()) {
+            let terminal_tail = self
+                .applied_terminal_tail
+                .clone()
+                .ok_or_else(|| backend_fault(false))?;
+            Ok(AvTerminalPostcondition::Applied {
                 terminal_id: ticket.terminal_id(),
-            }
+                terminal_tail,
+            })
         } else {
-            AvTerminalPostcondition::NotApplied
-        })
+            Ok(AvTerminalPostcondition::NotApplied)
+        }
     }
 
     fn execute(
@@ -813,12 +866,19 @@ impl<S: DeviceInputs, P: PowerEvents> NativeAvBridge for DeviceInputBridge<S, P>
             }
             AvNativeRequest::Stop | AvNativeRequest::Cancel => {
                 let terminal = ticket.terminal_id().ok_or_else(|| backend_fault(false))?;
-                let stopped = self.stop_all(true);
+                let retain_tail = matches!(request, AvNativeRequest::Stop);
+                self.applied_terminal_tail = None;
+                let stopped = self.stop_all_with_tail(true, retain_tail);
                 if self.active.is_empty() {
                     self.applied_terminal = Some(terminal);
                 }
-                stopped?;
-                Ok(ticket.acknowledge(true))
+                let tail = stopped?;
+                self.applied_terminal_tail = Some(tail.clone());
+                if retain_tail {
+                    Ok(ticket.acknowledge_with_terminal_tail(true, tail))
+                } else {
+                    Ok(ticket.acknowledge(true))
+                }
             }
         }
     }
@@ -1976,6 +2036,59 @@ mod tests {
             assert!(!input.payload().bytes().expect("bytes").is_empty());
             input.release();
         }
+    }
+
+    #[test]
+    fn terminal_reconciliation_replays_complete_microphone_and_camera_tails() {
+        let (mut bridge, mut session, _, state) = started(4);
+        for class in [AvSourceClass::Microphone, AvSourceClass::Camera] {
+            let stamp = session.source_stamp(class).expect("stamp");
+            let batch = bridge
+                .startup_calibration(stamp)
+                .expect("calibration batch");
+            session
+                .calibrate_source(stamp, AvSyncPolicy::default(), batch.samples())
+                .expect("install calibration");
+        }
+        let action = session.request_stop().expect("stop").expect("stop action");
+        let AvActionExecution::Acknowledged(delayed_acknowledgement) = action
+            .execute_source(&mut session, &mut bridge)
+            .expect("stop dispatch")
+        else {
+            panic!("first stop must acknowledge");
+        };
+        let retry = session
+            .retry_teardown()
+            .expect("retry lost acknowledgement");
+        let AvActionExecution::Acknowledged(reconciled) = retry
+            .execute_source(&mut session, &mut bridge)
+            .expect("terminal reconciliation")
+        else {
+            panic!("reconciled stop must acknowledge");
+        };
+        let terminal = session
+            .complete(reconciled)
+            .expect("complete reconciled stop");
+        drop(delayed_acknowledgement);
+
+        assert_eq!(terminal.len(), 4);
+        for class in [AvSourceClass::Microphone, AvSourceClass::Camera] {
+            let source = terminal
+                .iter()
+                .filter(|buffer| buffer.stamp().class() == class)
+                .collect::<Vec<_>>();
+            assert_eq!(source.len(), 2);
+            assert_eq!(source[0].sequence(), 1);
+            assert_eq!(source[1].sequence(), 2);
+        }
+        for buffer in terminal {
+            buffer
+                .into_appsrc_input()
+                .expect("authenticated terminal input")
+                .release();
+        }
+        assert_eq!(state.lock().expect("state").stops, 2);
+        assert_eq!(session.state(), frame_media::AvSessionState::Stopped);
     }
 
     #[test]

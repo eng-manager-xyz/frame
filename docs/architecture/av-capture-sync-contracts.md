@@ -178,8 +178,16 @@ messages, pushes at most the configured number of buffers, returns at most the
 configured recording-output samples and bytes, and coalesces only privacy-safe
 status/timing events. Attach and poll contract failures attempt native terminal
 reconciliation and confirm GStreamer `Null`; successful recording EOS is
-reported only after output drain and `Null`. The runtime owns a validated
-bounded EOS deadline,
+reported only after output drain and `Null`. A successful Stop carries a
+bounded CPU-byte callback tail that the adapter retains for identical
+lost-acknowledgement reconciliation. The session authenticates that tail
+against the exact owner/stamp, next per-source sequence, format, negotiated
+session-stage count/byte budget including already-queued buffers, and cloned
+timebase before committing any cursor. Existing session-queue buffers and the
+authenticated tail are then pushed through their owned appsrc edges before
+graph EOS. Cancel never publishes a tail. An adapter that cannot reproduce a
+confirmed tail cannot reconcile Stop as successful.
+The runtime owns a validated bounded EOS deadline,
 rejects a regressing caller clock, and rotates its first-polled source so a
 one-buffer poll budget cannot starve later sources. This runtime is currently a
 preview/execution foundation. Explicit `quiesce` makes one terminal
@@ -192,9 +200,8 @@ does not wait for EOS and does not claim a completed artifact. Native calls are
 bounded by their operation-ticket timeout contract, but safe Rust cannot
 preempt an adapter that blocks after violating that contract; production
 adapters still need their platform watchdog/process-isolation policy. The
-runtime does not yet parse `level` messages into production meters,
-authenticate a lossless native callback tail, or connect its returned samples
-to the desktop recording mux.
+runtime does not yet parse `level` messages into production meters or connect
+its returned samples to the desktop recording mux.
 
 ## Current macOS system-audio primitive
 
@@ -219,15 +226,19 @@ provider-neutral adapter. It derives a separate secret-bound adapter identity,
 advertises one virtual device, collects five callback-arrival/source-PTS
 samples behind a 750 ms deadline for every stream epoch, transfers subsequent
 owned PCM through `NativeAvAppSrc`, probes permission at most once per second,
-and consumes the process-lifetime power cursor. Calibration callbacks are not
-replayed after the timebase anchor. Pause and sleep confirm native stop;
-resume starts a new epoch and cannot reuse the prior calibration.
+and consumes the process-lifetime power cursor. On Stop it converts both
+already-buffered and callback-fence tail chunks into replayable terminal
+buffers before clearing native state; terminal reconciliation returns the
+identical tail without releasing ScreenCaptureKit twice. Calibration callbacks
+are not replayed after the timebase anchor. Pause and sleep confirm native
+stop; resume starts a new epoch and cannot reuse the prior calibration.
 
 Because this ScreenCaptureKit mix is one virtual source, it has no physical
 default-route or hotplug choice; catalog revision advances on permission
 changes. The adapter still does not provide microphone or camera capture, and
-the normalized runtime remains a preview/execution foundation whose terminal
-tail is not yet authenticated into the desktop recording mux.
+the normalized runtime remains a preview/execution foundation whose
+authenticated terminal output is not yet connected to the desktop recording
+mux.
 
 ## Master clock and declared timeline
 
