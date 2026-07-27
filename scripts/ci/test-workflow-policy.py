@@ -318,9 +318,15 @@ def main() -> int:
             ),
             (
                 quality,
-                "frame-media|frame-platform-lifecycle|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer",
-                "frame-unrelated|frame-macos-unrelated|not-gstreamer",
+                "python scripts/ci/check-portable-desktop-dependencies.py",
+                "python scripts/ci/check-portable-desktop-dependencies-disabled.py",
                 "portable desktop native-media dependency rejection removed",
+            ),
+            (
+                quality,
+                "python3 -I scripts/ci/test-portable-desktop-dependencies.py",
+                "python3 -I scripts/ci/check-portable-desktop-dependencies.py",
+                "portable desktop dependency hostile fixtures removed",
             ),
             (
                 quality,

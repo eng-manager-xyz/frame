@@ -292,11 +292,12 @@ mod browser {
         let mut next = dispatch.snapshot.clone();
         let mut previous_event_sequence = None;
         let mut telemetry_count = 0_u8;
-        if recorder_poll && next.recorder == RecorderState::Recording {
-            if let Some((meter, camera_preview)) = previous_input {
-                next.meter = meter;
-                next.camera_preview = camera_preview;
-            }
+        if recorder_poll
+            && next.recorder == RecorderState::Recording
+            && let Some((meter, camera_preview)) = previous_input
+        {
+            next.meter = meter;
+            next.camera_preview = camera_preview;
         }
         for envelope in &dispatch.events {
             if envelope.protocol_version != DESKTOP_RUNTIME_VERSION

@@ -43,6 +43,7 @@ jobs:
           python3 -I scripts/ci/test-release-change-plan.py
           python3 -I scripts/ci/test-legacy-api-parity-runner.py
           python3 -I scripts/ci/test-web-hydration-browser-launch.py
+          python3 -I scripts/ci/test-portable-desktop-dependencies.py
       - name: Validate YAML and Render authority
         run: |
           ruby scripts/ci/check-yaml-syntax.rb
@@ -475,12 +476,10 @@ jobs:
           mkdir -p target/evidence
           cargo tree --locked -p frame-desktop-core \
             --features tauri-app,custom-protocol --edges normal \
+            --prefix none --format '{p}' \
             > target/evidence/desktop-portable-dependencies-${{ runner.os }}.txt
-          if rg -n '(frame-media|frame-platform-lifecycle|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer[^[:space:]]*) v[0-9]' \
-            target/evidence/desktop-portable-dependencies-${{ runner.os }}.txt; then
-            echo "portable desktop dependency graph contains native media code" >&2
-            exit 1
-          fi
+          python scripts/ci/check-portable-desktop-dependencies.py \
+            target/evidence/desktop-portable-dependencies-${{ runner.os }}.txt
       - name: Lint and test the portable Tauri command boundary
         run: |
           cargo test --locked -p frame-desktop-core --features tauri-app --bin frame-desktop
