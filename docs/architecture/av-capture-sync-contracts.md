@@ -268,6 +268,29 @@ preview with no active camera resolves to disabled rather than claiming a
 preview. Raw audio samples, video frames, device labels, opaque identities, and
 hardware identifiers are absent from `AvUiEvent`.
 
+The production desktop boundary has a separate versioned projection,
+`DesktopInputTelemetry`. `RecorderPoll` remains an owner-scoped, payload-free
+health trigger; it cannot choose a source, meter value, interval, or recording
+token. The native runtime reads only a bounded 0..=10,000 meter summary from
+the active recording authority and emits at most one telemetry event per
+100 ms. Polls inside that interval update backend truth but are coalesced; the
+next eligible event contains the latest summary. Starting a new recording
+resets its sample sequence, while stop, cancel, device loss, restart, and native
+failure clear pending telemetry.
+
+The event contains its own version and nonzero sample sequence, the two bounded
+audio levels, and only `disabled`, `unavailable`, or `active` camera-preview
+state. Its strict decoder rejects unknown fields, so raw PCM/video, filesystem
+paths, device labels, and native identifiers cannot be smuggled through an
+additive property. The Leptos consumer accepts at most one event per response
+from the recorder owner, requires the current runtime version and strictly
+increasing envelope sequence, revalidates the telemetry payload, and retains
+the last displayed meter when the server suppresses an early poll. It does not
+read the newer unthrottled snapshot value as a substitute event. Tauri also
+emits the same typed envelope on `frame-desktop://event-v1`; the command
+response is the deterministic consumer path used by the current single-window
+Leptos shell.
+
 ## Lifecycle and race rules
 
 | Event | Required result |

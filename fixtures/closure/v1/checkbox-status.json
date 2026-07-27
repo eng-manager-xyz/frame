@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 358,
+    "local_satisfied": 359,
     "protected_pending": 176,
-    "local_gap": 20
+    "local_gap": 19
   },
   "issues": {
     "01": {
@@ -186,9 +186,9 @@
     "25": {
       "count": 10,
       "digest": "4a6b8211c0eaa63f99e798d8fad533b61b965bf7afc3a7ccd512bba2d3f49695",
-      "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs", "crates/media/tests/av_runtime_contract.rs", "crates/macos-av-capture/src/lib.rs", "crates/macos-av-capture/src/bridge.rs", "apps/desktop/src/av_settings.rs"],
+      "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs", "crates/media/tests/av_runtime_contract.rs", "crates/macos-av-capture/src/lib.rs", "crates/macos-av-capture/src/bridge.rs", "apps/desktop/src/av_settings.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs"],
       "protected": [],
-      "local_gaps": [{"ordinals": [1, 5, 6, 7, 8], "reason": "The durable settings migration/storage contract and a bounded production macOS system-audio NativeAvBridge now exist, but the shared-clock recording mux, desktop UI events/meters, microphone/camera adapters, and physical device/permission recovery remain unwired repository-local work."}]
+      "local_gaps": [{"ordinals": [1, 6, 7, 8], "reason": "The durable settings contract, bounded macOS system-audio bridge, and server-throttled raw-media-free desktop telemetry path now exist, but the shared-clock recording mux, microphone/camera adapters, continuous mixed controls, and physical device/permission recovery remain unwired repository-local work."}]
     },
     "26": {
       "count": 11,

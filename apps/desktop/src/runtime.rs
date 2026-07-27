@@ -6,7 +6,11 @@
 //! adapter is intentionally explicit and is used by the hermetic journey; a
 //! release build never selects it implicitly.
 
-use std::{fmt, path::Path};
+use std::{
+    fmt,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,7 +44,11 @@ use crate::{
     },
 };
 
-pub const DESKTOP_RUNTIME_VERSION: u16 = 2;
+pub const DESKTOP_RUNTIME_VERSION: u16 = 3;
+pub const DESKTOP_INPUT_TELEMETRY_VERSION: u16 = 1;
+pub const DESKTOP_INPUT_TELEMETRY_INTERVAL_MS: u64 = 100;
+const DESKTOP_INPUT_TELEMETRY_INTERVAL: Duration =
+    Duration::from_millis(DESKTOP_INPUT_TELEMETRY_INTERVAL_MS);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,10 +68,52 @@ pub enum PermissionState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AudioMeterSnapshot {
     pub microphone_basis_points: u16,
     pub system_audio_basis_points: u16,
     pub camera_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraPreviewState {
+    #[default]
+    Disabled,
+    Unavailable,
+    Active,
+}
+
+/// Coarse input telemetry safe to cross the WebView boundary.
+///
+/// The type deliberately has no byte buffer, device label, device identifier,
+/// or filesystem field. Camera preview is represented only as availability
+/// state; raw video remains owned by the native preview surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopInputTelemetry {
+    pub version: u16,
+    pub sample_sequence: u64,
+    pub meter: AudioMeterSnapshot,
+    pub camera_preview: CameraPreviewState,
+}
+
+impl DesktopInputTelemetry {
+    #[must_use]
+    pub const fn validate(self) -> bool {
+        self.version == DESKTOP_INPUT_TELEMETRY_VERSION
+            && self.sample_sequence > 0
+            && self.meter.microphone_basis_points <= 10_000
+            && self.meter.system_audio_basis_points <= 10_000
+            && matches!(
+                (self.camera_preview, self.meter.camera_active),
+                (CameraPreviewState::Active, true)
+                    | (
+                        CameraPreviewState::Disabled | CameraPreviewState::Unavailable,
+                        false
+                    )
+            )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +177,8 @@ pub struct DesktopRuntimeSnapshot {
     pub instant_progress: Option<InstantUiProgressV1>,
     pub permission: PermissionState,
     pub meter: AudioMeterSnapshot,
+    #[serde(default)]
+    pub camera_preview: CameraPreviewState,
     pub recorder_configuration: RecorderConfiguration,
     pub selected_sources: SelectedSources,
     #[serde(default = "CaptureTargetCatalog::empty")]
@@ -197,6 +249,7 @@ pub struct DesktopEventEnvelope {
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum DesktopRuntimeEvent {
     Backend(BackendEvent),
+    InputTelemetry(DesktopInputTelemetry),
     InstantProgress(InstantUiProgressV1),
     StateConfirmed { operation_revision: u64 },
 }
@@ -304,6 +357,10 @@ pub struct DesktopRuntime {
     instant_progress: Option<InstantUiProgressV1>,
     permission: PermissionState,
     meter: AudioMeterSnapshot,
+    camera_preview: CameraPreviewState,
+    input_telemetry_sequence: u64,
+    last_input_telemetry_at: Option<Instant>,
+    pending_input_telemetry: Option<DesktopInputTelemetry>,
     recorder_configuration: RecorderConfiguration,
     selected_sources: SelectedSources,
     capture_targets: CaptureTargetCatalog,
@@ -416,6 +473,10 @@ impl DesktopRuntime {
                 system_audio_basis_points: 0,
                 camera_active: false,
             },
+            camera_preview: CameraPreviewState::Disabled,
+            input_telemetry_sequence: 0,
+            last_input_telemetry_at: None,
+            pending_input_telemetry: None,
             recorder_configuration: RecorderConfiguration {
                 mode: RecorderMode::Instant,
                 countdown_seconds: 3,
@@ -508,6 +569,7 @@ impl DesktopRuntime {
             instant_progress: self.instant_progress,
             permission: self.permission,
             meter: self.meter,
+            camera_preview: self.camera_preview,
             recorder_configuration: self.recorder_configuration,
             selected_sources: self.selected_sources,
             capture_targets: self.capture_targets.clone(),
@@ -723,6 +785,12 @@ impl DesktopRuntime {
                     .into_iter()
                     .map(|event| candidate.wrap_event(owner, DesktopRuntimeEvent::Backend(event)))
                     .collect::<Result<Vec<_>, _>>()?;
+                if let Some(telemetry) = candidate.pending_input_telemetry.take() {
+                    events.push(
+                        candidate
+                            .wrap_event(owner, DesktopRuntimeEvent::InputTelemetry(telemetry))?,
+                    );
+                }
                 events.push(candidate.wrap_event(
                     owner,
                     DesktopRuntimeEvent::StateConfirmed {
@@ -807,6 +875,7 @@ impl DesktopRuntime {
         self.apply_unsolicited(&[BackendEvent::DeviceLost])?;
         self.recovery_projects = self.recovery_projects.saturating_add(1);
         self.permission = PermissionState::NotDetermined;
+        self.reset_input_telemetry();
         self.meter = AudioMeterSnapshot {
             microphone_basis_points: 0,
             system_audio_basis_points: 0,
@@ -831,6 +900,7 @@ impl DesktopRuntime {
             self.apply_unsolicited(&[BackendEvent::DeviceLost])?;
             self.recovery_projects = self.recovery_projects.saturating_add(1);
         }
+        self.reset_input_telemetry();
         self.lifecycle.main_visible = true;
         self.lifecycle.overlay_visible = false;
         self.lifecycle.target_picker_visible = false;
@@ -915,6 +985,7 @@ impl DesktopRuntime {
                     })
                     .map_err(ExecutionFailure::native_backend)?;
                 let Some(failure) = failure else {
+                    self.queue_input_telemetry(Instant::now())?;
                     return Ok(Vec::new());
                 };
                 if failure.recording_token != recording.recording_token
@@ -1143,6 +1214,7 @@ impl DesktopRuntime {
                 });
                 self.native_artifact = None;
                 self.lifecycle.overlay_visible = true;
+                self.reset_input_telemetry();
                 self.meter = AudioMeterSnapshot {
                     microphone_basis_points: 0,
                     system_audio_basis_points: 0,
@@ -1407,7 +1479,9 @@ impl DesktopRuntime {
                 };
                 self.lifecycle.overlay_visible = true;
                 self.announcement = "Recording started after backend confirmation.".into();
-                self.transition(
+                self.reset_input_telemetry();
+                self.queue_input_telemetry(Instant::now())?;
+                let events = self.transition(
                     intent_id,
                     IntentKind::RecorderStart,
                     vec![
@@ -1416,7 +1490,8 @@ impl DesktopRuntime {
                         },
                         BackendEvent::RecorderStarted,
                     ],
-                )
+                )?;
+                Ok(events)
             }
             IpcCommand::RecorderPause { intent_id } => {
                 self.announcement = "Recording paused after backend confirmation.".into();
@@ -1440,6 +1515,7 @@ impl DesktopRuntime {
             }
             IpcCommand::RecorderStop { intent_id } => {
                 self.lifecycle.overlay_visible = false;
+                self.reset_input_telemetry();
                 self.meter = AudioMeterSnapshot {
                     microphone_basis_points: 0,
                     system_audio_basis_points: 0,
@@ -1457,6 +1533,7 @@ impl DesktopRuntime {
             }
             IpcCommand::RecorderCancel { intent_id } => {
                 self.lifecycle.overlay_visible = false;
+                self.reset_input_telemetry();
                 self.meter = AudioMeterSnapshot {
                     microphone_basis_points: 0,
                     system_audio_basis_points: 0,
@@ -1966,6 +2043,7 @@ impl DesktopRuntime {
     fn clear_native_recording_session(&mut self) {
         self.native_recording = None;
         self.lifecycle.overlay_visible = false;
+        self.reset_input_telemetry();
         self.meter = AudioMeterSnapshot {
             microphone_basis_points: 0,
             system_audio_basis_points: 0,
@@ -1975,6 +2053,48 @@ impl DesktopRuntime {
         self.selected_capture_target = None;
         self.selected_sources.target = None;
         self.selected_sources.display_selected = false;
+    }
+
+    fn reset_input_telemetry(&mut self) {
+        self.camera_preview = CameraPreviewState::Disabled;
+        self.input_telemetry_sequence = 0;
+        self.last_input_telemetry_at = None;
+        self.pending_input_telemetry = None;
+    }
+
+    fn queue_input_telemetry(&mut self, now: Instant) -> Result<(), ExecutionFailure> {
+        let ready = self.last_input_telemetry_at.is_none_or(|last| {
+            now.checked_duration_since(last)
+                .is_some_and(|elapsed| elapsed >= DESKTOP_INPUT_TELEMETRY_INTERVAL)
+        });
+        if !ready {
+            return Ok(());
+        }
+        let sample_sequence = self
+            .input_telemetry_sequence
+            .checked_add(1)
+            .ok_or_else(ExecutionFailure::internal)?;
+        let camera_preview = if self.meter.camera_active {
+            CameraPreviewState::Active
+        } else if self.settings.camera_enabled {
+            CameraPreviewState::Unavailable
+        } else {
+            CameraPreviewState::Disabled
+        };
+        let telemetry = DesktopInputTelemetry {
+            version: DESKTOP_INPUT_TELEMETRY_VERSION,
+            sample_sequence,
+            meter: self.meter,
+            camera_preview,
+        };
+        if !telemetry.validate() {
+            return Err(ExecutionFailure::invalid_backend_response());
+        }
+        self.camera_preview = camera_preview;
+        self.input_telemetry_sequence = sample_sequence;
+        self.last_input_telemetry_at = Some(now);
+        self.pending_input_telemetry = Some(telemetry);
+        Ok(())
     }
 
     fn apply_unsolicited(&mut self, events: &[BackendEvent]) -> Result<(), DesktopRuntimeError> {
@@ -3001,10 +3121,12 @@ mod tests {
         let object = value.as_object_mut().expect("snapshot object");
         object.remove("capture_targets");
         object.remove("capture_artifact");
+        object.remove("camera_preview");
         let decoded: DesktopRuntimeSnapshot =
             serde_json::from_value(value).expect("compatible v2 snapshot");
         assert_eq!(decoded.capture_targets, CaptureTargetCatalog::empty());
         assert!(decoded.capture_artifact.is_none());
+        assert_eq!(decoded.camera_preview, CameraPreviewState::Disabled);
     }
 
     #[test]
@@ -3283,10 +3405,226 @@ mod tests {
         assert_eq!(backend.call_count("meter"), 1);
         assert!(backend.poll_request_matches_recording);
         assert_eq!(healthy.snapshot.meter.system_audio_basis_points, 7_500);
+        let telemetry = healthy
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                DesktopRuntimeEvent::InputTelemetry(telemetry) => Some(*telemetry),
+                _ => None,
+            })
+            .expect("first healthy poll emits telemetry");
+        assert_eq!(telemetry.version, DESKTOP_INPUT_TELEMETRY_VERSION);
+        assert_eq!(telemetry.sample_sequence, 1);
+        assert_eq!(telemetry.meter.system_audio_basis_points, 7_500);
+        assert_eq!(telemetry.camera_preview, CameraPreviewState::Disabled);
+        assert!(telemetry.validate());
         assert!(healthy.events.iter().all(|event| !matches!(
             &event.event,
             DesktopRuntimeEvent::Backend(BackendEvent::RecorderFailed { .. })
         )));
+    }
+
+    #[test]
+    fn native_input_events_are_server_throttled_and_coalesce_the_latest_meter() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        prepare_native_recording(&mut runtime, &mut backend);
+        let start = request(
+            &runtime,
+            WindowRole::Recorder,
+            4,
+            "telemetry-start",
+            IpcCommand::RecorderStart {
+                intent_id: "telemetry-start".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(start, &mut backend)
+            .expect("native start"));
+
+        backend.poll_meter.system_audio_basis_points = 2_500;
+        let first = request(
+            &runtime,
+            WindowRole::Recorder,
+            5,
+            "telemetry-first",
+            IpcCommand::RecorderPoll,
+        );
+        let first = runtime
+            .dispatch_native(first, &mut backend)
+            .expect("first poll");
+        assert!(first.events.iter().any(|event| matches!(
+            &event.event,
+            DesktopRuntimeEvent::InputTelemetry(DesktopInputTelemetry {
+                sample_sequence: 1,
+                ..
+            })
+        )));
+
+        backend.poll_meter.system_audio_basis_points = 8_500;
+        runtime.last_input_telemetry_at = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .or(runtime.last_input_telemetry_at);
+        let throttled = request(
+            &runtime,
+            WindowRole::Recorder,
+            6,
+            "telemetry-throttled",
+            IpcCommand::RecorderPoll,
+        );
+        let throttled = runtime
+            .dispatch_native(throttled, &mut backend)
+            .expect("throttled poll");
+        assert_eq!(
+            throttled.snapshot.meter.system_audio_basis_points, 8_500,
+            "backend truth still advances while UI events are coalesced"
+        );
+        assert!(
+            throttled
+                .events
+                .iter()
+                .all(|event| !matches!(&event.event, DesktopRuntimeEvent::InputTelemetry(_)))
+        );
+
+        runtime.last_input_telemetry_at = Instant::now()
+            .checked_sub(DESKTOP_INPUT_TELEMETRY_INTERVAL)
+            .or(runtime.last_input_telemetry_at);
+        let ready = request(
+            &runtime,
+            WindowRole::Recorder,
+            7,
+            "telemetry-ready",
+            IpcCommand::RecorderPoll,
+        );
+        let ready = runtime
+            .dispatch_native(ready, &mut backend)
+            .expect("ready poll");
+        let telemetry = ready
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                DesktopRuntimeEvent::InputTelemetry(telemetry) => Some(*telemetry),
+                _ => None,
+            })
+            .expect("coalesced telemetry");
+        assert_eq!(telemetry.sample_sequence, 2);
+        assert_eq!(telemetry.meter.system_audio_basis_points, 8_500);
+
+        let before_invalid = runtime.snapshot();
+        backend.poll_meter.system_audio_basis_points = 10_001;
+        let invalid = request(
+            &runtime,
+            WindowRole::Recorder,
+            8,
+            "telemetry-invalid",
+            IpcCommand::RecorderPoll,
+        );
+        let invalid = runtime
+            .dispatch_native(invalid, &mut backend)
+            .expect("bounded invalid poll");
+        assert_eq!(
+            invalid.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Internal,
+                retryable: false,
+            }
+        );
+        let after_invalid = runtime.snapshot();
+        assert_eq!(after_invalid.recorder, before_invalid.recorder);
+        assert_eq!(after_invalid.meter, before_invalid.meter);
+        assert_eq!(after_invalid.camera_preview, before_invalid.camera_preview);
+        assert!(runtime.native_recording.is_some());
+        assert_eq!(runtime.input_telemetry_sequence, 2);
+        assert!(runtime.pending_input_telemetry.is_none());
+        assert!(
+            invalid
+                .events
+                .iter()
+                .all(|event| !matches!(&event.event, DesktopRuntimeEvent::InputTelemetry(_)))
+        );
+    }
+
+    #[test]
+    fn input_telemetry_contains_only_coarse_meter_and_preview_state() {
+        let mut runtime = runtime();
+        runtime.settings.camera_enabled = true;
+        runtime.meter = AudioMeterSnapshot {
+            microphone_basis_points: 4_200,
+            system_audio_basis_points: 3_100,
+            camera_active: true,
+        };
+        let now = Instant::now();
+        runtime
+            .queue_input_telemetry(now)
+            .expect("queue first telemetry");
+        let telemetry = runtime
+            .pending_input_telemetry
+            .take()
+            .expect("pending telemetry");
+        assert_eq!(telemetry.camera_preview, CameraPreviewState::Active);
+        assert_eq!(
+            runtime.snapshot().camera_preview,
+            CameraPreviewState::Active
+        );
+        assert!(telemetry.validate());
+
+        let json = serde_json::to_value(telemetry).expect("telemetry JSON");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "version": 1,
+                "sample_sequence": 1,
+                "meter": {
+                    "microphone_basis_points": 4_200,
+                    "system_audio_basis_points": 3_100,
+                    "camera_active": true
+                },
+                "camera_preview": "active"
+            })
+        );
+        let rendered = json.to_string();
+        for forbidden in [
+            "pcm",
+            "sample_bytes",
+            "frame_bytes",
+            "device_id",
+            "device_label",
+            "path",
+        ] {
+            assert!(!rendered.contains(forbidden));
+        }
+        let mut injected = json.clone();
+        injected
+            .as_object_mut()
+            .expect("telemetry object")
+            .insert("frame_bytes".into(), serde_json::json!([1, 2, 3]));
+        assert!(
+            serde_json::from_value::<DesktopInputTelemetry>(injected).is_err(),
+            "the WebView decoder must reject an additive raw-media field"
+        );
+
+        runtime.meter.system_audio_basis_points = 7_000;
+        runtime
+            .queue_input_telemetry(
+                now.checked_add(DESKTOP_INPUT_TELEMETRY_INTERVAL / 2)
+                    .expect("later instant"),
+            )
+            .expect("coalesce early update");
+        assert!(runtime.pending_input_telemetry.is_none());
+        runtime
+            .queue_input_telemetry(
+                now.checked_add(DESKTOP_INPUT_TELEMETRY_INTERVAL)
+                    .expect("ready instant"),
+            )
+            .expect("emit coalesced update");
+        assert_eq!(
+            runtime
+                .pending_input_telemetry
+                .expect("latest telemetry")
+                .meter
+                .system_audio_basis_points,
+            7_000
+        );
     }
 
     #[test]
@@ -4009,13 +4347,13 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "runtime_version": 2,
+                "runtime_version": 3,
                 "command_protocol_version": 1,
                 "command_sequence": 1,
                 "operation_revision": 2,
                 "events": [
                     {
-                        "protocol_version": 2,
+                        "protocol_version": 3,
                         "event_sequence": 1,
                         "owner": "recorder",
                         "event": {
@@ -4030,7 +4368,7 @@ mod tests {
                         }
                     },
                     {
-                        "protocol_version": 2,
+                        "protocol_version": 3,
                         "event_sequence": 2,
                         "owner": "recorder",
                         "event": {

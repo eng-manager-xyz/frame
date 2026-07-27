@@ -2,22 +2,25 @@
 
 Status: provider-free contracts, a concrete bounded GStreamer appsrc runtime,
 descriptor-rooted macOS settings, and a production macOS `NativeAvBridge` for
-the target-gated ScreenCaptureKit system-audio primitive. This record does not
-claim microphone/camera adapters, normalized desktop recording integration,
-lossless terminal-tail mux, physical permission success, Bluetooth recovery,
-wall-clock soak, or performance completion.
+the target-gated ScreenCaptureKit system-audio primitive, plus a
+server-throttled production desktop telemetry/Leptos consumer path. This record
+does not claim microphone/camera adapters, normalized desktop recording
+integration, lossless terminal-tail mux, physical permission success,
+Bluetooth recovery, wall-clock soak, or performance completion.
 
 ## Closure ledger boundary
 
-Issue 25 checkboxes 1, 5, 6, 7, and 8 are repository-local gaps. Checkbox 4 is
-now locally satisfied by the validated V2 codec, migration rules, and the
+Issue 25 checkboxes 1, 6, 7, and 8 are repository-local gaps. Checkbox 4 is
+locally satisfied by the validated V2 codec, migration rules, and the
 revisioned descriptor-rooted `DurableAvSettingsStore` implementation of the
-provider-neutral `AvSettingsStorage` boundary. Checkboxes 2, 3, 9, and 10
-remain locally satisfied by the executable graph, clock/timestamp logic,
-optional-device negotiation, and privacy-safe diagnostic model. No issue-25
-checkbox is currently `protected_pending`; the hardware portions of checkboxes
-1 and 6–8 become meaningful only after the remaining local integration gaps
-close.
+provider-neutral `AvSettingsStorage` boundary. Checkbox 5 is locally satisfied
+by the versioned desktop input-telemetry event, native meter adapter, runtime
+throttle/coalescer, strict WebView decoder, and Leptos meter/preview-state
+consumer. Checkboxes 2, 3, 9, and 10 remain locally satisfied by the executable
+graph, clock/timestamp logic, optional-device negotiation, and privacy-safe
+diagnostic model. No issue-25 checkbox is currently `protected_pending`; the
+hardware portions of checkboxes 1 and 6–8 become meaningful only after the
+remaining local integration gaps close.
 
 `MacOsNativeAvBridge` now pumps the production ScreenCaptureKit source through
 the real owned-byte `NativeAvAppSrc` runtime. It supplies callback-derived
@@ -30,13 +33,23 @@ descriptor-rooted CAS.
 The macOS desktop composition still muxes `MacOsSystemAudioSource` with selected
 display/window/region video through the direct worker and computes a bounded
 coarse system-audio peak. Only screen-only recording uses the normalized screen
-ingress/pump. The existing one-second recorder poll carries only a 0..=10,000
-value; raw PCM never crosses IPC. The normalized A/V runtime remains a
-preview/execution foundation and intentionally discards its calibration
-callbacks and terminal tail rather than claiming a complete artifact.
-Microphone and camera native adapters, shared screen/A/V runtime ownership,
-lossless mux, and product recovery remain absent. Consequently these local
-results narrow, but do not yet completely satisfy, checkboxes 1 or 5–8.
+ingress/pump. The recorder health command is a bounded trigger at 100 ms, but
+the native runtime is the authority for whether a UI event may be emitted. It
+coalesces repeated observations, emits at most once per 100 ms, and sends only
+0..=10,000 microphone/system levels plus `disabled`/`unavailable`/`active`
+camera-preview state. The Leptos consumer validates runtime/event versions,
+strictly increasing event-envelope sequence, event ownership, payload bounds,
+and at most one telemetry event per response; when an event is suppressed it
+retains the last displayed meter rather than reading an unthrottled snapshot.
+Unknown telemetry fields fail deserialization, and raw PCM/video, paths, labels,
+and device identities have no field in the event.
+
+The normalized A/V runtime remains a preview/execution foundation and
+intentionally discards its calibration callbacks and terminal tail rather than
+claiming a complete artifact. Microphone and camera native adapters, shared
+screen/A/V runtime ownership, lossless mux, continuous mixed-source controls,
+and product recovery remain absent. Consequently these local results satisfy
+checkbox 5 but do not yet completely satisfy checkboxes 1 or 6–8.
 
 ## Contract surface exercised locally
 
@@ -77,7 +90,8 @@ results narrow, but do not yet completely satisfy, checkboxes 1 or 5–8.
   pause/resume/discontinuity handling, and no rollback;
 - mic/system gain and mute ramps, silence continuity, explicit clipping,
   rational sample-position timelines, coarse meters, and preview toggles; and
-- privacy-safe throttled UI events and diagnostic records.
+- privacy-safe throttled media-runtime events and the production desktop
+  `InputTelemetry` event/Leptos consumer, plus diagnostic records.
 
 ## Local hostile scenarios
 
@@ -133,11 +147,13 @@ authority remains explicitly unconfirmed; explicit `quiesce` then reconciles
 the same terminal ID on retry. This is a one-attempt destructor safeguard, not
 a hard preemption boundary: an adapter that ignores its operation-ticket
 timeout can still block its caller and needs a platform watchdog or process
-isolation. The suite does not
-push a production device buffer, consume the mixed-media sinks as a recording,
-emit production meters, or connect a UI event consumer. The macOS bridge suite
-does push fake-native buffers through the exact production bridge and real
-GStreamer appsrc runtime; physical ScreenCaptureKit execution remains protected.
+isolation. The suite does not push a physical production device buffer or
+consume the mixed-media sinks as a recording. The desktop suite does exercise
+the production system-audio meter adapter boundary, server-side coalescing,
+strict raw-media-free event shape, and Leptos release compilation. The macOS
+bridge suite pushes fake-native buffers through the exact production bridge and
+real GStreamer appsrc runtime; physical ScreenCaptureKit execution remains
+protected.
 
 The EOS regression lane executes 500 empty-source stops and 500
 first-buffer-immediate stops, including a one-buffer appsrc budget. Empty stop
@@ -168,6 +184,11 @@ GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked \
   -p frame-macos-av-capture
 cargo test --locked -p frame-desktop-core --features macos-native av_settings::tests
+cargo test --locked -p frame-desktop-core input_telemetry
+cargo test --locked -p frame-desktop-core native_input_events
+cargo clippy --locked -p frame-desktop-core --features macos-native --all-targets -- -D warnings
+python3 scripts/ci/build-desktop-ui.py
+python3 scripts/ci/check-desktop-bundle.py
 cargo clippy -p frame-media --all-targets -- -D warnings
 cargo clippy -p frame-macos-av-capture --all-targets --no-deps -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc -p frame-media --no-deps
