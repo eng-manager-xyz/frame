@@ -1,40 +1,55 @@
 # frame-macos-av-capture
 
-Safe, target-gated ScreenCaptureKit system-audio capture for Issue 25. This
-crate captures one privacy-safe source: the macOS system/application mix,
-excluding Frame's own process audio. It does not capture microphone or camera
-input and does not claim that the normalized preview runtime losslessly muxes
-audio into a recording artifact.
+Safe, target-gated native A/V capture for Issue 25. The crate captures the
+macOS system/application mix through ScreenCaptureKit and supplies a separate
+GStreamer-backed microphone/camera bridge. It does not claim that the desktop
+recording composition or normalized preview runtime losslessly muxes those
+inputs into one recording artifact.
 
 ## Current boundary
 
-`MacOsSystemAudioSource` remains the narrow raw native owner.
-`MacOsNativeAvBridge` wraps it in the provider-neutral session contract:
+`MacOsSystemAudioSource` remains the narrow raw native system-audio owner.
+`MacOsNativeAvBridge` wraps it in the provider-neutral session contract.
+`MacOsDeviceAvBridge` separately owns microphone/camera device monitoring and
+capture:
 
 - one secret-bound virtual device and one secret-bound adapter identity;
+- secret-bound, label-free microphone/camera IDs derived from GStreamer
+  provider identity without exporting the provider value;
+- audited `osxaudiosrc` and `avfvideosrc` device elements feeding exact
+  normalized caps through three-buffer appsinks;
 - exact owner, generation, and per-epoch source stamps;
-- five callback-derived startup calibration samples retained only for
+- five source-derived startup calibration samples retained only for
   calibration, followed by a fresh bounded ingress sequence;
-- owned PCM leases transferred through the real CPU `appsrc` adapter;
+- owned PCM/BGRA leases transferred through the real CPU `appsrc` adapter;
 - permission revision events, process-lifetime sleep/wake events, pause/resume,
   and stable terminal reconciliation; and
-- a one-second permission probe that never exports labels, native IDs, or raw
-  media through UI/diagnostic events.
+- GStreamer device-monitor hotplug/default events plus a one-second permission
+  probe that never exports labels, native IDs, or raw media through
+  UI/diagnostic events.
 
-The source has no physical default-route or hotplug choice: it represents the
-single ScreenCaptureKit application/system mix. Its catalog therefore changes
-only when permission changes. Microphone and camera adapters remain separate
-Issue 25 work, and the desktop recording composition still uses its direct
-screen/system-audio worker until the Studio journal can authenticate and drain
-the normalized runtime's terminal callback tail.
+The system-audio source has no physical default-route or hotplug choice: it
+represents the single ScreenCaptureKit application/system mix. The device
+bridge enumerates physical microphone/camera sources with `GstDeviceMonitor`,
+retains the exact provider object for selection, and uses only an HMAC token in
+the public catalog. The desktop recording composition still uses its direct
+screen/system-audio worker until shared recording ownership and the Studio
+journal can authenticate and drain the normalized runtime's terminal callback
+tail.
 
-The only admitted format is interleaved stereo F32LE PCM at 48 kHz. Native
+The admitted audio format is interleaved stereo F32LE PCM at 48 kHz. Native
 ScreenCaptureKit output must report linear PCM, float, little-endian, 32 bits
 per channel, 48 kHz, and two channels. Both one-buffer interleaved stereo and
 two-buffer planar mono layouts are accepted; planar input is copied into the
 same interleaved output. Format changes, non-finite samples, malformed layouts,
 and oversized chunks are rejected and force a discontinuity on the next valid
 chunk.
+
+The device bridge normalizes microphones to that same exact audio format and
+cameras to 1280×720 BGRA at 30 fps before copying an appsink sample. Audio
+callbacks larger than 100 ms, non-frame-aligned PCM, partial camera frames,
+missing timestamps, undeclared factories, or plugins outside the build-time
+trusted root fail closed.
 
 ## Lifecycle and permission
 
@@ -94,7 +109,8 @@ cannot access released capture state or block after the receiver is gone.
   750 ms deadline; it never waits for an unbounded first sample.
 
 The production application must target macOS 13 or newer, provide
-`NSScreenCaptureUsageDescription`, and embed the Swift runtime search paths
+`NSScreenCaptureUsageDescription`, `NSMicrophoneUsageDescription`, and
+`NSCameraUsageDescription`, and embed the Swift/GStreamer runtime paths
 described by the existing desktop macOS bundle policy.
 
 See [PROVENANCE.md](PROVENANCE.md) for the conceptual reference and dependency

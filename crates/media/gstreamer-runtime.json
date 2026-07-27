@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "rust_manifest_version": 6,
+  "rust_manifest_version": 7,
   "minimum_gstreamer": "1.22.0",
   "plugin_search_policy": {
     "denied_environment_variables": [
@@ -61,6 +61,8 @@
     {"factory": "appsrc", "capability": "appsrc_bridge", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "queue", "capability": "appsrc_bridge", "requirement": "required", "platform": "all"},
     {"factory": "appsink", "capability": "appsink_bridge", "requirement": "optional", "platform": "all"},
+    {"factory": "osxaudiosrc", "capability": "microphone_capture", "requirement": "optional", "platform": "macos"},
+    {"factory": "avfvideosrc", "capability": "camera_capture", "requirement": "optional", "platform": "macos"},
     {"factory": "audioconvert", "capability": "audio_mixing", "requirement": "required", "platform": "native_desktop"},
     {"factory": "audioresample", "capability": "audio_mixing", "requirement": "required", "platform": "native_desktop"},
     {"factory": "audiomixer", "capability": "audio_mixing", "requirement": "optional", "platform": "native_desktop"},

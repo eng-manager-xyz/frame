@@ -1383,6 +1383,8 @@ dependencies = [
  "core-graphics",
  "frame-media",
  "frame-platform-lifecycle",
+ "gstreamer",
+ "gstreamer-app",
  "ring",
  "screencapturekit",
  "thiserror 2.0.18",

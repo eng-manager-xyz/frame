@@ -17,6 +17,10 @@
 
   <key>NSScreenCaptureUsageDescription</key>
   <string>Frame records the display you select so you can create and export a video.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Frame records the microphone you select alongside your screen recording.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Frame records the camera you select alongside your screen recording.</string>
   <key>NSDownloadsFolderUsageDescription</key>
   <string>Frame saves exported screen recordings in your Downloads folder.</string>
 </dict>

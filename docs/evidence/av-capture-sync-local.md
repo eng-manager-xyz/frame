@@ -1,16 +1,18 @@
 # Audio/camera synchronization local evidence
 
 Status: provider-free contracts, a concrete bounded GStreamer appsrc runtime,
-descriptor-rooted macOS settings, and a production macOS `NativeAvBridge` for
-the target-gated ScreenCaptureKit system-audio primitive, plus a
-server-throttled production desktop telemetry/Leptos consumer path. This record
-does not claim microphone/camera adapters, normalized desktop recording
-integration, lossless terminal-tail mux, physical permission success,
-Bluetooth recovery, wall-clock soak, or performance completion.
+descriptor-rooted macOS settings, production macOS `NativeAvBridge`
+implementations for ScreenCaptureKit system audio and GStreamer-backed
+microphone/camera inputs, plus a server-throttled production desktop
+telemetry/Leptos consumer path. This record does not claim normalized desktop
+recording integration, lossless terminal-tail mux, physical permission
+success, Bluetooth recovery, wall-clock soak, or performance completion.
 
 ## Closure ledger boundary
 
-Issue 25 checkboxes 1, 6, 7, and 8 are repository-local gaps. Checkbox 4 is
+Issue 25 checkbox 1 is now locally satisfied by the normalized contracts plus
+the production macOS system-audio and microphone/camera native-to-appsrc
+bridges. Checkboxes 6, 7, and 8 remain repository-local gaps. Checkbox 4 is
 locally satisfied by the validated V2 codec, migration rules, and the
 revisioned descriptor-rooted `DurableAvSettingsStore` implementation of the
 provider-neutral `AvSettingsStorage` boundary. Checkbox 5 is locally satisfied
@@ -19,8 +21,8 @@ throttle/coalescer, strict WebView decoder, and Leptos meter/preview-state
 consumer. Checkboxes 2, 3, 9, and 10 remain locally satisfied by the executable
 graph, clock/timestamp logic, optional-device negotiation, and privacy-safe
 diagnostic model. No issue-25 checkbox is currently `protected_pending`; the
-hardware portions of checkboxes 1 and 6–8 become meaningful only after the
-remaining local integration gaps close.
+hardware portions of checkboxes 6–8 become meaningful only after the remaining
+local integration gaps close.
 
 `MacOsNativeAvBridge` now pumps the production ScreenCaptureKit source through
 the real owned-byte `NativeAvAppSrc` runtime. It supplies callback-derived
@@ -29,6 +31,17 @@ and stable terminal reconciliation. Its one virtual system-mix device has no
 physical hotplug/default-route choice. `DurableAvSettingsStore` now implements
 the provider-neutral `AvSettingsStorage` interface on top of its revisioned,
 descriptor-rooted CAS.
+
+`MacOsDeviceAvBridge` uses the audited macOS GStreamer providers to enumerate
+microphones and cameras, retains the selected `GstDevice` without exposing its
+label or provider identifier, and derives only a secret-bound opaque public
+ID. `osxaudiosrc` normalizes into exact 48 kHz stereo F32LE and `avfvideosrc`
+normalizes into exact 1280×720/30 BGRA. Three-buffer leaky source queues and
+appsinks bound retained data; samples require exact shape, explicit PTS and
+duration, trusted plugin provenance, and an owned copy before entering the
+existing Frame appsrc graph. Device-monitor events rotate the catalog for
+hotplug/default changes. Both sources share one master-arrival origin,
+calibrate per epoch, poll fairly, and confirm two-source teardown.
 
 The macOS desktop composition still muxes `MacOsSystemAudioSource` with selected
 display/window/region video through the direct worker and computes a bounded
@@ -46,10 +59,10 @@ and device identities have no field in the event.
 
 The normalized A/V runtime remains a preview/execution foundation and
 intentionally discards its calibration callbacks and terminal tail rather than
-claiming a complete artifact. Microphone and camera native adapters, shared
-screen/A/V runtime ownership, lossless mux, continuous mixed-source controls,
-and product recovery remain absent. Consequently these local results satisfy
-checkbox 5 but do not yet completely satisfy checkboxes 1 or 6–8.
+claiming a complete artifact. Shared screen/A/V runtime ownership, lossless
+mux, continuous mixed-source controls, and product recovery remain absent.
+Consequently these local results satisfy checkboxes 1 and 5 but do not yet
+satisfy checkboxes 6–8.
 
 ## Contract surface exercised locally
 
@@ -78,6 +91,12 @@ checkbox 5 but do not yet completely satisfy checkboxes 1 or 6–8.
   secret-bound adapter ID, five-sample/750 ms per-epoch calibration, owned PCM
   appsrc transfer, one-second permission probes, process sleep/wake,
   pause/resume epoch rotation, and stable terminal reconciliation;
+- a production macOS microphone/camera `NativeAvBridge` with HMAC-redacted
+  GStreamer device catalogs, real selected-device elements, audited
+  `osxaudiosrc`/`avfvideosrc` factories, bounded three-buffer appsinks, exact
+  PCM/BGRA shape validation, a shared arrival clock, fair source polling,
+  hotplug/default-change catalog events, per-epoch calibration, and confirmed
+  multi-source teardown;
 - one-shot session owner, session-bound native bridge, one-shot operation
   tickets, live catalog
   revalidation, source stamps, stale/replay/cross-session rejection, and
@@ -151,9 +170,9 @@ isolation. The suite does not push a physical production device buffer or
 consume the mixed-media sinks as a recording. The desktop suite does exercise
 the production system-audio meter adapter boundary, server-side coalescing,
 strict raw-media-free event shape, and Leptos release compilation. The macOS
-bridge suite pushes fake-native buffers through the exact production bridge and
-real GStreamer appsrc runtime; physical ScreenCaptureKit execution remains
-protected.
+bridge suites push fake-native system-audio, microphone, and camera buffers
+through the exact bridge cores and real GStreamer appsrc runtime; physical
+ScreenCaptureKit, `osxaudiosrc`, and `avfvideosrc` execution remains protected.
 
 The EOS regression lane executes 500 empty-source stops and 500
 first-buffer-immediate stops, including a one-buffer appsrc budget. Empty stop
@@ -221,8 +240,8 @@ be inferred from local tests:
   continues; and
 - product, media, privacy, accessibility, and release-owner signoff.
 
-Until shared-clock screen/audio composition, lossless tail/mux proof, UI event
-connection, microphone/camera adapters, and physical device recovery
-integration exist, this slice is suitable for native adapter development and
-local conformance only. Later hardware records cannot repair the absent release
-code and do not authorize production promotion.
+Until shared-clock screen/audio composition, lossless tail/mux proof,
+continuous mixed-source controls, and physical device recovery integration
+exist, this slice is suitable for native adapter development and local
+conformance only. Later hardware records cannot repair the absent release code
+and do not authorize production promotion.
