@@ -10,7 +10,7 @@ use gstreamer as gst;
 
 use crate::MediaError;
 
-pub const RUNTIME_MANIFEST_VERSION: u16 = 7;
+pub const RUNTIME_MANIFEST_VERSION: u16 = 8;
 pub const MEDIA_APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MINIMUM_GSTREAMER_VERSION: (u32, u32, u32) = (1, 22, 0);
 pub const MINIMUM_GSTREAMER_VERSION_TEXT: &str = "1.22.0";
@@ -65,8 +65,12 @@ pub enum RuntimeCapability {
     Mp4Muxing,
     QuickTimeMuxing,
     SoftwareH264,
+    SoftwareH265,
+    SoftwareFfv1,
     SoftwareAac,
     SoftwareOpus,
+    SoftwareFlac,
+    MatroskaMuxing,
     MediaTransform,
 }
 
@@ -89,8 +93,12 @@ impl fmt::Display for RuntimeCapability {
             Self::Mp4Muxing => "mp4_muxing",
             Self::QuickTimeMuxing => "quicktime_muxing",
             Self::SoftwareH264 => "software_h264",
+            Self::SoftwareH265 => "software_h265",
+            Self::SoftwareFfv1 => "software_ffv1",
             Self::SoftwareAac => "software_aac",
             Self::SoftwareOpus => "software_opus",
+            Self::SoftwareFlac => "software_flac",
+            Self::MatroskaMuxing => "matroska_muxing",
             Self::MediaTransform => "media_transform",
         };
         formatter.write_str(value)
@@ -328,6 +336,12 @@ const FACTORIES: &[FactorySpec] = &[
         platform: PlatformScope::NativeDesktop,
     },
     FactorySpec {
+        factory: "matroskamux",
+        capability: RuntimeCapability::MatroskaMuxing,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
         factory: "qtmux",
         capability: RuntimeCapability::QuickTimeMuxing,
         requirement: FactoryRequirement::Optional,
@@ -348,6 +362,24 @@ const FACTORIES: &[FactorySpec] = &[
     FactorySpec {
         factory: "h264parse",
         capability: RuntimeCapability::SoftwareH264,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "x265enc",
+        capability: RuntimeCapability::SoftwareH265,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "h265parse",
+        capability: RuntimeCapability::SoftwareH265,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "avenc_ffv1",
+        capability: RuntimeCapability::SoftwareFfv1,
         requirement: FactoryRequirement::Optional,
         platform: PlatformScope::NativeDesktop,
     },
@@ -397,6 +429,12 @@ const FACTORIES: &[FactorySpec] = &[
         factory: "opusdec",
         capability: RuntimeCapability::DecodeAnalysis,
         requirement: FactoryRequirement::Required,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "flacenc",
+        capability: RuntimeCapability::SoftwareFlac,
+        requirement: FactoryRequirement::Optional,
         platform: PlatformScope::NativeDesktop,
     },
 ];

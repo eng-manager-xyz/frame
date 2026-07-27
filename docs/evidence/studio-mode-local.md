@@ -8,11 +8,11 @@ It does not classify the complete Studio product path as locally implemented.
 
 ## Closure ledger boundary
 
-Issue 27 checkboxes 4, 5, 8, 9, 10, and 11 are repository-local gaps.
-Checkboxes 1, 2, 3, and 6 are locally satisfied by the versioned project
-format, production isolated-track recorder, source-set-bound native preview
-engine, and production filesystem legacy importer. Checkbox 7 alone remains
-`protected_pending`, because the
+Issue 27 checkboxes 8, 9, 10, and 11 are repository-local gaps. Checkboxes 1–6
+are locally satisfied by the versioned project format, production
+isolated-track recorder, source-set-bound native preview engine, exact
+aligned-source export profiles, and production filesystem legacy importer.
+Checkbox 7 alone remains `protected_pending`, because the
 non-mutating importer/reporting path exists but still needs a reviewed
 representative legacy-project corpus.
 
@@ -35,17 +35,20 @@ microphone/camera bridge into Studio. Its artifact-backed Editable WebM
 copy/publication
 is not an edit-aware Studio export. A new narrow native adapter does execute
 the shared canonical plan for a clock-aligned screen original plus optional
-microphone/system-audio originals: preview maps an
-edited output point before real decode, and export applies trim/delete/rational
-speed plus audio gaps/gain/mute to a playable VP8/Opus WebM. It is not wired to
-the desktop or `StudioRenderCoordinator`, does not assemble arbitrary
-asset-offset ranges, and fails closed for camera, cursor, background,
-camera-only, and side-by-side composition. The reference renderer still writes
-a checksum-bound bundle rather than dispatching that native adapter. Therefore
-these paths cannot yet satisfy complete desktop Studio composition,
-edit-aware export, Cloudflare distribution-master, every-boundary production
-recovery, decoded goldens, long-project effects, or
-hardware-fallback/cancellation checkboxes.
+microphone/system-audio originals: preview maps an edited output point before
+real decode, and export applies trim/delete/rational speed plus audio
+gaps/gain/mute. The export adapter now executes and postcondition-probes all
+four approved software profiles, including the H.264/AAC hosted-media
+distribution master, while preserving input originals. It emits bounded
+monotonic progress and cleans its private staging artifact when cancellation
+occurs before publication. It is not wired to the desktop or
+`StudioRenderCoordinator`, does not assemble arbitrary asset-offset ranges, and
+fails closed for camera, cursor, background, camera-only, and side-by-side
+composition. The reference renderer still writes a checksum-bound bundle
+rather than dispatching that native adapter. Therefore these paths cannot yet
+satisfy complete desktop Studio composition, every-boundary production
+recovery, decoded preview/export/reference goldens, long-project effects, or
+hardware-fallback acceptance criteria.
 
 Separately, `NativeStudioPreviewEngine` opens the complete immutable
 `StudioPreviewGraphSpec`, verifies every original against its durable sidecar
@@ -103,8 +106,15 @@ The external contract suite exercises:
   through accurate, shared-sequence GStreamer segments, waits for every aligned
   source branch rather than the first aggregate message, bounds any closing
   screen-frame hold to one second, emits a playable VP8/Opus WebM whose measured
-  duration is within 100 ms of the exact plan, decodes the result, and removes
-  pre-cancelled or failed outputs;
+  duration is within 100 ms of the exact plan, decodes the result, emits a
+  bounded monotonic progress trace, and removes pre-cancelled, mid-render
+  cancelled, or failed outputs;
+- real approved-profile exports that decode and verify the exact H.264/AAC MP4
+  hosted-media master, VP8/Opus WebM native master, HEVC/AAC MP4 native master,
+  and FFV1/FLAC Matroska archive geometry, frame rate, colorimetry, 48 kHz stereo
+  audio, container/codec markers, and complete output hash; licensed profiles
+  require their explicit approval environment value, and an approved profile
+  without an aligned audio source fails closed;
 - a separately composed macOS display/window/region desktop source and
   recording graph whose source-level checks cover permission preflight, opaque
   target selection, bounded normalized frame ingress and stop tail,
@@ -151,13 +161,13 @@ The external contract suite exercises:
   renderer and journal; and
 - hard buffer/byte/time ceilings on every media queue.
 
-The native execution tests also retain the basic single-source WebM path and,
-behind the explicit codec-decision gate, emit an MP4 that a second GStreamer
-demux/parser graph consumes to EOS. The edit-aware WebM path proves canonical
-temporal/audio execution for aligned synthetic originals, bounded cancellation,
-and a playable output duration. It does not prove camera/cursor/background
-composition, Cloudflare profile geometry/color compliance, arbitrary persisted
-asset assembly, perceptual parity, or coordinator/desktop integration.
+The native execution tests also retain the basic single-source WebM path and
+the older video-only MP4 compatibility helper. The edit-aware path proves
+canonical temporal/audio execution for aligned synthetic originals, bounded
+progress and cancellation, a playable output duration, and exact decoded
+postconditions for every approved profile. It does not prove
+camera/cursor/background composition, arbitrary persisted asset assembly,
+perceptual parity, or coordinator/desktop integration.
 
 The production-mode desktop composition can be built and its adapter-truth
 bootstrap smoked on macOS with:
@@ -185,6 +195,7 @@ cargo test -p frame-media --test studio_mode_contract
 cargo test -p frame-media --test studio_native_recording
 
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
+FRAME_NATIVE_HEVC_AAC_APPROVED=approved-v1 \
 GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media \
   studio_ -- --nocapture
@@ -198,6 +209,7 @@ Full media command (using the audited plugin root discovered for this build):
 
 ```text
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
+FRAME_NATIVE_HEVC_AAC_APPROVED=approved-v1 \
 GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
   scripts/ci/gstreamer-sanitized-exec cargo test --locked -p frame-media --all-targets
 ```
@@ -237,8 +249,9 @@ not a historical Cap project and its media-named files are not encoded samples.
 The contract suite uses deterministic fake native ports alongside production
 filesystem durability components. Its reference renderer writes a canonical
 checksum-bound bundle, while the separate native execution helpers supply
-synthetic tracks, edited preview mapping, aligned A/V WebM, single-source WebM,
-and gated MP4 evidence. The production isolated-track recorder uses synthetic
+synthetic tracks, edited preview mapping, aligned A/V execution for all four
+approved profiles, single-source WebM, and gated licensed-codec evidence. The
+production isolated-track recorder uses synthetic
 payloads in local execution because the display/window/region desktop recorder
 is connected to the release shell, but not to the production multitrack
 recorder or the Studio coordinator.
@@ -274,6 +287,5 @@ corresponding repository-local production paths exist:
   release-candidate evidence links.
 
 Absence of a required protected record blocks promotion, but attaching one
-cannot close checkboxes 4–5 or 8–11 while their local integrations remain
-absent. No provider, hardware, user, or release claim is made by this local
-evidence file.
+cannot close checkboxes 8–11 while their local integrations remain absent. No
+provider, hardware, user, or release claim is made by this local evidence file.

@@ -480,6 +480,12 @@ def main() -> int:
             ),
             (
                 quality,
+                "            gstreamer1.0-libav \\\n            | sort > target/evidence/gstreamer-packages-ci.tsv",
+                "            | sort > target/evidence/gstreamer-packages-ci.tsv",
+                "FFV1 runtime package omitted from audited GStreamer evidence",
+            ),
+            (
+                quality,
                 "      G_DEBUG: fatal-criticals",
                 "      G_DEBUG: gc-friendly",
                 "media job permits GLib/GStreamer criticals",

@@ -24,8 +24,8 @@ use thiserror::Error;
 
 use crate::{
     AudioSampleFormat, AvFormat, AvPipelineGraphSpec, AvQueueSpec, AvSourceClass,
-    CancellationToken, ExactCapsSpec, InstantPipelineRequest, InstantVideoCaps, PixelFormat,
-    pipeline_has_trusted_factory_provenance, prepare_runtime,
+    CancellationToken, ExactCapsSpec, ExportProfile, InstantPipelineRequest, InstantVideoCaps,
+    PixelFormat, pipeline_has_trusted_factory_provenance, prepare_runtime,
 };
 
 const BUS_POLL: Duration = Duration::from_millis(25);
@@ -66,7 +66,7 @@ pub enum NativeExecutionError {
     ResourceLimit,
     #[error("native media filesystem operation failed")]
     Filesystem,
-    #[error("H.264/AAC execution has not been explicitly approved")]
+    #[error("licensed native codec execution has not been explicitly approved")]
     CodecApprovalRequired,
 }
 
@@ -1114,8 +1114,35 @@ pub(crate) fn acquire_studio_native_execution_slot(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeStudioExportProfile {
+    /// Source-shaped VP8/WebM compatibility artifact. This is not one of the
+    /// four exact approved Studio delivery profiles.
     EditableWebM,
     DistributionMasterMp4,
+    NativeHighQualityWebM,
+    NativeHighQualityHevcMp4,
+    NativeArchiveMatroska,
+}
+
+impl NativeStudioExportProfile {
+    #[must_use]
+    pub const fn approved_profile(self) -> Option<ExportProfile> {
+        match self {
+            Self::EditableWebM => None,
+            Self::DistributionMasterMp4 => Some(ExportProfile::DistributionMaster),
+            Self::NativeHighQualityWebM => Some(ExportProfile::NativeHighQualityWebM),
+            Self::NativeHighQualityHevcMp4 => Some(ExportProfile::NativeHighQualityHevc),
+            Self::NativeArchiveMatroska => Some(ExportProfile::NativeArchiveLossless),
+        }
+    }
+
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::EditableWebM | Self::NativeHighQualityWebM => "webm",
+            Self::DistributionMasterMp4 | Self::NativeHighQualityHevcMp4 => "mp4",
+            Self::NativeArchiveMatroska => "mkv",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1127,18 +1154,25 @@ pub struct NativeStudioExportArtifact {
     pub playable_container_marker: bool,
 }
 
-/// Decode and re-encode a playable Studio export. MP4 remains behind the
-/// explicit codec decision; WebM is the fully executable local fallback.
+/// Decode and re-encode one video-only compatibility artifact.
+///
+/// Exact approved Studio profiles require the edit-aware multi-track executor;
+/// this older helper fails closed for profiles other than Editable WebM and
+/// the retained video-only distribution compatibility path.
 pub fn render_studio_export(
     source: &Path,
     output: &Path,
     profile: NativeStudioExportProfile,
     cancellation: &CancellationToken,
 ) -> Result<NativeStudioExportArtifact, NativeExecutionError> {
-    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
-    if profile == NativeStudioExportProfile::DistributionMasterMp4 {
-        require_codec_approval()?;
+    if !matches!(
+        profile,
+        NativeStudioExportProfile::EditableWebM | NativeStudioExportProfile::DistributionMasterMp4
+    ) {
+        return Err(NativeExecutionError::InvalidGraph);
     }
+    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
+    require_export_codec_approval(profile)?;
     let canonical = fs::canonicalize(source).map_err(|_| NativeExecutionError::Filesystem)?;
     if !canonical.is_file() || output.exists() {
         return Err(NativeExecutionError::InvalidOutput);
@@ -1153,10 +1187,15 @@ pub fn render_studio_export(
             b"webm".as_slice(),
         ),
         NativeStudioExportProfile::DistributionMasterMp4 => (
-            "videoconvert ! x264enc tune=zerolatency byte-stream=false ! h264parse config-interval=-1",
+            "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=1920,height=1080,framerate=30/1,colorimetry=2:3:5:1 ! x264enc bitrate=12000 tune=zerolatency key-int-max=60 byte-stream=false ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au",
             "mp4mux faststart=true fragment-duration=2000 streamable=true",
             b"ftyp".as_slice(),
         ),
+        NativeStudioExportProfile::NativeHighQualityWebM
+        | NativeStudioExportProfile::NativeHighQualityHevcMp4
+        | NativeStudioExportProfile::NativeArchiveMatroska => {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
     };
     let description = format!(
         concat!(
@@ -1299,6 +1338,31 @@ pub(crate) fn require_codec_approval() -> Result<(), NativeExecutionError> {
         == Some("approved-v1"))
     .then_some(())
     .ok_or(NativeExecutionError::CodecApprovalRequired)
+}
+
+pub(crate) fn require_export_codec_approval(
+    profile: NativeStudioExportProfile,
+) -> Result<(), NativeExecutionError> {
+    let approved = match profile {
+        NativeStudioExportProfile::DistributionMasterMp4 => {
+            std::env::var("FRAME_NATIVE_H264_AAC_APPROVED")
+                .ok()
+                .as_deref()
+                == Some("approved-v1")
+        }
+        NativeStudioExportProfile::NativeHighQualityHevcMp4 => {
+            std::env::var("FRAME_NATIVE_HEVC_AAC_APPROVED")
+                .ok()
+                .as_deref()
+                == Some("approved-v1")
+        }
+        NativeStudioExportProfile::EditableWebM
+        | NativeStudioExportProfile::NativeHighQualityWebM
+        | NativeStudioExportProfile::NativeArchiveMatroska => true,
+    };
+    approved
+        .then_some(())
+        .ok_or(NativeExecutionError::CodecApprovalRequired)
 }
 
 pub(crate) fn create_private_directory(path: &Path) -> Result<(), NativeExecutionError> {
@@ -1774,6 +1838,25 @@ mod tests {
                     &CancellationToken::new(),
                 ),
                 Err(NativeExecutionError::CodecApprovalRequired)
+            ));
+        }
+    }
+
+    #[test]
+    fn video_only_compatibility_export_rejects_multitrack_profiles() {
+        for profile in [
+            NativeStudioExportProfile::NativeHighQualityWebM,
+            NativeStudioExportProfile::NativeHighQualityHevcMp4,
+            NativeStudioExportProfile::NativeArchiveMatroska,
+        ] {
+            assert!(matches!(
+                render_studio_export(
+                    Path::new("/unused"),
+                    Path::new("/unused-output"),
+                    profile,
+                    &CancellationToken::new(),
+                ),
+                Err(NativeExecutionError::InvalidGraph)
             ));
         }
     }

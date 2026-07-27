@@ -1,9 +1,10 @@
 # Studio Mode v1 contracts
 
 Status: provider-neutral contracts, durable filesystem adapters, the bounded
-native isolated-track encoder, and the source-set-bound native preview engine
-are implemented. Desktop source composition, edit-aware production rendering,
-and protected parity evidence remain separate gates.
+native isolated-track encoder, the source-set-bound native preview engine, and
+exact aligned-source native export profiles are implemented. Desktop source
+composition, renderer-coordinator wiring, and protected parity evidence remain
+separate gates.
 
 ## Durable documents
 
@@ -276,18 +277,30 @@ unbounded decoded-frame queue.
 The first native executor slice accepts one required clock-aligned screen
 original plus independently optional clock-aligned microphone and system-audio
 originals. It performs accurate per-window GStreamer segment seeks, converts
-those segments to one continuous output timeline, mixes Opus audio after
-applying canonical gaps/gain/mute, and writes a playable VP8/Opus WebM (or the
-explicitly licensed H.264/AAC MP4 path). It verifies the container and audio
-markers, hashes the complete output, removes partial output on every error, and
-rechecks recursively autoplugged factories against the trusted plugin root.
+those segments to one continuous output timeline, applies canonical audio
+gaps/gain/mute before mixing, and executes the four approved profiles below in
+software. Every approved profile requires at least one aligned audio original;
+the executor does not silently publish a video-only artifact for a profile that
+requires AAC, Opus, or FLAC. H.264/AAC and HEVC/AAC fail closed behind separate
+explicit license approvals.
+
+Before atomic publication, the executor verifies container, video-codec, and
+audio-codec markers, decodes the staged artifact through the trusted runtime,
+checks exact resolution, frame rate, colorimetry, sample rate, and channel
+count, and hashes the complete output. It removes private staging and partial
+output on every error or cancellation and rechecks recursively autoplugged
+factories against the trusted plugin root. Progress is synchronous, bounded to
+one event per execution window plus lifecycle events, and monotonic by phase and
+basis points.
 Every aligned decoder receives one shared seek sequence number while paused and
 first-buffer blocked; execution advances only after a matching downstream
 `SegmentDone` from every declared source branch. Temporarily inactive mixer pads
 do not suppress a later window. A final decoded screen frame may be held only
 long enough to close the exact output timeline, with a hard one-second ceiling;
 a missing frame or larger closing gap fails the export instead of publishing a
-short artifact.
+short artifact. The initial barrier also prevents a non-live source from
+finalizing a muxer before the first canonical seek; HEVC receives its exact
+input caps before that flushing seek so x265 can reinitialize deterministically.
 Camera composition, transformed cursor metadata, nontransparent backgrounds,
 camera-only/side-by-side layouts, arbitrary asset-offset assembly, and wiring
 this adapter into `StudioRenderCoordinator` still fail closed or remain
