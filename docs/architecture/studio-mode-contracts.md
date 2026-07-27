@@ -1,8 +1,9 @@
 # Studio Mode v1 contracts
 
-Status: provider-neutral contracts and durable filesystem reference adapters are
-implemented; native codec/platform adapters and protected parity evidence remain
-separate gates.
+Status: provider-neutral contracts, durable filesystem adapters, and the
+bounded native isolated-track encoder are implemented. Desktop source
+composition, edit-aware production rendering, and protected parity evidence
+remain separate gates.
 
 ## Durable documents
 
@@ -103,23 +104,46 @@ build; it is never relabeled as VP8/Opus because that would reinterpret retained
 partial bytes. This is separate from asset v1 migration, whose format is
 explicitly unknown rather than rewritten.
 
-`FilesystemStudioRecordingSession` is a non-test sink for this graph. Native
-bridges feed bounded pre-encoded chunks to one file per enabled track; finish
-syncs and seals each track independently into the temporary namespace. It does
-not substitute a flattened master. `FilesystemStudioOriginalStore` verifies bytes
+`NativeStudioRecording` is the production GStreamer owner for this contract.
+It accepts only exact master-clock-corrected raw buffers, requires the
+recording session to own the same persisted graph, and constructs one bounded
+non-leaky `appsrc` plus one independent VP8/Opus streamable WebM encoder for
+each enabled branch. Encoded appsink buffers are split at the 1 MiB pull bound
+and streamed directly into `FilesystemStudioRecordingSession`; they do not
+pass through a flattened master or an unbounded staging allocation. Each
+source enforces its graph-declared buffer, byte, and time ceilings, exact
+payload shape, finite F32 audio, monotonic sequence/PTS, and the four-hour
+media ceiling. Finalization requires input on every enabled branch, serializes
+EOS to all sources, waits for aggregate pipeline EOS, confirms `Null`, and
+only then seals the durable session.
+
+`FilesystemStudioRecordingSession` is the non-test per-track sink for that
+graph. Finish syncs and seals each track independently into the temporary
+namespace. `FilesystemStudioOriginalStore` verifies bytes
 while staging and committing, uses per-asset locks, same-filesystem rename,
 canonical sidecars, file and directory sync, and never overwrites an existing
 original. If power fails after the media rename but before the sidecar write, a
 retry verifies the orphaned original and completes the sidecar without
 requiring the already-consumed temporary path.
 
-Dropping an unfinished filesystem recording session syncs and preserves its
-partials; it never treats an unwind as authorization to destroy captured media.
+Dropping an unfinished native graph reaches `Null`; dropping its unfinished
+filesystem recording session syncs and preserves the streamable WebM partials.
+Neither path treats an unwind as authorization to destroy captured media.
 `FilesystemStudioRecordingSession::recover` requires the exact original graph,
 rehashes every retained file under the per-track byte ceiling, reopens partials
 for append, and treats already-sealed temporary tracks as immutable. This also
 covers a crash in the middle of an enabled-track seal, where some tracks are
-partials and others are already in the temporary namespace.
+partials and others are already in the temporary namespace. The native WebM
+recorder accepts only a fresh empty session: recovery seals a nonempty
+streamable partial as an immutable clip and never appends a second EBML header.
+
+The native recording test executes all four branches, decodes both isolated
+video originals, commits all four exact temporary assets, and probes their
+durable sidecars. A second test stops a streamable WebM graph without EOS,
+rehashes and seals the retained partial through the recovery session, and
+decodes the recovered video. This proves the repository-local pipeline and
+recovery boundary; it does not substitute for kill/power-loss runs on the
+supported hardware matrix.
 
 Temporary media becomes an original only through a non-cloneable commit ticket
 bound to project, operation, asset metadata, checksum, and journal fence. A lost

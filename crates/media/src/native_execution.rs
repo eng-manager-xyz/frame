@@ -24,8 +24,8 @@ use thiserror::Error;
 
 use crate::{
     AudioSampleFormat, AvFormat, AvPipelineGraphSpec, AvQueueSpec, AvSourceClass,
-    CancellationToken, ExactCapsSpec, InstantAudioCaps, InstantPipelineRequest, InstantVideoCaps,
-    PixelFormat, pipeline_has_trusted_factory_provenance, prepare_runtime,
+    CancellationToken, ExactCapsSpec, InstantPipelineRequest, InstantVideoCaps, PixelFormat,
+    pipeline_has_trusted_factory_provenance, prepare_runtime,
 };
 
 const BUS_POLL: Duration = Duration::from_millis(25);
@@ -926,71 +926,6 @@ pub fn record_synthetic_studio_tracks(
         .collect()
 }
 
-/// Build the appsrc recording topology used by Studio capture. Each original
-/// is encoded and committed independently; flattening cannot destroy editability.
-pub fn build_studio_multitrack_appsrc_pipeline(
-    directory: &Path,
-    video: InstantVideoCaps,
-    audio: InstantAudioCaps,
-) -> Result<gst::Pipeline, NativeExecutionError> {
-    if video.width == 0
-        || video.height == 0
-        || video.frame_rate_numerator == 0
-        || video.frame_rate_denominator == 0
-        || audio.sample_rate != 48_000
-        || audio.channels == 0
-    {
-        return Err(NativeExecutionError::InvalidGraph);
-    }
-    create_private_directory(directory)?;
-    let description = format!(
-        concat!(
-            "appsrc name=studio_screen_src is-live=true do-timestamp=false block=false format=time ",
-            "caps=\"video/x-raw,format=BGRA,width={},height={},framerate={}/{}\" ",
-            "! queue max-size-buffers=16 max-size-bytes=134217728 max-size-time=500000000 leaky=downstream ",
-            "! videoconvert ! vp8enc deadline=1 ! webmmux ! filesink name=screen_sink ",
-            "appsrc name=studio_camera_src is-live=true do-timestamp=false block=false format=time ",
-            "caps=\"video/x-raw,format=BGRA,width={},height={},framerate={}/{}\" ",
-            "! queue max-size-buffers=16 max-size-bytes=134217728 max-size-time=500000000 leaky=downstream ",
-            "! videoconvert ! vp8enc deadline=1 ! webmmux ! filesink name=camera_sink ",
-            "appsrc name=studio_microphone_src is-live=true do-timestamp=false block=false format=time ",
-            "caps=\"audio/x-raw,format=F32LE,layout=interleaved,rate={},channels={}\" ",
-            "! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 leaky=downstream ",
-            "! audioconvert ! audioresample ! opusenc ! webmmux ! filesink name=microphone_sink ",
-            "appsrc name=studio_system_audio_src is-live=true do-timestamp=false block=false format=time ",
-            "caps=\"audio/x-raw,format=F32LE,layout=interleaved,rate={},channels={}\" ",
-            "! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 leaky=downstream ",
-            "! audioconvert ! audioresample ! opusenc ! webmmux ! filesink name=system_audio_sink"
-        ),
-        video.width,
-        video.height,
-        video.frame_rate_numerator,
-        video.frame_rate_denominator,
-        video.width,
-        video.height,
-        video.frame_rate_numerator,
-        video.frame_rate_denominator,
-        audio.sample_rate,
-        audio.channels,
-        audio.sample_rate,
-        audio.channels,
-    );
-    let pipeline = parse_pipeline(&description)?;
-    for (sink, name) in [
-        ("screen_sink", "screen.webm"),
-        ("camera_sink", "camera.webm"),
-        ("microphone_sink", "microphone.webm"),
-        ("system_audio_sink", "system-audio.webm"),
-    ] {
-        pipeline
-            .by_name(sink)
-            .ok_or(NativeExecutionError::InvalidGraph)?
-            .set_property("location", directory.join(name));
-    }
-    require_trusted(&pipeline)?;
-    Ok(pipeline)
-}
-
 fn track_artifact(
     role: NativeStudioTrackRole,
     path: PathBuf,
@@ -1444,6 +1379,7 @@ pub(crate) fn sha256_file_with_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::InstantAudioCaps;
 
     fn native_av_spec() -> AvPipelineGraphSpec {
         let appsrc = crate::AvAppSrcBridgeSpec {

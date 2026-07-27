@@ -606,7 +606,7 @@ def main() -> int:
             "optional exact 48 kHz stereo system audio",
             "not an edit-aware Studio export",
             "does not request capture permission",
-            "not to those multitrack helpers or the Studio coordinator",
+            "not to the production multitrack\nrecorder or the Studio coordinator",
             "--expected-adapter native_macos_display",
         ),
         "Studio evidence",

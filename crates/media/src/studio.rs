@@ -5268,6 +5268,20 @@ impl fmt::Debug for FilesystemStudioRecordingSession {
 }
 
 impl FilesystemStudioRecordingSession {
+    /// Confirms that a native encoder is attaching to the exact persisted
+    /// graph identity and a fresh set of sinks. A recovered nonempty WebM
+    /// partial must be sealed as a clip; appending a second container header
+    /// would corrupt the original.
+    #[must_use]
+    pub fn can_start_native_encoding(&self, graph: &StudioRecordingGraphSpec) -> bool {
+        !self.finished
+            && &self.graph == graph
+            && self
+                .tracks
+                .values()
+                .all(|track| track.file.is_some() && track.bytes == 0)
+    }
+
     pub fn begin(
         store: &FilesystemStudioOriginalStore,
         graph: StudioRecordingGraphSpec,
@@ -5337,7 +5351,9 @@ impl FilesystemStudioRecordingSession {
     /// graph identity. Existing bytes are re-read through SHA-256 before a
     /// partial is opened for append; an already-sealed track remains immutable.
     /// Missing partials are recreated so a crash during graph preparation can
-    /// resume without flattening or substituting another track.
+    /// resume without flattening or substituting another track. Encoded-chunk
+    /// producers may resume their own framed protocol, but a WebM encoder must
+    /// seal a nonempty streamable partial instead of appending another header.
     pub fn recover(
         store: &FilesystemStudioOriginalStore,
         graph: StudioRecordingGraphSpec,
