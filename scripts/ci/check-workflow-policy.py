@@ -538,11 +538,20 @@ def main() -> int:
         desktop_shell, "Prove the portable desktop dependency closure"
     )
     require(
+        quality.count("python3 -I scripts/ci/test-portable-desktop-dependencies.py")
+        == 1,
+        "quality-gates.yml: the portable dependency checker must run its hostile fixtures",
+        errors,
+    )
+    require(
         bool(dependency_step)
         and "cargo tree --locked -p frame-desktop-core" in dependency_step
         and "--features tauri-app,custom-protocol --edges normal" in dependency_step
-        and "frame-media|frame-platform-lifecycle|frame-macos-screen-capture|frame-macos-av-capture|frame-windows-screen-capture|frame-windows-capture-ffi|wgc|gstreamer"
-        in dependency_step,
+        and "--prefix none --format '{p}'" in dependency_step
+        and dependency_step.count(
+            "python scripts/ci/check-portable-desktop-dependencies.py"
+        )
+        == 1,
         "quality-gates.yml: the portable desktop dependency graph must reject native media crates",
         errors,
     )

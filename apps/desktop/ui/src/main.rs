@@ -13,10 +13,11 @@ mod browser {
 
     use frame_client::{InstantUiPhaseV1, InstantUiProgressV1};
     use frame_desktop_core::{
-        CAPTURE_ARTIFACT_SUMMARY_VERSION, CAPTURE_TARGET_CATALOG_VERSION, CaptureTargetKind,
-        CommandOutcome, DESKTOP_RUNTIME_VERSION, DesktopAdapterKind, DesktopBootstrap,
-        DesktopDispatch, DesktopRuntimeSnapshot, DesktopWindowContext, DeviceClass, DeviceState,
-        EditorMutation, EditorState, ExportProfile, ExportState, IPC_PROTOCOL_VERSION,
+        AudioMeterSnapshot, CAPTURE_ARTIFACT_SUMMARY_VERSION, CAPTURE_TARGET_CATALOG_VERSION,
+        CameraPreviewState, CaptureTargetKind, CommandOutcome, DESKTOP_INPUT_TELEMETRY_INTERVAL_MS,
+        DESKTOP_RUNTIME_VERSION, DesktopAdapterKind, DesktopBootstrap, DesktopDispatch,
+        DesktopRuntimeEvent, DesktopRuntimeSnapshot, DesktopWindowContext, DeviceClass,
+        DeviceState, EditorMutation, EditorState, ExportProfile, ExportState, IPC_PROTOCOL_VERSION,
         InstantFinalizeCapabilityState, InstantFinalizeCommandV1, InstantFinalizeHandle,
         InstantFinalizeUiUpdate, IpcCommand, LifecycleAction, PublicErrorCode,
         RecorderAdapterState, RecorderMode, RecorderState, RequestEnvelope, RequestId,
@@ -36,7 +37,8 @@ mod browser {
 
     use self::region_picker::RegionPicker;
 
-    const RECORDER_POLL_INTERVAL: Duration = Duration::from_secs(1);
+    const RECORDER_POLL_INTERVAL: Duration =
+        Duration::from_millis(DESKTOP_INPUT_TELEMETRY_INTERVAL_MS);
 
     #[wasm_bindgen]
     extern "C" {
@@ -241,6 +243,7 @@ mod browser {
         if busy.get_untracked() {
             return;
         }
+        let recorder_poll = matches!(command, IpcCommand::RecorderPoll);
         busy.set(true);
         spawn_local(async move {
             match client.dispatch(role, command).await {
@@ -249,9 +252,25 @@ mod browser {
                         CommandOutcome::Ok { .. } => None,
                         CommandOutcome::Error { code, .. } => Some(public_error(code).into()),
                     };
-                    status.set(dispatch.snapshot.announcement.clone());
-                    snapshot.set(Some(dispatch.snapshot));
-                    error.set(operation_error);
+                    match validated_snapshot(
+                        snapshot
+                            .get_untracked()
+                            .map(|state| (state.meter, state.camera_preview)),
+                        recorder_poll,
+                        &dispatch,
+                    ) {
+                        Ok(next) => {
+                            status.set(next.announcement.clone());
+                            snapshot.set(Some(next));
+                            error.set(operation_error);
+                        }
+                        Err(()) => {
+                            status.set("Native telemetry event rejected.".into());
+                            error.set(Some(
+                                "Frame rejected malformed or stale input telemetry.".into(),
+                            ));
+                        }
+                    }
                 }
                 Err(()) => {
                     error.set(Some(
@@ -263,6 +282,44 @@ mod browser {
             }
             busy.set(false);
         });
+    }
+
+    fn validated_snapshot(
+        previous_input: Option<(AudioMeterSnapshot, CameraPreviewState)>,
+        recorder_poll: bool,
+        dispatch: &DesktopDispatch,
+    ) -> Result<DesktopRuntimeSnapshot, ()> {
+        let mut next = dispatch.snapshot.clone();
+        let mut previous_event_sequence = None;
+        let mut telemetry_count = 0_u8;
+        if recorder_poll
+            && next.recorder == RecorderState::Recording
+            && let Some((meter, camera_preview)) = previous_input
+        {
+            next.meter = meter;
+            next.camera_preview = camera_preview;
+        }
+        for envelope in &dispatch.events {
+            if envelope.protocol_version != DESKTOP_RUNTIME_VERSION
+                || previous_event_sequence
+                    .is_some_and(|previous| envelope.event_sequence <= previous)
+            {
+                return Err(());
+            }
+            previous_event_sequence = Some(envelope.event_sequence);
+            if let DesktopRuntimeEvent::InputTelemetry(telemetry) = &envelope.event {
+                telemetry_count = telemetry_count.checked_add(1).ok_or(())?;
+                if telemetry_count > 1
+                    || envelope.owner != WindowRole::Recorder
+                    || !telemetry.validate()
+                {
+                    return Err(());
+                }
+                next.meter = telemetry.meter;
+                next.camera_preview = telemetry.camera_preview;
+            }
+        }
+        Ok(next)
     }
 
     fn retry_instant_finalize(
@@ -779,12 +836,19 @@ mod browser {
                         }}</p>
                     </CardFrame>
 
-                    <Show when=move || is_fake()>
+                    <Show when=move || is_fake() || is_native()>
                         <div class="meter-grid" aria-label="Live input meters">
                             <Label attr:r#for="microphone-meter">"Microphone"</Label>
                             <Meter attr:id="microphone-meter" attr:min="0" attr:max="10000" attr:value=move || snapshot.get().map_or(0, |state| state.meter.microphone_basis_points)>"Microphone level"</Meter>
                             <Label attr:r#for="system-meter">"System audio"</Label>
                             <Meter attr:id="system-meter" attr:min="0" attr:max="10000" attr:value=move || snapshot.get().map_or(0, |state| state.meter.system_audio_basis_points)>"System audio level"</Meter>
+                            <output aria-live="off">{move || match snapshot.get().map(|state| state.camera_preview) {
+                                Some(CameraPreviewState::Active) => "Camera preview active",
+                                Some(CameraPreviewState::Unavailable) => {
+                                    "Camera preview unavailable"
+                                }
+                                Some(CameraPreviewState::Disabled) | None => "Camera preview disabled",
+                            }}</output>
                         </div>
                     </Show>
                     <Show when=move || is_native()>

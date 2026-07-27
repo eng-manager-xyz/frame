@@ -17,9 +17,9 @@ Ordinals are one-based in checkbox order within each issue. Every issue pins a
 digest of its checkbox text, so editing or reordering a requirement forces a
 fresh classification. Evidence paths must be real, non-symlink repository
 files. All ordinals not explicitly protected or open are locally satisfied.
-The current exact partition is 358 locally satisfied, 176 protected pending,
-and 20 repository-local gaps. The focused native-product audit pins those gaps
-to issue 25 checkboxes 1/5/6/7/8, issue 27 checkboxes
+The current exact partition is 359 locally satisfied, 176 protected pending,
+and 19 repository-local gaps. The focused native-product audit pins those gaps
+to issue 25 checkboxes 1/6/7/8, issue 27 checkboxes
 2/3/4/5/8/9/10/11, and issue 33 checkboxes 3/4/5/6/8/9/10.
 
 Run:
