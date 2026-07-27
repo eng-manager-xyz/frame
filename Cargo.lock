@@ -1382,6 +1382,7 @@ dependencies = [
  "apple-metal",
  "core-graphics",
  "frame-media",
+ "frame-platform-lifecycle",
  "ring",
  "screencapturekit",
  "thiserror 2.0.18",

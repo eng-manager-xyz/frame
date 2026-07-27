@@ -82,11 +82,26 @@ fn deliver_callback_chunk<T>(
     }
 }
 
-#[derive(Default)]
 struct CallbackState {
+    started: std::time::Instant,
     sequence: AtomicU64,
     last_end_ns: AtomicU64,
     force_discontinuity: AtomicBool,
+}
+
+impl CallbackState {
+    fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            sequence: AtomicU64::new(0),
+            last_end_ns: AtomicU64::new(0),
+            force_discontinuity: AtomicBool::new(false),
+        }
+    }
+
+    fn arrival_ns(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
 }
 
 struct ActiveCapture {
@@ -332,7 +347,7 @@ impl MacOsSystemAudioSource {
         };
         let stream = SCStream::new_with_delegate(&filter, &configuration, delegate);
         let callback_queue = DispatchQueue::new(CALLBACK_QUEUE_LABEL, DispatchQoS::UserInteractive);
-        let callback_state = Arc::new(CallbackState::default());
+        let callback_state = Arc::new(CallbackState::new());
         let callback_diagnostics = Arc::clone(&self.diagnostics);
         let mut active = ActiveCapture {
             stream: Some(stream),
@@ -615,6 +630,7 @@ fn process_callback_sample(
     let chunk = MacOsSystemAudioChunk {
         sequence,
         source_pts_ns: extracted.source_pts_ns,
+        arrival_ns: state.arrival_ns(),
         duration_ns: extracted.duration_ns,
         discontinuity,
         samples_f32le: extracted.samples_f32le,

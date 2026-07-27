@@ -16,6 +16,9 @@
 - The native-call deadline and delegate/context teardown proof follow the
   bounded ownership pattern established by `frame-macos-screen-capture` in
   Issue 24. No source code is shared through a private or unstable API.
+- `frame-platform-lifecycle` supplies the safe process-lifetime sleep/wake
+  cursor used by the normalized bridge. It exposes no Apple observer object or
+  callback identity.
 
 The crate contains `#![forbid(unsafe_code)]`; all Apple FFI remains inside the
 published dependencies.
@@ -34,12 +37,17 @@ the Screen Recording TCC category. Its Objective-C FFI, unsafe blocks,
 unbounded channel behavior, labels/process metadata, and timeout-only teardown
 were not copied.
 
-## Deliberate integration gap
+## Deliberate integration boundary
 
-This slice does not implement `frame_media::NativeAvBridge`. The contract is
-being extended with startup calibration and also requires hotplug,
-default-change, and sleep/wake behavior. Claiming those capabilities before a
-session-owned calibration/event implementation exists would be false. The
-narrow source exposes raw source PTS, duration, discontinuity, stable device
-identity, and exact format so that integration can be completed explicitly in
-the next media-runtime slice.
+This crate now implements `frame_media::NativeAvBridge` for the selected macOS
+ScreenCaptureKit system-audio source. The bridge owns calibration, appsrc
+leases, permission revisions, sleep/wake transitions, pause/resume epochs, and
+terminal reconciliation. Its portable fake-source suite also drives the real
+GStreamer appsrc runtime.
+
+This is not a claim that microphone or camera capture exists, or that the
+normalized preview runtime has a lossless recording tail. The desktop's
+current screen/system-audio WebM path remains direct until the Studio journal
+and mux owner can authenticate and consume every terminal callback. No source
+from the retained Cap checkout was copied: its AGPL recording/audio code was
+read only for behavioral comparison.

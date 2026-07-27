@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 frame-media = { path = "../media" }
+frame-platform-lifecycle = { path = "../platform-lifecycle" }
 ring.workspace = true
 thiserror.workspace = true
 

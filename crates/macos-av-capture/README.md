@@ -1,19 +1,32 @@
 # frame-macos-av-capture
 
-Safe, target-gated ScreenCaptureKit system-audio capture for the first Issue 25
-slice. This crate captures one privacy-safe source: the macOS system/application
-mix, excluding Frame's own process audio. It does not capture microphone or
-camera input and does not claim that audio is muxed into a recording artifact.
+Safe, target-gated ScreenCaptureKit system-audio capture for Issue 25. This
+crate captures one privacy-safe source: the macOS system/application mix,
+excluding Frame's own process audio. It does not capture microphone or camera
+input and does not claim that the normalized preview runtime losslessly muxes
+audio into a recording artifact.
 
 ## Current boundary
 
-`MacOsSystemAudioSource` is intentionally narrower than
-`frame_media::NativeAvBridge`. The provider-neutral bridge currently requires
-truthful hotplug, default-change, sleep/wake, and per-epoch startup-calibration
-behavior. Those orchestration contracts are not all implemented by this first
-native slice. The source instead exposes stable identity, explicit permission,
-bounded timestamped chunks, diagnostics, and confirmed teardown so the later
-bridge can integrate without inventing provider behavior.
+`MacOsSystemAudioSource` remains the narrow raw native owner.
+`MacOsNativeAvBridge` wraps it in the provider-neutral session contract:
+
+- one secret-bound virtual device and one secret-bound adapter identity;
+- exact owner, generation, and per-epoch source stamps;
+- five callback-derived startup calibration samples retained only for
+  calibration, followed by a fresh bounded ingress sequence;
+- owned PCM leases transferred through the real CPU `appsrc` adapter;
+- permission revision events, process-lifetime sleep/wake events, pause/resume,
+  and stable terminal reconciliation; and
+- a one-second permission probe that never exports labels, native IDs, or raw
+  media through UI/diagnostic events.
+
+The source has no physical default-route or hotplug choice: it represents the
+single ScreenCaptureKit application/system mix. Its catalog therefore changes
+only when permission changes. Microphone and camera adapters remain separate
+Issue 25 work, and the desktop recording composition still uses its direct
+screen/system-audio worker until the Studio journal can authenticate and drain
+the normalized runtime's terminal callback tail.
 
 The only admitted format is interleaved stereo F32LE PCM at 48 kHz. Native
 ScreenCaptureKit output must report linear PCM, float, little-endian, 32 bits
@@ -38,6 +51,13 @@ chunk.
 4. A completely stopped source may start again. A timeout, unexpected native
    stop, or unconfirmed callback teardown is sticky: future start/poll/stop
    calls fail closed rather than reusing ambiguous native authority.
+
+The normalized bridge collects five samples behind a 750 ms ceiling. Each
+sample carries callback arrival relative to the stream start and raw native
+PTS relative to the first callback. Calibration callbacks are not replayed
+after the timebase anchor; the next callback begins ingress sequence one.
+Pause or sleep confirms native stop. Resume starts a new stream epoch and
+requires a new calibration batch before PCM can enter `appsrc`.
 
 ScreenCaptureKit 8's shareable-content, start, and stop wrappers use an
 unbounded native completion wait. Each call runs on a named helper with a
@@ -70,6 +90,8 @@ cannot access released capture state or block after the receiver is gone.
 - Native stop has a five-second caller deadline. Each of the two callback-queue
   fences and the delegate proof has a separate one-second deadline, so no queue
   fence can turn `stop` or source `Drop` into an unbounded wait.
+- Normalized startup calibration admits exactly five callbacks behind a
+  750 ms deadline; it never waits for an unbounded first sample.
 
 The production application must target macOS 13 or newer, provide
 `NSScreenCaptureUsageDescription`, and embed the Swift runtime search paths
