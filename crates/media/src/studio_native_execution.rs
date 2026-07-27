@@ -28,17 +28,18 @@ use same_file::Handle;
 use uuid::Uuid;
 
 use crate::native_execution::{
-    acquire_studio_native_execution_slot, create_private_directory, require_codec_approval,
+    acquire_studio_native_execution_slot, create_private_directory, require_export_codec_approval,
     set_null, sha256_file_with_budget, sync_directory,
 };
 use crate::{
-    BackgroundStyle, CancellationToken, CanonicalEditPlan, ExactDuration,
+    BackgroundStyle, CancellationToken, CanonicalEditPlan, ExactDuration, ExportProfileSpec,
     FilesystemStudioOriginalStore, FrameRate, LayoutPreset, MAX_STUDIO_EDIT_EXECUTION_BATCH,
     MAX_STUDIO_EDIT_EXECUTION_WINDOWS, NativeExecutionError, NativeStudioExportProfile,
-    NativeStudioPreviewFrame, Sha256Digest, StudioAsset, StudioAssetId, StudioEditExecutionError,
-    StudioEditExecutionWindow, StudioEditExecutor, StudioPreviewGraphSpec, TrackKind,
-    decode_studio_preview_frame, pipeline_has_only_declared_authored_factories,
-    pipeline_has_trusted_factory_provenance, prepare_runtime,
+    NativeStudioPreviewFrame, RenderPhase, Sha256Digest, StudioAsset, StudioAssetId,
+    StudioColorSpace, StudioEditExecutionError, StudioEditExecutionWindow, StudioEditExecutor,
+    StudioPreviewGraphSpec, TrackKind, decode_studio_preview_frame,
+    pipeline_has_only_declared_authored_factories, pipeline_has_trusted_factory_provenance,
+    prepare_runtime,
 };
 
 const EDIT_EXECUTION_DEADLINE: Duration = Duration::from_secs(120);
@@ -74,13 +75,38 @@ pub struct NativeStudioEditedPreviewFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeStudioEditedExportArtifact {
     pub profile: NativeStudioExportProfile,
+    pub approved_profile: Option<ExportProfileSpec>,
     pub path: PathBuf,
     pub bytes: u64,
     pub sha256: String,
     pub playable_container_marker: bool,
     pub audio_tracks: u8,
+    pub video: NativeStudioOutputVideo,
+    pub audio: Option<NativeStudioOutputAudio>,
     pub execution_windows: usize,
     pub plan_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeStudioOutputVideo {
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: FrameRate,
+    pub colorimetry: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeStudioOutputAudio {
+    pub sample_rate: u32,
+    pub channels: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeStudioRenderProgress {
+    pub phase: RenderPhase,
+    pub basis_points: u16,
+    pub completed_windows: usize,
+    pub total_windows: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -631,35 +657,135 @@ pub fn render_studio_export_with_edits(
     profile: NativeStudioExportProfile,
     cancellation: &CancellationToken,
 ) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
+    render_studio_export_with_edits_and_progress(
+        sources,
+        output,
+        plan,
+        profile,
+        cancellation,
+        |_| {},
+    )
+}
+
+/// Render an edit-aware artifact while publishing a bounded monotonic progress
+/// trace. The callback is synchronous and receives at most one event per
+/// execution window plus six lifecycle events; it owns no media bytes.
+pub fn render_studio_export_with_edits_and_progress(
+    sources: &NativeStudioAlignedSources,
+    output: &Path,
+    plan: &CanonicalEditPlan,
+    profile: NativeStudioExportProfile,
+    cancellation: &CancellationToken,
+    progress: impl FnMut(NativeStudioRenderProgress),
+) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
     let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
-    if profile == NativeStudioExportProfile::DistributionMasterMp4 {
-        require_codec_approval()?;
-    }
+    require_export_codec_approval(profile)?;
     let mut executor =
         StudioEditExecutor::compile(plan, MAX_STUDIO_EDIT_EXECUTION_WINDOWS, cancellation)
             .map_err(map_execution_error)?;
     validate_supported_composition(executor.windows(), sources)?;
+    let approved_profile = profile
+        .approved_profile()
+        .map(ExportProfileSpec::approved)
+        .map(ExportProfileSpec::validate)
+        .transpose()
+        .map_err(|_| NativeExecutionError::InvalidGraph)?;
+    if approved_profile.is_some() && sources.microphone.is_none() && sources.system_audio.is_none()
+    {
+        return Err(NativeExecutionError::InvalidGraph);
+    }
+    let total_windows = executor.windows().len();
+    let mut progress = NativeStudioProgressEmitter::new(progress, total_windows);
+    progress.emit(RenderPhase::Preparing, 0, 0)?;
     let canonical = canonicalize_sources(sources)?;
     let mut reservation = StudioOutputReservation::new(output.to_path_buf(), profile)?;
 
     let pipeline = build_edit_pipeline(&canonical, reservation.staging_path(), profile)?;
-    let result = execute_windows(&pipeline, &mut executor, &canonical, cancellation);
+    let result = execute_windows(
+        &pipeline,
+        &mut executor,
+        &canonical,
+        profile,
+        cancellation,
+        &mut progress,
+    );
     if result.is_err() {
         let _ = set_null(&pipeline);
         return result.map(|()| unreachable!());
     }
     set_null(&pipeline)?;
+    progress.emit(RenderPhase::Finalizing, 9_800, total_windows)?;
     reservation.adopt_created()?;
     let mut artifact = validate_edited_output(
         reservation.staging_path(),
         profile,
+        approved_profile,
         canonical.audio_track_count(),
         executor.windows().len(),
         executor.plan_digest(),
         cancellation,
     )?;
+    if cancellation.is_cancelled() {
+        return Err(NativeExecutionError::Cancelled);
+    }
     artifact.path = reservation.commit()?;
+    progress.emit(RenderPhase::Finalizing, 10_000, total_windows)?;
     Ok(artifact)
+}
+
+struct NativeStudioProgressEmitter<F> {
+    callback: F,
+    total_windows: usize,
+    last_phase_rank: u8,
+    last_basis_points: u16,
+}
+
+impl<F: FnMut(NativeStudioRenderProgress)> NativeStudioProgressEmitter<F> {
+    fn new(callback: F, total_windows: usize) -> Self {
+        Self {
+            callback,
+            total_windows,
+            last_phase_rank: 0,
+            last_basis_points: 0,
+        }
+    }
+
+    fn emit(
+        &mut self,
+        phase: RenderPhase,
+        basis_points: u16,
+        completed_windows: usize,
+    ) -> Result<(), NativeExecutionError> {
+        let phase_rank = render_phase_rank(phase);
+        if self.total_windows == 0
+            || completed_windows > self.total_windows
+            || basis_points > 10_000
+            || basis_points < self.last_basis_points
+            || phase_rank < self.last_phase_rank
+        {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
+        self.last_phase_rank = phase_rank;
+        self.last_basis_points = basis_points;
+        (self.callback)(NativeStudioRenderProgress {
+            phase,
+            basis_points,
+            completed_windows,
+            total_windows: self.total_windows,
+        });
+        Ok(())
+    }
+}
+
+const fn render_phase_rank(phase: RenderPhase) -> u8 {
+    match phase {
+        RenderPhase::Preparing => 1,
+        RenderPhase::Decoding => 2,
+        RenderPhase::Compositing => 3,
+        RenderPhase::Encoding => 4,
+        RenderPhase::Muxing => 5,
+        RenderPhase::Finalizing => 6,
+    }
 }
 
 #[derive(Debug)]
@@ -696,10 +822,7 @@ impl StudioOutputReservation {
             }
         }
         let staging_directory = staging_directory.ok_or(NativeExecutionError::Filesystem)?;
-        let extension = match profile {
-            NativeStudioExportProfile::EditableWebM => "webm",
-            NativeStudioExportProfile::DistributionMasterMp4 => "mp4",
-        };
+        let extension = profile.extension();
         let staging_path = staging_directory.join(format!("artifact.{extension}"));
         Ok(Self {
             final_path,
@@ -856,6 +979,51 @@ struct CanonicalSources {
 #[derive(Debug)]
 struct DecoderDispatchBarrier {
     probes: Vec<(gst::Pad, gst::PadProbeId)>,
+}
+
+struct TimelinePrerollBarrier {
+    probes: Vec<(gst::Pad, gst::PadProbeId)>,
+}
+
+impl TimelinePrerollBarrier {
+    fn install(
+        pipeline: &gst::Pipeline,
+        sources: &CanonicalSources,
+    ) -> Result<Self, NativeExecutionError> {
+        let mut probes = Vec::with_capacity(MAX_STUDIO_ALIGNED_SOURCES);
+        for name in sources.timeline_element_names() {
+            let pad = pipeline
+                .by_name(name)
+                .and_then(|element| element.static_pad("src"))
+                .ok_or(NativeExecutionError::InvalidGraph)?;
+            let probe = pad
+                .add_probe(
+                    gst::PadProbeType::BLOCK
+                        | gst::PadProbeType::BUFFER
+                        | gst::PadProbeType::BUFFER_LIST,
+                    |_, _| gst::PadProbeReturn::Ok,
+                )
+                .ok_or(NativeExecutionError::Pipeline)?;
+            probes.push((pad, probe));
+        }
+        Ok(Self { probes })
+    }
+
+    fn release(mut self) {
+        self.remove_all();
+    }
+
+    fn remove_all(&mut self) {
+        for (pad, probe) in self.probes.drain(..) {
+            pad.remove_probe(probe);
+        }
+    }
+}
+
+impl Drop for TimelinePrerollBarrier {
+    fn drop(&mut self) {
+        self.remove_all();
+    }
 }
 
 impl DecoderDispatchBarrier {
@@ -1161,6 +1329,18 @@ impl CanonicalSources {
         .flatten()
     }
 
+    fn timeline_element_names(&self) -> impl Iterator<Item = &'static str> {
+        [
+            Some("edit_screen_timeline"),
+            self.microphone.as_ref().map(|_| "edit_microphone_timeline"),
+            self.system_audio
+                .as_ref()
+                .map(|_| "edit_system_audio_timeline"),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     fn segment_completion_probe_specs(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
         [
             Some(("edit_screen_timeline", "sink")),
@@ -1243,58 +1423,131 @@ fn validate_audio_source(required: bool, supplied: bool) -> Result<(), NativeExe
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct NativeStudioEncodingConfig {
+    video_transform: &'static str,
+    video_encoder: &'static str,
+    source_audio_transform: &'static str,
+    audio_transform: &'static str,
+    audio_encoder: &'static str,
+    muxer: &'static str,
+    container_marker: &'static [u8],
+    video_marker: &'static [u8],
+    audio_marker: &'static [u8],
+}
+
+const fn studio_encoding_config(profile: NativeStudioExportProfile) -> NativeStudioEncodingConfig {
+    match profile {
+        NativeStudioExportProfile::EditableWebM => NativeStudioEncodingConfig {
+            video_transform: "videoconvert",
+            video_encoder: "vp8enc name=edit_video_encoder deadline=1",
+            source_audio_transform: "audioconvert ! audioresample",
+            audio_transform: "audioconvert ! audioresample",
+            audio_encoder: "opusenc",
+            muxer: "webmmux streamable=false",
+            container_marker: b"webm",
+            video_marker: b"V_VP8",
+            audio_marker: b"A_OPUS",
+        },
+        NativeStudioExportProfile::DistributionMasterMp4 => NativeStudioEncodingConfig {
+            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=1920,height=1080,framerate=30/1,colorimetry=2:3:5:1",
+            video_encoder: "x264enc name=edit_video_encoder bitrate=12000 tune=zerolatency key-int-max=60 byte-stream=false ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au",
+            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_encoder: "avenc_aac bitrate=256000 ! aacparse",
+            muxer: "mp4mux faststart=true fragment-duration=2000 streamable=true",
+            container_marker: b"ftyp",
+            video_marker: b"avc1",
+            audio_marker: b"mp4a",
+        },
+        NativeStudioExportProfile::NativeHighQualityWebM => NativeStudioEncodingConfig {
+            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=2560,height=1440,framerate=60/1,colorimetry=1:3:5:1",
+            video_encoder: "vp8enc name=edit_video_encoder deadline=1 target-bitrate=24000000 keyframe-max-dist=120",
+            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_encoder: "opusenc bitrate=320000",
+            muxer: "webmmux streamable=false",
+            container_marker: b"webm",
+            video_marker: b"V_VP8",
+            audio_marker: b"A_OPUS",
+        },
+        NativeStudioExportProfile::NativeHighQualityHevcMp4 => NativeStudioEncodingConfig {
+            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=3840,height=2160,framerate=60/1,colorimetry=1:3:7:11",
+            video_encoder: "x265enc name=edit_video_encoder bitrate=60000 key-int-max=120 ! h265parse config-interval=-1 ! video/x-h265,stream-format=hvc1,alignment=au",
+            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_encoder: "avenc_aac bitrate=320000 ! aacparse",
+            muxer: "mp4mux faststart=true fragment-duration=2000 streamable=true",
+            container_marker: b"ftyp",
+            video_marker: b"hvc1",
+            audio_marker: b"mp4a",
+        },
+        NativeStudioExportProfile::NativeArchiveMatroska => NativeStudioEncodingConfig {
+            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=3840,height=2160,framerate=60/1,colorimetry=1:3:5:1",
+            video_encoder: "avenc_ffv1 name=edit_video_encoder",
+            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=S24_32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+            audio_encoder: "flacenc",
+            muxer: "matroskamux streamable=false",
+            container_marker: b"matroska",
+            video_marker: b"V_FFV1",
+            audio_marker: b"A_FLAC",
+        },
+    }
+}
+
 fn build_edit_pipeline(
     sources: &CanonicalSources,
     output: &Path,
     profile: NativeStudioExportProfile,
 ) -> Result<gst::Pipeline, NativeExecutionError> {
     prepare_runtime().map_err(|_| NativeExecutionError::MissingFactory)?;
-    let (video_encoder, audio_encoder, muxer) = match profile {
-        NativeStudioExportProfile::EditableWebM => {
-            ("vp8enc deadline=1", "opusenc", "webmmux streamable=false")
-        }
-        NativeStudioExportProfile::DistributionMasterMp4 => (
-            "x264enc tune=zerolatency byte-stream=false ! h264parse config-interval=-1",
-            "avenc_aac ! aacparse",
-            "mp4mux faststart=true fragment-duration=2000 streamable=true",
-        ),
-    };
+    let config = studio_encoding_config(profile);
     let mut description = format!(
         concat!(
             "{muxer} name=edit_mux ! filesink name=edit_output sync=false async=false ",
             "filesrc name=edit_screen_source ! decodebin name=edit_screen_decode ",
-            "edit_screen_decode. ! queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
+            "edit_screen_decode. ! queue name=edit_screen_input_queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
             "! videoconvert ! identity name=edit_screen_timeline single-segment=true ",
-            "! {video_encoder} ! queue name=edit_video_output_queue max-size-buffers=64 max-size-bytes=67108864 max-size-time=2000000000 ! edit_mux. "
+            "! {video_transform} ! {video_encoder} ",
+            "! queue name=edit_video_output_queue max-size-buffers=64 max-size-bytes=67108864 max-size-time=2000000000 ! edit_mux. "
         ),
-        muxer = muxer,
-        video_encoder = video_encoder,
+        muxer = config.muxer,
+        video_transform = config.video_transform,
+        video_encoder = config.video_encoder,
     );
     if sources.audio_track_count() > 0 {
         description.push_str(&format!(
             concat!(
                 "audiomixer name=edit_audio_mixer ignore-inactive-pads=true ",
-                "! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
-                "! audioconvert ! audioresample ! {audio_encoder} ",
+                "! queue name=edit_audio_mix_queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
+                "! {audio_transform} ! {audio_encoder} ",
                 "! queue name=edit_audio_output_queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ! edit_mux. "
             ),
-            audio_encoder = audio_encoder,
+            audio_transform = config.audio_transform,
+            audio_encoder = config.audio_encoder,
         ));
     }
     if sources.microphone.is_some() {
-        description.push_str(concat!(
-            "filesrc name=edit_microphone_source ! decodebin name=edit_microphone_decode ",
-            "edit_microphone_decode. ! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
-            "! audioconvert ! audioresample ! identity name=edit_microphone_timeline single-segment=true ",
-            "! volume name=edit_microphone_volume ! edit_audio_mixer. "
+        description.push_str(&format!(
+            concat!(
+                "filesrc name=edit_microphone_source ! decodebin name=edit_microphone_decode ",
+                "edit_microphone_decode. ! queue name=edit_microphone_input_queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
+                "! {source_audio_transform} ! identity name=edit_microphone_timeline single-segment=true ",
+                "! volume name=edit_microphone_volume ! edit_audio_mixer. "
+            ),
+            source_audio_transform = config.source_audio_transform,
         ));
     }
     if sources.system_audio.is_some() {
-        description.push_str(concat!(
-            "filesrc name=edit_system_audio_source ! decodebin name=edit_system_audio_decode ",
-            "edit_system_audio_decode. ! queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
-            "! audioconvert ! audioresample ! identity name=edit_system_audio_timeline single-segment=true ",
-            "! volume name=edit_system_audio_volume ! edit_audio_mixer. "
+        description.push_str(&format!(
+            concat!(
+                "filesrc name=edit_system_audio_source ! decodebin name=edit_system_audio_decode ",
+                "edit_system_audio_decode. ! queue name=edit_system_audio_input_queue max-size-buffers=128 max-size-bytes=8388608 max-size-time=2000000000 ",
+                "! {source_audio_transform} ! identity name=edit_system_audio_timeline single-segment=true ",
+                "! volume name=edit_system_audio_volume ! edit_audio_mixer. "
+            ),
+            source_audio_transform = config.source_audio_transform,
         ));
     }
     if description.len() > 64 * 1024 {
@@ -1346,15 +1599,22 @@ fn require_trusted(pipeline: &gst::Pipeline) -> Result<(), NativeExecutionError>
     }
 }
 
-fn execute_windows(
+fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
     pipeline: &gst::Pipeline,
     executor: &mut StudioEditExecutor,
     sources: &CanonicalSources,
+    profile: NativeStudioExportProfile,
     cancellation: &CancellationToken,
+    progress: &mut NativeStudioProgressEmitter<F>,
 ) -> Result<(), NativeExecutionError> {
     if cancellation.is_cancelled() {
         return Err(NativeExecutionError::Cancelled);
     }
+    // Non-live file sources can otherwise run through EOS while an async=false
+    // output sink lets the graph settle in Paused. Hold one buffer per aligned
+    // timeline before preroll so the first canonical FLUSH seek discards all
+    // speculative bytes before any encoder can finalize.
+    let mut initial_preroll = Some(TimelinePrerollBarrier::install(pipeline, sources)?);
     if pipeline.set_state(gst::State::Paused).is_err() {
         return Err(NativeExecutionError::Pipeline);
     }
@@ -1368,19 +1628,26 @@ fn execute_windows(
     if !pipeline_has_trusted_factory_provenance(pipeline) {
         return Err(NativeExecutionError::UntrustedFactory);
     }
+    let flushed_encoder_caps = flushed_encoder_caps(profile)?;
+    progress.emit(RenderPhase::Decoding, 1_000, 0)?;
     let bus = pipeline.bus().ok_or(NativeExecutionError::Pipeline)?;
     let segment_monitor = SegmentCompletionMonitor::install(pipeline, sources)?;
     let closing_video_frame = ClosingVideoFrameMonitor::install(pipeline)?;
+    progress.emit(RenderPhase::Compositing, 2_000, 0)?;
     let output_end = exact_duration_to_clock_time_ceil(executor.output_duration())?;
     let deadline = Instant::now() + EDIT_EXECUTION_DEADLINE;
     let mut messages = 0_usize;
     let mut first = true;
+    let mut completed_windows = 0_usize;
     while executor.remaining_windows() > 0 {
         let batch = executor
             .next_batch(MAX_STUDIO_EDIT_EXECUTION_BATCH, cancellation)
             .map_err(map_execution_error)?
             .to_vec();
         for window in batch {
+            if cancellation.is_cancelled() {
+                return Err(NativeExecutionError::Cancelled);
+            }
             if !first {
                 if pipeline.set_state(gst::State::Paused).is_err() {
                     return Err(NativeExecutionError::Pipeline);
@@ -1404,6 +1671,9 @@ fn execute_windows(
             // can complete before all branches own the shared sequence number.
             let dispatch_barrier = DecoderDispatchBarrier::install(pipeline, sources)?;
             let segment_seqnum = gst::Seqnum::next();
+            if first {
+                reassert_flushed_encoder_caps(pipeline, flushed_encoder_caps.as_ref())?;
+            }
             for name in sources.decode_element_names() {
                 let decoder = pipeline
                     .by_name(name)
@@ -1423,6 +1693,9 @@ fn execute_windows(
                 }
             }
             dispatch_barrier.release();
+            if let Some(barrier) = initial_preroll.take() {
+                barrier.release();
+            }
             if pipeline.set_state(gst::State::Playing).is_err() {
                 return Err(NativeExecutionError::Pipeline);
             }
@@ -1437,6 +1710,26 @@ fn execute_windows(
                 deadline,
                 &mut messages,
             )?;
+            completed_windows = completed_windows
+                .checked_add(1)
+                .ok_or(NativeExecutionError::ResourceLimit)?;
+            let completed = u64::try_from(completed_windows)
+                .map_err(|_| NativeExecutionError::ResourceLimit)?;
+            let total = u64::try_from(progress.total_windows)
+                .map_err(|_| NativeExecutionError::ResourceLimit)?;
+            let basis_points = 2_000_u64
+                .checked_add(
+                    7_000_u64
+                        .checked_mul(completed)
+                        .ok_or(NativeExecutionError::ResourceLimit)?
+                        / total,
+                )
+                .ok_or(NativeExecutionError::ResourceLimit)?;
+            progress.emit(
+                RenderPhase::Encoding,
+                u16::try_from(basis_points).map_err(|_| NativeExecutionError::ResourceLimit)?,
+                completed_windows,
+            )?;
         }
     }
     closing_video_frame.close_at(output_end)?;
@@ -1449,7 +1742,46 @@ fn execute_windows(
             return Err(NativeExecutionError::Pipeline);
         }
     }
-    wait_for_eos(&bus, cancellation, deadline, &mut messages)
+    wait_for_eos(&bus, cancellation, deadline, &mut messages)?;
+    progress.emit(RenderPhase::Muxing, 9_500, completed_windows)
+}
+
+fn flushed_encoder_caps(
+    profile: NativeStudioExportProfile,
+) -> Result<Option<gst::Caps>, NativeExecutionError> {
+    let Some(description) = (profile == NativeStudioExportProfile::NativeHighQualityHevcMp4)
+        .then_some(
+            "video/x-raw,format=I420,width=3840,height=2160,framerate=60/1,colorimetry=1:3:7:11",
+        )
+    else {
+        return Ok(None);
+    };
+    let caps = description
+        .parse::<gst::Caps>()
+        .map_err(|_| NativeExecutionError::InvalidGraph)?;
+    if caps.is_fixed() {
+        Ok(Some(caps))
+    } else {
+        Err(NativeExecutionError::InvalidGraph)
+    }
+}
+
+fn reassert_flushed_encoder_caps(
+    pipeline: &gst::Pipeline,
+    caps: Option<&gst::Caps>,
+) -> Result<(), NativeExecutionError> {
+    let Some(caps) = caps else {
+        return Ok(());
+    };
+    let sink = pipeline
+        .by_name("edit_video_encoder")
+        .and_then(|encoder| encoder.static_pad("sink"))
+        .ok_or(NativeExecutionError::InvalidGraph)?;
+    if sink.send_event(gst::event::Caps::new(caps)) {
+        Ok(())
+    } else {
+        Err(NativeExecutionError::Pipeline)
+    }
 }
 
 fn apply_audio_window(
@@ -1631,6 +1963,7 @@ fn exact_duration_to_clock_time_ceil(
 fn validate_edited_output(
     output: &Path,
     profile: NativeStudioExportProfile,
+    approved_profile: Option<ExportProfileSpec>,
     audio_tracks: u8,
     execution_windows: usize,
     plan_digest: Sha256Digest,
@@ -1647,35 +1980,212 @@ fn validate_edited_output(
     File::open(output)
         .and_then(|mut file| file.read_exact(&mut prefix))
         .map_err(|_| NativeExecutionError::Filesystem)?;
-    let container_marker = match profile {
-        NativeStudioExportProfile::EditableWebM => b"webm".as_slice(),
-        NativeStudioExportProfile::DistributionMasterMp4 => b"ftyp".as_slice(),
-    };
+    let config = studio_encoding_config(profile);
+    let container_marker = config.container_marker;
     let playable_container_marker = prefix
         .windows(container_marker.len())
         .any(|value| value == container_marker);
-    let audio_marker = match profile {
-        NativeStudioExportProfile::EditableWebM => b"A_OPUS".as_slice(),
-        NativeStudioExportProfile::DistributionMasterMp4 => b"mp4a".as_slice(),
-    };
-    if !playable_container_marker
-        || (audio_tracks > 0
-            && !prefix
-                .windows(audio_marker.len())
-                .any(|value| value == audio_marker))
-    {
+    let video_marker = prefix
+        .windows(config.video_marker.len())
+        .any(|value| value == config.video_marker);
+    let audio_marker = prefix
+        .windows(config.audio_marker.len())
+        .any(|value| value == config.audio_marker);
+    if !playable_container_marker || !video_marker || (audio_tracks > 0 && !audio_marker) {
         return Err(NativeExecutionError::InvalidOutput);
+    }
+    let (video, audio) = probe_edited_output(output, audio_tracks, cancellation)?;
+    if let Some(expected) = approved_profile {
+        validate_approved_output_caps(&video, audio, expected, audio_tracks)?;
     }
     Ok(NativeStudioEditedExportArtifact {
         profile,
+        approved_profile,
         path: output.to_path_buf(),
         bytes: metadata.len(),
         sha256: sha256_file_with_budget(output, cancellation, EDIT_EXECUTION_DEADLINE)?,
         playable_container_marker,
         audio_tracks,
+        video,
+        audio,
         execution_windows,
         plan_digest,
     })
+}
+
+fn probe_edited_output(
+    output: &Path,
+    audio_tracks: u8,
+    cancellation: &CancellationToken,
+) -> Result<(NativeStudioOutputVideo, Option<NativeStudioOutputAudio>), NativeExecutionError> {
+    if cancellation.is_cancelled() {
+        return Err(NativeExecutionError::Cancelled);
+    }
+    let player = gst::ElementFactory::make("playbin3")
+        .name("studio_export_probe_player")
+        .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    let video_sink = gst::ElementFactory::make("fakesink")
+        .name("studio_export_probe_video")
+        .property("sync", false)
+        .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    let audio_sink = gst::ElementFactory::make("fakesink")
+        .name("studio_export_probe_audio")
+        .property("sync", false)
+        .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    player.set_property("video-sink", &video_sink);
+    player.set_property("audio-sink", &audio_sink);
+    let uri =
+        gst::glib::filename_to_uri(output, None).map_err(|_| NativeExecutionError::Filesystem)?;
+    player.set_property("uri", uri.as_str());
+    let pipeline = gst::Pipeline::with_name("studio_export_probe_pipeline");
+    pipeline
+        .add(&player)
+        .map_err(|_| NativeExecutionError::Pipeline)?;
+    require_trusted(&pipeline)?;
+    let result = (|| {
+        if pipeline.set_state(gst::State::Paused).is_err() {
+            return Err(NativeExecutionError::Pipeline);
+        }
+        let (transition, current, _) = pipeline.state(EDIT_STATE_TIMEOUT);
+        if transition.is_err() || current != gst::State::Paused {
+            return Err(NativeExecutionError::InvalidOutput);
+        }
+        if cancellation.is_cancelled() {
+            return Err(NativeExecutionError::Cancelled);
+        }
+        if !pipeline_has_trusted_factory_provenance(&pipeline) {
+            return Err(NativeExecutionError::UntrustedFactory);
+        }
+        let video_caps = video_sink
+            .static_pad("sink")
+            .and_then(|pad| pad.current_caps())
+            .ok_or(NativeExecutionError::InvalidOutput)?;
+        let video = output_video_from_caps(&video_caps)?;
+        let audio_caps = audio_sink
+            .static_pad("sink")
+            .and_then(|pad| pad.current_caps());
+        let audio = audio_caps
+            .as_ref()
+            .map(|caps| output_audio_from_caps(caps.as_ref()))
+            .transpose()?;
+        if (audio_tracks == 0) != audio.is_none() {
+            return Err(NativeExecutionError::InvalidOutput);
+        }
+        Ok((video, audio))
+    })();
+    set_null(&pipeline)?;
+    result
+}
+
+fn output_video_from_caps(
+    caps: &gst::CapsRef,
+) -> Result<NativeStudioOutputVideo, NativeExecutionError> {
+    let structure = caps
+        .structure(0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let width = structure
+        .get::<i32>("width")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let height = structure
+        .get::<i32>("height")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let fraction = structure
+        .get::<gst::Fraction>("framerate")
+        .map_err(|_| NativeExecutionError::InvalidOutput)?;
+    let numerator =
+        u32::try_from(fraction.numer()).map_err(|_| NativeExecutionError::InvalidOutput)?;
+    let denominator =
+        u32::try_from(fraction.denom()).map_err(|_| NativeExecutionError::InvalidOutput)?;
+    let frame_rate = FrameRate {
+        numerator,
+        denominator,
+    };
+    frame_rate
+        .validate()
+        .map_err(|_| NativeExecutionError::InvalidOutput)?;
+    let colorimetry = structure
+        .get::<String>("colorimetry")
+        .unwrap_or_else(|_| "unknown".to_owned());
+    let colorimetry = match colorimetry.as_str() {
+        // GStreamer defines `bt709` as the canonical alias for limited-range
+        // BT.709 (range/matrix/transfer/primaries = 2:3:5:1).
+        "bt709" => "2:3:5:1".to_owned(),
+        _ => colorimetry,
+    };
+    if colorimetry.len() > 64 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    Ok(NativeStudioOutputVideo {
+        width,
+        height,
+        frame_rate,
+        colorimetry,
+    })
+}
+
+fn output_audio_from_caps(
+    caps: &gst::CapsRef,
+) -> Result<NativeStudioOutputAudio, NativeExecutionError> {
+    let structure = caps
+        .structure(0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let sample_rate = structure
+        .get::<i32>("rate")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let channels = structure
+        .get::<i32>("channels")
+        .ok()
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    Ok(NativeStudioOutputAudio {
+        sample_rate,
+        channels,
+    })
+}
+
+fn validate_approved_output_caps(
+    video: &NativeStudioOutputVideo,
+    audio: Option<NativeStudioOutputAudio>,
+    expected: ExportProfileSpec,
+    audio_tracks: u8,
+) -> Result<(), NativeExecutionError> {
+    if audio_tracks == 0 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let expected_colorimetry = match expected.color {
+        StudioColorSpace::Bt709Limited => "2:3:5:1",
+        StudioColorSpace::Bt709Full => "1:3:5:1",
+        StudioColorSpace::DisplayP3 => "1:3:7:11",
+    };
+    if video.width != expected.resolution.width
+        || video.height != expected.resolution.height
+        || video.frame_rate != expected.frame_rate
+        || video.colorimetry != expected_colorimetry
+    {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    match audio {
+        Some(audio)
+            if audio.sample_rate == expected.audio_sample_rate
+                && audio.channels == expected.audio_channels =>
+        {
+            Ok(())
+        }
+        None | Some(_) => Err(NativeExecutionError::InvalidOutput),
+    }
 }
 
 fn map_execution_error(error: StudioEditExecutionError) -> NativeExecutionError {
@@ -1791,6 +2301,40 @@ mod tests {
             },
         )
         .expect("edited plan")
+    }
+
+    fn short_profile_plan(with_audio: bool) -> CanonicalEditPlan {
+        profile_plan(15, with_audio)
+    }
+
+    fn profile_plan(ticks: u64, with_audio: bool) -> CanonicalEditPlan {
+        let time_base = TimeBase::new(30).expect("30 Hz timebase");
+        let end = crate::RationalTime::new(ticks, time_base);
+        let mut coverage = vec![SourceCoverage {
+            track: TrackKind::Screen,
+            start: crate::RationalTime::new(0, time_base),
+            end,
+        }];
+        if with_audio {
+            coverage.push(SourceCoverage {
+                track: TrackKind::SystemAudio,
+                start: crate::RationalTime::new(0, time_base),
+                end,
+            });
+        }
+        StudioTimelineCompiler::compile(
+            &TimelineSource {
+                duration: end,
+                coverage,
+                vfr_video_pts: BTreeMap::new(),
+            },
+            &EditSpec {
+                version: crate::STUDIO_EDIT_VERSION,
+                revision: 1,
+                operations: Vec::new(),
+            },
+        )
+        .expect("short profile plan")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2212,21 +2756,50 @@ mod tests {
         )
         .expect("shared windows");
         let output = directory.path().join("edited.webm");
-        let artifact = render_studio_export_with_edits(
-            &NativeStudioAlignedSources {
-                screen: path(NativeStudioTrackRole::Screen),
-                microphone: None,
-                system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
-            },
+        let mut progress = Vec::new();
+        let aligned = NativeStudioAlignedSources {
+            screen: path(NativeStudioTrackRole::Screen),
+            microphone: None,
+            system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
+        };
+        let artifact = render_studio_export_with_edits_and_progress(
+            &aligned,
             &output,
             &plan,
             NativeStudioExportProfile::EditableWebM,
             &CancellationToken::new(),
+            |event| progress.push(event),
         )
         .expect("edit-aware A/V export");
+        assert_eq!(
+            progress
+                .first()
+                .map(|event| (event.phase, event.basis_points)),
+            Some((RenderPhase::Preparing, 0))
+        );
+        assert_eq!(
+            progress
+                .last()
+                .map(|event| (event.phase, event.basis_points)),
+            Some((RenderPhase::Finalizing, 10_000))
+        );
+        assert!(
+            progress
+                .windows(2)
+                .all(|pair| pair[0].basis_points <= pair[1].basis_points
+                    && render_phase_rank(pair[0].phase) <= render_phase_rank(pair[1].phase))
+        );
+        assert_eq!(
+            progress
+                .iter()
+                .filter(|event| event.phase == RenderPhase::Encoding)
+                .count(),
+            executor.windows().len()
+        );
         assert_eq!(artifact.plan_digest, plan.digest());
         assert_eq!(artifact.execution_windows, executor.windows().len());
         assert_eq!(artifact.audio_tracks, 1);
+        assert_eq!(artifact.audio.map(|audio| audio.sample_rate), Some(48_000));
         assert_eq!(artifact.path, output);
         assert!(artifact.playable_container_marker);
         assert!(
@@ -2251,6 +2824,261 @@ mod tests {
         )
         .expect("edited output remains playable");
         assert_eq!((decoded.width, decoded.height), (320, 180));
+
+        let cancelled_output = directory.path().join("cancelled-after-progress.webm");
+        let cancellation = CancellationToken::new();
+        assert!(matches!(
+            render_studio_export_with_edits_and_progress(
+                &aligned,
+                &cancelled_output,
+                &plan,
+                NativeStudioExportProfile::EditableWebM,
+                &cancellation,
+                |event| {
+                    if event.phase == RenderPhase::Encoding {
+                        cancellation.cancel();
+                    }
+                },
+            ),
+            Err(NativeExecutionError::Cancelled)
+        ));
+        assert!(!cancelled_output.exists());
+        assert!(
+            fs::read_dir(directory.path())
+                .expect("output directory")
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".frame-studio-")),
+            "cancelled publication must remove its private staging directory"
+        );
+    }
+
+    #[test]
+    fn approved_native_webm_and_archive_profiles_enforce_exact_output_caps() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let tracks = record_synthetic_studio_tracks(
+            directory.path(),
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+        )
+        .expect("short synthetic originals");
+        let path = |role| {
+            tracks
+                .iter()
+                .find(|track| track.role == role)
+                .expect("requested original")
+                .path
+                .clone()
+        };
+        let sources = NativeStudioAlignedSources {
+            screen: path(NativeStudioTrackRole::Screen),
+            microphone: None,
+            system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
+        };
+        let plan = short_profile_plan(true);
+        for (profile, name) in [
+            (
+                NativeStudioExportProfile::NativeHighQualityWebM,
+                "native-high-quality.webm",
+            ),
+            (
+                NativeStudioExportProfile::NativeArchiveMatroska,
+                "native-archive.mkv",
+            ),
+        ] {
+            let expected = ExportProfileSpec::approved(
+                profile.approved_profile().expect("approved native profile"),
+            );
+            let artifact = render_studio_export_with_edits(
+                &sources,
+                &directory.path().join(name),
+                &plan,
+                profile,
+                &CancellationToken::new(),
+            )
+            .expect("exact approved native profile");
+            assert_eq!(artifact.approved_profile, Some(expected));
+            assert_eq!(artifact.video.width, expected.resolution.width);
+            assert_eq!(artifact.video.height, expected.resolution.height);
+            assert_eq!(artifact.video.frame_rate, expected.frame_rate);
+            assert_eq!(
+                artifact.audio,
+                Some(NativeStudioOutputAudio {
+                    sample_rate: 48_000,
+                    channels: 2,
+                })
+            );
+            assert!(artifact.bytes > 128);
+        }
+    }
+
+    #[test]
+    fn approved_licensed_profiles_fail_closed_or_emit_exact_caps() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let sources = NativeStudioAlignedSources {
+            screen: directory.path().join("unused-screen.webm"),
+            microphone: None,
+            system_audio: Some(directory.path().join("unused-system-audio.webm")),
+        };
+        let plan = short_profile_plan(true);
+        assert!(matches!(
+            render_studio_export_with_edits(
+                &NativeStudioAlignedSources {
+                    screen: directory.path().join("unused-screen.webm"),
+                    microphone: None,
+                    system_audio: None,
+                },
+                &directory.path().join("audio-less-native-high-quality.webm"),
+                &short_profile_plan(false),
+                NativeStudioExportProfile::NativeHighQualityWebM,
+                &CancellationToken::new(),
+            ),
+            Err(NativeExecutionError::InvalidGraph)
+        ));
+        if std::env::var("FRAME_NATIVE_H264_AAC_APPROVED").as_deref() != Ok("approved-v1") {
+            assert!(matches!(
+                render_studio_export_with_edits(
+                    &sources,
+                    &directory.path().join("distribution-master.mp4"),
+                    &plan,
+                    NativeStudioExportProfile::DistributionMasterMp4,
+                    &CancellationToken::new(),
+                ),
+                Err(NativeExecutionError::CodecApprovalRequired)
+            ));
+        }
+        if std::env::var("FRAME_NATIVE_HEVC_AAC_APPROVED").as_deref() != Ok("approved-v1") {
+            assert!(matches!(
+                render_studio_export_with_edits(
+                    &sources,
+                    &directory.path().join("native-high-quality-hevc.mp4"),
+                    &plan,
+                    NativeStudioExportProfile::NativeHighQualityHevcMp4,
+                    &CancellationToken::new(),
+                ),
+                Err(NativeExecutionError::CodecApprovalRequired)
+            ));
+        }
+    }
+
+    #[test]
+    fn approved_distribution_profile_emits_exact_cloudflare_input_caps() {
+        if std::env::var("FRAME_NATIVE_H264_AAC_APPROVED").as_deref() != Ok("approved-v1") {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let tracks = record_synthetic_studio_tracks(
+            directory.path(),
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+        )
+        .expect("short synthetic originals");
+        let path = |role| {
+            tracks
+                .iter()
+                .find(|track| track.role == role)
+                .expect("requested original")
+                .path
+                .clone()
+        };
+        let profile = NativeStudioExportProfile::DistributionMasterMp4;
+        let expected = ExportProfileSpec::approved(
+            profile
+                .approved_profile()
+                .expect("approved distribution profile"),
+        );
+        let output = directory.path().join("distribution-master.mp4");
+        let artifact = render_studio_export_with_edits(
+            &NativeStudioAlignedSources {
+                screen: path(NativeStudioTrackRole::Screen),
+                microphone: None,
+                system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
+            },
+            &output,
+            &short_profile_plan(true),
+            profile,
+            &CancellationToken::new(),
+        )
+        .expect("exact Cloudflare-compatible distribution master");
+        assert_eq!(artifact.approved_profile, Some(expected));
+        assert_eq!(
+            (artifact.video.width, artifact.video.height),
+            (1_920, 1_080)
+        );
+        assert_eq!(
+            artifact.video.frame_rate,
+            FrameRate {
+                numerator: 30,
+                denominator: 1,
+            }
+        );
+        assert_eq!(artifact.video.colorimetry, "2:3:5:1");
+        assert_eq!(
+            artifact.audio,
+            Some(NativeStudioOutputAudio {
+                sample_rate: 48_000,
+                channels: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn approved_hevc_profile_emits_exact_native_high_quality_caps() {
+        if std::env::var("FRAME_NATIVE_HEVC_AAC_APPROVED").as_deref() != Ok("approved-v1") {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let tracks = record_synthetic_studio_tracks(
+            directory.path(),
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+        )
+        .expect("short synthetic originals");
+        let path = |role| {
+            tracks
+                .iter()
+                .find(|track| track.role == role)
+                .expect("requested original")
+                .path
+                .clone()
+        };
+        let profile = NativeStudioExportProfile::NativeHighQualityHevcMp4;
+        let expected =
+            ExportProfileSpec::approved(profile.approved_profile().expect("approved HEVC profile"));
+        let artifact = render_studio_export_with_edits(
+            &NativeStudioAlignedSources {
+                screen: path(NativeStudioTrackRole::Screen),
+                microphone: None,
+                system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
+            },
+            &directory.path().join("native-high-quality-hevc.mp4"),
+            &profile_plan(3, true),
+            profile,
+            &CancellationToken::new(),
+        )
+        .expect("exact native high-quality HEVC artifact");
+        assert_eq!(artifact.approved_profile, Some(expected));
+        assert_eq!(
+            (artifact.video.width, artifact.video.height),
+            (3_840, 2_160)
+        );
+        assert_eq!(
+            artifact.video.frame_rate,
+            FrameRate {
+                numerator: 60,
+                denominator: 1,
+            }
+        );
+        assert_eq!(artifact.video.colorimetry, "1:3:7:11");
+        assert_eq!(
+            artifact.audio,
+            Some(NativeStudioOutputAudio {
+                sample_rate: 48_000,
+                channels: 2,
+            })
+        );
     }
 
     #[test]

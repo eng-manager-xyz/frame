@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 362,
+    "local_satisfied": 364,
     "protected_pending": 176,
-    "local_gap": 16
+    "local_gap": 14
   },
   "issues": {
     "01": {
@@ -205,7 +205,7 @@
       "digest": "244a7013ad0379b0463415960789126a747c13b5d5567bbd666bbd8aefb91a73",
       "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
       "protected": [{"ordinals": [7], "classes": ["human_approval"], "reason": "The legacy import implementation exists, but acceptance still needs a reviewed corpus of representative Cap projects."}],
-      "local_gaps": [{"ordinals": [4, 5, 8, 9, 10, 11], "reason": "Edit-aware export, distribution audio, full production recovery, decoded goldens, effects parity, and fallback or cancellation are not connected to the desktop release; the source-set-bound native preview engine and isolated-track recorder do not claim those later paths."}]
+      "local_gaps": [{"ordinals": [8, 9, 10, 11], "reason": "Full production recovery, decoded preview/export/reference goldens, long-project effects parity, and hardware fallback remain unconnected to the desktop release; exact aligned-source software exports do not claim those later paths."}]
     },
     "28": {
       "count": 15,

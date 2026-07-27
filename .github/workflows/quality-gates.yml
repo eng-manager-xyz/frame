@@ -117,7 +117,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good ripgrep
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-libav ripgrep
           plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
           test -d "${plugin_dir}"
           echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
@@ -281,7 +282,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good
+            gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good \
+            gstreamer1.0-libav
           plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
           test -d "${plugin_dir}"
           echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
@@ -304,6 +306,7 @@ jobs:
             libgstreamer-plugins-base1.0-0 libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good \
+            gstreamer1.0-libav \
             | sort > target/evidence/gstreamer-packages-ci.tsv
           scripts/ci/gstreamer-sanitized-exec cargo run --locked -q -p frame-media --example runtime_doctor \
             > target/evidence/gstreamer-doctor-ci.json

@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "rust_manifest_version": 7,
+  "rust_manifest_version": 8,
   "minimum_gstreamer": "1.22.0",
   "plugin_search_policy": {
     "denied_environment_variables": [
@@ -74,10 +74,14 @@
     {"factory": "playbin3", "capability": "studio_preview", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "decodebin3", "capability": "decode_analysis", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "mp4mux", "capability": "mp4_muxing", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "matroskamux", "capability": "matroska_muxing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "qtmux", "capability": "quicktime_muxing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "x264enc", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "avenc_aac", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "h264parse", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "x265enc", "capability": "software_h265", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "h265parse", "capability": "software_h265", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "avenc_ffv1", "capability": "software_ffv1", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "aacparse", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "videorate", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "jpegenc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
@@ -85,7 +89,8 @@
     {"factory": "lamemp3enc", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "concat", "capability": "media_transform", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "opusenc", "capability": "software_opus", "requirement": "required", "platform": "native_desktop"},
-    {"factory": "opusdec", "capability": "decode_analysis", "requirement": "required", "platform": "native_desktop"}
+    {"factory": "opusdec", "capability": "decode_analysis", "requirement": "required", "platform": "native_desktop"},
+    {"factory": "flacenc", "capability": "software_flac", "requirement": "optional", "platform": "native_desktop"}
   ],
   "targets": [
     {
@@ -101,7 +106,8 @@
         "gstreamer1.0-tools",
         "gstreamer1.0-plugins-base",
         "gstreamer1.0-plugins-base-apps",
-        "gstreamer1.0-plugins-good"
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-libav"
       ]
     },
     {
@@ -115,7 +121,8 @@
         "gstreamer1.0-tools",
         "gstreamer1.0-plugins-base",
         "gstreamer1.0-plugins-base-apps",
-        "gstreamer1.0-plugins-good"
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-libav"
       ]
     },
     {
@@ -143,6 +150,9 @@
   "codec_decisions": [
     {"profile": "synthetic_webm", "video": "vp8", "audio": "opus", "container": "webm", "status": "required_for_ci"},
     {"profile": "studio_original_v2", "video": "vp8", "audio": "opus", "container": "webm", "status": "required_for_native_desktop"},
-    {"profile": "distribution_mp4", "video": "h264", "audio": "aac", "container": "mp4", "status": "legal_and_patent_review_required"}
+    {"profile": "distribution_mp4", "video": "h264", "audio": "aac", "container": "mp4", "status": "legal_and_patent_review_required"},
+    {"profile": "studio_native_hq_webm", "video": "vp8", "audio": "opus", "container": "webm", "status": "required_for_native_desktop"},
+    {"profile": "studio_native_hq_hevc", "video": "hevc", "audio": "aac", "container": "mp4", "status": "legal_and_patent_review_required"},
+    {"profile": "studio_native_archive", "video": "ffv1", "audio": "flac", "container": "matroska", "status": "required_for_native_desktop"}
   ]
 }

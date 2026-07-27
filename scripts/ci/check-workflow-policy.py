@@ -306,9 +306,10 @@ def main() -> int:
                 "gstreamer1.0-plugins-base",
                 "gstreamer1.0-plugins-base-apps",
                 "gstreamer1.0-plugins-good",
+                "gstreamer1.0-libav",
             )
         ),
-        "quality-gates.yml: package evidence must query only the eight audited installed GStreamer packages",
+        "quality-gates.yml: package evidence must query only the nine audited installed GStreamer packages",
         errors,
     )
     require("check-media-conformance.py" in quality
