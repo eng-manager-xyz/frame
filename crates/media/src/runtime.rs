@@ -10,7 +10,7 @@ use gstreamer as gst;
 
 use crate::MediaError;
 
-pub const RUNTIME_MANIFEST_VERSION: u16 = 6;
+pub const RUNTIME_MANIFEST_VERSION: u16 = 7;
 pub const MEDIA_APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MINIMUM_GSTREAMER_VERSION: (u32, u32, u32) = (1, 22, 0);
 pub const MINIMUM_GSTREAMER_VERSION_TEXT: &str = "1.22.0";
@@ -56,6 +56,8 @@ pub enum RuntimeCapability {
     AudioMixing,
     AudioMetering,
     AudioNormalize,
+    MicrophoneCapture,
+    CameraCapture,
     CameraComposition,
     InstantSegmentation,
     StudioPreview,
@@ -78,6 +80,8 @@ impl fmt::Display for RuntimeCapability {
             Self::AudioMixing => "audio_mixing",
             Self::AudioMetering => "audio_metering",
             Self::AudioNormalize => "audio_normalize",
+            Self::MicrophoneCapture => "microphone_capture",
+            Self::CameraCapture => "camera_capture",
             Self::CameraComposition => "camera_composition",
             Self::InstantSegmentation => "instant_segmentation",
             Self::StudioPreview => "studio_preview",
@@ -244,6 +248,18 @@ const FACTORIES: &[FactorySpec] = &[
         capability: RuntimeCapability::AppSinkBridge,
         requirement: FactoryRequirement::Optional,
         platform: PlatformScope::All,
+    },
+    FactorySpec {
+        factory: "osxaudiosrc",
+        capability: RuntimeCapability::MicrophoneCapture,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::MacOs,
+    },
+    FactorySpec {
+        factory: "avfvideosrc",
+        capability: RuntimeCapability::CameraCapture,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::MacOs,
     },
     FactorySpec {
         factory: "audioconvert",

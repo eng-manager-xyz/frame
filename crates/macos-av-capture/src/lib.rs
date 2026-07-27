@@ -13,11 +13,15 @@ use thiserror::Error;
 
 #[cfg(any(target_os = "macos", test))]
 mod bridge;
+#[cfg(any(target_os = "macos", test))]
+mod device_bridge;
 #[cfg(target_os = "macos")]
 mod platform;
 
 #[cfg(target_os = "macos")]
 pub use bridge::{MacOsNativeAvBridge, MacOsNativeAvBridgeCreateError};
+#[cfg(target_os = "macos")]
+pub use device_bridge::{MacOsDeviceAvBridge, MacOsDeviceAvBridgeCreateError};
 #[cfg(target_os = "macos")]
 pub use platform::MacOsSystemAudioSource;
 

@@ -17,6 +17,8 @@ thiserror.workspace = true
 apple-cf.workspace = true
 apple-metal.workspace = true
 core-graphics.workspace = true
+gstreamer.workspace = true
+gstreamer-app.workspace = true
 screencapturekit.workspace = true
 zeroize.workspace = true
 
