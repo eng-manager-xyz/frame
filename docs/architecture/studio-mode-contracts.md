@@ -1,9 +1,9 @@
 # Studio Mode v1 contracts
 
-Status: provider-neutral contracts, durable filesystem adapters, and the
-bounded native isolated-track encoder are implemented. Desktop source
-composition, edit-aware production rendering, and protected parity evidence
-remain separate gates.
+Status: provider-neutral contracts, durable filesystem adapters, the bounded
+native isolated-track encoder, and the source-set-bound native preview engine
+are implemented. Desktop source composition, edit-aware production rendering,
+and protected parity evidence remain separate gates.
 
 ## Durable documents
 
@@ -252,6 +252,26 @@ availability, gain, and mute state. Preview uses point lookup against those
 windows; export drains the identical windows in batches of at most 256.
 Cancellation is checked before compilation or cursor state advances, and the
 complete allocation ceiling is derived from the existing span and gap limits.
+
+`NativeStudioPreviewEngine` is the stateful production preview owner. It opens a
+validated `StudioPreviewGraphSpec`, resolves every asset through
+`FilesystemStudioOriginalStore`, and accepts an original only after the durable
+sidecar, complete media hash, byte length, encoding descriptor, and source-set
+record agree. It caches the regular-file identity and refuses a path that is
+replaced after opening. At each exact edited output point it selects the correct
+asset-local position across segmented originals, decodes one bounded real RGB
+screen frame plus the active camera frame, and returns the canonical
+microphone/system-audio source, gap, gain, and mute decisions. No caller path or
+filename participates in source selection.
+
+The preview transport owns paused/playing/ended state, exact seek, one-frame
+advancement, monotonically fenced generations and sample sequences, and
+deterministic CFR fallback or mapped VFR scheduling. A failed or cancelled seek
+does not advance transport state. Every sample carries the source-set and edit
+plan digests plus the exact execution window, so a UI compositor/audio adapter
+cannot silently combine a frame with stale edits. The engine returns at most
+one 320×180 RGB frame per active video track per call; it does not own an
+unbounded decoded-frame queue.
 
 The first native executor slice accepts one required clock-aligned screen
 original plus independently optional clock-aligned microphone and system-audio
