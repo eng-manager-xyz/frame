@@ -20,6 +20,8 @@ const MAX_CAPTURE_TARGETS: usize = 256;
 pub const MAX_STUDIO_PROJECT_CATALOG_ENTRIES: usize = 256;
 const MAX_STUDIO_PROJECT_ASSETS: u16 = 64;
 const MAX_CAPTURE_DIMENSION: u32 = 65_535;
+const MAX_STUDIO_PREVIEW_DIMENSION: u32 = 1_920;
+const MAX_STUDIO_PREVIEW_RGB_BYTES: usize = 1_920 * 1_080 * 3;
 
 /// A versioned catalog containing no display titles or platform identifiers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -875,6 +877,98 @@ impl NativeStudioExportOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeStudioPreviewAudioState {
+    pub source_available: bool,
+    pub gain_millibels: i32,
+    pub muted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeStudioPreviewRequest {
+    pub editor_revision: u64,
+    pub position_ms: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeStudioPreviewOutcome {
+    pub editor_revision: u64,
+    pub project_revision: u64,
+    pub position_ms: u64,
+    pub source_position_ms: u64,
+    pub output_duration_ms: u64,
+    pub width: u32,
+    pub height: u32,
+    pub rgb: Vec<u8>,
+    pub plan_sha256: String,
+    pub source_set_sha256: String,
+    pub microphone: NativeStudioPreviewAudioState,
+    pub system_audio: NativeStudioPreviewAudioState,
+}
+
+impl NativeStudioPreviewOutcome {
+    pub fn validate_for(
+        &self,
+        request: NativeStudioPreviewRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        let expected_rgb_bytes = usize::try_from(self.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(self.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(3));
+        if self.editor_revision != request.editor_revision
+            || self.project_revision == 0
+            || self.position_ms != request.position_ms
+            || self.position_ms >= self.output_duration_ms
+            || self.source_position_ms > 86_400_000
+            || self.output_duration_ms > 86_400_000
+            || self.width == 0
+            || self.height == 0
+            || self.width > MAX_STUDIO_PREVIEW_DIMENSION
+            || self.height > MAX_STUDIO_PREVIEW_DIMENSION
+            || expected_rgb_bytes != Some(self.rgb.len())
+            || self.rgb.len() > MAX_STUDIO_PREVIEW_RGB_BYTES
+            || !valid_sha256(&self.plan_sha256)
+            || !valid_sha256(&self.source_set_sha256)
+            || !(-9_600..=2_400).contains(&self.microphone.gain_millibels)
+            || !(-9_600..=2_400).contains(&self.system_audio.gain_millibels)
+        {
+            return Err(NativeDesktopContractError::InvalidStudioPreview);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeStudioPreviewOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioPreviewOutcome")
+            .field("editor_revision", &self.editor_revision)
+            .field("project_revision", &self.project_revision)
+            .field("position_ms", &self.position_ms)
+            .field("source_position_ms", &self.source_position_ms)
+            .field("output_duration_ms", &self.output_duration_ms)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("rgb_bytes", &self.rgb.len())
+            .field("plan_sha256", &"<redacted>")
+            .field("source_set_sha256", &"<redacted>")
+            .field("microphone", &self.microphone)
+            .field("system_audio", &self.system_audio)
+            .finish()
+    }
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
 impl fmt::Debug for NativeStudioExportOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1029,6 +1123,13 @@ pub trait NativeDesktopBackend {
         Err(NativeDesktopBackendError::Unavailable)
     }
 
+    fn preview_studio_project(
+        &mut self,
+        _request: NativeStudioPreviewRequest,
+    ) -> Result<NativeStudioPreviewOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
     fn export_studio_project(
         &mut self,
         _request: &NativeStudioExportRequest,
@@ -1109,6 +1210,8 @@ pub enum NativeDesktopContractError {
     InvalidStudioRecovery,
     #[error("Studio editor response is invalid")]
     InvalidStudioEditor,
+    #[error("Studio preview response is invalid")]
+    InvalidStudioPreview,
     #[error("Studio export response is invalid")]
     InvalidStudioExport,
 }
@@ -1393,6 +1496,49 @@ mod tests {
         assert_eq!(
             uppercase.validate_for(&request),
             Err(NativeDesktopContractError::InvalidStudioExport)
+        );
+    }
+
+    #[test]
+    fn studio_preview_is_revision_position_shape_and_digest_bound() {
+        let request = NativeStudioPreviewRequest {
+            editor_revision: 7,
+            position_ms: 250,
+        };
+        let outcome = NativeStudioPreviewOutcome {
+            editor_revision: 7,
+            project_revision: 4,
+            position_ms: 250,
+            source_position_ms: 500,
+            output_duration_ms: 1_000,
+            width: 2,
+            height: 1,
+            rgb: vec![0, 1, 2, 3, 4, 5],
+            plan_sha256: "12".repeat(32),
+            source_set_sha256: "34".repeat(32),
+            microphone: NativeStudioPreviewAudioState {
+                source_available: false,
+                gain_millibels: 0,
+                muted: false,
+            },
+            system_audio: NativeStudioPreviewAudioState {
+                source_available: true,
+                gain_millibels: -600,
+                muted: false,
+            },
+        };
+        outcome.validate_for(request).expect("valid preview");
+        let debug = format!("{outcome:?}");
+        assert!(!debug.contains(&outcome.plan_sha256));
+        assert!(!debug.contains("[0, 1, 2"));
+
+        let malformed = NativeStudioPreviewOutcome {
+            rgb: vec![0; 5],
+            ..outcome
+        };
+        assert_eq!(
+            malformed.validate_for(request),
+            Err(NativeDesktopContractError::InvalidStudioPreview)
         );
     }
 }

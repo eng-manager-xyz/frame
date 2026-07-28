@@ -51,10 +51,12 @@ use frame_macos_screen_capture::{
 use frame_media::ScreenRecordingArtifact;
 use frame_media::{
     AvSessionId, CancellationToken, ColorSpace, CursorCaptureMode, DisplayGeometryTransform,
-    FrameMemory, LogicalRect, PermissionPreflight, PixelFormat, ProtectedContentPolicy, Rotation,
+    ExactDuration, FilesystemStudioOriginalStore, FrameMemory, FrameRate, LogicalRect,
+    NativeStudioPreviewEngine, PermissionPreflight, PixelFormat, ProtectedContentPolicy, Rotation,
     ScreenAudioRecording, ScreenAudioRecordingArtifact, ScreenRecording, ScreenRecordingError,
     ScreenRecordingSpec, ScreenSessionId, ScreenSourceInstanceId, ScreenTargetBinding,
-    ScreenTargetDescriptor, ScreenTargetKind, ScreenTargetSnapshot, SystemAudioRecordingSpec,
+    ScreenTargetDescriptor, ScreenTargetKind, ScreenTargetSnapshot, StudioPreviewGraphSpec,
+    StudioSourceSet, StudioTimelineCompiler, SystemAudioRecordingSpec, TimelineSource,
     VideoFrameSpec, preflight_screen_recording_runtime,
 };
 use frame_platform_lifecycle::SystemPowerMonitor;
@@ -94,7 +96,8 @@ use crate::{
     NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
     NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioEditApplyOutcome,
     NativeStudioEditApplyRequest, NativeStudioEditSaveOutcome, NativeStudioEditSaveRequest,
-    NativeStudioExportOutcome, NativeStudioExportRequest, NativeStudioProjectCatalog,
+    NativeStudioExportOutcome, NativeStudioExportRequest, NativeStudioPreviewAudioState,
+    NativeStudioPreviewOutcome, NativeStudioPreviewRequest, NativeStudioProjectCatalog,
     NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest, NativeStudioProjectSummary,
     NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
     NativeStudioRecoveryOutcome, NativeStudioRecoveryRequest, NativeTargetSelectionOutcome,
@@ -111,6 +114,25 @@ const FILE_IO_BUFFER_BYTES: usize = 64 * 1_024;
 const RECORDINGS_DIRECTORY: &str = "recordings";
 const STUDIO_DIRECTORY: &str = "studio";
 const EXPORT_STAGING_DIRECTORY: &str = ".frame-staging";
+
+fn exact_duration_millis(value: ExactDuration) -> Result<u64, NativeDesktopBackendError> {
+    value
+        .numerator()
+        .checked_mul(1_000)
+        .and_then(|milliseconds| milliseconds.checked_div(value.denominator()))
+        .and_then(|milliseconds| u64::try_from(milliseconds).ok())
+        .ok_or(NativeDesktopBackendError::InvalidEdit)
+}
+
+fn exact_duration_millis_ceil(value: ExactDuration) -> Result<u64, NativeDesktopBackendError> {
+    value
+        .numerator()
+        .checked_mul(1_000)
+        .and_then(|milliseconds| milliseconds.checked_add(value.denominator().saturating_sub(1)))
+        .and_then(|milliseconds| milliseconds.checked_div(value.denominator()))
+        .and_then(|milliseconds| u64::try_from(milliseconds).ok())
+        .ok_or(NativeDesktopBackendError::InvalidEdit)
+}
 
 #[derive(Clone)]
 struct CatalogTarget {
@@ -2255,6 +2277,76 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             project_revision,
             project_token: reminted_token,
             catalog,
+        })
+    }
+
+    fn preview_studio_project(
+        &mut self,
+        request: NativeStudioPreviewRequest,
+    ) -> Result<NativeStudioPreviewOutcome, NativeDesktopBackendError> {
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        let editor = self
+            .active_editor
+            .as_ref()
+            .ok_or(NativeDesktopBackendError::Unavailable)?;
+        let discovered = self
+            .studio_projects
+            .values()
+            .find(|project| project.project_id() == editor.project_id())
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        let (authenticated, _) = authenticate_ready_project(&self.projects_directory, discovered)?;
+        let manifest = editor.preview_manifest(request.editor_revision, &authenticated)?;
+        let timeline = TimelineSource::from_assets(&manifest.assets)
+            .map_err(|_| NativeDesktopBackendError::InvalidEdit)?;
+        let plan = StudioTimelineCompiler::compile(&timeline, &manifest.edits)
+            .map_err(|_| NativeDesktopBackendError::InvalidEdit)?;
+        let sources = StudioSourceSet::from_project(&manifest, &timeline)
+            .map_err(|_| NativeDesktopBackendError::InvalidEdit)?;
+        let graph = StudioPreviewGraphSpec::compile(sources, plan)
+            .map_err(|_| NativeDesktopBackendError::InvalidEdit)?;
+        let mut store = FilesystemStudioOriginalStore::new(&self.studio_root)
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+        let cancellation = CancellationToken::new();
+        let mut preview = NativeStudioPreviewEngine::open(
+            graph,
+            &mut store,
+            FrameRate {
+                numerator: 30,
+                denominator: 1,
+            },
+            &cancellation,
+        )
+        .map_err(studio_export::map_native_error)?;
+        let output_time = ExactDuration::new(u128::from(request.position_ms), 1_000)
+            .map_err(|_| NativeDesktopBackendError::InvalidEdit)?;
+        let sample = preview
+            .seek(output_time, &cancellation)
+            .map_err(studio_export::map_native_error)?;
+        let output_duration_ms = exact_duration_millis_ceil(preview.snapshot().output_duration)?;
+        let source_position_ms = exact_duration_millis(sample.source_time)?;
+        let screen = sample.screen.frame;
+        Ok(NativeStudioPreviewOutcome {
+            editor_revision: request.editor_revision,
+            project_revision: manifest.revision,
+            position_ms: request.position_ms,
+            source_position_ms,
+            output_duration_ms,
+            width: screen.width,
+            height: screen.height,
+            rgb: screen.rgb,
+            plan_sha256: sample.plan_digest.to_hex(),
+            source_set_sha256: sample.source_set_digest.to_hex(),
+            microphone: NativeStudioPreviewAudioState {
+                source_available: sample.microphone.source.is_some(),
+                gain_millibels: sample.microphone.gain_millibels,
+                muted: sample.microphone.muted,
+            },
+            system_audio: NativeStudioPreviewAudioState {
+                source_available: sample.system_audio.source.is_some(),
+                gain_millibels: sample.system_audio.gain_millibels,
+                muted: sample.system_audio.muted,
+            },
         })
     }
 

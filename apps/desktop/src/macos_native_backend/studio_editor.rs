@@ -76,6 +76,42 @@ impl ActiveStudioEditor {
         Ok(self.manifest.clone())
     }
 
+    /// Returns the canonical manifest represented by the current draft.
+    ///
+    /// Dirty drafts use exactly the single durable revision that `save` will
+    /// commit, regardless of how many optimistic editor mutations were
+    /// applied. The caller must reauthenticate the durable base manifest
+    /// before requesting this view.
+    pub(super) fn preview_manifest(
+        &self,
+        expected_editor_revision: u64,
+        authenticated_base: &StudioProjectManifest,
+    ) -> Result<StudioProjectManifest, NativeDesktopBackendError> {
+        if expected_editor_revision != self.editor_revision || authenticated_base != &self.manifest
+        {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        if !self.dirty {
+            return Ok(self.manifest.clone());
+        }
+        let next_project_revision = self
+            .manifest
+            .revision
+            .checked_add(1)
+            .ok_or(NativeDesktopBackendError::InvalidEdit)?;
+        let mut preview = self.manifest.clone();
+        preview.revision = next_project_revision;
+        preview.edits = EditSpec {
+            version: STUDIO_EDIT_VERSION,
+            revision: next_project_revision,
+            operations: self.operations.clone(),
+        };
+        preview.validate().map_err(map_studio_error)?;
+        let source = TimelineSource::from_assets(&preview.assets).map_err(map_editor_error)?;
+        StudioTimelineCompiler::compile(&source, &preview.edits).map_err(map_editor_error)?;
+        Ok(preview)
+    }
+
     pub(super) fn apply(
         &mut self,
         request: &NativeStudioEditApplyRequest,
@@ -468,6 +504,37 @@ mod tests {
         };
         assert_eq!(editor.apply(&valid).expect("valid edit").editor_revision, 2);
         assert_eq!(editor.editor_revision(), 2);
+    }
+
+    #[test]
+    fn multiple_draft_edits_share_the_next_durable_project_revision() {
+        let manifest =
+            ready_manifest(StudioProjectId::from_csprng([4; 16]).expect("project identity"));
+        let mut editor = ActiveStudioEditor::new(manifest.clone()).expect("editor");
+        editor
+            .apply(&NativeStudioEditApplyRequest {
+                base_editor_revision: 1,
+                mutation: NativeStudioEditMutation::Split { at_ms: 3_000 },
+            })
+            .expect("first draft edit");
+        editor
+            .apply(&NativeStudioEditApplyRequest {
+                base_editor_revision: 2,
+                mutation: NativeStudioEditMutation::Split { at_ms: 6_000 },
+            })
+            .expect("second draft edit");
+
+        let preview = editor
+            .preview_manifest(3, &manifest)
+            .expect("canonical draft manifest");
+        assert_eq!(editor.editor_revision(), 3);
+        assert_eq!(preview.revision, 2);
+        assert_eq!(preview.edits.revision, 2);
+        assert_eq!(preview.edits.operations.len(), 2);
+        assert_eq!(
+            editor.clean_manifest(3),
+            Err(NativeDesktopBackendError::InvalidEdit)
+        );
     }
 
     #[test]

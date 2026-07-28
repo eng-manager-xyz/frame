@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::instant_finalize_service::InstantFinalizeCapabilityState;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 2;
+pub const IPC_PROTOCOL_VERSION: u16 = 3;
 const MAX_PATH_BYTES: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +155,7 @@ pub enum CommandKind {
     EditorOpen,
     EditorApply,
     EditorSave,
+    EditorPreview,
     ExportStart,
     ExportCancel,
     UploadStart,
@@ -351,6 +352,10 @@ pub enum IpcCommand {
     EditorSave {
         expected_revision: u64,
     },
+    EditorPreview {
+        editor_revision: u64,
+        position_ms: u64,
+    },
     ExportStart {
         project_revision: u64,
         output_path: String,
@@ -441,6 +446,7 @@ impl IpcCommand {
             Self::EditorOpen { .. } => CommandKind::EditorOpen,
             Self::EditorApply { .. } => CommandKind::EditorApply,
             Self::EditorSave { .. } => CommandKind::EditorSave,
+            Self::EditorPreview { .. } => CommandKind::EditorPreview,
             Self::ExportStart { .. } => CommandKind::ExportStart,
             Self::ExportCancel { .. } => CommandKind::ExportCancel,
             Self::UploadStart { .. } => CommandKind::UploadStart,
@@ -547,6 +553,12 @@ impl IpcCommand {
                 mutation.validate()
             }
             Self::EditorSave { expected_revision } if *expected_revision == 0 => {
+                Err(IpcError::InvalidPayload)
+            }
+            Self::EditorPreview {
+                editor_revision,
+                position_ms,
+            } if *editor_revision == 0 || *position_ms > 86_400_000 => {
                 Err(IpcError::InvalidPayload)
             }
             Self::ExportStart {
@@ -1115,6 +1127,7 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
             CommandKind::EditorOpen
                 | CommandKind::EditorApply
                 | CommandKind::EditorSave
+                | CommandKind::EditorPreview
                 | CommandKind::ExportStart
                 | CommandKind::ExportCancel
                 | CommandKind::UploadStart
@@ -1348,6 +1361,43 @@ mod tests {
             WindowRole::Overlay,
         ] {
             assert!(!command_allowed(role, CommandKind::RecorderPoll));
+        }
+    }
+
+    #[test]
+    fn editor_preview_is_bounded_redacted_and_editor_scoped() {
+        let command = IpcCommand::EditorPreview {
+            editor_revision: 9,
+            position_ms: 1_250,
+        };
+        assert_eq!(command.validate_payload(), Ok(()));
+        assert_eq!(command.kind(), CommandKind::EditorPreview);
+        assert!(!format!("{command:?}").contains("1250"));
+        assert!(command_allowed(
+            WindowRole::Editor,
+            CommandKind::EditorPreview
+        ));
+        for role in [
+            WindowRole::Main,
+            WindowRole::Recorder,
+            WindowRole::Recovery,
+            WindowRole::Export,
+            WindowRole::Settings,
+            WindowRole::Overlay,
+        ] {
+            assert!(!command_allowed(role, CommandKind::EditorPreview));
+        }
+        for invalid in [
+            IpcCommand::EditorPreview {
+                editor_revision: 0,
+                position_ms: 0,
+            },
+            IpcCommand::EditorPreview {
+                editor_revision: 1,
+                position_ms: 86_400_001,
+            },
+        ] {
+            assert_eq!(invalid.validate_payload(), Err(IpcError::InvalidPayload));
         }
     }
 

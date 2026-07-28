@@ -36,7 +36,8 @@ use crate::{
         NativeRecordingInputControlRequest, NativeRecordingStartOutcome,
         NativeRecordingStopOutcome, NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome,
         NativeRegionDefinitionRequest, NativeStudioEditApplyRequest, NativeStudioEditMutation,
-        NativeStudioEditSaveRequest, NativeStudioExportRequest, NativeStudioProjectCatalog,
+        NativeStudioEditSaveRequest, NativeStudioExportRequest, NativeStudioPreviewAudioState,
+        NativeStudioPreviewOutcome, NativeStudioPreviewRequest, NativeStudioProjectCatalog,
         NativeStudioProjectOpenRequest, NativeStudioProjectStatus, NativeStudioRecoveryAction,
         NativeStudioRecoveryRequest, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
         STUDIO_PROJECT_CATALOG_VERSION,
@@ -48,7 +49,7 @@ use crate::{
     },
 };
 
-pub const DESKTOP_RUNTIME_VERSION: u16 = 5;
+pub const DESKTOP_RUNTIME_VERSION: u16 = 6;
 pub const DESKTOP_INPUT_TELEMETRY_VERSION: u16 = 1;
 pub const DESKTOP_INPUT_TELEMETRY_INTERVAL_MS: u64 = 100;
 const DESKTOP_INPUT_TELEMETRY_INTERVAL: Duration =
@@ -1785,6 +1786,7 @@ impl DesktopRuntime {
                         },
                         BackendEvent::EditorLoaded {
                             revision: outcome.project_revision,
+                            project_revision: outcome.project_revision,
                             duration_ms: outcome.duration_ms,
                         },
                     ],
@@ -1853,6 +1855,7 @@ impl DesktopRuntime {
                     vec![BackendEvent::EditorSaved {
                         intent_id: intent_id.clone(),
                         revision: outcome.editor_revision,
+                        project_revision: outcome.project_revision,
                     }],
                 )?;
                 self.recovery_projects = u16::try_from(outcome.catalog.projects.len())
@@ -1871,6 +1874,41 @@ impl DesktopRuntime {
                 );
                 Ok(events)
             }
+            IpcCommand::EditorPreview {
+                editor_revision,
+                position_ms,
+            } => {
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                let request = NativeStudioPreviewRequest {
+                    editor_revision: *editor_revision,
+                    position_ms: *position_ms,
+                };
+                self.preflight_transition(
+                    &intent_id,
+                    IntentKind::EditorPreview {
+                        editor_revision: *editor_revision,
+                    },
+                )?;
+                let outcome = backend
+                    .preview_studio_project(request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                outcome
+                    .validate_for(request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::EditorPreview {
+                        editor_revision: *editor_revision,
+                    },
+                    vec![BackendEvent::EditorPreviewReady {
+                        intent_id: intent_id.clone(),
+                        preview: outcome,
+                    }],
+                )?;
+                self.announcement =
+                    format!("Studio preview rendered at {position_ms} milliseconds.");
+                Ok(events)
+            }
             IpcCommand::ExportStart {
                 project_revision,
                 profile: profile @ (ExportProfile::DistributionMp4 | ExportProfile::Archive),
@@ -1879,10 +1917,10 @@ impl DesktopRuntime {
                 if !matches!(
                     self.workflow.editor(),
                     EditorState::Ready {
-                        revision,
+                        project_revision: current_project_revision,
                         dirty: false,
                         ..
-                    } if revision == *project_revision
+                    } if current_project_revision == *project_revision
                 ) {
                     return Err(ExecutionFailure::unavailable());
                 }
@@ -2358,6 +2396,7 @@ impl DesktopRuntime {
                         },
                         BackendEvent::EditorLoaded {
                             revision,
+                            project_revision: revision,
                             duration_ms: 90_000,
                         },
                     ],
@@ -2378,6 +2417,14 @@ impl DesktopRuntime {
                 )
             }
             IpcCommand::EditorSave { expected_revision } => {
+                let EditorState::Ready {
+                    project_revision,
+                    dirty: true,
+                    ..
+                } = self.workflow.editor()
+                else {
+                    return Err(ExecutionFailure::unavailable());
+                };
                 let intent_id = current_intent_id(owner, self.operation_revision);
                 self.announcement = "Project revision saved.".into();
                 self.transition(
@@ -2388,6 +2435,71 @@ impl DesktopRuntime {
                     vec![BackendEvent::EditorSaved {
                         intent_id: intent_id.clone(),
                         revision: *expected_revision,
+                        project_revision: project_revision.saturating_add(1),
+                    }],
+                )
+            }
+            IpcCommand::EditorPreview {
+                editor_revision,
+                position_ms,
+            } => {
+                let EditorState::Ready {
+                    revision,
+                    project_revision,
+                    duration_ms,
+                    dirty,
+                } = self.workflow.editor()
+                else {
+                    return Err(ExecutionFailure::unavailable());
+                };
+                if revision != *editor_revision || *position_ms >= duration_ms {
+                    return Err(ExecutionFailure::unavailable());
+                }
+                let preview_project_revision = if dirty {
+                    project_revision.saturating_add(1)
+                } else {
+                    project_revision
+                };
+                let request = NativeStudioPreviewRequest {
+                    editor_revision: *editor_revision,
+                    position_ms: *position_ms,
+                };
+                let outcome = NativeStudioPreviewOutcome {
+                    editor_revision: *editor_revision,
+                    project_revision: preview_project_revision,
+                    position_ms: *position_ms,
+                    source_position_ms: *position_ms,
+                    output_duration_ms: duration_ms,
+                    width: 2,
+                    height: 1,
+                    rgb: vec![32, 64, 96, 96, 64, 32],
+                    plan_sha256: "12".repeat(32),
+                    source_set_sha256: "34".repeat(32),
+                    microphone: NativeStudioPreviewAudioState {
+                        source_available: true,
+                        gain_millibels: 0,
+                        muted: false,
+                    },
+                    system_audio: NativeStudioPreviewAudioState {
+                        source_available: true,
+                        gain_millibels: 0,
+                        muted: false,
+                    },
+                };
+                outcome
+                    .validate_for(request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.announcement =
+                    format!("Studio preview rendered at {position_ms} milliseconds.");
+                self.transition(
+                    &intent_id,
+                    IntentKind::EditorPreview {
+                        editor_revision: *editor_revision,
+                    },
+                    vec![BackendEvent::EditorPreviewReady {
+                        intent_id: intent_id.clone(),
+                        preview: outcome,
                     }],
                 )
             }
@@ -3867,11 +3979,42 @@ mod tests {
                 },
             ))
             .expect("trim"));
-        ok(&runtime
+        let previewed = runtime
             .dispatch(request(
                 &runtime,
                 WindowRole::Editor,
                 3,
+                "editor-preview",
+                IpcCommand::EditorPreview {
+                    editor_revision: 2,
+                    position_ms: 500,
+                },
+            ))
+            .expect("preview");
+        ok(&previewed);
+        let preview = previewed
+            .events
+            .iter()
+            .find_map(|envelope| match &envelope.event {
+                DesktopRuntimeEvent::Backend(BackendEvent::EditorPreviewReady {
+                    preview, ..
+                }) => Some(preview),
+                _ => None,
+            });
+        assert!(preview.is_some_and(|preview| {
+            preview.editor_revision == 2 && preview.project_revision == 2 && preview.rgb.len() == 6
+        }));
+        assert!(
+            !serde_json::to_string(&previewed.snapshot)
+                .expect("snapshot JSON")
+                .contains("\"rgb\""),
+            "one-shot raw preview bytes must never persist in the runtime snapshot"
+        );
+        ok(&runtime
+            .dispatch(request(
+                &runtime,
+                WindowRole::Editor,
+                4,
                 "editor-save",
                 IpcCommand::EditorSave {
                     expected_revision: 2,
@@ -3882,7 +4025,7 @@ mod tests {
             .dispatch(request(
                 &runtime,
                 WindowRole::Editor,
-                4,
+                5,
                 "export-start",
                 IpcCommand::ExportStart {
                     project_revision: 2,
@@ -3895,7 +4038,7 @@ mod tests {
             .dispatch(request(
                 &runtime,
                 WindowRole::Editor,
-                5,
+                6,
                 "upload-start",
                 IpcCommand::UploadStart {
                     source_path: absolute_test_path(&["frame", "media", "demo.mp4"]),
@@ -4395,6 +4538,7 @@ mod tests {
             opened.snapshot.editor,
             EditorState::Ready {
                 revision: 3,
+                project_revision: 3,
                 duration_ms: 4_000,
                 dirty: false,
             }
@@ -4437,7 +4581,7 @@ mod tests {
     }
 
     #[test]
-    fn native_studio_apply_and_save_use_backend_confirmed_revisions() {
+    fn native_studio_multiple_edits_save_and_export_use_distinct_revisions() {
         let mut runtime = native_runtime();
         let mut backend = TestNativeBackend::new();
         ok(&runtime
@@ -4488,6 +4632,33 @@ mod tests {
             applied.snapshot.editor,
             EditorState::Ready {
                 revision: 4,
+                project_revision: 3,
+                duration_ms: 4_000,
+                dirty: true,
+            }
+        );
+
+        let applied_again = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    3,
+                    "studio-edit-apply-again",
+                    IpcCommand::EditorApply {
+                        base_revision: 4,
+                        mutation: EditorMutation::Split { at_ms: 3_000 },
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("second native edit apply");
+        ok(&applied_again);
+        assert_eq!(
+            applied_again.snapshot.editor,
+            EditorState::Ready {
+                revision: 5,
+                project_revision: 3,
                 duration_ms: 4_000,
                 dirty: true,
             }
@@ -4498,10 +4669,10 @@ mod tests {
                 request(
                     &runtime,
                     WindowRole::Editor,
-                    3,
+                    4,
                     "studio-edit-save",
                     IpcCommand::EditorSave {
-                        expected_revision: 4,
+                        expected_revision: 5,
                     },
                 ),
                 &mut backend,
@@ -4511,7 +4682,8 @@ mod tests {
         assert_eq!(
             saved.snapshot.editor,
             EditorState::Ready {
-                revision: 4,
+                revision: 5,
+                project_revision: 4,
                 duration_ms: 4_000,
                 dirty: false,
             }
@@ -4521,8 +4693,37 @@ mod tests {
             saved.snapshot.studio_projects.projects[0].project_token,
             "studio-project-token-reminted"
         );
-        assert_eq!(backend.call_count("apply_studio_edit"), 1);
+        let destination = saved
+            .snapshot
+            .studio_export_destination
+            .clone()
+            .expect("saved export destination");
+        let exported = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    5,
+                    "studio-edit-export",
+                    IpcCommand::ExportStart {
+                        project_revision: 4,
+                        output_path: destination.output_path,
+                        profile: destination.profile,
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("saved revision export");
+        ok(&exported);
+        assert_eq!(
+            exported.snapshot.export,
+            ExportState::Completed {
+                project_revision: 4
+            }
+        );
+        assert_eq!(backend.call_count("apply_studio_edit"), 2);
         assert_eq!(backend.call_count("save_studio_edits"), 1);
+        assert_eq!(backend.call_count("export_studio"), 1);
     }
 
     #[test]

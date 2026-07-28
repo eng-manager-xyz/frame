@@ -3031,6 +3031,23 @@ mod tests {
         )
         .expect("edited output remains playable");
         assert_eq!((decoded.width, decoded.height), (320, 180));
+        let preview = decode_studio_edited_preview_frame(
+            &path(NativeStudioTrackRole::Screen),
+            &plan,
+            ExactDuration::new(1, 2).expect("half-second output position"),
+            &CancellationToken::new(),
+        )
+        .expect("shared-plan preview");
+        assert_eq!(preview.plan_digest, artifact.plan_digest);
+        assert_eq!(
+            (preview.frame.width, preview.frame.height),
+            (decoded.width, decoded.height)
+        );
+        let (mean_error, peak_error) = rgb_error(&preview.frame.rgb, &decoded.rgb);
+        assert!(
+            mean_error <= 8 && peak_error <= 64,
+            "decoded preview/export frame drift exceeded the golden tolerance: mean={mean_error}, peak={peak_error}"
+        );
 
         let cancelled_output = directory.path().join("cancelled-after-progress.webm");
         let cancellation = CancellationToken::new();
@@ -3060,6 +3077,19 @@ mod tests {
                     .starts_with(".frame-studio-")),
             "cancelled publication must remove its private staging directory"
         );
+    }
+
+    fn rgb_error(expected: &[u8], actual: &[u8]) -> (u64, u8) {
+        assert_eq!(expected.len(), actual.len(), "RGB frame shape");
+        let mut total = 0_u64;
+        let mut peak = 0_u8;
+        for (&expected, &actual) in expected.iter().zip(actual) {
+            let error = expected.abs_diff(actual);
+            total = total.saturating_add(u64::from(error));
+            peak = peak.max(error);
+        }
+        let mean = total / u64::try_from(expected.len()).expect("bounded frame length");
+        (mean, peak)
     }
 
     #[test]
