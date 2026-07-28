@@ -620,6 +620,7 @@ impl DesktopProductSurface {
                 revision,
                 duration_ms,
                 dirty,
+                ..
             } => {
                 let selection = self.selection.unwrap_or(EditorSelection {
                     start_ms: 0,
@@ -811,7 +812,7 @@ impl DesktopProductSurface {
         destination: ExportDestinationHandle,
     ) -> Result<SurfaceEffect, SurfaceError> {
         let EditorState::Ready {
-            revision,
+            project_revision,
             dirty: false,
             ..
         } = self.workflow.editor()
@@ -819,11 +820,9 @@ impl DesktopProductSurface {
             return Err(SurfaceError::ActionUnavailable);
         };
         let effect = self.queue_command(
-            IntentKind::ExportStart {
-                project_revision: revision,
-            },
+            IntentKind::ExportStart { project_revision },
             SurfaceCommand::ExportStart {
-                project_revision: revision,
+                project_revision,
                 destination,
             },
         )?;
@@ -1009,7 +1008,7 @@ impl DesktopProductSurface {
                     return Err(SurfaceError::ActionUnavailable);
                 }
                 let EditorState::Ready {
-                    revision,
+                    project_revision,
                     dirty: false,
                     ..
                 } = self.workflow.editor()
@@ -1029,9 +1028,7 @@ impl DesktopProductSurface {
                 {
                     return Err(SurfaceError::ActionUnavailable);
                 }
-                Ok(SurfaceEffect::ChooseExportDestination {
-                    project_revision: revision,
-                })
+                Ok(SurfaceEffect::ChooseExportDestination { project_revision })
             }
             KeyboardAction::RetryLastOperation => self.retry_failure(),
             KeyboardAction::FocusRecorder => self.change_screen(DesktopScreen::Recorder),
@@ -1095,13 +1092,14 @@ impl DesktopProductSurface {
         match failure.operation {
             FailureOperation::SaveProject => self.request_save(),
             FailureOperation::Export => {
-                let EditorState::Ready { revision, .. } = self.workflow.editor() else {
+                let EditorState::Ready {
+                    project_revision, ..
+                } = self.workflow.editor()
+                else {
                     return Err(SurfaceError::ActionUnavailable);
                 };
                 self.clear_failure_for_retry();
-                Ok(SurfaceEffect::ChooseExportDestination {
-                    project_revision: revision,
-                })
+                Ok(SurfaceEffect::ChooseExportDestination { project_revision })
             }
             FailureOperation::ApplyEdit => {
                 let effect = self.apply_selection()?;
@@ -1527,6 +1525,7 @@ mod tests {
                 2,
                 BackendEvent::EditorLoaded {
                     revision: 1,
+                    project_revision: 1,
                     duration_ms: 60_000,
                 },
             ))
@@ -1677,6 +1676,7 @@ mod tests {
             surface.snapshot().editor,
             EditorState::Ready {
                 revision: 2,
+                project_revision: 1,
                 duration_ms: 60_000,
                 dirty: true,
             }
@@ -1742,6 +1742,7 @@ mod tests {
                 BackendEvent::EditorSaved {
                     intent_id: "ui-0000000000000004".into(),
                     revision: 2,
+                    project_revision: 2,
                 },
             ))
             .expect("saved");
@@ -1774,6 +1775,7 @@ mod tests {
             surface.snapshot().editor,
             EditorState::Ready {
                 revision: 1,
+                project_revision: 1,
                 duration_ms: 60_000,
                 dirty: false,
             }

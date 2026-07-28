@@ -8,11 +8,14 @@ It does not classify the complete Studio product path as locally implemented.
 
 ## Closure ledger boundary
 
-Issue 27 checkboxes 9, 10, and 11 are repository-local gaps. Checkboxes 1–6
-and 8 are locally satisfied by the versioned project format, production
+Issue 27 checkboxes 10 and 11 are repository-local gaps. Checkboxes 1–6,
+8, and 9 are locally satisfied by the versioned project format, production
 isolated-track recorder, source-set-bound native preview engine, exact
 aligned-source export profiles, production filesystem legacy importer, and
-journal-fenced native recording/edit-save recovery.
+journal-fenced native recording/edit-save recovery. Checkbox 9 is backed by
+the release editor's one-shot native preview command and a decoded RGB
+preview/export golden that executes trim, delete, rational speed, and
+audio-gain windows through the same canonical plan.
 Checkbox 7 alone remains `protected_pending`, because the
 non-mutating importer/reporting path exists but still needs a reviewed
 representative legacy-project corpus.
@@ -80,9 +83,10 @@ draft atomicity, a real filesystem journal/project save, immutable-original
 preservation, opaque-token redaction, and backend-confirmed desktop
 apply/save transitions.
 
-The combined microphone/camera bridge is not yet fed into Studio. The
-artifact-backed Editable WebM copy/publication remains the flattened recorder
-output and is not an edit-aware Studio export. The narrow native edit adapter
+The combined optional-input bridge feeds selected microphone, camera, and
+system-audio samples into isolated Studio tracks. The artifact-backed Editable
+WebM copy/publication remains the flattened recorder output and is not an
+edit-aware Studio export. The narrow native edit adapter
 executes the shared canonical plan for one clock-aligned screen original plus
 optional microphone/system-audio originals: preview maps an edited output
 point before real decode, and export applies trim/delete/rational speed plus
@@ -106,13 +110,23 @@ A native integration test generates real isolated screen/system-audio sources,
 commits them, replaces the visible Studio root after preparation, and still
 produces the artifact from the retained original descriptors.
 
-The desktop call remains synchronous, publishes only terminal progress, and is
+The release editor now submits a bounded revision/position request, and the
+native backend reauthenticates the durable base manifest before constructing
+the exact draft manifest that the next save would commit. Multiple optimistic
+editor mutations advance only the editor revision; the draft preview and save
+share one next durable project revision. `NativeStudioPreviewEngine` decodes
+the requested screen frame and exact audio decisions, and only the bounded
+one-shot preview event crosses into the WebView; raw RGB bytes never persist in
+the runtime snapshot. The Leptos editor paints that frame into a canvas and
+announces the mapped source position plus microphone/system-audio decisions.
+
+The export call remains synchronous, publishes only terminal progress, and is
 not wired to `StudioRenderCoordinator`; cancellation cannot currently race a
 running desktop render. The adapter does not assemble arbitrary asset-offset
 ranges and fails closed for camera, cursor, background, camera-only, and
 side-by-side composition. The reference renderer still writes a checksum-bound
 bundle rather than dispatching the native adapter. Therefore these paths cannot
-yet satisfy complete desktop Studio composition, decoded
+yet satisfy complete desktop Studio composition, complete decoded
 preview/export/reference goldens, long-project effects, or hardware-fallback
 acceptance criteria.
 
@@ -172,9 +186,10 @@ The external contract suite exercises:
   through accurate, shared-sequence GStreamer segments, waits for every aligned
   source branch rather than the first aggregate message, bounds any closing
   screen-frame hold to one second, emits a playable VP8/Opus WebM whose measured
-  duration is within 100 ms of the exact plan, decodes the result, emits a
-  bounded monotonic progress trace, and removes pre-cancelled, mid-render
-  cancelled, or failed outputs;
+  duration is within 100 ms of the exact plan, decodes the result, compares the
+  decoded export frame to the shared-plan preview within an explicit mean/peak
+  RGB tolerance, emits a bounded monotonic progress trace, and removes
+  pre-cancelled, mid-render cancelled, or failed outputs;
 - real approved-profile exports that decode and verify the exact H.264/AAC MP4
   hosted-media master, VP8/Opus WebM native master, HEVC/AAC MP4 native master,
   and FFV1/FLAC Matroska archive geometry, frame rate, colorimetry, 48 kHz stereo
@@ -266,10 +281,10 @@ proven-empty attempt without deleting media. The editor now initiates bounded
 trim/delete/split/speed/audio-gain drafts and persists them through the durable
 edit-save journal transaction. A clean aligned screen/audio project can now
 render and identity-publish a verified distribution master from the desktop.
-It does not yet feed the combined microphone/camera bridge into Studio,
-connect native preview/composition to the desktop, run export asynchronously
-through the durable coordinator, or prove the remaining goldens/fallback
-matrix, so issue 27 remains open.
+It does not yet composite the recorded camera/cursor/background tracks into
+native preview/export, run export asynchronously through the durable
+coordinator, or prove the remaining long-project goldens/fallback matrix, so
+issue 27 remains open.
 
 Focused command:
 
@@ -339,11 +354,12 @@ checksum-bound bundle, while the separate native execution helpers supply
 synthetic tracks, edited preview mapping, aligned A/V execution for all four
 approved profiles, single-source WebM, and gated licensed-codec evidence. The
 production isolated-track recorder has both synthetic all-track coverage and a
-release desktop bridge for screen plus optional system audio. Physical capture
-remains protected evidence, and the desktop bridge is not yet connected to the
-combined microphone/camera source or the Studio coordinator.
-Most timeline goldens remain mathematical; the decoded edited artifact adds a
-duration/playability check, not a perceptual frame or reference-audio diff.
+release desktop bridge for screen plus optional microphone, camera, and system
+audio. Physical capture remains protected evidence, and the desktop bridge is
+not yet connected to the Studio coordinator.
+Most timeline goldens remain mathematical; the decoded edited artifact now
+adds a bounded RGB preview/export frame diff, but not a perceptual reference or
+reference-audio diff.
 The JSON keys and non-fragmented `.mp4`/`.ogg` paths were checked against
 `crates/project/src/meta.rs`, `crates/project/src/configuration.rs`, and
 `crates/recording/src/studio_recording.rs` at the pinned revision.

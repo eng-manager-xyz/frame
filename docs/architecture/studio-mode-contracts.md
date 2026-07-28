@@ -311,6 +311,17 @@ cannot silently combine a frame with stale edits. The engine returns at most
 one 320×180 RGB frame per active video track per call; it does not own an
 unbounded decoded-frame queue.
 
+The desktop preview IPC carries only an optimistic editor revision and a
+bounded output position. Rust reauthenticates the durable base manifest, then
+materializes the exact draft manifest that a save would commit. Optimistic
+editor revisions and durable project revisions are separate: any number of
+validated draft mutations maps to one next durable revision. The native
+preview outcome is revision-, position-, shape-, duration-, source-set-, and
+plan-digest-bound. Its bounded RGB screen frame is delivered as a one-shot
+editor event and is never copied into the serializable runtime snapshot. The
+WebView paints the frame into its canvas and exposes source time and audio
+decisions as accessible text.
+
 The first native executor slice accepts one required clock-aligned screen
 original plus independently optional clock-aligned microphone and system-audio
 originals. It performs accurate per-window GStreamer segment seeks, converts
@@ -341,7 +352,8 @@ input caps before that flushing seek so x265 can reinitialize deterministically.
 Camera composition, transformed cursor metadata, nontransparent backgrounds,
 camera-only/side-by-side layouts, arbitrary asset-offset assembly, and wiring
 this adapter into `StudioRenderCoordinator` still fail closed or remain
-unimplemented; this slice is not the complete Studio service or editor UI.
+unimplemented; the screen/audio preview path does not weaken those fail-closed
+boundaries.
 
 Approved profiles are exact:
 

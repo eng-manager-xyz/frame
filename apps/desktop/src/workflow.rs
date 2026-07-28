@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ipc::SessionId;
+use crate::native_backend::NativeStudioPreviewOutcome;
 
-pub const WORKFLOW_PROTOCOL_VERSION: u16 = 1;
+pub const WORKFLOW_PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -87,7 +88,10 @@ pub enum EditorState {
     Closed,
     Loading,
     Ready {
+        /// Optimistic revision of the in-memory editor draft.
         revision: u64,
+        /// Durable Studio manifest revision used to authorize export.
+        project_revision: u64,
         duration_ms: u64,
         dirty: bool,
     },
@@ -173,6 +177,7 @@ pub enum IntentKind {
     EditorOpen,
     EditorApply { base_revision: u64 },
     EditorSave { expected_revision: u64 },
+    EditorPreview { editor_revision: u64 },
     ExportStart { project_revision: u64 },
     CaptureExportStart { artifact_revision: u64 },
     ExportCancel,
@@ -196,9 +201,10 @@ impl IntentKind {
             Self::RecoveryScan | Self::RecoveryOpen | Self::RecoveryDiscard => {
                 WorkflowArea::Recovery
             }
-            Self::EditorOpen | Self::EditorApply { .. } | Self::EditorSave { .. } => {
-                WorkflowArea::Editor
-            }
+            Self::EditorOpen
+            | Self::EditorApply { .. }
+            | Self::EditorSave { .. }
+            | Self::EditorPreview { .. } => WorkflowArea::Editor,
             Self::ExportStart { .. } | Self::CaptureExportStart { .. } | Self::ExportCancel => {
                 WorkflowArea::Export
             }
@@ -313,6 +319,7 @@ pub enum BackendEvent {
     },
     EditorLoaded {
         revision: u64,
+        project_revision: u64,
         duration_ms: u64,
     },
     EditorApplied {
@@ -322,6 +329,11 @@ pub enum BackendEvent {
     EditorSaved {
         intent_id: String,
         revision: u64,
+        project_revision: u64,
+    },
+    EditorPreviewReady {
+        intent_id: String,
+        preview: NativeStudioPreviewOutcome,
     },
     EditorFailed {
         code: SafeFailureCode,
@@ -394,6 +406,7 @@ impl BackendEvent {
             Self::EditorLoaded { .. } => "editor_loaded",
             Self::EditorApplied { .. } => "editor_applied",
             Self::EditorSaved { .. } => "editor_saved",
+            Self::EditorPreviewReady { .. } => "editor_preview_ready",
             Self::EditorFailed { .. } => "editor_failed",
             Self::ExportStarted { .. } => "export_started",
             Self::ExportProgress { .. } => "export_progress",
@@ -428,6 +441,7 @@ impl BackendEvent {
             | Self::EditorLoading { intent_id }
             | Self::EditorApplied { intent_id, .. }
             | Self::EditorSaved { intent_id, .. }
+            | Self::EditorPreviewReady { intent_id, .. }
             | Self::ExportStarted { intent_id, .. }
             | Self::ExportCancelling { intent_id }
             | Self::UploadStarted { intent_id, .. }
@@ -642,17 +656,27 @@ impl DesktopWorkflow {
                 self.editor,
                 EditorState::Ready { revision, dirty: true, .. } if revision == expected_revision
             ),
+            IntentKind::EditorPreview { editor_revision } => matches!(
+                self.editor,
+                EditorState::Ready { revision, .. } if revision == editor_revision
+            ),
             IntentKind::ExportStart { project_revision } => {
-                matches!(self.editor, EditorState::Ready { revision, .. } if revision == project_revision)
-                    && matches!(
-                        self.export,
-                        ExportState::Idle
-                            | ExportState::Completed { .. }
-                            | ExportState::Failed {
-                                retryable: true,
-                                ..
-                            }
-                    )
+                matches!(
+                    self.editor,
+                    EditorState::Ready {
+                        project_revision: current,
+                        dirty: false,
+                        ..
+                    } if current == project_revision
+                ) && matches!(
+                    self.export,
+                    ExportState::Idle
+                        | ExportState::Completed { .. }
+                        | ExportState::Failed {
+                            retryable: true,
+                            ..
+                        }
+                )
             }
             IntentKind::CaptureExportStart { artifact_revision } => {
                 artifact_revision > 0
@@ -861,11 +885,18 @@ impl DesktopWorkflow {
             }
             BackendEvent::EditorLoaded {
                 revision,
+                project_revision,
                 duration_ms,
             } => {
-                require(self.editor == EditorState::Loading && revision > 0 && duration_ms > 0)?;
+                require(
+                    self.editor == EditorState::Loading
+                        && revision > 0
+                        && project_revision > 0
+                        && duration_ms > 0,
+                )?;
                 self.editor = EditorState::Ready {
                     revision,
+                    project_revision,
                     duration_ms,
                     dirty: false,
                 };
@@ -881,6 +912,7 @@ impl DesktopWorkflow {
                 };
                 let EditorState::Ready {
                     revision: current,
+                    project_revision,
                     duration_ms,
                     ..
                 } = self.editor
@@ -891,6 +923,7 @@ impl DesktopWorkflow {
                 self.pending.remove(&WorkflowArea::Editor);
                 self.editor = EditorState::Ready {
                     revision,
+                    project_revision,
                     duration_ms,
                     dirty: true,
                 };
@@ -899,6 +932,7 @@ impl DesktopWorkflow {
             BackendEvent::EditorSaved {
                 intent_id,
                 revision,
+                project_revision,
             } => {
                 let pending = self.pending_intent_kind(WorkflowArea::Editor, &intent_id)?;
                 let IntentKind::EditorSave { expected_revision } = pending else {
@@ -906,20 +940,52 @@ impl DesktopWorkflow {
                 };
                 let EditorState::Ready {
                     revision: current,
+                    project_revision: current_project_revision,
                     duration_ms,
                     dirty: true,
                 } = self.editor
                 else {
                     return Err(WorkflowError::InvalidBackendTransition);
                 };
-                require(current == expected_revision && revision == current)?;
+                require(
+                    current == expected_revision
+                        && revision == current
+                        && project_revision == current_project_revision.saturating_add(1),
+                )?;
                 self.pending.remove(&WorkflowArea::Editor);
                 self.editor = EditorState::Ready {
                     revision,
+                    project_revision,
                     duration_ms,
                     dirty: false,
                 };
                 self.editor_operation_failure = None;
+            }
+            BackendEvent::EditorPreviewReady { intent_id, preview } => {
+                let pending = self.pending_intent_kind(WorkflowArea::Editor, &intent_id)?;
+                let IntentKind::EditorPreview { editor_revision } = pending else {
+                    return Err(WorkflowError::IntentMismatch);
+                };
+                let EditorState::Ready {
+                    revision,
+                    project_revision,
+                    dirty,
+                    ..
+                } = self.editor
+                else {
+                    return Err(WorkflowError::InvalidBackendTransition);
+                };
+                let expected_project_revision = if dirty {
+                    project_revision.saturating_add(1)
+                } else {
+                    project_revision
+                };
+                require(
+                    editor_revision == revision
+                        && preview.editor_revision == revision
+                        && preview.project_revision == expected_project_revision,
+                )?;
+                self.pending.remove(&WorkflowArea::Editor);
             }
             BackendEvent::EditorFailed { code } => {
                 let operation =
@@ -1324,6 +1390,7 @@ mod tests {
         let mut model = DesktopWorkflow::new(session());
         model.editor = EditorState::Ready {
             revision: 4,
+            project_revision: 3,
             duration_ms: 1_000,
             dirty: false,
         };

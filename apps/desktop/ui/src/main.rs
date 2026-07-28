@@ -13,16 +13,17 @@ mod browser {
 
     use frame_client::{InstantUiPhaseV1, InstantUiProgressV1};
     use frame_desktop_core::{
-        AudioMeterSnapshot, CAPTURE_ARTIFACT_SUMMARY_VERSION, CAPTURE_TARGET_CATALOG_VERSION,
-        CameraPreviewState, CaptureTargetKind, CommandOutcome, DESKTOP_INPUT_TELEMETRY_INTERVAL_MS,
-        DESKTOP_RUNTIME_VERSION, DesktopAdapterKind, DesktopBootstrap, DesktopDispatch,
-        DesktopRuntimeEvent, DesktopRuntimeSnapshot, DesktopWindowContext, DeviceClass,
-        DeviceState, EditorMutation, EditorState, ExportProfile, ExportState, IPC_PROTOCOL_VERSION,
-        InstantFinalizeCapabilityState, InstantFinalizeCommandV1, InstantFinalizeHandle,
-        InstantFinalizeUiUpdate, IpcCommand, LifecycleAction, NativeStudioProjectStatus,
-        PublicErrorCode, RecorderAdapterState, RecorderMode, RecorderState, RequestEnvelope,
-        RequestId, ShellCapabilities, UpdateAction, UpdateState, UploadState, WindowRole,
-        instant_error_message, instant_progress_announcement,
+        AudioMeterSnapshot, BackendEvent, CAPTURE_ARTIFACT_SUMMARY_VERSION,
+        CAPTURE_TARGET_CATALOG_VERSION, CameraPreviewState, CaptureTargetKind, CommandOutcome,
+        DESKTOP_INPUT_TELEMETRY_INTERVAL_MS, DESKTOP_RUNTIME_VERSION, DesktopAdapterKind,
+        DesktopBootstrap, DesktopDispatch, DesktopRuntimeEvent, DesktopRuntimeSnapshot,
+        DesktopWindowContext, DeviceClass, DeviceState, EditorMutation, EditorState, ExportProfile,
+        ExportState, IPC_PROTOCOL_VERSION, InstantFinalizeCapabilityState,
+        InstantFinalizeCommandV1, InstantFinalizeHandle, InstantFinalizeUiUpdate, IpcCommand,
+        LifecycleAction, NativeStudioPreviewOutcome, NativeStudioPreviewRequest,
+        NativeStudioProjectStatus, PublicErrorCode, RecorderAdapterState, RecorderMode,
+        RecorderState, RequestEnvelope, RequestId, ShellCapabilities, UpdateAction, UpdateState,
+        UploadState, WindowRole, instant_error_message, instant_progress_announcement,
     };
     use frame_ui::{
         Alert, Badge, BadgeVariant, Button, ButtonGroup, ButtonVariant, Card, CardFrame,
@@ -32,8 +33,9 @@ mod browser {
     use js_sys::Reflect;
     use leptos::prelude::*;
     use serde::Serialize;
-    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::{Clamped, JsCast, prelude::*};
     use wasm_bindgen_futures::spawn_local;
+    use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
     use self::region_picker::RegionPicker;
 
@@ -282,6 +284,144 @@ mod browser {
             }
             busy.set(false);
         });
+    }
+
+    fn submit_preview(
+        client: RwSignal<Option<DesktopClient>>,
+        snapshot: RwSignal<Option<DesktopRuntimeSnapshot>>,
+        status: RwSignal<String>,
+        error: RwSignal<Option<String>>,
+        busy: RwSignal<bool>,
+        preview_summary: RwSignal<String>,
+        request: NativeStudioPreviewRequest,
+    ) {
+        let Some(client) = client.get_untracked() else {
+            error.set(Some("The native backend is unavailable.".into()));
+            return;
+        };
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        spawn_local(async move {
+            let command = IpcCommand::EditorPreview {
+                editor_revision: request.editor_revision,
+                position_ms: request.position_ms,
+            };
+            match client.dispatch(WindowRole::Editor, command).await {
+                Ok(dispatch) => {
+                    let operation_error = match dispatch.response.outcome {
+                        CommandOutcome::Ok { .. } => None,
+                        CommandOutcome::Error { code, .. } => Some(public_error(code).into()),
+                    };
+                    let next = validated_snapshot(
+                        snapshot
+                            .get_untracked()
+                            .map(|state| (state.meter, state.camera_preview)),
+                        false,
+                        &dispatch,
+                    );
+                    let previews = dispatch
+                        .events
+                        .iter()
+                        .filter_map(|envelope| match &envelope.event {
+                            DesktopRuntimeEvent::Backend(BackendEvent::EditorPreviewReady {
+                                preview,
+                                ..
+                            }) if envelope.owner == WindowRole::Editor => Some(preview),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    match (next, operation_error, previews.as_slice()) {
+                        (Ok(next), None, [preview])
+                            if preview.validate_for(request).is_ok()
+                                && draw_studio_preview(preview).is_ok() =>
+                        {
+                            preview_summary.set(format!(
+                                "Preview at {} ms maps to source {} ms. Microphone {}; system audio {}.",
+                                preview.position_ms,
+                                preview.source_position_ms,
+                                preview_audio_label(preview.microphone),
+                                preview_audio_label(preview.system_audio),
+                            ));
+                            status.set(next.announcement.clone());
+                            snapshot.set(Some(next));
+                            error.set(None);
+                        }
+                        (Ok(next), Some(operation_error), []) => {
+                            status.set(next.announcement.clone());
+                            snapshot.set(Some(next));
+                            error.set(Some(operation_error));
+                        }
+                        _ => {
+                            status.set("Native Studio preview rejected.".into());
+                            error.set(Some(
+                                "Frame rejected malformed, stale, or unrenderable preview media."
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                Err(()) => {
+                    error.set(Some(
+                        "The native command boundary rejected the preview request.".into(),
+                    ));
+                    status.set("Native Studio preview unavailable.".into());
+                }
+            }
+            busy.set(false);
+        });
+    }
+
+    fn preview_audio_label(audio: frame_desktop_core::NativeStudioPreviewAudioState) -> String {
+        if !audio.source_available {
+            "silent (no source)".into()
+        } else if audio.muted {
+            "muted".into()
+        } else {
+            format!("active at {} millibels", audio.gain_millibels)
+        }
+    }
+
+    fn draw_studio_preview(preview: &NativeStudioPreviewOutcome) -> Result<(), ()> {
+        let document = web_sys::window()
+            .and_then(|window| window.document())
+            .ok_or(())?;
+        let canvas = document
+            .get_element_by_id("studio-preview-canvas")
+            .ok_or(())?
+            .dyn_into::<HtmlCanvasElement>()
+            .map_err(|_| ())?;
+        canvas.set_width(preview.width);
+        canvas.set_height(preview.height);
+        let context = canvas
+            .get_context("2d")
+            .map_err(|_| ())?
+            .ok_or(())?
+            .dyn_into::<CanvasRenderingContext2d>()
+            .map_err(|_| ())?;
+        let pixel_count = usize::try_from(preview.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(preview.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or(())?;
+        let mut rgba = Vec::with_capacity(pixel_count.checked_mul(4).ok_or(())?);
+        for rgb in preview.rgb.chunks_exact(3) {
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], u8::MAX]);
+        }
+        if rgba.len() != pixel_count.checked_mul(4).ok_or(())? {
+            return Err(());
+        }
+        let image = ImageData::new_with_u8_clamped_array_and_sh(
+            Clamped(&rgba),
+            preview.width,
+            preview.height,
+        )
+        .map_err(|_| ())?;
+        context.put_image_data(&image, 0.0, 0.0).map_err(|_| ())
     }
 
     fn validated_snapshot(
@@ -538,6 +678,8 @@ mod browser {
         let busy = RwSignal::new(false);
         let selection_start = RwSignal::new(1_000_u64);
         let selection_end = RwSignal::new(80_000_u64);
+        let preview_position = RwSignal::new(1_000_u64);
+        let preview_summary = RwSignal::new("No Studio preview has been rendered yet.".to_owned());
 
         Effect::new(move |_| {
             spawn_local(async move {
@@ -1244,8 +1386,55 @@ mod browser {
                             }
                             attr:aria-describedby="timeline-help"
                         />
+                        <Label attr:r#for="preview-position">"Preview position, milliseconds"</Label>
+                        <Input
+                            attr:id="preview-position"
+                            attr:r#type="number"
+                            attr:min="0"
+                            attr:max="89999"
+                            attr:step="100"
+                            prop:value=move || preview_position.get().to_string()
+                            on:input=move |event| {
+                                if let Ok(value) = event_target_value(&event).parse::<u64>() {
+                                    preview_position.set(value.min(89_999));
+                                }
+                            }
+                            attr:aria-describedby="preview-help"
+                        />
                     </FieldGroup>
                     <ButtonGroup class="button-row">
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || {
+                            busy.get() || snapshot.get().is_none_or(|state| {
+                                !matches!(
+                                    state.adapter,
+                                    DesktopAdapterKind::DeterministicFake
+                                        | DesktopAdapterKind::NativeMacOs
+                                ) || !matches!(state.editor, EditorState::Ready { .. })
+                            })
+                        } on:click=move |_| {
+                            if let Some(EditorState::Ready {
+                                revision,
+                                duration_ms,
+                                ..
+                            }) = snapshot.get_untracked().map(|state| state.editor)
+                            {
+                                let position_ms =
+                                    preview_position.get_untracked().min(duration_ms.saturating_sub(1));
+                                preview_position.set(position_ms);
+                                submit_preview(
+                                    client,
+                                    snapshot,
+                                    status,
+                                    error,
+                                    busy,
+                                    preview_summary,
+                                    NativeStudioPreviewRequest {
+                                        editor_revision: revision,
+                                        position_ms,
+                                    },
+                                );
+                            }
+                        }>"Render preview frame"</Button>
                         <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !snapshot.get().is_some_and(|state| matches!(state.editor, EditorState::Ready { .. })) || busy.get() on:click=move |_| {
                             if let Some(EditorState::Ready { revision, .. }) = snapshot.get().map(|state| state.editor) {
                                 submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::EditorApply {
@@ -1260,6 +1449,17 @@ mod browser {
                             }
                         }>"Save project"</Button>
                     </ButtonGroup>
+                    <div id="preview-help">
+                        <canvas
+                            id="studio-preview-canvas"
+                            width="320"
+                            height="180"
+                            role="img"
+                            aria-label="Decoded Studio preview frame"
+                            style="display:block;max-width:100%;height:auto;background:#111827;border-radius:0.5rem;"
+                        ></canvas>
+                        <p aria-live="polite">{move || preview_summary.get()}</p>
+                    </div>
 
                     <div class="split-grid">
                         <Card attr:aria-labelledby="export-heading">
@@ -1312,9 +1512,9 @@ mod browser {
                                     };
                                     match state.adapter {
                                         DesktopAdapterKind::DeterministicFake => {
-                                            if let (Some(paths), EditorState::Ready { revision, .. }) = (fake_paths(), state.editor) {
+                                            if let (Some(paths), EditorState::Ready { project_revision, .. }) = (fake_paths(), state.editor) {
                                                 submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportStart {
-                                                    project_revision: revision,
+                                                    project_revision,
                                                     output_path: paths.export,
                                                     profile: ExportProfile::DistributionMp4,
                                                 });
@@ -1323,7 +1523,7 @@ mod browser {
                                         DesktopAdapterKind::NativeMacOs => {
                                             if let (
                                                 EditorState::Ready {
-                                                    revision,
+                                                    project_revision,
                                                     dirty: false,
                                                     ..
                                                 },
@@ -1333,7 +1533,7 @@ mod browser {
                                                 state.studio_export_destination,
                                             ) {
                                                 submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportStart {
-                                                    project_revision: revision,
+                                                    project_revision,
                                                     output_path: destination.output_path,
                                                     profile: destination.profile,
                                                 });

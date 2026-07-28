@@ -172,7 +172,7 @@ fn map_studio_error(error: frame_media::StudioError) -> NativeDesktopBackendErro
     }
 }
 
-fn map_native_error(error: NativeExecutionError) -> NativeDesktopBackendError {
+pub(super) fn map_native_error(error: NativeExecutionError) -> NativeDesktopBackendError {
     match error {
         NativeExecutionError::Cancelled => NativeDesktopBackendError::Cancelled,
         NativeExecutionError::Filesystem | NativeExecutionError::InvalidOutput => {

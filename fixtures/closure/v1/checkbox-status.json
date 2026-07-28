@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 365,
+    "local_satisfied": 366,
     "protected_pending": 179,
-    "local_gap": 10
+    "local_gap": 9
   },
   "issues": {
     "01": {
@@ -205,9 +205,9 @@
     "27": {
       "count": 11,
       "digest": "244a7013ad0379b0463415960789126a747c13b5d5567bbd666bbd8aefb91a73",
-      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "apps/desktop/src/macos_native_backend/studio_recovery.rs", "apps/desktop/src/runtime.rs", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
+      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "apps/desktop/src/ipc.rs", "apps/desktop/src/native_backend.rs", "apps/desktop/src/macos_native_backend/studio_editor.rs", "apps/desktop/src/macos_native_backend/studio_export.rs", "apps/desktop/src/macos_native_backend/studio_recovery.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
       "protected": [{"ordinals": [7], "classes": ["human_approval"], "reason": "The legacy import implementation exists, but acceptance still needs a reviewed corpus of representative Cap projects."}],
-      "local_gaps": [{"ordinals": [9, 10, 11], "reason": "Decoded preview/export/reference goldens, long-project effects parity, and hardware fallback remain unconnected to the desktop release; journal-fenced production recovery and exact aligned-source software exports do not claim those later paths."}]
+      "local_gaps": [{"ordinals": [10, 11], "reason": "The release editor now renders a revision-fenced decoded preview through the same canonical plan as export, with a decoded RGB preview/export golden. Camera/cursor/background composition, complete long-project goldens, asynchronous cancellation, and hardware/software fallback remain unconnected."}]
     },
     "28": {
       "count": 15,
