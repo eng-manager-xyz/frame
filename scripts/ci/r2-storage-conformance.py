@@ -38,6 +38,9 @@ LIB_SOURCE = ROOT / "apps" / "control-plane" / "src" / "lib.rs"
 CONFORMANCE_PATH = "/__frame/local/r2-storage-conformance"
 DATABASE = "frame-local"
 WRANGLER_VERSION = "4.111.0"
+WRANGLER_BOOTSTRAP_ATTEMPTS = 3
+WRANGLER_BOOTSTRAP_TIMEOUT_SECONDS = 120
+WRANGLER_BOOTSTRAP_RETRY_DELAY_SECONDS = 2
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -77,19 +80,32 @@ def detect_wrangler(explicit: str | None) -> list[str]:
             "WRANGLER_SEND_METRICS": "false",
         }
     )
-    version = subprocess.run(
-        [*command, "--version"],
-        cwd=ROOT,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    for attempt in range(WRANGLER_BOOTSTRAP_ATTEMPTS):
+        try:
+            version = subprocess.run(
+                [*command, "--version"],
+                cwd=ROOT,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=WRANGLER_BOOTSTRAP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            version = None
+        if (
+            version is not None
+            and version.returncode == 0
+            and ANSI.sub("", version.stdout).strip() == WRANGLER_VERSION
+        ):
+            return command
+        if attempt + 1 < WRANGLER_BOOTSTRAP_ATTEMPTS:
+            time.sleep(WRANGLER_BOOTSTRAP_RETRY_DELAY_SECONDS)
+    raise ConformanceFailure(
+        f"Wrangler {WRANGLER_VERSION} could not be verified after "
+        f"{WRANGLER_BOOTSTRAP_ATTEMPTS} bounded attempts"
     )
-    if version.returncode != 0 or ANSI.sub("", version.stdout).strip() != WRANGLER_VERSION:
-        raise ConformanceFailure(f"Wrangler {WRANGLER_VERSION} is required")
-    return command
 
 
 def verify_checked_in_surface() -> None:

@@ -683,6 +683,13 @@ def main() -> int:
     )
 
     production = texts.get("production-gate.yml", "")
+    wrangler_bootstrap_test = "python3 -I scripts/ci/test-wrangler-bootstrap.py"
+    require(
+        quality.count(wrangler_bootstrap_test) == 1
+        and production.count(wrangler_bootstrap_test) == 1,
+        "quality-gates.yml and production-gate.yml: bounded Wrangler bootstrap regression test must run exactly once",
+        errors,
+    )
     require(
         "pull_request:" in production
         and "push:\n    branches: [main]" in production

@@ -35,6 +35,9 @@ ROUTING = CONTROL / "src" / "routing.rs"
 LIB = CONTROL / "src" / "lib.rs"
 DATABASE = "frame-local"
 WRANGLER_VERSION = "4.111.0"
+WRANGLER_BOOTSTRAP_ATTEMPTS = 3
+WRANGLER_BOOTSTRAP_TIMEOUT_SECONDS = 120
+WRANGLER_BOOTSTRAP_RETRY_DELAY_SECONDS = 2
 CONFORMANCE_PATH = "/__frame/local/auth-repository-conformance"
 TOKEN_HEADER = "x-frame-auth-repository-conformance-token"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -517,19 +520,32 @@ def detect_wrangler(explicit: str | None) -> list[str]:
     )
     environment = os.environ.copy()
     environment.update({"NO_COLOR": "1", "WRANGLER_LOG_PATH": "/tmp/frame-auth-wrangler-version.log"})
-    result = subprocess.run(
-        [*command, "--version"],
-        cwd=ROOT,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    for attempt in range(WRANGLER_BOOTSTRAP_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                [*command, "--version"],
+                cwd=ROOT,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=WRANGLER_BOOTSTRAP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+        if (
+            result is not None
+            and result.returncode == 0
+            and ANSI.sub("", result.stdout).strip() == WRANGLER_VERSION
+        ):
+            return command
+        if attempt + 1 < WRANGLER_BOOTSTRAP_ATTEMPTS:
+            time.sleep(WRANGLER_BOOTSTRAP_RETRY_DELAY_SECONDS)
+    raise ConformanceFailure(
+        f"Wrangler {WRANGLER_VERSION} could not be verified after "
+        f"{WRANGLER_BOOTSTRAP_ATTEMPTS} bounded attempts"
     )
-    if result.returncode != 0 or ANSI.sub("", result.stdout).strip() != WRANGLER_VERSION:
-        raise ConformanceFailure(f"Wrangler {WRANGLER_VERSION} is required")
-    return command
 
 
 def refuse_external_authority() -> None:

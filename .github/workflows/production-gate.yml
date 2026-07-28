@@ -75,6 +75,7 @@ jobs:
         run: |
           python3 scripts/ci/check-workflow-policy.py
           python3 -I scripts/ci/test-workflow-policy.py
+          python3 -I scripts/ci/test-wrangler-bootstrap.py
           python3 -I scripts/ci/test-release-change-plan.py
           python3 -I scripts/ci/test-web-hydration-browser-launch.py
           ruby scripts/ci/check-yaml-syntax.rb
