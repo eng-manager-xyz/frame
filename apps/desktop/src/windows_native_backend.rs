@@ -573,6 +573,8 @@ impl NativeDesktopBackend for WindowsNativeDesktopBackend {
             target_token: request.target.token.clone(),
             recording_token,
             system_audio_included: false,
+            microphone_included: false,
+            camera_included: false,
         })
     }
 

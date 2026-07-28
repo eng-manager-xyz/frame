@@ -37,7 +37,7 @@ ALLOWED_CLASSES = {
 # human audit rather than compensating with an unrelated total adjustment.
 AUDITED_LOCAL_GAPS = {
     "24": frozenset(),
-    "25": frozenset({6, 7, 8}),
+    "25": frozenset(),
     "27": frozenset({9, 10, 11}),
     "33": frozenset({3, 4, 5, 6, 8, 9, 10}),
 }

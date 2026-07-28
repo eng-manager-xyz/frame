@@ -1108,6 +1108,233 @@ fn runtime_poll_is_bounded_coalesced_and_reaches_eos_then_null() {
 }
 
 #[test]
+fn live_audio_controls_and_pause_resume_preserve_one_graph_and_rotate_source_epoch() {
+    let (source, session, state, live_catalog) = started_session(35);
+    let first_stamp = session
+        .source_stamp(AvSourceClass::SystemAudio)
+        .expect("initial source stamp");
+    let graph = NativeAvGstreamerGraph::build_recording(&graph_spec(&live_catalog))
+        .expect("recording graph");
+    let pipeline = graph.pipeline().clone();
+    let mut runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+
+    runtime
+        .set_audio_mix(
+            AvSourceClass::SystemAudio,
+            AudioSourceMixSettings {
+                gain_milli: 275,
+                muted: true,
+                ramp_frames: 480,
+            },
+        )
+        .expect("bounded live mix control");
+    let volume = pipeline
+        .by_name("system_audio_src_volume")
+        .expect("system audio volume");
+    assert!((volume.property::<f64>("volume") - 0.275).abs() < 0.000_001);
+    assert!(volume.property::<bool>("mute"));
+    assert!(runtime.graph().system_audio_record_sink().is_some());
+
+    runtime
+        .pause(MonotonicTimeNs::new(190_000_000))
+        .expect("pause");
+    assert_eq!(runtime.state(), NativeAvRuntimeState::Paused);
+    assert_eq!(runtime.session().state(), AvSessionState::Paused);
+    let paused = runtime
+        .poll(MonotonicTimeNs::new(195_000_000))
+        .expect("paused poll stays bounded");
+    assert_eq!(paused.buffers_pushed, 0);
+    assert!(paused.termination.is_none());
+
+    runtime
+        .resume(MonotonicTimeNs::new(205_000_000))
+        .expect("resume");
+    assert_eq!(runtime.state(), NativeAvRuntimeState::Playing);
+    assert_eq!(runtime.session().state(), AvSessionState::Recording);
+    let resumed_stamp = runtime
+        .session()
+        .source_stamp(AvSourceClass::SystemAudio)
+        .expect("resumed source stamp");
+    assert_ne!(resumed_stamp, first_stamp);
+    assert!(
+        runtime
+            .session()
+            .source_calibration(AvSourceClass::SystemAudio)
+            .is_some()
+    );
+    assert_eq!(
+        pipeline.current_state(),
+        gst::State::Playing,
+        "pause/resume must retain one output graph"
+    );
+
+    let termination = runtime.cancel().expect("cancel");
+    assert_eq!(termination.outcome, NativeAvRuntimeOutcome::Cancelled);
+    assert_eq!(
+        termination.source_teardown,
+        NativeAvSourceTeardown::Confirmed
+    );
+    assert_eq!(state.lock().expect("fake state").native_release_count, 1);
+}
+
+#[test]
+fn wake_automatically_rotates_and_recalibrates_source_epochs_in_the_same_graph() {
+    let (source, session, state, live_catalog) = started_session(46);
+    let first_stamp = session
+        .source_stamp(AvSourceClass::SystemAudio)
+        .expect("initial source stamp");
+    let graph = NativeAvGstreamerGraph::build_recording(&graph_spec(&live_catalog))
+        .expect("recording graph");
+    let pipeline = graph.pipeline().clone();
+    let mut runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+    {
+        let mut state = state.lock().expect("fake state");
+        state.events.push_back(NativeAvEvent::Sleep);
+        state.events.push_back(NativeAvEvent::Wake);
+    }
+
+    let report = runtime
+        .poll(MonotonicTimeNs::new(210_000_000))
+        .expect("sleep/wake poll");
+    assert!(report.termination.is_none(), "{report:?}");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == AvStableCode::Sleep)
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == AvStableCode::Wake)
+    );
+    assert_eq!(runtime.state(), NativeAvRuntimeState::Playing);
+    assert_eq!(runtime.session().state(), AvSessionState::Recording);
+    let resumed_stamp = runtime
+        .session()
+        .source_stamp(AvSourceClass::SystemAudio)
+        .expect("resumed source stamp");
+    assert_ne!(resumed_stamp, first_stamp);
+    assert!(
+        runtime
+            .session()
+            .source_calibration(AvSourceClass::SystemAudio)
+            .is_some()
+    );
+    assert_eq!(pipeline.current_state(), gst::State::Playing);
+
+    let termination = runtime.cancel().expect("cancel");
+    assert_eq!(termination.outcome, NativeAvRuntimeOutcome::Cancelled);
+}
+
+#[test]
+fn permission_loss_retires_only_the_failed_branch_and_remaining_audio_continues() {
+    let adapter = adapter_id(47);
+    let live_catalog = dual_audio_catalog(adapter);
+    let (source, session, state, _) =
+        started_session_with(47, live_catalog.clone(), dual_audio_settings());
+    let _microphone_stamp = session
+        .source_stamp(AvSourceClass::Microphone)
+        .expect("microphone stamp");
+    let system_stamp = session
+        .source_stamp(AvSourceClass::SystemAudio)
+        .expect("system audio stamp");
+    let spec = AvPipelineGraphSpec::negotiate(&live_catalog, dual_audio_settings(), false)
+        .expect("dual-source graph spec");
+    let graph =
+        NativeAvGstreamerGraph::build_recording(&spec).expect("dual-source recording graph");
+    let mut runtime = NativeAvRuntime::attach(
+        source,
+        session,
+        graph,
+        AvSyncPolicy::default(),
+        AvRuntimePolicy::default(),
+    )
+    .expect("attached runtime");
+    let released = Arc::new(AtomicUsize::new(0));
+    {
+        let mut state = state.lock().expect("fake state");
+        let owner = state.binding.expect("bound owner");
+        let control = AvControlEventStamp::new(owner, 1, 1).expect("control stamp");
+        state.events.push_back(NativeAvEvent::PermissionChanged {
+            stamp: control,
+            class: AvSourceClass::Microphone,
+            state: PermissionState::Revoked,
+        });
+        let bytes = vec![0_u8; 8 * 480];
+        state.events.push_back(NativeAvEvent::Buffer(buffer(
+            system_stamp,
+            1,
+            AvPayloadBody::Bytes(bytes.clone()),
+            u64::try_from(bytes.len()).expect("payload length"),
+            &released,
+        )));
+    }
+
+    let report = runtime
+        .poll(MonotonicTimeNs::new(210_000_000))
+        .expect("permission-loss poll");
+    assert!(report.termination.is_none(), "{report:?}");
+    assert_eq!(report.buffers_pushed, 1);
+    assert!(
+        runtime
+            .session()
+            .source_stamp(AvSourceClass::Microphone)
+            .is_none()
+    );
+    assert_eq!(
+        runtime.session().source_stamp(AvSourceClass::SystemAudio),
+        Some(system_stamp)
+    );
+    assert!(
+        runtime
+            .graph()
+            .source_is_disabled(AvSourceClass::Microphone)
+    );
+    assert!(
+        !runtime
+            .graph()
+            .source_is_disabled(AvSourceClass::SystemAudio)
+    );
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.class == Some(AvSourceClass::Microphone)
+            && diagnostic.code == AvStableCode::PermissionRevoked
+    }));
+
+    runtime
+        .request_stop(MonotonicTimeNs::new(220_000_000))
+        .expect("stop after branch retirement");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let termination = loop {
+        let report = runtime
+            .poll(MonotonicTimeNs::new(225_000_000))
+            .expect("terminal poll");
+        if let Some(termination) = report.termination {
+            break termination;
+        }
+        assert!(Instant::now() < deadline, "bounded EOS completion");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(termination.outcome, NativeAvRuntimeOutcome::Completed);
+    wait_for_release_count(&released, 1);
+}
+
+#[test]
 fn runtime_pushes_authenticated_callback_tail_before_graph_eos() {
     let (source, session, state, live_catalog) = started_session(58);
     let stamp = session

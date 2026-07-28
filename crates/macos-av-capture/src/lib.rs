@@ -17,6 +17,8 @@ mod bridge;
 mod device_bridge;
 #[cfg(target_os = "macos")]
 mod platform;
+#[cfg(target_os = "macos")]
+mod recording;
 
 #[cfg(target_os = "macos")]
 pub use bridge::{MacOsNativeAvBridge, MacOsNativeAvBridgeCreateError};
@@ -24,6 +26,12 @@ pub use bridge::{MacOsNativeAvBridge, MacOsNativeAvBridgeCreateError};
 pub use device_bridge::{MacOsDeviceAvBridge, MacOsDeviceAvBridgeCreateError};
 #[cfg(target_os = "macos")]
 pub use platform::MacOsSystemAudioSource;
+#[cfg(target_os = "macos")]
+pub use recording::{
+    MacOsOptionalInputCatalog, MacOsOptionalInputError, MacOsOptionalInputPoll,
+    MacOsOptionalInputRecording, MacOsOptionalInputRequest, MacOsOptionalInputSelection,
+    MacOsOptionalInputStart, enumerate_optional_inputs,
+};
 
 pub const SYSTEM_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const SYSTEM_AUDIO_CHANNELS: u8 = 2;

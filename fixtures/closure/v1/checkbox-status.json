@@ -9,8 +9,8 @@
   "expected_totals": {
     "checkboxes": 554,
     "local_satisfied": 365,
-    "protected_pending": 176,
-    "local_gap": 13
+    "protected_pending": 179,
+    "local_gap": 10
   },
   "issues": {
     "01": {
@@ -186,9 +186,11 @@
     "25": {
       "count": 10,
       "digest": "4a6b8211c0eaa63f99e798d8fad533b61b965bf7afc3a7ccd512bba2d3f49695",
-      "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs", "crates/media/tests/av_runtime_contract.rs", "crates/macos-av-capture/src/lib.rs", "crates/macos-av-capture/src/bridge.rs", "crates/macos-av-capture/src/device_bridge.rs", "apps/desktop/src/av_settings.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs"],
-      "protected": [],
-      "local_gaps": [{"ordinals": [6, 7, 8], "reason": "The normalized contracts, bounded macOS system-audio/microphone/camera bridges, durable settings, and server-throttled raw-media-free desktop telemetry path now exist, but the shared-clock recording mux, continuous mixed controls, and physical device/permission recovery remain unwired repository-local work."}]
+      "evidence": ["docs/evidence/av-capture-sync-local.md", "docs/architecture/av-capture-sync-contracts.md", "crates/media/tests/av_capture_contract.rs", "crates/media/tests/av_runtime_contract.rs", "crates/macos-av-capture/src/lib.rs", "crates/macos-av-capture/src/bridge.rs", "crates/macos-av-capture/src/device_bridge.rs", "crates/macos-av-capture/src/recording.rs", "crates/macos-screen-capture/src/lib.rs", "apps/desktop/src/av_settings.rs", "apps/desktop/src/macos_native_backend.rs", "apps/desktop/src/macos_native_backend/av_worker.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs"],
+      "protected": [
+        {"ordinals": [6, 7, 8], "classes": ["hardware_execution"], "reason": "The shared-clock desktop mux, live controls, source-disable fallback, and sleep/wake epoch recovery are wired and locally exercised; offset/drift, audible and visual continuity, physical permission/device/profile transitions, and the declared OS matrix still require representative hardware recordings."}
+      ],
+      "local_gaps": []
     },
     "26": {
       "count": 11,

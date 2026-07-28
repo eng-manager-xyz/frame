@@ -238,6 +238,7 @@ struct DeviceInputBridge<S, P> {
     inputs: S,
     power: P,
     adapter: AvAdapterInstanceId,
+    next_master_origin: Option<Instant>,
     binding: Option<AvOwnerBinding>,
     catalog_revision: u64,
     control_sequence: u64,
@@ -251,7 +252,17 @@ struct DeviceInputBridge<S, P> {
 }
 
 impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
-    fn new(mut inputs: S, power: P, adapter: AvAdapterInstanceId) -> Result<Self, NativeAvFailure> {
+    #[cfg(test)]
+    fn new(inputs: S, power: P, adapter: AvAdapterInstanceId) -> Result<Self, NativeAvFailure> {
+        Self::new_with_master_origin(inputs, power, adapter, None)
+    }
+
+    fn new_with_master_origin(
+        mut inputs: S,
+        power: P,
+        adapter: AvAdapterInstanceId,
+        next_master_origin: Option<Instant>,
+    ) -> Result<Self, NativeAvFailure> {
         let mut permissions = BTreeMap::new();
         for class in inputs
             .devices()
@@ -271,6 +282,7 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
             inputs,
             power,
             adapter,
+            next_master_origin,
             binding: None,
             catalog_revision: 1,
             control_sequence: 0,
@@ -380,7 +392,7 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
         plans: Vec<(AvSourceStamp, AvDeviceId, AvDeviceGeneration, AvFormat)>,
     ) -> Result<(), NativeAvFailure> {
         self.stop_all(true)?;
-        let master_origin = Instant::now();
+        let master_origin = self.next_master_origin.take().unwrap_or_else(Instant::now);
         for (stamp, device, generation, format) in plans {
             let class = stamp.class();
             if let Err(error) = self
@@ -925,12 +937,27 @@ impl MacOsDeviceAvBridge {
         installation_secret: [u8; 32],
         power: &SystemPowerMonitor,
     ) -> Result<Self, MacOsDeviceAvBridgeCreateError> {
+        Self::new_with_master_origin(installation_secret, power, Instant::now())
+    }
+
+    /// Creates the optional-input adapter on the same host-monotonic origin
+    /// supplied to the ScreenCaptureKit video source.
+    pub fn new_with_master_origin(
+        installation_secret: [u8; 32],
+        power: &SystemPowerMonitor,
+        master_origin: Instant,
+    ) -> Result<Self, MacOsDeviceAvBridgeCreateError> {
         let adapter = derive_opaque_id(&installation_secret, ADAPTER_ID_DOMAIN)
             .and_then(|bytes| AvAdapterInstanceId::from_opaque(bytes).ok())
             .ok_or(MacOsDeviceAvBridgeCreateError::AdapterIdentity)?;
         let inputs = MacOsDeviceInputs::new(installation_secret)?;
-        let inner = DeviceInputBridge::new(inputs, NativePowerEvents(power.cursor()), adapter)
-            .map_err(|_| MacOsDeviceAvBridgeCreateError::DeviceMonitor)?;
+        let inner = DeviceInputBridge::new_with_master_origin(
+            inputs,
+            NativePowerEvents(power.cursor()),
+            adapter,
+            Some(master_origin),
+        )
+        .map_err(|_| MacOsDeviceAvBridgeCreateError::DeviceMonitor)?;
         Ok(Self { inner })
     }
 }

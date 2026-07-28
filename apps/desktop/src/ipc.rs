@@ -143,6 +143,7 @@ pub enum CommandKind {
     RecorderStart,
     RecorderPause,
     RecorderResume,
+    RecorderInputSet,
     RecorderStop,
     RecorderCancel,
     DeviceEnumerate,
@@ -306,6 +307,13 @@ pub enum IpcCommand {
     RecorderResume {
         intent_id: String,
     },
+    RecorderInputSet {
+        intent_id: String,
+        class: DeviceClass,
+        gain_milli: u16,
+        muted: bool,
+        enabled: bool,
+    },
     RecorderStop {
         intent_id: String,
     },
@@ -421,6 +429,7 @@ impl IpcCommand {
             Self::RecorderStart { .. } => CommandKind::RecorderStart,
             Self::RecorderPause { .. } => CommandKind::RecorderPause,
             Self::RecorderResume { .. } => CommandKind::RecorderResume,
+            Self::RecorderInputSet { .. } => CommandKind::RecorderInputSet,
             Self::RecorderStop { .. } => CommandKind::RecorderStop,
             Self::RecorderCancel { .. } => CommandKind::RecorderCancel,
             Self::DeviceEnumerate { .. } => CommandKind::DeviceEnumerate,
@@ -467,6 +476,25 @@ impl IpcCommand {
             | Self::UploadPause { intent_id }
             | Self::UploadResume { intent_id }
             | Self::UploadCancel { intent_id } => validate_token(intent_id),
+            Self::RecorderInputSet {
+                intent_id,
+                class,
+                gain_milli,
+                muted,
+                ..
+            } => {
+                validate_token(intent_id)?;
+                match class {
+                    DeviceClass::Microphone | DeviceClass::SystemAudio if *gain_milli <= 4_000 => {
+                        Ok(())
+                    }
+                    DeviceClass::Camera if *gain_milli == 1_000 && !*muted => Ok(()),
+                    DeviceClass::Display
+                    | DeviceClass::Microphone
+                    | DeviceClass::SystemAudio
+                    | DeviceClass::Camera => Err(IpcError::InvalidPayload),
+                }
+            }
             Self::DeviceSelect { device_token, .. } => validate_token(device_token),
             Self::CaptureTargetSelect { target_token, .. } => validate_token(target_token),
             Self::CaptureRegionDefine {
@@ -1062,6 +1090,7 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
                 | CommandKind::RecorderStart
                 | CommandKind::RecorderPause
                 | CommandKind::RecorderResume
+                | CommandKind::RecorderInputSet
                 | CommandKind::RecorderStop
                 | CommandKind::RecorderCancel
                 | CommandKind::DeviceEnumerate
@@ -1364,6 +1393,61 @@ mod tests {
                 y: 0,
                 width: 1,
                 height: 480,
+            },
+        ] {
+            assert_eq!(invalid.validate_payload(), Err(IpcError::InvalidPayload));
+        }
+    }
+
+    #[test]
+    fn live_input_control_is_bounded_redacted_and_recorder_scoped() {
+        let command = IpcCommand::RecorderInputSet {
+            intent_id: "private-input-intent".into(),
+            class: DeviceClass::Microphone,
+            gain_milli: 2_500,
+            muted: false,
+            enabled: true,
+        };
+        assert_eq!(command.validate_payload(), Ok(()));
+        let rendered = format!("{command:?}");
+        assert!(!rendered.contains("private-input-intent"));
+        assert!(!rendered.contains("2500"));
+        assert!(command_allowed(
+            WindowRole::Recorder,
+            CommandKind::RecorderInputSet
+        ));
+        for role in [
+            WindowRole::Main,
+            WindowRole::Recovery,
+            WindowRole::Editor,
+            WindowRole::Export,
+            WindowRole::Settings,
+            WindowRole::Overlay,
+        ] {
+            assert!(!command_allowed(role, CommandKind::RecorderInputSet));
+        }
+
+        for invalid in [
+            IpcCommand::RecorderInputSet {
+                intent_id: "private-input-intent".into(),
+                class: DeviceClass::Microphone,
+                gain_milli: 4_001,
+                muted: false,
+                enabled: true,
+            },
+            IpcCommand::RecorderInputSet {
+                intent_id: "private-input-intent".into(),
+                class: DeviceClass::Camera,
+                gain_milli: 999,
+                muted: false,
+                enabled: true,
+            },
+            IpcCommand::RecorderInputSet {
+                intent_id: "private-input-intent".into(),
+                class: DeviceClass::Display,
+                gain_milli: 1_000,
+                muted: false,
+                enabled: true,
             },
         ] {
             assert_eq!(invalid.validate_payload(), Err(IpcError::InvalidPayload));

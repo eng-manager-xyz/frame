@@ -99,6 +99,7 @@ impl AvRuntimePolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeAvRuntimeState {
     Playing,
+    Paused,
     EosRequested,
     NullConfirmed,
     Failed,
@@ -182,6 +183,8 @@ pub enum NativeAvRuntimeError {
     SourceGraphMismatch,
     #[error("native A/V runtime transition is invalid")]
     InvalidTransition,
+    #[error("native A/V live control failed: {0:?}")]
+    LiveControl(NativeAvGraphFailure),
     #[error(
         "native A/V runtime attachment failed: {failure:?}; source teardown: {source_teardown:?}; graph teardown: {graph_teardown:?}"
     )]
@@ -331,6 +334,23 @@ impl NativeAvAppSrc {
         std::mem::take(&mut self.overload_unreported)
     }
 
+    fn rebind(
+        &mut self,
+        stamp: AvSourceStamp,
+        format: AvFormat,
+    ) -> Result<(), NativeAvRuntimeError> {
+        format.validate_for(stamp.class())?;
+        if stamp.class() != self.stamp.class()
+            || format != self.format
+            || self.appsrc.current_state() != gst::State::Playing
+        {
+            return Err(NativeAvRuntimeError::SourceGraphMismatch);
+        }
+        self.stamp = stamp;
+        self.pending_discontinuity = true;
+        Ok(())
+    }
+
     fn observe_overload(&mut self) {
         let queue_overruns = self.queue_overruns.load(Ordering::Relaxed);
         if queue_overruns > self.observed_queue_overruns {
@@ -437,6 +457,7 @@ pub struct NativeAvRuntime<B: NativeAvBridge> {
     graph: NativeAvGstreamerGraph,
     appsrc: BTreeMap<AvSourceClass, NativeAvAppSrc>,
     ui: AvUiEventCoalescer,
+    sync_policy: AvSyncPolicy,
     policy: AvRuntimePolicy,
     state: NativeAvRuntimeState,
     next_source_index: usize,
@@ -471,6 +492,7 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
             appsrc: BTreeMap::new(),
             ui: AvUiEventCoalescer::new(DEFAULT_UI_EVENT_INTERVAL_NS)
                 .expect("invariant: the default UI interval is valid"),
+            sync_policy,
             policy,
             state: NativeAvRuntimeState::Failed,
             next_source_index: 0,
@@ -514,7 +536,9 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
     ) -> Result<AvRuntimePollReport, NativeAvRuntimeError> {
         if !matches!(
             self.state,
-            NativeAvRuntimeState::Playing | NativeAvRuntimeState::EosRequested
+            NativeAvRuntimeState::Playing
+                | NativeAvRuntimeState::Paused
+                | NativeAvRuntimeState::EosRequested
         ) {
             return Err(NativeAvRuntimeError::InvalidTransition);
         }
@@ -622,7 +646,10 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
     /// Recording-mode callers must keep polling until the bounded output drain
     /// and `Null` confirmation complete.
     pub fn request_stop(&mut self, now: MonotonicTimeNs) -> Result<(), NativeAvRuntimeError> {
-        if self.state != NativeAvRuntimeState::Playing {
+        if !matches!(
+            self.state,
+            NativeAvRuntimeState::Playing | NativeAvRuntimeState::Paused
+        ) {
             return Err(NativeAvRuntimeError::InvalidTransition);
         }
         let deadline = now.get().checked_add(self.policy.eos_timeout_ns);
@@ -698,6 +725,107 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         Ok(())
     }
 
+    /// Applies a continuous mixed-audio control while preserving the
+    /// isolated original and every negotiated timestamp.
+    pub fn set_audio_mix(
+        &mut self,
+        class: AvSourceClass,
+        settings: crate::AudioSourceMixSettings,
+    ) -> Result<(), NativeAvRuntimeError> {
+        if !matches!(
+            self.state,
+            NativeAvRuntimeState::Playing | NativeAvRuntimeState::Paused
+        ) || self.session.source_stamp(class).is_none()
+        {
+            return Err(NativeAvRuntimeError::InvalidTransition);
+        }
+        self.graph
+            .set_audio_mix(class, settings)
+            .map_err(NativeAvRuntimeError::LiveControl)
+    }
+
+    /// Pauses every native optional input under the existing graph authority.
+    ///
+    /// The graph remains Playing so resume can install fresh source epochs
+    /// without replacing the output sinks or mixer clock.
+    pub fn pause(&mut self, now: MonotonicTimeNs) -> Result<(), NativeAvRuntimeError> {
+        if self.state != NativeAvRuntimeState::Playing
+            || self
+                .last_time_ns
+                .is_some_and(|last_time_ns| now.get() < last_time_ns)
+        {
+            return Err(NativeAvRuntimeError::InvalidTransition);
+        }
+        self.last_time_ns = Some(now.get());
+        let action = self.session.request_pause()?;
+        if let Err(error) = execute_action(&mut self.session, &mut self.source, action) {
+            let failure = runtime_error_failure(&error);
+            let source_teardown = self.quiesce_native();
+            let teardown = confirm_graph_null(&mut self.graph);
+            self.state = NativeAvRuntimeState::Failed;
+            return Err(NativeAvRuntimeError::SourceControl {
+                failure,
+                source_teardown,
+                teardown,
+            });
+        }
+        self.ui.push(now, AvUiEvent::Paused)?;
+        self.state = NativeAvRuntimeState::Paused;
+        Ok(())
+    }
+
+    /// Resumes native inputs only after a fresh catalog validation, rotates
+    /// every stream epoch, and recalibrates every appsrc edge.
+    pub fn resume(&mut self, now: MonotonicTimeNs) -> Result<(), NativeAvRuntimeError> {
+        if self.state != NativeAvRuntimeState::Paused
+            || self
+                .last_time_ns
+                .is_some_and(|last_time_ns| now.get() < last_time_ns)
+        {
+            return Err(NativeAvRuntimeError::InvalidTransition);
+        }
+        self.last_time_ns = Some(now.get());
+        if let Err(error) = self.resume_source_epochs() {
+            let failure = runtime_error_failure(&error);
+            let source_teardown = self.quiesce_native();
+            let teardown = confirm_graph_null(&mut self.graph);
+            self.state = NativeAvRuntimeState::Failed;
+            return Err(NativeAvRuntimeError::SourceControl {
+                failure,
+                source_teardown,
+                teardown,
+            });
+        }
+        self.ui.push(now, AvUiEvent::Resumed)?;
+        self.state = NativeAvRuntimeState::Playing;
+        Ok(())
+    }
+
+    fn resume_source_epochs(&mut self) -> Result<(), NativeAvRuntimeError> {
+        let capabilities = self.source.capabilities()?;
+        let catalog = self.source.enumerate()?;
+        let action = self.session.request_resume(capabilities, catalog)?;
+        execute_action(&mut self.session, &mut self.source, action)?;
+        for class in source_classes() {
+            let Some(stamp) = self.session.source_stamp(class) else {
+                continue;
+            };
+            let format = self
+                .session
+                .source_format(class)
+                .ok_or(NativeAvRuntimeError::SourceGraphMismatch)?;
+            let adapter = self
+                .appsrc
+                .get_mut(&class)
+                .ok_or(NativeAvRuntimeError::SourceGraphMismatch)?;
+            adapter.rebind(stamp, format)?;
+            let batch = self.source.startup_calibration(stamp)?;
+            self.session
+                .calibrate_source(stamp, self.sync_policy, batch.samples())?;
+        }
+        Ok(())
+    }
+
     fn push_terminal_buffers(
         &mut self,
         terminal_buffers: Vec<crate::NativeAvBuffer>,
@@ -749,6 +877,7 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         if !matches!(
             self.state,
             NativeAvRuntimeState::Playing
+                | NativeAvRuntimeState::Paused
                 | NativeAvRuntimeState::EosRequested
                 | NativeAvRuntimeState::Failed
         ) {
@@ -914,7 +1043,19 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
         outcome: AvEventOutcome,
         report: &mut AvRuntimePollReport,
     ) -> Result<(), NativeAvRuntimeFailure> {
+        let wake_observed = outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == AvStableCode::Wake);
+        let active_sources_remain = source_classes()
+            .into_iter()
+            .any(|class| self.session.source_stamp(class).is_some());
         for class in outcome.disabled_sources {
+            if active_sources_remain {
+                self.graph
+                    .disable_source(class)
+                    .map_err(NativeAvRuntimeFailure::Graph)?;
+            }
             self.ui
                 .push(
                     now,
@@ -944,6 +1085,13 @@ impl<B: NativeAvBridge> NativeAvRuntime<B> {
             } else {
                 report.diagnostics_truncated = true;
             }
+        }
+        if wake_observed {
+            self.resume_source_epochs()
+                .map_err(|error| runtime_error_failure(&error))?;
+            self.ui
+                .push(now, AvUiEvent::Resumed)
+                .map_err(|_| NativeAvRuntimeFailure::CaptureContract)?;
         }
         Ok(())
     }
@@ -1228,7 +1376,9 @@ impl<B: NativeAvBridge> Drop for NativeAvRuntime<B> {
     fn drop(&mut self) {
         if matches!(
             self.state,
-            NativeAvRuntimeState::Playing | NativeAvRuntimeState::EosRequested
+            NativeAvRuntimeState::Playing
+                | NativeAvRuntimeState::Paused
+                | NativeAvRuntimeState::EosRequested
         ) {
             let _ = self.quiesce_once();
         }
@@ -1271,6 +1421,7 @@ fn runtime_error_failure(error: &NativeAvRuntimeError) -> NativeAvRuntimeFailure
         | NativeAvRuntimeError::SessionNotRecording
         | NativeAvRuntimeError::SourceGraphMismatch
         | NativeAvRuntimeError::InvalidTransition
+        | NativeAvRuntimeError::LiveControl(_)
         | NativeAvRuntimeError::Capture(_) => NativeAvRuntimeFailure::CaptureContract,
     }
 }

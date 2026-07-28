@@ -28,15 +28,16 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
         mpsc::{SyncSender, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use frame_macos_av_capture::{
-    MacOsSystemAudioDiagnostics, MacOsSystemAudioError, MacOsSystemAudioSource, SYSTEM_AUDIO_FORMAT,
+    MacOsOptionalInputRecording, MacOsOptionalInputRequest, MacOsSystemAudioDiagnostics,
+    MacOsSystemAudioError, MacOsSystemAudioSource, SYSTEM_AUDIO_FORMAT, enumerate_optional_inputs,
 };
 #[cfg(test)]
 use frame_macos_screen_capture::MacOsCaptureStopError;
@@ -47,7 +48,7 @@ use frame_macos_screen_capture::{
 #[cfg(test)]
 use frame_media::ScreenRecordingArtifact;
 use frame_media::{
-    ColorSpace, CursorCaptureMode, DisplayGeometryTransform, FrameMemory, LogicalRect,
+    AvSessionId, ColorSpace, CursorCaptureMode, DisplayGeometryTransform, FrameMemory, LogicalRect,
     PermissionPreflight, PixelFormat, ProtectedContentPolicy, Rotation, ScreenAudioRecording,
     ScreenAudioRecordingArtifact, ScreenRecording, ScreenRecordingError, ScreenRecordingSpec,
     ScreenSessionId, ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetDescriptor,
@@ -57,8 +58,9 @@ use frame_media::{
 use frame_platform_lifecycle::SystemPowerMonitor;
 
 use self::av_worker::{
-    AvWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup, classify_audio_stop,
-    classify_screen_stop, run_av_capture_worker, run_screen_studio_capture_worker,
+    AvWorkerTelemetry, OptionalWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup,
+    classify_audio_stop, classify_screen_stop, run_av_capture_worker,
+    run_optional_av_capture_worker, run_screen_studio_capture_worker,
 };
 use self::studio_projects::{
     DiscoveredStudioProject, authenticate_ready, authenticate_recovery,
@@ -83,11 +85,12 @@ use crate::{
     CAPTURE_TARGET_CATALOG_VERSION, CaptureTargetCatalog, CaptureTargetKind, CaptureTargetSummary,
     DurableAvSettingsStore, NativeCaptureArtifact, NativeCaptureStartRequest, NativeDesktopBackend,
     NativeDesktopBackendError, NativeEditableWebmExportOutcome, NativeEditableWebmExportRequest,
-    NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
-    NativeRecordingMeter, NativeRecordingStartOutcome, NativeRecordingStopOutcome,
-    NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest,
-    NativeStudioProjectCatalog, NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest,
-    NativeStudioProjectSummary, NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
+    NativeInputDeviceCounts, NativePermissionOutcome, NativeRecordingCancelOutcome,
+    NativeRecordingControlRequest, NativeRecordingInputControlRequest, NativeRecordingMeter,
+    NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
+    NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioProjectCatalog,
+    NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest, NativeStudioProjectSummary,
+    NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
     NativeStudioRecoveryOutcome, NativeStudioRecoveryRequest, NativeTargetSelectionOutcome,
     NativeTargetSelectionRequest, PathUse, RecorderMode, STUDIO_PROJECT_CATALOG_VERSION,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
@@ -124,7 +127,9 @@ struct ActiveRecording {
     control: SyncSender<WorkerControl>,
     worker: JoinHandle<WorkerCompletion>,
     output: PendingRecordingOutput,
+    microphone_meter: Arc<AtomicU16>,
     system_audio_meter: Arc<AtomicU16>,
+    camera_active: Arc<AtomicBool>,
 }
 
 struct PendingRecordingOutput {
@@ -255,6 +260,7 @@ enum WorkerStart {
     Normalized(Box<ScreenWorkerStart<MacOsNormalizedScreenCaptureSource>>),
     Studio(Box<ScreenStudioWorkerStart>),
     Audio(Box<ScreenAudioWorkerStart>),
+    Optional(Box<ScreenOptionalWorkerStart>),
 }
 
 struct ScreenStudioWorkerStart {
@@ -274,7 +280,15 @@ struct ScreenAudioWorkerStart {
     audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
 }
 
-enum PendingRecordingGraph {
+struct ScreenOptionalWorkerStart {
+    source: MacOsScreenCaptureSource,
+    optional: MacOsOptionalInputRecording,
+    recording: PendingRecordingGraph,
+    studio: Option<DesktopStudioRecording>,
+    screen_diagnostic_baseline: MacOsCaptureDiagnostics,
+}
+
+pub(super) enum PendingRecordingGraph {
     ScreenOnly(ScreenRecording),
     ScreenAudio(ScreenAudioRecording),
 }
@@ -397,6 +411,352 @@ impl MacOsNativeDesktopBackend {
             artifact: None,
             studio_catalog_generation: 0,
             studio_projects: BTreeMap::new(),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_recording_with_optional_inputs(
+        &mut self,
+        request: &NativeCaptureStartRequest,
+        target: CatalogTarget,
+        frame_spec: VideoFrameSpec,
+        recording_spec: ScreenRecordingSpec,
+        recording_token: String,
+        final_relative: PathBuf,
+        staging_relative: PathBuf,
+        mut source: MacOsScreenCaptureSource,
+        system_audio: MacOsSystemAudioSource,
+        observed_topology_generation: Option<u64>,
+        snapshot: Option<ScreenTargetSnapshot>,
+    ) -> Result<NativeRecordingStartOutcome, NativeDesktopBackendError> {
+        let master_origin = Instant::now();
+        let power = match session_power_monitor() {
+            Ok(power) => power,
+            Err(error) => {
+                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                    source,
+                    system_audio,
+                    observed_topology_generation,
+                    snapshot,
+                }));
+                return Err(error);
+            }
+        };
+        let session_random = match random_array(&SystemRandom::new()) {
+            Ok(random) => random,
+            Err(error) => {
+                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                    source,
+                    system_audio,
+                    observed_topology_generation,
+                    snapshot,
+                }));
+                return Err(error);
+            }
+        };
+        let session_id = match AvSessionId::from_csprng(session_random) {
+            Ok(session_id) => session_id,
+            Err(_) => {
+                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                    source,
+                    system_audio,
+                    observed_topology_generation,
+                    snapshot,
+                }));
+                return Err(NativeDesktopBackendError::Internal);
+            }
+        };
+        let start = match MacOsOptionalInputRecording::start(
+            *self.installation_secret,
+            &power,
+            session_id,
+            master_origin,
+            MacOsOptionalInputRequest {
+                microphone: request.microphone_enabled,
+                system_audio: request.system_audio_enabled,
+                camera: request.camera_enabled,
+                camera_preview: request.camera_enabled,
+            },
+        ) {
+            Ok(start) => start,
+            Err(_) => {
+                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                    source,
+                    system_audio,
+                    observed_topology_generation,
+                    snapshot,
+                }));
+                return Err(NativeDesktopBackendError::Internal);
+            }
+        };
+        let selection = start.selection;
+        let mut optional = start.recording.ok_or(NativeDesktopBackendError::Internal)?;
+        let has_audio = selection.microphone || selection.system_audio;
+
+        let staging = match self.recordings_directory.create_new_file(&staging_relative) {
+            Ok(staging) => staging,
+            Err(error) => {
+                let optional_teardown_confirmed = optional.cancel().is_ok();
+                if optional_teardown_confirmed {
+                    self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                        source,
+                        system_audio,
+                        observed_topology_generation,
+                        snapshot,
+                    }));
+                }
+                return Err(map_rooted_io_error(error));
+            }
+        };
+        let staging_identity = staging.metadata().identity();
+        let recording_path = self.recordings_root.join(&final_relative);
+        let recording = if has_audio {
+            SystemAudioRecordingSpec::new(SYSTEM_AUDIO_FORMAT).and_then(|audio_spec| {
+                ScreenAudioRecording::start_preopened(
+                    &recording_path,
+                    staging.into_file(),
+                    recording_spec,
+                    audio_spec,
+                )
+                .map(PendingRecordingGraph::ScreenAudio)
+            })
+        } else {
+            ScreenRecording::start_preopened(&recording_path, staging.into_file(), recording_spec)
+                .map(PendingRecordingGraph::ScreenOnly)
+        };
+        let recording = match recording {
+            Ok(recording) => recording,
+            Err(error) => {
+                let optional_teardown_confirmed = optional.cancel().is_ok();
+                let _ = self
+                    .recordings_directory
+                    .cleanup_file_if_identity(&staging_relative, staging_identity);
+                if optional_teardown_confirmed {
+                    self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                        source,
+                        system_audio,
+                        observed_topology_generation,
+                        snapshot,
+                    }));
+                }
+                return Err(map_recording_error(error));
+            }
+        };
+        let output = PendingRecordingOutput {
+            staging_relative,
+            final_relative,
+            identity: staging_identity,
+        };
+        let mut studio = if request.mode == RecorderMode::Studio {
+            match new_studio_recording(
+                &self.studio_root,
+                &self.projects_root,
+                frame_spec,
+                request.frame_rate,
+                StudioOptionalTracks {
+                    microphone: selection.microphone,
+                    system_audio: selection.system_audio,
+                    camera: selection.camera,
+                },
+            ) {
+                Ok(recording) => Some(recording),
+                Err(error) => {
+                    let optional_teardown_confirmed = optional.cancel().is_ok();
+                    let recorder_teardown_confirmed = match recording {
+                        PendingRecordingGraph::ScreenOnly(recording) => recording.abort().is_ok(),
+                        PendingRecordingGraph::ScreenAudio(recording) => recording.abort().is_ok(),
+                    };
+                    if optional_teardown_confirmed && recorder_teardown_confirmed {
+                        self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                            source,
+                            system_audio,
+                            observed_topology_generation,
+                            snapshot,
+                        }));
+                    }
+                    self.cleanup_recording_output(&output);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        let capture_config = match MacOsCaptureConfig::new(
+            target.descriptor.binding(),
+            frame_spec,
+            CursorCaptureMode::EmbeddedInFrame,
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                let primary_error = map_capture_error(error);
+                let optional_teardown_confirmed = optional.cancel().is_ok();
+                let recorder_teardown_confirmed = match recording {
+                    PendingRecordingGraph::ScreenOnly(recording) => recording.abort().is_ok(),
+                    PendingRecordingGraph::ScreenAudio(recording) => recording.abort().is_ok(),
+                };
+                let studio_teardown_confirmed =
+                    studio.take().is_none_or(|studio| studio.abort().is_ok());
+                if optional_teardown_confirmed
+                    && recorder_teardown_confirmed
+                    && studio_teardown_confirmed
+                {
+                    self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                        source,
+                        system_audio,
+                        observed_topology_generation,
+                        snapshot,
+                    }));
+                }
+                self.cleanup_recording_output(&output);
+                return Err(primary_error);
+            }
+        };
+        if let Err(error) = source.start_with_master_origin(capture_config, master_origin) {
+            let primary_error = map_capture_error(error);
+            let optional_teardown_confirmed = optional.cancel().is_ok();
+            let recorder_teardown_confirmed = match recording {
+                PendingRecordingGraph::ScreenOnly(recording) => recording.abort().is_ok(),
+                PendingRecordingGraph::ScreenAudio(recording) => recording.abort().is_ok(),
+            };
+            let studio_teardown_confirmed =
+                studio.take().is_none_or(|studio| studio.abort().is_ok());
+            if capture_start_resources_reusable(
+                error,
+                optional_teardown_confirmed
+                    && recorder_teardown_confirmed
+                    && studio_teardown_confirmed,
+            ) {
+                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                    source,
+                    system_audio,
+                    observed_topology_generation,
+                    snapshot,
+                }));
+            } else {
+                self.capture = CaptureLifecycle::Poisoned;
+            }
+            self.cleanup_recording_output(&output);
+            return Err(primary_error);
+        }
+        if let Some(studio_recording) = studio.as_mut()
+            && let Err(primary_error) = studio_recording.capture_started()
+        {
+            let (_, screen_teardown_confirmed, _) =
+                classify_screen_stop(source.stop_and_drain_frames());
+            let optional_teardown_confirmed = optional.cancel().is_ok();
+            let recorder_teardown_confirmed = match recording {
+                PendingRecordingGraph::ScreenOnly(recording) => recording.abort().is_ok(),
+                PendingRecordingGraph::ScreenAudio(recording) => recording.abort().is_ok(),
+            };
+            let studio_teardown_confirmed =
+                studio.take().is_none_or(|studio| studio.abort().is_ok());
+            if screen_teardown_confirmed
+                && optional_teardown_confirmed
+                && recorder_teardown_confirmed
+                && studio_teardown_confirmed
+            {
+                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                    source,
+                    system_audio,
+                    observed_topology_generation,
+                    snapshot,
+                }));
+            } else {
+                self.capture = CaptureLifecycle::Poisoned;
+            }
+            self.cleanup_recording_output(&output);
+            return Err(primary_error);
+        }
+        let screen_diagnostic_baseline = source.diagnostics();
+        let worker_start_value = WorkerStart::Optional(Box::new(ScreenOptionalWorkerStart {
+            source,
+            optional,
+            recording,
+            studio,
+            screen_diagnostic_baseline,
+        }));
+        let (control, receiver) = sync_channel(WORKER_CONTROL_CAPACITY);
+        let microphone_meter = Arc::new(AtomicU16::new(0));
+        let system_audio_meter = Arc::new(AtomicU16::new(0));
+        let camera_active = Arc::new(AtomicBool::new(false));
+        let worker_microphone_meter = Arc::clone(&microphone_meter);
+        let worker_system_audio_meter = Arc::clone(&system_audio_meter);
+        let worker_camera_active = Arc::clone(&camera_active);
+        let (worker_start, worker_start_receiver) = sync_channel(WORKER_START_CAPACITY);
+        let worker = thread::Builder::new()
+            .name("frame-macos-optional-input-recorder".into())
+            .spawn(move || {
+                let Ok(WorkerStart::Optional(start)) = worker_start_receiver.recv() else {
+                    return WorkerCompletion {
+                        outcome: WorkerOutcome::Failed {
+                            error: NativeDesktopBackendError::Internal,
+                            teardown_confirmed: false,
+                        },
+                    };
+                };
+                let ScreenOptionalWorkerStart {
+                    source,
+                    optional,
+                    recording,
+                    studio,
+                    screen_diagnostic_baseline,
+                } = *start;
+                run_optional_av_capture_worker(
+                    source,
+                    optional,
+                    recording,
+                    studio,
+                    receiver,
+                    OptionalWorkerTelemetry {
+                        screen_diagnostic_baseline,
+                        microphone_meter: worker_microphone_meter,
+                        system_audio_meter: worker_system_audio_meter,
+                        camera_active: worker_camera_active,
+                    },
+                )
+            });
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(_) => {
+                let _ = teardown_worker_start(
+                    worker_start_value,
+                    NativeDesktopBackendError::Internal,
+                    "optional-input worker spawn failed",
+                );
+                let _ = self.advance_catalog_generation();
+                self.capture = CaptureLifecycle::Poisoned;
+                self.cleanup_recording_output(&output);
+                return Err(NativeDesktopBackendError::Internal);
+            }
+        };
+        if let Err(error) = worker_start.send(worker_start_value) {
+            let _ = worker.join();
+            let _ = teardown_worker_start(
+                error.0,
+                NativeDesktopBackendError::Internal,
+                "optional-input worker startup handoff failed",
+            );
+            self.capture = CaptureLifecycle::Poisoned;
+            self.cleanup_recording_output(&output);
+            return Err(NativeDesktopBackendError::Internal);
+        }
+        self.capture = CaptureLifecycle::Recording(ActiveRecording {
+            token: recording_token.clone(),
+            control,
+            worker,
+            output,
+            microphone_meter,
+            system_audio_meter,
+            camera_active,
+        });
+        self.artifact = None;
+        Ok(NativeRecordingStartOutcome {
+            catalog_generation: self.catalog_generation,
+            target_token: request.target.token.clone(),
+            recording_token,
+            system_audio_included: selection.system_audio,
+            microphone_included: selection.microphone,
+            camera_included: selection.camera,
         })
     }
 
@@ -625,6 +985,35 @@ impl MacOsNativeDesktopBackend {
             },
         };
         Ok((token, output, completion))
+    }
+
+    fn send_recording_live_control(
+        &mut self,
+        request: &NativeRecordingControlRequest,
+        command: impl FnOnce(SyncSender<Result<(), NativeDesktopBackendError>>) -> WorkerControl,
+    ) -> Result<(), NativeDesktopBackendError> {
+        let active = match &self.capture {
+            CaptureLifecycle::Recording(active) => active,
+            CaptureLifecycle::Ready(_) => {
+                return Err(NativeDesktopBackendError::TargetUnavailable);
+            }
+            CaptureLifecycle::Poisoned => return Err(NativeDesktopBackendError::Unavailable),
+        };
+        if active.token != request.recording_token {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        let (reply, response) = sync_channel(1);
+        match active.control.try_send(command(reply)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(NativeDesktopBackendError::Busy),
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(NativeDesktopBackendError::Unavailable);
+            }
+        }
+        match response.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => result,
+            Err(_) => Err(NativeDesktopBackendError::Unavailable),
+        }
     }
 
     fn cleanup_recording_output(&self, output: &PendingRecordingOutput) {
@@ -859,6 +1248,26 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         self.install_target_snapshot(snapshot, previous_topology_generation)
     }
 
+    fn enumerate_input_devices(
+        &mut self,
+    ) -> Result<NativeInputDeviceCounts, NativeDesktopBackendError> {
+        match &self.capture {
+            CaptureLifecycle::Ready(_) => {}
+            CaptureLifecycle::Recording(_) => return Err(NativeDesktopBackendError::Busy),
+            CaptureLifecycle::Poisoned => return Err(NativeDesktopBackendError::Unavailable),
+        }
+        let power = session_power_monitor()?;
+        let session_id = AvSessionId::from_csprng(random_array(&SystemRandom::new())?)
+            .map_err(|_| NativeDesktopBackendError::Internal)?;
+        let catalog = enumerate_optional_inputs(*self.installation_secret, &power, session_id)
+            .map_err(|_| NativeDesktopBackendError::Unavailable)?;
+        Ok(NativeInputDeviceCounts {
+            microphones: catalog.microphones,
+            system_audio_sources: catalog.system_audio_sources,
+            cameras: catalog.cameras,
+        })
+    }
+
     fn select_target(
         &mut self,
         request: &NativeTargetSelectionRequest,
@@ -1009,6 +1418,22 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             observed_topology_generation,
             snapshot,
         } = *session;
+
+        if request.microphone_enabled || request.system_audio_enabled || request.camera_enabled {
+            return self.start_recording_with_optional_inputs(
+                request,
+                target,
+                frame_spec,
+                recording_spec,
+                recording_token,
+                final_relative,
+                staging_relative,
+                source,
+                system_audio,
+                observed_topology_generation,
+                snapshot,
+            );
+        }
 
         let screen_diagnostic_baseline = source.diagnostics();
         let audio_diagnostic_baseline = system_audio.diagnostics();
@@ -1439,8 +1864,12 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         };
 
         let (control, receiver) = sync_channel(WORKER_CONTROL_CAPACITY);
+        let microphone_meter = Arc::new(AtomicU16::new(0));
         let system_audio_meter = Arc::new(AtomicU16::new(0));
+        let camera_active = Arc::new(AtomicBool::new(false));
+        let worker_microphone_meter = Arc::clone(&microphone_meter);
         let worker_system_audio_meter = Arc::clone(&system_audio_meter);
+        let worker_camera_active = Arc::clone(&camera_active);
         // Keep both native authorities on this thread until worker creation is
         // confirmed. A failed startup send returns the tuple for explicit
         // teardown instead of hiding graph failure in Drop.
@@ -1497,6 +1926,28 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             },
                         )
                     }
+                    WorkerStart::Optional(start) => {
+                        let ScreenOptionalWorkerStart {
+                            source,
+                            optional,
+                            recording,
+                            studio,
+                            screen_diagnostic_baseline,
+                        } = *start;
+                        run_optional_av_capture_worker(
+                            source,
+                            optional,
+                            recording,
+                            studio,
+                            receiver,
+                            OptionalWorkerTelemetry {
+                                screen_diagnostic_baseline,
+                                microphone_meter: worker_microphone_meter,
+                                system_audio_meter: worker_system_audio_meter,
+                                camera_active: worker_camera_active,
+                            },
+                        )
+                    }
                 }
             });
         let worker = match worker {
@@ -1530,7 +1981,9 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             control,
             worker,
             output,
+            microphone_meter,
             system_audio_meter,
+            camera_active,
         });
         self.artifact = None;
         Ok(NativeRecordingStartOutcome {
@@ -1538,6 +1991,8 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             target_token: request.target.token.clone(),
             recording_token,
             system_audio_included,
+            microphone_included: false,
+            camera_included: false,
         })
     }
 
@@ -1601,8 +2056,39 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             return Err(NativeDesktopBackendError::StaleCatalog);
         }
         Ok(NativeRecordingMeter {
+            microphone_basis_points: active.microphone_meter.load(Ordering::Acquire),
             system_audio_basis_points: active.system_audio_meter.load(Ordering::Acquire),
+            camera_active: active.camera_active.load(Ordering::Acquire),
         })
+    }
+
+    fn pause_recording(
+        &mut self,
+        request: &NativeRecordingControlRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
+        self.send_recording_live_control(request, WorkerControl::Pause)
+    }
+
+    fn resume_recording(
+        &mut self,
+        request: &NativeRecordingControlRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
+        self.send_recording_live_control(request, WorkerControl::Resume)
+    }
+
+    fn set_recording_input(
+        &mut self,
+        request: &NativeRecordingInputControlRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
+        self.send_recording_live_control(
+            &NativeRecordingControlRequest {
+                recording_token: request.recording_token.clone(),
+            },
+            |reply| WorkerControl::Input {
+                request: request.clone(),
+                reply,
+            },
+        )
     }
 
     fn stop_recording(
@@ -2561,6 +3047,26 @@ fn teardown_worker_start(
                 recording_teardown_confirmed && studio_teardown_confirmed,
             )
         }
+        WorkerStart::Optional(start) => {
+            let ScreenOptionalWorkerStart {
+                mut source,
+                mut optional,
+                recording,
+                studio,
+                ..
+            } = *start;
+            let (_, screen_teardown_confirmed, _) =
+                classify_screen_stop(source.stop_and_drain_frames());
+            let optional_teardown_confirmed = optional.cancel().is_ok();
+            let recording_teardown_confirmed = match recording {
+                PendingRecordingGraph::ScreenOnly(recording) => recording.abort().is_ok(),
+                PendingRecordingGraph::ScreenAudio(recording) => recording.abort().is_ok(),
+            };
+            screen_teardown_confirmed
+                && optional_teardown_confirmed
+                && recording_teardown_confirmed
+                && studio.is_none_or(|studio| studio.abort().is_ok())
+        }
     }
 }
 
@@ -2961,7 +3467,9 @@ mod tests {
             control,
             worker,
             output,
+            microphone_meter: Arc::new(AtomicU16::new(0)),
             system_audio_meter: Arc::new(AtomicU16::new(0)),
+            camera_active: Arc::new(AtomicBool::new(false)),
         });
         NativeRecordingControlRequest { recording_token }
     }
@@ -3301,7 +3809,9 @@ mod tests {
                 control,
                 worker,
                 output,
+                microphone_meter: Arc::new(AtomicU16::new(0)),
                 system_audio_meter: Arc::new(AtomicU16::new(0)),
+                camera_active: Arc::new(AtomicBool::new(false)),
             }),
             installation_secret: Zeroizing::new(TEST_INSTALLATION_SECRET),
             projects_root: PathBuf::from("/private/tmp"),
@@ -3362,7 +3872,9 @@ mod tests {
             control,
             worker,
             output,
+            microphone_meter: Arc::new(AtomicU16::new(0)),
             system_audio_meter: Arc::new(AtomicU16::new(0)),
+            camera_active: Arc::new(AtomicBool::new(false)),
         });
         let request = NativeRecordingControlRequest {
             recording_token: "recording-poll-token".into(),

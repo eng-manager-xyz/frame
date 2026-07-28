@@ -43,6 +43,7 @@ impl FrameAssembler {
         pixels: Vec<u8>,
         pts: RawMediaTime,
         duration: RawMediaTime,
+        master_arrival_ns: u64,
     ) -> Result<FrameAssembly, MacOsCaptureError> {
         let normalized = self.timestamps.normalize(
             pts,
@@ -51,7 +52,7 @@ impl FrameAssembler {
             self.pending_discontinuity,
         )?;
         let cached_pixels = pixels.clone();
-        let assembly = self.assemble(pixels, normalized)?;
+        let assembly = self.assemble(pixels, normalized, master_arrival_ns)?;
         self.last_complete_pixels = Some(cached_pixels);
         Ok(assembly)
     }
@@ -59,6 +60,7 @@ impl FrameAssembler {
     pub(super) fn accept_idle(
         &mut self,
         pts: RawMediaTime,
+        master_arrival_ns: u64,
     ) -> Result<Option<FrameAssembly>, MacOsCaptureError> {
         let Some(pixels) = self.last_complete_pixels.clone() else {
             return Ok(None);
@@ -68,13 +70,15 @@ impl FrameAssembler {
             self.spec.nominal_frame_duration_ns,
             self.pending_discontinuity,
         )?;
-        self.assemble(pixels, normalized).map(Some)
+        self.assemble(pixels, normalized, master_arrival_ns)
+            .map(Some)
     }
 
     fn assemble(
         &mut self,
         pixels: Vec<u8>,
         normalized: NormalizedTimestamp,
+        master_arrival_ns: u64,
     ) -> Result<FrameAssembly, MacOsCaptureError> {
         let sequence = self.next_sequence;
         self.next_sequence = self
@@ -87,6 +91,7 @@ impl FrameAssembler {
                 target: self.target,
                 sequence,
                 source_pts_ns: normalized.source_pts_ns,
+                master_arrival_ns: Some(master_arrival_ns),
                 timestamp: normalized.timestamp,
                 spec: self.spec,
                 pixels,

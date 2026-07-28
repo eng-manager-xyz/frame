@@ -176,6 +176,24 @@ impl DesktopStudioRecording {
         self.push(TrackKind::SystemAudio, sequence, timestamp, samples)
     }
 
+    pub(super) fn push_microphone(
+        &mut self,
+        sequence: u64,
+        timestamp: FrameTimestamp,
+        samples: Vec<u8>,
+    ) -> Result<(), NativeDesktopBackendError> {
+        self.push(TrackKind::Microphone, sequence, timestamp, samples)
+    }
+
+    pub(super) fn push_camera(
+        &mut self,
+        sequence: u64,
+        timestamp: FrameTimestamp,
+        pixels: Vec<u8>,
+    ) -> Result<(), NativeDesktopBackendError> {
+        self.push(TrackKind::Camera, sequence, timestamp, pixels)
+    }
+
     fn push(
         &mut self,
         track: TrackKind,
