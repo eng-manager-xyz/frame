@@ -66,6 +66,16 @@ impl ActiveStudioEditor {
         self.editor_revision
     }
 
+    pub(super) fn clean_manifest(
+        &self,
+        expected_project_revision: u64,
+    ) -> Result<StudioProjectManifest, NativeDesktopBackendError> {
+        if self.dirty || self.manifest.revision != expected_project_revision {
+            return Err(NativeDesktopBackendError::InvalidEdit);
+        }
+        Ok(self.manifest.clone())
+    }
+
     pub(super) fn apply(
         &mut self,
         request: &NativeStudioEditApplyRequest,

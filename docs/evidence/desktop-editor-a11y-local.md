@@ -23,9 +23,11 @@ enter the editor through a fresh opaque token after native reauthentication,
 and interrupted entries are reported as recovery-required. Recording and
 edit-save boundaries can be inspected and reconciled through a new ownership
 fence; only a proven-empty attempt can be archived, and that archive deletes no
-media. It does not make editor mutation/export, lifecycle, updater, combined
-microphone/camera Studio, or complete accessibility journeys production
-behavior.
+media. The editor now applies and durably saves bounded canonical mutations,
+and a clean aligned project can invoke the verified native distribution export
+adapter. Lifecycle, updater, combined microphone/camera Studio, asynchronous
+export cancellation, and complete accessibility journeys remain
+non-production behavior.
 
 The media crate now has a production bounded isolated-track Studio encoder and
 durable partial-recovery boundary. The macOS desktop adapter now composes its
@@ -37,9 +39,10 @@ duration after descriptor-rooted reauthentication. Incomplete recording and
 edit-save journals recover through exact graph/original/project identities,
 while the “archive” control is restricted to a proven-empty attempt and
 preserves every graph/media file. It does not yet compose the normalized
-combined microphone/camera source, persist editor mutations, or perform
-edit-aware export, so this component does not close an issue-33 product
-journey.
+combined microphone/camera source or provide coordinator-owned asynchronous
+preview/export. The implemented editor mutation/save and synchronous
+screen/audio distribution-export subset therefore does not close an issue-33
+product journey.
 
 The checked-in hardware workflow invokes `frame-hardware-driver`, but this
 repository does not provide that driver. Its validator and workflow shape are
@@ -137,12 +140,15 @@ project paths, session tokens, or user data.
 Local code still satisfies the typed surface, backend-owned state model, and IPC
 security classifications without closing broader product-integration
 checkboxes. In addition, the macOS composition now has a real but narrow
-target-video and optional-system-audio WebM path plus a read-only native Studio
-catalog. It can open a completed Studio project and truthfully report
+target-video and optional-system-audio WebM path plus a native Studio catalog
+with authenticated edit/save/export authority. It can open a completed
+Studio project and truthfully report
 interrupted entries. It reconciles recording and edit-save boundaries and can
-archive a proven-empty attempt without deleting media, but continues to refuse
-editor mutation, microphone, camera, pause, MP4, upload, updater, Instant
-publication, and edit-aware Studio export.
+archive a proven-empty attempt without deleting media. It now accepts
+revision-fenced editor mutations/save and a clean aligned Studio distribution
+MP4, but continues to refuse microphone/camera Studio composition, pause,
+asynchronous export cancellation, upload, updater, Instant publication, and
+complete preview/export parity.
 Optional macOS system audio is the only native audio source currently supported;
 microphone capture remains unavailable. The registered Instant command
 therefore proves a fail-closed boundary and state model, not a working

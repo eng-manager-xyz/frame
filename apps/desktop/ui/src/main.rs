@@ -1277,8 +1277,25 @@ mod browser {
                                             fake_paths().is_none()
                                                 || !matches!(state.editor, EditorState::Ready { dirty: false, .. })
                                         }
-                                        DesktopAdapterKind::NativeMacOs
-                                        | DesktopAdapterKind::NativeWindows => state
+                                        DesktopAdapterKind::NativeMacOs => {
+                                            let studio_ready = matches!(
+                                                state.editor,
+                                                EditorState::Ready { dirty: false, .. }
+                                            ) && state.studio_export_destination.is_some();
+                                            let capture_ready = state
+                                                .capture_artifact
+                                                .as_ref()
+                                                .filter(|artifact| {
+                                                    artifact.schema_version
+                                                        == CAPTURE_ARTIFACT_SUMMARY_VERSION
+                                                })
+                                                .and_then(|artifact| {
+                                                    artifact.editable_webm_output_path.as_ref()
+                                                })
+                                                .is_some();
+                                            !studio_ready && !capture_ready
+                                        }
+                                        DesktopAdapterKind::NativeWindows => state
                                             .capture_artifact
                                             .as_ref()
                                             .filter(|artifact| {
@@ -1303,8 +1320,36 @@ mod browser {
                                                 });
                                             }
                                         }
-                                        DesktopAdapterKind::NativeMacOs
-                                        | DesktopAdapterKind::NativeWindows => {
+                                        DesktopAdapterKind::NativeMacOs => {
+                                            if let (
+                                                EditorState::Ready {
+                                                    revision,
+                                                    dirty: false,
+                                                    ..
+                                                },
+                                                Some(destination),
+                                            ) = (
+                                                state.editor,
+                                                state.studio_export_destination,
+                                            ) {
+                                                submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportStart {
+                                                    project_revision: revision,
+                                                    output_path: destination.output_path,
+                                                    profile: destination.profile,
+                                                });
+                                            } else if let Some(artifact) = state.capture_artifact
+                                                && artifact.schema_version
+                                                    == CAPTURE_ARTIFACT_SUMMARY_VERSION
+                                                && let Some(output_path) = artifact.editable_webm_output_path
+                                            {
+                                                submit(client, snapshot, status, error, busy, WindowRole::Export, IpcCommand::ExportStart {
+                                                    project_revision: artifact.artifact_revision,
+                                                    output_path,
+                                                    profile: ExportProfile::EditableWebm,
+                                                });
+                                            }
+                                        }
+                                        DesktopAdapterKind::NativeWindows => {
                                             if let Some(artifact) = state.capture_artifact
                                                 && artifact.schema_version
                                                     == CAPTURE_ARTIFACT_SUMMARY_VERSION
@@ -1319,7 +1364,22 @@ mod browser {
                                         }
                                         DesktopAdapterKind::Unavailable => {}
                                     }
-                                }>{move || if is_native() { "Export editable WebM" } else { "Start export" }}</Button>
+                                }>{move || {
+                                    if snapshot.get().is_some_and(|state| {
+                                        state.adapter == DesktopAdapterKind::NativeMacOs
+                                            && state.studio_export_destination.is_some()
+                                            && matches!(
+                                                state.editor,
+                                                EditorState::Ready { dirty: false, .. }
+                                            )
+                                    }) {
+                                        "Export distribution MP4"
+                                    } else if is_native() {
+                                        "Export editable WebM"
+                                    } else {
+                                        "Start export"
+                                    }
+                                }}</Button>
                                 <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || !snapshot.get().is_some_and(|state| matches!(state.export, ExportState::Running { .. })) || busy.get() on:click=move |_| {
                                     if let Some(client_value) = client.get_untracked() {
                                         let intent_id = client_value.next_intent_id();

@@ -36,9 +36,10 @@ use crate::{
         NativeRecordingInputControlRequest, NativeRecordingStartOutcome,
         NativeRecordingStopOutcome, NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome,
         NativeRegionDefinitionRequest, NativeStudioEditApplyRequest, NativeStudioEditMutation,
-        NativeStudioEditSaveRequest, NativeStudioProjectCatalog, NativeStudioProjectOpenRequest,
-        NativeStudioProjectStatus, NativeStudioRecoveryAction, NativeStudioRecoveryRequest,
-        NativeTargetSelectionOutcome, NativeTargetSelectionRequest, STUDIO_PROJECT_CATALOG_VERSION,
+        NativeStudioEditSaveRequest, NativeStudioExportRequest, NativeStudioProjectCatalog,
+        NativeStudioProjectOpenRequest, NativeStudioProjectStatus, NativeStudioRecoveryAction,
+        NativeStudioRecoveryRequest, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
+        STUDIO_PROJECT_CATALOG_VERSION,
     },
     workflow::{
         BackendEvent, BackendEventEnvelope, DesktopWorkflow, DeviceCounts, DeviceState,
@@ -47,7 +48,7 @@ use crate::{
     },
 };
 
-pub const DESKTOP_RUNTIME_VERSION: u16 = 4;
+pub const DESKTOP_RUNTIME_VERSION: u16 = 5;
 pub const DESKTOP_INPUT_TELEMETRY_VERSION: u16 = 1;
 pub const DESKTOP_INPUT_TELEMETRY_INTERVAL_MS: u64 = 100;
 const DESKTOP_INPUT_TELEMETRY_INTERVAL: Duration =
@@ -163,6 +164,22 @@ pub enum UpdateState {
     ReadyToRelaunch { revision: u64 },
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StudioExportDestination {
+    pub output_path: String,
+    pub profile: ExportProfile,
+}
+
+impl fmt::Debug for StudioExportDestination {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StudioExportDestination")
+            .field("output_path", &"<redacted>")
+            .field("profile", &self.profile)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopRuntimeSnapshot {
     pub version: u16,
@@ -190,6 +207,8 @@ pub struct DesktopRuntimeSnapshot {
     pub studio_projects: NativeStudioProjectCatalog,
     #[serde(default)]
     pub capture_artifact: Option<CaptureArtifactSummary>,
+    #[serde(default)]
+    pub studio_export_destination: Option<StudioExportDestination>,
     pub settings: DesktopSettingsSnapshot,
     pub lifecycle: LifecycleSnapshot,
     pub update: UpdateState,
@@ -380,6 +399,8 @@ pub struct DesktopRuntime {
     native_project_paths: PathPolicy,
     native_media_paths: PathPolicy,
     native_export_paths: PathPolicy,
+    native_export_root: String,
+    studio_export_destination: Option<StudioExportDestination>,
     settings: DesktopSettingsSnapshot,
     lifecycle: LifecycleSnapshot,
     update: UpdateState,
@@ -530,6 +551,8 @@ impl DesktopRuntime {
             native_project_paths,
             native_media_paths,
             native_export_paths,
+            native_export_root: roots.exports,
+            studio_export_destination: None,
             settings: DesktopSettingsSnapshot {
                 revision: 1,
                 mode: RecorderMode::Instant,
@@ -613,6 +636,7 @@ impl DesktopRuntime {
                 .native_artifact
                 .as_ref()
                 .map(|artifact| artifact.summary.clone()),
+            studio_export_destination: self.studio_export_destination.clone(),
             settings: self.settings,
             lifecycle: self.lifecycle,
             update: self.update,
@@ -1745,6 +1769,13 @@ impl DesktopRuntime {
                 {
                     return Err(ExecutionFailure::invalid_backend_response());
                 }
+                self.studio_export_destination = Some(StudioExportDestination {
+                    output_path: Path::new(&self.native_export_root)
+                        .join(format!("Frame-Studio-{project_token}.mp4"))
+                        .to_string_lossy()
+                        .into_owned(),
+                    profile: ExportProfile::DistributionMp4,
+                });
                 let events = self.transition(
                     &intent_id,
                     IntentKind::EditorOpen,
@@ -1826,10 +1857,73 @@ impl DesktopRuntime {
                 )?;
                 self.recovery_projects = u16::try_from(outcome.catalog.projects.len())
                     .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                self.studio_export_destination = Some(StudioExportDestination {
+                    output_path: Path::new(&self.native_export_root)
+                        .join(format!("Frame-Studio-{}.mp4", outcome.project_token))
+                        .to_string_lossy()
+                        .into_owned(),
+                    profile: ExportProfile::DistributionMp4,
+                });
                 self.studio_projects = outcome.catalog;
                 self.announcement = format!(
                     "Studio edits durably saved as project revision {}.",
                     outcome.project_revision
+                );
+                Ok(events)
+            }
+            IpcCommand::ExportStart {
+                project_revision,
+                profile: profile @ (ExportProfile::DistributionMp4 | ExportProfile::Archive),
+                ..
+            } => {
+                if !matches!(
+                    self.workflow.editor(),
+                    EditorState::Ready {
+                        revision,
+                        dirty: false,
+                        ..
+                    } if revision == *project_revision
+                ) {
+                    return Err(ExecutionFailure::unavailable());
+                }
+                let output_path = validated_path.ok_or_else(ExecutionFailure::internal)?;
+                let request = NativeStudioExportRequest {
+                    project_revision: *project_revision,
+                    output_path: output_path.clone(),
+                    profile: *profile,
+                };
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(
+                    &intent_id,
+                    IntentKind::ExportStart {
+                        project_revision: *project_revision,
+                    },
+                )?;
+                let outcome = backend
+                    .export_studio_project(&request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                outcome
+                    .validate_for(&request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::ExportStart {
+                        project_revision: *project_revision,
+                    },
+                    vec![
+                        BackendEvent::ExportStarted {
+                            intent_id: intent_id.clone(),
+                            project_revision: *project_revision,
+                        },
+                        BackendEvent::ExportProgress {
+                            progress_basis_points: 10_000,
+                        },
+                        BackendEvent::ExportCompleted,
+                    ],
+                )?;
+                self.announcement = format!(
+                    "Studio export completed with {} verified bytes.",
+                    outcome.bytes_written
                 );
                 Ok(events)
             }
@@ -3147,7 +3241,8 @@ mod tests {
     use super::*;
     use crate::ipc::{EditorMutation, ExportProfile, IPC_PROTOCOL_VERSION, RequestId};
     use crate::native_backend::{
-        NativeEditableWebmExportOutcome, NativeRecordingMeter, NativeStudioProjectOpenOutcome,
+        NativeEditableWebmExportOutcome, NativeRecordingMeter, NativeStudioExportOutcome,
+        NativeStudioProjectOpenOutcome,
     };
 
     #[derive(Debug)]
@@ -3172,6 +3267,7 @@ mod tests {
         export_calls: usize,
         studio_catalog: NativeStudioProjectCatalog,
         studio_open_outcome: NativeStudioProjectOpenOutcome,
+        studio_opened: bool,
     }
 
     impl TestNativeBackend {
@@ -3224,6 +3320,7 @@ mod tests {
                     project_revision: 3,
                     duration_ms: 4_000,
                 },
+                studio_opened: false,
             }
         }
 
@@ -3397,6 +3494,7 @@ mod tests {
             _request: &NativeStudioProjectOpenRequest,
         ) -> Result<NativeStudioProjectOpenOutcome, NativeDesktopBackendError> {
             self.calls.push("open_studio");
+            self.studio_opened = true;
             Ok(self.studio_open_outcome.clone())
         }
 
@@ -3442,6 +3540,22 @@ mod tests {
                 project_revision,
                 project_token: "studio-project-token-reminted".into(),
                 catalog: self.studio_catalog.clone(),
+            })
+        }
+
+        fn export_studio_project(
+            &mut self,
+            request: &NativeStudioExportRequest,
+        ) -> Result<NativeStudioExportOutcome, NativeDesktopBackendError> {
+            if !self.studio_opened {
+                return Err(NativeDesktopBackendError::Unavailable);
+            }
+            self.calls.push("export_studio");
+            Ok(NativeStudioExportOutcome {
+                project_revision: request.project_revision,
+                profile: request.profile,
+                bytes_written: 512_000,
+                sha256: "ab".repeat(32),
             })
         }
 
@@ -4285,6 +4399,41 @@ mod tests {
                 dirty: false,
             }
         );
+        let destination = opened
+            .snapshot
+            .studio_export_destination
+            .expect("revision-bound Studio export destination");
+        assert!(
+            destination
+                .output_path
+                .ends_with("Frame-Studio-studio-project-token-1.mp4")
+        );
+        assert_eq!(destination.profile, ExportProfile::DistributionMp4);
+        assert!(!format!("{destination:?}").contains("/frame/exports"));
+        let exported = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    3,
+                    "studio-export",
+                    IpcCommand::ExportStart {
+                        project_revision: 3,
+                        output_path: destination.output_path,
+                        profile: destination.profile,
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("native Studio export");
+        ok(&exported);
+        assert_eq!(
+            exported.snapshot.export,
+            ExportState::Completed {
+                project_revision: 3,
+            }
+        );
+        assert_eq!(backend.call_count("export_studio"), 1);
     }
 
     #[test]
@@ -5770,13 +5919,13 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "runtime_version": 4,
+                "runtime_version": DESKTOP_RUNTIME_VERSION,
                 "command_protocol_version": 1,
                 "command_sequence": 1,
                 "operation_revision": 2,
                 "events": [
                     {
-                        "protocol_version": 4,
+                        "protocol_version": DESKTOP_RUNTIME_VERSION,
                         "event_sequence": 1,
                         "owner": "recorder",
                         "event": {
@@ -5791,7 +5940,7 @@ mod tests {
                         }
                     },
                     {
-                        "protocol_version": 4,
+                        "protocol_version": DESKTOP_RUNTIME_VERSION,
                         "event_sequence": 2,
                         "owner": "recorder",
                         "event": {

@@ -82,21 +82,39 @@ apply/save transitions.
 
 The combined microphone/camera bridge is not yet fed into Studio. The
 artifact-backed Editable WebM copy/publication remains the flattened recorder
-output and is not an edit-aware Studio export. A separate narrow native adapter does execute
-the shared canonical plan for a clock-aligned screen original plus optional
-microphone/system-audio originals: preview maps an edited output point before
-real decode, and export applies trim/delete/rational speed plus audio
-gaps/gain/mute. The export adapter now executes and postcondition-probes all
-four approved software profiles, including the H.264/AAC hosted-media
-distribution master, while preserving input originals. It emits bounded
-monotonic progress and cleans its private staging artifact when cancellation
-occurs before publication. It is not wired to the desktop or
-`StudioRenderCoordinator`, does not assemble arbitrary asset-offset ranges, and
-fails closed for camera, cursor, background, camera-only, and side-by-side
-composition. The reference renderer still writes a checksum-bound bundle
-rather than dispatching that native adapter. Therefore these paths cannot yet
-satisfy complete desktop Studio composition, decoded preview/export/reference
-goldens, long-project effects, or hardware-fallback acceptance criteria.
+output and is not an edit-aware Studio export. The narrow native edit adapter
+executes the shared canonical plan for one clock-aligned screen original plus
+optional microphone/system-audio originals: preview maps an edited output
+point before real decode, and export applies trim/delete/rational speed plus
+audio gaps/gain/mute. The adapter executes and postcondition-probes all four
+approved software profiles, including the H.264/AAC hosted-media distribution
+master, while preserving input originals. It emits bounded monotonic progress
+and cleans its private staging artifact when cancellation occurs before
+publication.
+
+The macOS desktop now connects a clean authenticated Studio project to that
+adapter. Rust revision-fences the request, re-reads the project through the
+pinned project directory, verifies every immutable original and sidecar,
+opens and hashes each original through the pinned Studio directory, and retains
+those exact descriptors while the seekable decoder reads `/dev/fd` rather than
+the project pathname. It recompiles the canonical plan, renders into a
+preopened private export-staging inode, and publishes only that hashed regular
+file to the scoped destination. The Leptos editor exposes the distribution MP4
+action only for a clean project; the runtime accepts terminal success only when
+revision, profile, nonzero byte count, and lowercase SHA-256 match the request.
+A native integration test generates real isolated screen/system-audio sources,
+commits them, replaces the visible Studio root after preparation, and still
+produces the artifact from the retained original descriptors.
+
+The desktop call remains synchronous, publishes only terminal progress, and is
+not wired to `StudioRenderCoordinator`; cancellation cannot currently race a
+running desktop render. The adapter does not assemble arbitrary asset-offset
+ranges and fails closed for camera, cursor, background, camera-only, and
+side-by-side composition. The reference renderer still writes a checksum-bound
+bundle rather than dispatching the native adapter. Therefore these paths cannot
+yet satisfy complete desktop Studio composition, decoded
+preview/export/reference goldens, long-project effects, or hardware-fallback
+acceptance criteria.
 
 Separately, `NativeStudioPreviewEngine` opens the complete immutable
 `StudioPreviewGraphSpec`, verifies every original against its durable sidecar
@@ -246,9 +264,12 @@ inspects interrupted entries through opaque handles, recovers recording and
 edit-save boundaries into a reminted ready-project handle, and archives only a
 proven-empty attempt without deleting media. The editor now initiates bounded
 trim/delete/split/speed/audio-gain drafts and persists them through the durable
-edit-save journal transaction. It does not yet feed the combined
-microphone/camera bridge into Studio, connect native preview/composition/export
-to the desktop, or render a distribution master, so issue 27 remains open.
+edit-save journal transaction. A clean aligned screen/audio project can now
+render and identity-publish a verified distribution master from the desktop.
+It does not yet feed the combined microphone/camera bridge into Studio,
+connect native preview/composition to the desktop, run export asynchronously
+through the durable coordinator, or prove the remaining goldens/fallback
+matrix, so issue 27 remains open.
 
 Focused command:
 

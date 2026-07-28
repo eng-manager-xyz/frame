@@ -361,6 +361,13 @@ impl AssetChecksum {
     pub fn from_content(bytes: &[u8]) -> Self {
         Self(strong_sha256(bytes))
     }
+
+    /// Encode this checksum for equality checks at descriptor-rooted platform
+    /// boundaries. Debug output remains redacted.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        self.0.to_hex()
+    }
 }
 
 impl fmt::Debug for AssetChecksum {
@@ -5276,6 +5283,22 @@ impl FilesystemStudioOriginalStore {
         }
         let (media, _) = self.original_paths(project_id, expected.id);
         fs::canonicalize(media).map_err(|_| StudioError::StorageIo)
+    }
+
+    /// Return the canonical relative location of one durable original.
+    ///
+    /// Descriptor-rooted platform adapters use this bounded, opaque-ID-derived
+    /// name to open the media inode without following path symlinks. Callers
+    /// must still authenticate the project manifest and verify the opened
+    /// bytes against its [`StudioAsset`] descriptor.
+    #[must_use]
+    pub fn durable_original_relative_path(
+        project_id: StudioProjectId,
+        asset_id: StudioAssetId,
+    ) -> PathBuf {
+        PathBuf::from(opaque_id_hex(project_id.0))
+            .join("originals")
+            .join(format!("{}.media", opaque_id_hex(asset_id.0)))
     }
 
     /// Locate and decode the one persisted recording graph for this project.

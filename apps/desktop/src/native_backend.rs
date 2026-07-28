@@ -9,7 +9,9 @@ use std::{collections::HashSet, fmt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ipc::{CaptureTargetKind, DeviceClass, RecorderMode, ValidatedPath, valid_opaque_id};
+use crate::ipc::{
+    CaptureTargetKind, DeviceClass, ExportProfile, RecorderMode, ValidatedPath, valid_opaque_id,
+};
 
 pub const CAPTURE_TARGET_CATALOG_VERSION: u16 = 1;
 pub const CAPTURE_ARTIFACT_SUMMARY_VERSION: u16 = 1;
@@ -827,6 +829,64 @@ pub struct NativeEditableWebmExportOutcome {
     pub bytes_written: u64,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioExportRequest {
+    pub project_revision: u64,
+    pub output_path: ValidatedPath,
+    pub profile: ExportProfile,
+}
+
+impl fmt::Debug for NativeStudioExportRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioExportRequest")
+            .field("project_revision", &self.project_revision)
+            .field("output_path", &self.output_path)
+            .field("profile", &self.profile)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioExportOutcome {
+    pub project_revision: u64,
+    pub profile: ExportProfile,
+    pub bytes_written: u64,
+    pub sha256: String,
+}
+
+impl NativeStudioExportOutcome {
+    pub fn validate_for(
+        &self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        if self.project_revision != request.project_revision
+            || self.profile != request.profile
+            || self.bytes_written == 0
+            || self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(NativeDesktopContractError::InvalidStudioExport);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeStudioExportOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioExportOutcome")
+            .field("project_revision", &self.project_revision)
+            .field("profile", &self.profile)
+            .field("bytes_written", &self.bytes_written)
+            .field("sha256", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Privacy-safe, raw-media-free telemetry for one active native recording.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeRecordingMeter {
@@ -969,6 +1029,13 @@ pub trait NativeDesktopBackend {
         Err(NativeDesktopBackendError::Unavailable)
     }
 
+    fn export_studio_project(
+        &mut self,
+        _request: &NativeStudioExportRequest,
+    ) -> Result<NativeStudioExportOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
     fn inspect_studio_recovery(
         &mut self,
         _request: &NativeStudioRecoveryRequest,
@@ -1042,6 +1109,8 @@ pub enum NativeDesktopContractError {
     InvalidStudioRecovery,
     #[error("Studio editor response is invalid")]
     InvalidStudioEditor,
+    #[error("Studio export response is invalid")]
+    InvalidStudioExport,
 }
 
 const fn target_kind_tag(kind: CaptureTargetKind) -> u8 {
@@ -1054,7 +1123,19 @@ const fn target_kind_tag(kind: CaptureTargetKind) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::{PathPolicy, PathUse, RootAccess};
+
+    fn absolute_test_path(components: &[&str]) -> PathBuf {
+        #[cfg(windows)]
+        let mut path = PathBuf::from(r"C:\");
+        #[cfg(not(windows))]
+        let mut path = PathBuf::from("/");
+        path.extend(components);
+        path
+    }
 
     #[test]
     fn catalog_json_has_only_coarse_geometry_and_opaque_identity() {
@@ -1272,6 +1353,46 @@ mod tests {
         assert_eq!(
             outcome.validate_for(save, 10),
             Err(NativeDesktopContractError::InvalidStudioEditor)
+        );
+    }
+
+    #[test]
+    fn studio_export_outcome_is_revision_profile_and_digest_bound() {
+        let root = absolute_test_path(&["frame-native-export-contract"]);
+        let output = root.join("output.mp4").to_string_lossy().into_owned();
+        let policy = PathPolicy::empty()
+            .allow_root(
+                &root,
+                RootAccess {
+                    read: false,
+                    write: true,
+                    delete: false,
+                },
+            )
+            .expect("export policy");
+        let request = NativeStudioExportRequest {
+            project_revision: 9,
+            output_path: policy
+                .validate(&output, PathUse::ExportWrite)
+                .expect("validated export"),
+            profile: ExportProfile::DistributionMp4,
+        };
+        let outcome = NativeStudioExportOutcome {
+            project_revision: 9,
+            profile: ExportProfile::DistributionMp4,
+            bytes_written: 1_024,
+            sha256: "ab".repeat(32),
+        };
+        outcome.validate_for(&request).expect("valid export");
+        assert!(!format!("{outcome:?}").contains(&outcome.sha256));
+
+        let uppercase = NativeStudioExportOutcome {
+            sha256: "AB".repeat(32),
+            ..outcome
+        };
+        assert_eq!(
+            uppercase.validate_for(&request),
+            Err(NativeDesktopContractError::InvalidStudioExport)
         );
     }
 }
