@@ -1277,15 +1277,23 @@ fn recording_runtime_returns_bounded_output_and_drains_it_before_completion() {
         NativeAvGraphTeardown::NullReached
     );
     assert!(!output_samples.is_empty());
-    for (index, sample) in output_samples.iter().enumerate() {
-        assert_eq!(sample.kind(), NativeAvGraphOutputKind::MixedAudio);
-        assert_eq!(
-            sample.sequence(),
-            u64::try_from(index + 1).expect("sequence")
-        );
+    let mut mixed_sequence = 0_u64;
+    let mut isolated_sequence = 0_u64;
+    for sample in &output_samples {
+        let sequence = match sample.kind() {
+            NativeAvGraphOutputKind::MixedAudio => &mut mixed_sequence,
+            NativeAvGraphOutputKind::SystemAudioRecord => &mut isolated_sequence,
+            NativeAvGraphOutputKind::MicrophoneRecord | NativeAvGraphOutputKind::CameraRecord => {
+                panic!("unexpected output kind: {:?}", sample.kind())
+            }
+        };
+        *sequence = sequence.checked_add(1).expect("bounded output sequence");
+        assert_eq!(sample.sequence(), *sequence);
         assert!(sample.timestamp().duration_ns > 0);
         assert!(!sample.bytes().is_empty());
     }
+    assert!(mixed_sequence > 0);
+    assert!(isolated_sequence > 0);
     assert_eq!(runtime.state(), NativeAvRuntimeState::NullConfirmed);
     wait_for_release_count(
         &released,

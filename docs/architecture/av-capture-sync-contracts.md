@@ -151,14 +151,17 @@ conservative pre-push saturation, while the explicit queue reports an exact
 overrun signal. Newly observed pressure or overrun produces one stable,
 privacy-safe `IngressOverload` diagnostic and marks the next accepted source
 buffer discontinuous. Preview-owned appsinks use bounded dropping queues.
-Recording-owned mixed-audio and camera branches use non-leaky output queues and
-appsinks that do not drop; their output is copied into bounded typed poll
-reports with per-branch monotonic sequences, explicit timestamps, and an
-aggregate byte ceiling. A sample that does not fit the caller's current byte
-budget is retained for a later larger pull. Runtime attachment rejects a fixed
-recording byte budget smaller than the largest active branch bound, preventing
-an EOS drain that can never make progress. Exact queue bounds/leak mode, sink
-mode, and nonblocking EOS properties are revalidated at attach.
+Recording-owned mixed-audio, isolated microphone/system-audio original, and
+camera branches use non-leaky output queues and appsinks that do not drop;
+their output is copied into bounded typed poll reports with per-branch
+monotonic sequences, explicit timestamps, and an aggregate byte ceiling. The
+isolated audio tee is upstream of per-source gain/mute, so later Studio edits
+do not destroy the captured original. A sample that does not fit the caller's
+current byte budget is retained for a later larger pull. Runtime attachment
+rejects a fixed recording byte budget smaller than the largest active branch
+bound, preventing an EOS drain that can never make progress. Exact queue
+bounds/leak mode, sink mode, and nonblocking EOS properties are revalidated at
+attach.
 Some GStreamer aggregator versions append an empty or incompletely timestamped
 `GAP` sentinel while reaching EOS. The output boundary consumes only those
 incomplete `GAP` sentinels, counts each against the bounded pull budget, and
@@ -239,6 +242,15 @@ changes. The adapter still does not provide microphone or camera capture, and
 the normalized runtime remains a preview/execution foundation whose
 authenticated terminal output is not yet connected to the desktop recording
 mux.
+
+`MacOsDeviceAvBridge` is the production combined optional-input adapter. It
+places that virtual system-audio source and the GStreamer microphone/camera
+providers in one catalog, starts every enabled source from one host-monotonic
+origin, and rebases ScreenCaptureKit callback arrival to that origin before
+the ordinary per-source calibration. One session therefore owns
+microphone/system mixing, isolated audio originals, camera record/preview, a
+single permission/hotplug/power event stream, and one terminal reconciliation
+tail. This combined bridge remains unwired to the desktop recording owner.
 
 ## Master clock and declared timeline
 

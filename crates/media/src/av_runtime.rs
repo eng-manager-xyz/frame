@@ -1,7 +1,8 @@
 //! Bounded native A/V orchestration and the CPU-backed GStreamer appsrc edge.
 //!
-//! Recording-mode graphs return bounded mixed-audio and camera samples through
-//! poll reports and do not confirm `Null` after EOS until those outputs drain.
+//! Recording-mode graphs return bounded mixed-audio, isolated-audio, and
+//! camera samples through poll reports and do not confirm `Null` after EOS
+//! until those outputs drain.
 //! A successful stop authenticates and pushes every retained session buffer
 //! and replayable native callback-tail buffer before graph EOS. Callers still
 //! must not treat this runtime as evidence that the resulting mixed outputs

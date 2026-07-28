@@ -23,8 +23,9 @@ journeys production behavior.
 
 The media crate now has a production bounded isolated-track Studio encoder and
 durable partial-recovery boundary. The desktop adapter does not yet compose its
-native screen/system-audio sources or normalized microphone/camera source with
-that recorder, so this component does not close an issue-33 product journey.
+native screen source or normalized combined
+system-audio/microphone/camera source with that recorder, so this component
+does not close an issue-33 product journey.
 
 The checked-in hardware workflow invokes `frame-hardware-driver`, but this
 repository does not provide that driver. Its validator and workflow shape are

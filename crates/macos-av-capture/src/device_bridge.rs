@@ -26,7 +26,7 @@ use frame_platform_lifecycle::{SystemPowerEvent, SystemPowerMonitorError};
 
 #[cfg(target_os = "macos")]
 use frame_media::{
-    FactoryRequirement, PlatformScope, RuntimeCapability,
+    FactoryRequirement, PermissionPreflight, PlatformScope, RuntimeCapability,
     pipeline_has_only_declared_authored_factories, pipeline_has_trusted_factory_provenance,
     prepare_runtime, runtime_manifest,
 };
@@ -44,6 +44,10 @@ use ring::hmac;
 use thiserror::Error;
 
 use crate::SYSTEM_AUDIO_FORMAT;
+#[cfg(target_os = "macos")]
+use crate::{
+    MacOsSystemAudioChunk, MacOsSystemAudioError, MacOsSystemAudioSource, MacOsSystemAudioStopError,
+};
 
 const MICROPHONE_FORMAT: frame_media::AudioFormat = SYSTEM_AUDIO_FORMAT;
 const CAMERA_FORMAT: CameraFormat = CameraFormat {
@@ -249,8 +253,19 @@ struct DeviceInputBridge<S, P> {
 impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
     fn new(mut inputs: S, power: P, adapter: AvAdapterInstanceId) -> Result<Self, NativeAvFailure> {
         let mut permissions = BTreeMap::new();
-        for class in [AvSourceClass::Microphone, AvSourceClass::Camera] {
+        for class in inputs
+            .devices()
+            .map_err(map_input_failure)?
+            .into_iter()
+            .map(|device| device.class)
+        {
             permissions.insert(class, inputs.permission(class).map_err(map_input_failure)?);
+        }
+        if permissions.is_empty() {
+            return Err(NativeAvFailure {
+                code: NativeAvFailureCode::SourceUnavailable,
+                retryable: true,
+            });
         }
         Ok(Self {
             inputs,
@@ -320,12 +335,6 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
         let devices = self.inputs.devices().map_err(map_input_failure)?;
         let mut plans = Vec::with_capacity(graph.sources.len());
         for source in &graph.sources {
-            if !matches!(
-                source.class,
-                AvSourceClass::Microphone | AvSourceClass::Camera
-            ) {
-                return Err(capability_changed());
-            }
             let stamp = ticket
                 .stamps()
                 .iter()
@@ -337,7 +346,10 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
             }
             let format = match source.input_caps {
                 frame_media::ExactCapsSpec::Audio(caps)
-                    if source.class == AvSourceClass::Microphone =>
+                    if matches!(
+                        source.class,
+                        AvSourceClass::Microphone | AvSourceClass::SystemAudio
+                    ) =>
                 {
                     AvFormat::Audio(caps.format)
                 }
@@ -658,7 +670,8 @@ impl<S: DeviceInputs, P: PowerEvents> DeviceInputBridge<S, P> {
         self.next_permission_probe = now
             .checked_add(PERMISSION_PROBE_INTERVAL)
             .ok_or_else(|| backend_fault(false))?;
-        for class in [AvSourceClass::Microphone, AvSourceClass::Camera] {
+        let classes = self.permissions.keys().copied().collect::<Vec<_>>();
+        for class in classes {
             let permission = self.inputs.permission(class).map_err(map_input_failure)?;
             if !self.observe_permission(class, permission)? {
                 continue;
@@ -831,9 +844,13 @@ impl<S: DeviceInputs, P: PowerEvents> NativeAvBridge for DeviceInputBridge<S, P>
             return Err(backend_fault(false));
         }
         match request {
-            AvNativeRequest::RequestPermission(class)
-                if matches!(class, AvSourceClass::Microphone | AvSourceClass::Camera) =>
-            {
+            AvNativeRequest::RequestPermission(class) => {
+                if !self.permissions.contains_key(class) {
+                    return Err(NativeAvFailure {
+                        code: NativeAvFailureCode::SourceUnavailable,
+                        retryable: false,
+                    });
+                }
                 let permission = self
                     .inputs
                     .request_permission(*class, ticket.native_timeout())
@@ -847,10 +864,6 @@ impl<S: DeviceInputs, P: PowerEvents> NativeAvBridge for DeviceInputBridge<S, P>
                 }
                 Ok(ticket.acknowledge(false))
             }
-            AvNativeRequest::RequestPermission(_) => Err(NativeAvFailure {
-                code: NativeAvFailureCode::SourceUnavailable,
-                retryable: false,
-            }),
             AvNativeRequest::Start(graph) | AvNativeRequest::Reconfigure(graph) => {
                 let plans = self.validate_graph(&ticket, graph)?;
                 self.start_plans(plans)?;
@@ -991,6 +1004,8 @@ struct MacOsDeviceInputs {
     records: Vec<DeviceRecord>,
     permissions: BTreeMap<AvSourceClass, PermissionState>,
     pipelines: BTreeMap<AvSourceClass, CapturePipeline>,
+    system_audio: MacOsSystemAudioSource,
+    system_audio_master_offset_ns: Option<u64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -999,6 +1014,8 @@ impl MacOsDeviceInputs {
         if installation_secret.iter().all(|byte| *byte == 0) {
             return Err(MacOsDeviceAvBridgeCreateError::AdapterIdentity);
         }
+        let system_audio = MacOsSystemAudioSource::new(installation_secret)
+            .map_err(|_| MacOsDeviceAvBridgeCreateError::DeviceMonitor)?;
         prepare_runtime().map_err(|_| MacOsDeviceAvBridgeCreateError::Runtime)?;
         require_capture_factories()?;
         let monitor = gst::DeviceMonitor::new();
@@ -1014,9 +1031,12 @@ impl MacOsDeviceInputs {
             records: Vec::new(),
             permissions: BTreeMap::from([
                 (AvSourceClass::Microphone, PermissionState::PromptRequired),
+                (AvSourceClass::SystemAudio, PermissionState::PromptRequired),
                 (AvSourceClass::Camera, PermissionState::PromptRequired),
             ]),
             pipelines: BTreeMap::new(),
+            system_audio,
+            system_audio_master_offset_ns: None,
         };
         inputs
             .refresh_inventory()
@@ -1103,6 +1123,19 @@ impl MacOsDeviceInputs {
         })
     }
 
+    fn system_audio_device(&mut self) -> Result<InputDevice, InputFailure> {
+        let device = self.system_audio.device();
+        Ok(InputDevice {
+            id: device.id(),
+            generation: AvDeviceGeneration::new(1).map_err(|_| InputFailure::BackendFault)?,
+            class: AvSourceClass::SystemAudio,
+            is_default: true,
+            permission: device.permission(),
+            route: NativeRouteClass::Virtual,
+            formats: vec![AvFormat::Audio(device.format())],
+        })
+    }
+
     fn pipeline_source(
         &self,
         class: AvSourceClass,
@@ -1124,6 +1157,26 @@ impl MacOsDeviceInputs {
         }
         source_factory(class)
     }
+
+    fn system_audio_input(
+        &self,
+        chunk: MacOsSystemAudioChunk,
+    ) -> Result<InputBuffer, InputFailure> {
+        let master_offset_ns = self
+            .system_audio_master_offset_ns
+            .ok_or(InputFailure::BackendFault)?;
+        let arrival_ns = master_offset_ns
+            .checked_add(chunk.arrival_ns())
+            .ok_or(InputFailure::BackendFault)?;
+        Ok(InputBuffer {
+            format: AvFormat::Audio(chunk.format()),
+            source_pts_ns: chunk.source_pts_ns(),
+            arrival_ns,
+            duration_ns: chunk.duration_ns(),
+            discontinuity: chunk.discontinuity(),
+            bytes: chunk.into_samples_f32le(),
+        })
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1139,11 +1192,20 @@ impl DeviceInputs for MacOsDeviceInputs {
                 devices.push(self.fallback_device(class)?);
             }
         }
+        let system_audio = self.system_audio_device()?;
+        self.permissions
+            .insert(AvSourceClass::SystemAudio, system_audio.permission);
+        devices.push(system_audio);
         devices.sort_by_key(|device| (device.class, device.id));
         Ok(devices)
     }
 
     fn permission(&mut self, class: AvSourceClass) -> Result<PermissionState, InputFailure> {
+        if class == AvSourceClass::SystemAudio {
+            let permission = self.system_audio.device().permission();
+            self.permissions.insert(class, permission);
+            return Ok(permission);
+        }
         self.permissions
             .get(&class)
             .copied()
@@ -1155,6 +1217,11 @@ impl DeviceInputs for MacOsDeviceInputs {
         class: AvSourceClass,
         timeout: Duration,
     ) -> Result<PermissionState, InputFailure> {
+        if class == AvSourceClass::SystemAudio {
+            let permission = permission_state(self.system_audio.request_permission());
+            self.permissions.insert(class, permission);
+            return Ok(permission);
+        }
         if !matches!(class, AvSourceClass::Microphone | AvSourceClass::Camera) {
             return Err(InputFailure::SourceUnavailable);
         }
@@ -1195,11 +1262,24 @@ impl DeviceInputs for MacOsDeviceInputs {
         format: AvFormat,
         master_origin: Instant,
     ) -> Result<(), InputFailure> {
-        if self.pipelines.contains_key(&class) {
+        if self.is_running(class) {
             return Err(InputFailure::Busy);
         }
         if self.permission(class)? != PermissionState::Granted {
             return Err(InputFailure::PermissionDenied);
+        }
+        if class == AvSourceClass::SystemAudio {
+            let expected = self.system_audio_device()?;
+            if device != expected.id || format != AvFormat::Audio(SYSTEM_AUDIO_FORMAT) {
+                return Err(InputFailure::FormatChanged);
+            }
+            let offset_ns = u64::try_from(master_origin.elapsed().as_nanos())
+                .map_err(|_| InputFailure::BackendFault)?;
+            self.system_audio
+                .start()
+                .map_err(map_system_audio_failure)?;
+            self.system_audio_master_offset_ns = Some(offset_ns);
+            return Ok(());
         }
         let source = self.pipeline_source(class, device)?;
         let mut pipeline = CapturePipeline::build(source, format, master_origin)?;
@@ -1209,6 +1289,14 @@ impl DeviceInputs for MacOsDeviceInputs {
     }
 
     fn poll(&mut self, class: AvSourceClass) -> Result<Option<InputBuffer>, InputFailure> {
+        if class == AvSourceClass::SystemAudio {
+            return self
+                .system_audio
+                .poll_chunk()
+                .map_err(map_system_audio_failure)?
+                .map(|chunk| self.system_audio_input(chunk))
+                .transpose();
+        }
         self.pipelines
             .get_mut(&class)
             .ok_or(InputFailure::SourceUnavailable)?
@@ -1219,6 +1307,23 @@ impl DeviceInputs for MacOsDeviceInputs {
         &mut self,
         class: AvSourceClass,
     ) -> Result<Vec<InputBuffer>, InputStopFailure> {
+        if class == AvSourceClass::SystemAudio {
+            let result = self
+                .system_audio
+                .stop_and_drain_chunks()
+                .map_err(map_system_audio_stop_failure)?
+                .into_iter()
+                .map(|chunk| {
+                    self.system_audio_input(chunk)
+                        .map_err(|failure| InputStopFailure {
+                            failure,
+                            teardown_confirmed: true,
+                        })
+                })
+                .collect();
+            self.system_audio_master_offset_ns = None;
+            return result;
+        }
         let Some(mut pipeline) = self.pipelines.remove(&class) else {
             return Ok(Vec::new());
         };
@@ -1226,7 +1331,11 @@ impl DeviceInputs for MacOsDeviceInputs {
     }
 
     fn is_running(&self, class: AvSourceClass) -> bool {
-        self.pipelines.contains_key(&class)
+        if class == AvSourceClass::SystemAudio {
+            self.system_audio.is_running()
+        } else {
+            self.pipelines.contains_key(&class)
+        }
     }
 
     fn poll_catalog_change(&mut self) -> Result<Option<CatalogChangeReason>, InputFailure> {
@@ -1760,6 +1869,59 @@ const fn map_input_failure(error: InputFailure) -> NativeAvFailure {
     NativeAvFailure { code, retryable }
 }
 
+#[cfg(target_os = "macos")]
+const fn permission_state(permission: PermissionPreflight) -> PermissionState {
+    match permission {
+        PermissionPreflight::Granted => PermissionState::Granted,
+        PermissionPreflight::PromptRequired => PermissionState::PromptRequired,
+        PermissionPreflight::Denied(_) => PermissionState::Denied,
+        PermissionPreflight::Restricted => PermissionState::Restricted,
+        PermissionPreflight::Revoked(_) => PermissionState::Revoked,
+    }
+}
+
+#[cfg(target_os = "macos")]
+const fn map_system_audio_failure(error: MacOsSystemAudioError) -> InputFailure {
+    match error {
+        MacOsSystemAudioError::PermissionDenied => InputFailure::PermissionDenied,
+        MacOsSystemAudioError::AlreadyRunning
+        | MacOsSystemAudioError::NativeOperationCapacityUnavailable => InputFailure::Busy,
+        MacOsSystemAudioError::NativeOperationTimedOut
+        | MacOsSystemAudioError::CallbackQueueFenceTimedOut
+        | MacOsSystemAudioError::DelegateQuiescenceUnconfirmed => InputFailure::Timeout,
+        MacOsSystemAudioError::UnexpectedAudioFormat
+        | MacOsSystemAudioError::MissingAudioBuffer
+        | MacOsSystemAudioError::InvalidAudioBufferLayout
+        | MacOsSystemAudioError::AudioChunkTooLarge
+        | MacOsSystemAudioError::NonFiniteAudioSample
+        | MacOsSystemAudioError::InvalidTimestamp => InputFailure::FormatChanged,
+        MacOsSystemAudioError::NotRunning
+        | MacOsSystemAudioError::ShareableContentUnavailable
+        | MacOsSystemAudioError::NoDisplayAvailable
+        | MacOsSystemAudioError::OutputHandlerRegistrationFailed
+        | MacOsSystemAudioError::CaptureStartFailed
+        | MacOsSystemAudioError::UnexpectedStreamStop
+        | MacOsSystemAudioError::CaptureStopFailed
+        | MacOsSystemAudioError::CallbackQueueDisconnected => InputFailure::SourceUnavailable,
+        MacOsSystemAudioError::InvalidInstallationSecret
+        | MacOsSystemAudioError::DeviceIdDerivationFailed
+        | MacOsSystemAudioError::NativeOperationWorkerUnavailable
+        | MacOsSystemAudioError::CaptureStartTeardownUnconfirmed
+        | MacOsSystemAudioError::CaptureTeardownUnconfirmed
+        | MacOsSystemAudioError::OutputHandlerReleaseUnconfirmed
+        | MacOsSystemAudioError::InvalidSampleBuffer
+        | MacOsSystemAudioError::SequenceExhausted => InputFailure::BackendFault,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn map_system_audio_stop_failure(error: MacOsSystemAudioStopError) -> InputStopFailure {
+    InputStopFailure {
+        failure: map_system_audio_failure(error.capture_error()),
+        teardown_confirmed: error.capture_teardown_confirmed(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -1816,6 +1978,15 @@ mod tests {
                     permission: PermissionState::Granted,
                     route: NativeRouteClass::BuiltIn,
                     formats: vec![AvFormat::Camera(CAMERA_FORMAT)],
+                },
+                InputDevice {
+                    id: device_id(5),
+                    generation: generation(),
+                    class: AvSourceClass::SystemAudio,
+                    is_default: true,
+                    permission: PermissionState::Granted,
+                    route: NativeRouteClass::Virtual,
+                    formats: vec![AvFormat::Audio(SYSTEM_AUDIO_FORMAT)],
                 },
             ];
             let state = Arc::new(Mutex::new(FakeInputState {
@@ -1946,6 +2117,24 @@ mod tests {
         }
     }
 
+    fn combined_settings() -> AvCaptureSettingsV2 {
+        AvCaptureSettingsV2 {
+            version: AV_SETTINGS_VERSION,
+            microphone: DeviceSelectionV2::Pinned {
+                id: device_id(3),
+                format: AvFormat::Audio(MICROPHONE_FORMAT),
+            },
+            system_audio: DeviceSelectionV2::Pinned {
+                id: device_id(5),
+                format: AvFormat::Audio(SYSTEM_AUDIO_FORMAT),
+            },
+            camera: DeviceSelectionV2::Pinned {
+                id: device_id(4),
+                format: AvFormat::Camera(CAMERA_FORMAT),
+            },
+        }
+    }
+
     fn input(class: AvSourceClass, sequence: u64) -> InputBuffer {
         let (format, bytes, duration_ns) = match class {
             AvSourceClass::Microphone => (
@@ -1958,7 +2147,11 @@ mod tests {
                 vec![0_u8; 1280 * 720 * 4],
                 33_333_333,
             ),
-            AvSourceClass::SystemAudio => unreachable!(),
+            AvSourceClass::SystemAudio => (
+                AvFormat::Audio(SYSTEM_AUDIO_FORMAT),
+                vec![0_u8; 3_840],
+                10_000_000,
+            ),
         };
         InputBuffer {
             format,
@@ -1972,7 +2165,11 @@ mod tests {
 
     fn enqueue_calibration(state: &Arc<Mutex<FakeInputState>>) {
         let mut state = state.lock().expect("state");
-        for class in [AvSourceClass::Microphone, AvSourceClass::Camera] {
+        for class in [
+            AvSourceClass::Microphone,
+            AvSourceClass::SystemAudio,
+            AvSourceClass::Camera,
+        ] {
             let queue = state.buffers.entry(class).or_default();
             for sequence in 0..7 {
                 queue.push_back(input(class, sequence));
@@ -1988,6 +2185,10 @@ mod tests {
     );
 
     fn started(seed: u8) -> StartedBridge {
+        started_with(seed, settings())
+    }
+
+    fn started_with(seed: u8, capture_settings: AvCaptureSettingsV2) -> StartedBridge {
         let (inputs, state) = FakeInputs::new();
         enqueue_calibration(&state);
         let bridge =
@@ -1996,9 +2197,10 @@ mod tests {
         let mut session = AvCaptureSession::new(bound.claim_session().expect("owner"));
         let capabilities = bound.capabilities().expect("capabilities");
         let catalog = bound.enumerate().expect("catalog");
-        let graph = AvPipelineGraphSpec::negotiate(&catalog, settings(), true).expect("graph");
+        let graph =
+            AvPipelineGraphSpec::negotiate(&catalog, capture_settings, true).expect("graph");
         let action = session
-            .request_start(capabilities, catalog, settings(), true)
+            .request_start(capabilities, catalog, capture_settings, true)
             .expect("start");
         let AvActionExecution::Acknowledged(ack) = action
             .execute_source(&mut session, &mut bound)
@@ -2088,6 +2290,65 @@ mod tests {
                 .release();
         }
         assert_eq!(state.lock().expect("state").stops, 2);
+        assert_eq!(session.state(), frame_media::AvSessionState::Stopped);
+    }
+
+    #[test]
+    fn combined_bridge_owns_microphone_system_audio_and_camera_on_one_session_clock() {
+        let (mut bridge, mut session, graph, state) = started_with(5, combined_settings());
+        assert_eq!(graph.sources.len(), 3);
+        assert_eq!(
+            graph
+                .shared_audio_mixer
+                .as_ref()
+                .expect("shared mixer")
+                .request_pads
+                .len(),
+            2
+        );
+        for class in [
+            AvSourceClass::Microphone,
+            AvSourceClass::SystemAudio,
+            AvSourceClass::Camera,
+        ] {
+            let stamp = session.source_stamp(class).expect("stamp");
+            let batch = bridge
+                .startup_calibration(stamp)
+                .expect("calibration batch");
+            session
+                .calibrate_source(stamp, AvSyncPolicy::default(), batch.samples())
+                .expect("install calibration");
+        }
+        let action = session.request_stop().expect("stop").expect("stop action");
+        let AvActionExecution::Acknowledged(acknowledgement) = action
+            .execute_source(&mut session, &mut bridge)
+            .expect("stop dispatch")
+        else {
+            panic!("stop must acknowledge");
+        };
+        let terminal = session.complete(acknowledgement).expect("complete stop");
+
+        assert_eq!(terminal.len(), 6);
+        for class in [
+            AvSourceClass::Microphone,
+            AvSourceClass::SystemAudio,
+            AvSourceClass::Camera,
+        ] {
+            let source = terminal
+                .iter()
+                .filter(|buffer| buffer.stamp().class() == class)
+                .collect::<Vec<_>>();
+            assert_eq!(source.len(), 2);
+            assert_eq!(source[0].sequence(), 1);
+            assert_eq!(source[1].sequence(), 2);
+        }
+        for buffer in terminal {
+            buffer
+                .into_appsrc_input()
+                .expect("authenticated terminal input")
+                .release();
+        }
+        assert_eq!(state.lock().expect("state").stops, 3);
         assert_eq!(session.state(), frame_media::AvSessionState::Stopped);
     }
 

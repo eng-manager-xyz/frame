@@ -32,16 +32,19 @@ physical hotplug/default-route choice. `DurableAvSettingsStore` now implements
 the provider-neutral `AvSettingsStorage` interface on top of its revisioned,
 descriptor-rooted CAS.
 
-`MacOsDeviceAvBridge` uses the audited macOS GStreamer providers to enumerate
-microphones and cameras, retains the selected `GstDevice` without exposing its
-label or provider identifier, and derives only a secret-bound opaque public
-ID. `osxaudiosrc` normalizes into exact 48 kHz stereo F32LE and `avfvideosrc`
+`MacOsDeviceAvBridge` now composes the ScreenCaptureKit system/application mix
+with the audited macOS GStreamer microphone/camera providers under one adapter
+identity and session clock. It retains a selected `GstDevice` without exposing
+its label or provider identifier, and derives only a secret-bound opaque
+public ID. `osxaudiosrc` normalizes into exact 48 kHz stereo F32LE and
+`avfvideosrc`
 normalizes into exact 1280×720/30 BGRA. Three-buffer leaky source queues and
 appsinks bound retained data; samples require exact shape, explicit PTS and
 duration, trusted plugin provenance, and an owned copy before entering the
 existing Frame appsrc graph. Device-monitor events rotate the catalog for
-hotplug/default changes. Both sources share one master-arrival origin,
-calibrate per epoch, poll fairly, and confirm two-source teardown.
+hotplug/default changes. All three optional source classes share one
+master-arrival origin, calibrate per epoch, poll fairly, and confirm
+multi-source teardown.
 
 The macOS desktop composition still muxes `MacOsSystemAudioSource` with selected
 display/window/region video through the direct worker and computes a bounded
@@ -58,12 +61,15 @@ Unknown telemetry fields fail deserialization, and raw PCM/video, paths, labels,
 and device identities have no field in the event.
 
 The normalized A/V runtime now has a recording mode that returns bounded,
-typed mixed-audio/camera samples and holds EOS completion until every recording
-sink is drained. Stop now authenticates every retained session buffer and the
+typed mixed-audio, isolated microphone/system-audio original, and camera
+samples and holds EOS completion until every recording sink is drained. The
+isolated audio branches tee before gain/mute. Stop now authenticates every
+retained session buffer and the
 complete replayable native callback tail, pushes them before graph EOS, and
 replays the identical tail after a lost acknowledgement without a second
-native release. Those mixed-audio/camera outputs are still not connected to
-the desktop mux, so this does not claim a complete artifact. Shared screen/A/V
+native release. Those mixed/isolated-audio and camera outputs are still not
+connected to the desktop mux or Studio originals store, so this does not claim
+a complete artifact. Shared screen/A/V
 runtime ownership, lossless desktop mux proof, continuous mixed-source
 controls, and product recovery remain absent.
 GStreamer-version-specific incomplete terminal `GAP` sentinels are consumed
@@ -89,7 +95,8 @@ satisfy checkboxes 6–8.
   appsrc pressure and exact downstream queue overruns with next-buffer
   discontinuity, fair bounded runtime polling, source calibration, distinct
   dropping preview and non-leaky/non-dropping recording output branches,
-  bounded typed mixed-audio/camera output pulls, retained over-budget samples,
+  bounded typed mixed-audio/isolated-audio/camera output pulls, retained
+  over-budget samples,
   an attach-time progress budget, replayable bounded CPU-byte terminal tails,
   transactional stamp/sequence/format/timebase authentication, queued-plus-tail
   appsrc delivery before EOS, an EOS output-drain barrier,
@@ -104,8 +111,9 @@ satisfy checkboxes 6–8.
   secret-bound adapter ID, five-sample/750 ms per-epoch calibration, owned PCM
   appsrc transfer, one-second permission probes, process sleep/wake,
   pause/resume epoch rotation, and stable terminal reconciliation;
-- a production macOS microphone/camera `NativeAvBridge` with HMAC-redacted
-  GStreamer device catalogs, real selected-device elements, audited
+- a production combined macOS optional-input `NativeAvBridge` with one
+  ScreenCaptureKit system-audio virtual device, HMAC-redacted GStreamer
+  microphone/camera catalogs, real selected-device elements, audited
   `osxaudiosrc`/`avfvideosrc` factories, bounded three-buffer appsinks, exact
   PCM/BGRA shape validation, a shared arrival clock, fair source polling,
   hotplug/default-change catalog events, per-epoch calibration, and confirmed
