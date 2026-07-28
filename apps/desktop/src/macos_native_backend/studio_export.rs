@@ -7,10 +7,11 @@
 use std::{fs::File, path::Path};
 
 use frame_media::{
-    AssetChecksum, CancellationToken, FilesystemStudioOriginalStore, NativeExecutionError,
-    NativeStudioAlignedFileSources, NativeStudioEditedExportArtifact, NativeStudioExportProfile,
-    NativeStudioRenderProgress, StudioProjectManifest, StudioTimelineCompiler, TimelineSource,
-    TrackKind, render_studio_export_with_edits_preopened_and_progress,
+    AssetChecksum, CancellationToken, EncoderBackend, FilesystemStudioOriginalStore,
+    NativeExecutionError, NativeStudioAlignedFileSources, NativeStudioEditedExportArtifact,
+    NativeStudioExportProfile, NativeStudioRenderProgress, StudioProjectManifest,
+    StudioTimelineCompiler, TimelineSource, TrackKind,
+    render_studio_export_with_edits_preopened_for_backend_and_progress,
 };
 
 use crate::{
@@ -131,22 +132,30 @@ impl PreparedStudioExport {
         output: File,
         cancellation: &CancellationToken,
     ) -> Result<NativeStudioEditedExportArtifact, NativeDesktopBackendError> {
-        self.render_preopened_with_progress(artifact_path, output, cancellation, |_| {})
+        self.render_preopened_with_backend_and_progress(
+            artifact_path,
+            output,
+            EncoderBackend::Software,
+            cancellation,
+            |_| {},
+        )
     }
 
-    pub(super) fn render_preopened_with_progress(
+    pub(super) fn render_preopened_with_backend_and_progress(
         mut self,
         artifact_path: &Path,
         output: File,
+        backend: EncoderBackend,
         cancellation: &CancellationToken,
         progress: impl FnMut(NativeStudioRenderProgress),
     ) -> Result<NativeStudioEditedExportArtifact, NativeDesktopBackendError> {
-        let artifact = render_studio_export_with_edits_preopened_and_progress(
+        let artifact = render_studio_export_with_edits_preopened_for_backend_and_progress(
             self.sources,
             artifact_path,
             output,
             &self.plan,
             self.profile,
+            backend,
             cancellation,
             progress,
         )

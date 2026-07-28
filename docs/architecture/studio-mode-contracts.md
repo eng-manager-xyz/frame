@@ -355,16 +355,30 @@ fail closed or remain unimplemented; the screen/audio preview path does not
 weaken those fail-closed boundaries.
 
 The macOS release adapter dispatches the same canonical graph through
-`StudioRenderCoordinator` with software capabilities. A bounded worker renders
-only into a pre-opened private inode and reports monotonic phase/basis-point
-progress through a one-slot completion channel. The desktop polls through a
-payload-free, editor/export-scoped IPC command. Cancellation waits for worker
-termination, conditionally removes only the exact staging/output inode, probes
-absence, and advances the journal to `RenderCancelled` before the UI can report
-success. Commit verifies and publishes the exact inode, probes its checksum and
-length, and CAS-persists `RenderFinalizing`/`RenderCommitted` plus the terminal
-receipt before releasing authority. Hardware selection and identical-plan
-software fallback are not yet enabled by this adapter.
+`StudioRenderCoordinator`. Software capability remains available for every
+approved profile. Distribution master additionally advertises hardware H.264
+only when the hardware-only `vtenc_h264_hw` factory exists under the exact
+trusted build-time plugin root; the other profiles remain software-only. A
+bounded worker renders only into a pre-opened private inode and reports
+monotonic phase/basis-point progress through a one-slot completion channel. The
+desktop polls through a payload-free, editor/export-scoped IPC command.
+Cancellation waits for worker termination, conditionally removes only the exact
+staging/output inode, probes absence, and advances the journal to
+`RenderCancelled` before the UI can report success. Commit verifies and
+publishes the exact inode, probes its checksum and length, and CAS-persists
+`RenderFinalizing`/`RenderCommitted` plus the terminal receipt before releasing
+authority.
+
+An unavailable/internal VideoToolbox failure is the only adapter failure
+classified as hardware-retryable. The coordinator first terminates the failed
+attempt, deletes and absence-probes its exact partial, and durably records
+`RenderCancelled`. The desktop then reopens and rehashes every original,
+recompiles the same canonical plan/profile/output, creates new export and
+operation IDs plus a new random private staging name, and CAS-reserves
+`RenderPrepared` under the same journal fence before starting software. The
+source, plan, profile, output, and render-spec digests must match the failed
+attempt or the retry is rejected. Cancellation, filesystem, invalid-project,
+and other failures never enter this fallback.
 
 Approved profiles are exact:
 

@@ -34,12 +34,12 @@ use crate::native_execution::{
     set_null, sha256_file_with_budget, sync_directory,
 };
 use crate::{
-    BackgroundStyle, CancellationToken, CanonicalEditPlan, ExactDuration, ExportProfileSpec,
-    FilesystemStudioOriginalStore, FrameRate, LayoutPreset, MAX_STUDIO_EDIT_EXECUTION_BATCH,
-    MAX_STUDIO_EDIT_EXECUTION_WINDOWS, NativeExecutionError, NativeStudioExportProfile,
-    NativeStudioPreviewFrame, RenderPhase, Sha256Digest, StudioAsset, StudioAssetId,
-    StudioColorSpace, StudioEditExecutionError, StudioEditExecutionWindow, StudioEditExecutor,
-    StudioPreviewGraphSpec, TrackKind, decode_studio_preview_frame,
+    BackgroundStyle, CancellationToken, CanonicalEditPlan, EncoderBackend, ExactDuration,
+    ExportProfileSpec, FilesystemStudioOriginalStore, FrameRate, LayoutPreset,
+    MAX_STUDIO_EDIT_EXECUTION_BATCH, MAX_STUDIO_EDIT_EXECUTION_WINDOWS, NativeExecutionError,
+    NativeStudioExportProfile, NativeStudioPreviewFrame, RenderPhase, Sha256Digest, StudioAsset,
+    StudioAssetId, StudioColorSpace, StudioEditExecutionError, StudioEditExecutionWindow,
+    StudioEditExecutor, StudioPreviewGraphSpec, TrackKind, decode_studio_preview_frame,
     pipeline_has_only_declared_authored_factories, pipeline_has_trusted_factory_provenance,
     prepare_runtime,
 };
@@ -738,6 +738,7 @@ pub fn render_studio_export_with_edits_and_progress(
         &canonical,
         StudioEditOutput::Path(reservation.staging_path()),
         profile,
+        EncoderBackend::Software,
     )?;
     let result = execute_windows(
         &pipeline,
@@ -801,11 +802,42 @@ pub fn render_studio_export_with_edits_preopened(
 /// path-based adapter and never receives media bytes.
 #[cfg(unix)]
 pub fn render_studio_export_with_edits_preopened_and_progress(
+    sources: NativeStudioAlignedFileSources,
+    artifact_path: &Path,
+    output: File,
+    plan: &CanonicalEditPlan,
+    profile: NativeStudioExportProfile,
+    cancellation: &CancellationToken,
+    progress: impl FnMut(NativeStudioRenderProgress),
+) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
+    render_studio_export_with_edits_preopened_for_backend_and_progress(
+        sources,
+        artifact_path,
+        output,
+        plan,
+        profile,
+        EncoderBackend::Software,
+        cancellation,
+        progress,
+    )
+}
+
+/// Render into a caller-owned regular file with an explicitly preflighted
+/// encoder backend.
+///
+/// Hardware is accepted only for the exact VideoToolbox profiles declared by
+/// [`native_studio_hardware_encoder_available`]. Callers remain responsible
+/// for deleting a failed hardware partial before retrying the identical graph
+/// in software.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+pub fn render_studio_export_with_edits_preopened_for_backend_and_progress(
     mut sources: NativeStudioAlignedFileSources,
     artifact_path: &Path,
     mut output: File,
     plan: &CanonicalEditPlan,
     profile: NativeStudioExportProfile,
+    backend: EncoderBackend,
     cancellation: &CancellationToken,
     progress: impl FnMut(NativeStudioRenderProgress),
 ) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
@@ -844,6 +876,7 @@ pub fn render_studio_export_with_edits_preopened_and_progress(
         &canonical,
         StudioEditOutput::FileDescriptor(descriptor),
         profile,
+        backend,
     )?;
     let result = execute_windows(
         &pipeline,
@@ -1630,63 +1663,131 @@ struct NativeStudioEncodingConfig {
     audio_marker: &'static [u8],
 }
 
-const fn studio_encoding_config(profile: NativeStudioExportProfile) -> NativeStudioEncodingConfig {
+const fn studio_encoding_config(
+    profile: NativeStudioExportProfile,
+    backend: EncoderBackend,
+) -> Result<NativeStudioEncodingConfig, NativeExecutionError> {
+    let config = match (profile, backend) {
+        (NativeStudioExportProfile::EditableWebM, EncoderBackend::Software) => {
+            NativeStudioEncodingConfig {
+                video_transform: "videoconvert",
+                video_encoder: "vp8enc name=edit_video_encoder deadline=1",
+                source_audio_transform: "audioconvert ! audioresample",
+                audio_transform: "audioconvert ! audioresample",
+                audio_encoder: "opusenc",
+                muxer: "webmmux streamable=false",
+                container_marker: b"webm",
+                video_marker: b"V_VP8",
+                audio_marker: b"A_OPUS",
+            }
+        }
+        (NativeStudioExportProfile::DistributionMasterMp4, EncoderBackend::Software) => {
+            NativeStudioEncodingConfig {
+                video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=1920,height=1080,framerate=30/1,colorimetry=2:3:5:1",
+                video_encoder: "x264enc name=edit_video_encoder bitrate=12000 tune=zerolatency key-int-max=60 byte-stream=false ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au",
+                source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_encoder: "avenc_aac bitrate=256000 ! aacparse",
+                muxer: "mp4mux faststart=true fragment-duration=2000 streamable=true",
+                container_marker: b"ftyp",
+                video_marker: b"avc1",
+                audio_marker: b"mp4a",
+            }
+        }
+        (NativeStudioExportProfile::DistributionMasterMp4, EncoderBackend::Hardware) => {
+            NativeStudioEncodingConfig {
+                video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=1920,height=1080,framerate=30/1,colorimetry=2:3:5:1",
+                video_encoder: "vtenc_h264_hw name=edit_video_encoder bitrate=12000 realtime=false allow-frame-reordering=true max-keyframe-interval=60 ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au",
+                source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_encoder: "avenc_aac bitrate=256000 ! aacparse",
+                muxer: "mp4mux faststart=true fragment-duration=2000 streamable=true",
+                container_marker: b"ftyp",
+                video_marker: b"avc1",
+                audio_marker: b"mp4a",
+            }
+        }
+        (NativeStudioExportProfile::NativeHighQualityWebM, EncoderBackend::Software) => {
+            NativeStudioEncodingConfig {
+                video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=2560,height=1440,framerate=60/1,colorimetry=1:3:5:1",
+                video_encoder: "vp8enc name=edit_video_encoder deadline=1 target-bitrate=24000000 keyframe-max-dist=120",
+                source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_encoder: "opusenc bitrate=320000",
+                muxer: "webmmux streamable=false",
+                container_marker: b"webm",
+                video_marker: b"V_VP8",
+                audio_marker: b"A_OPUS",
+            }
+        }
+        (NativeStudioExportProfile::NativeHighQualityHevcMp4, EncoderBackend::Software) => {
+            NativeStudioEncodingConfig {
+                video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=3840,height=2160,framerate=60/1,colorimetry=1:3:7:11",
+                video_encoder: "x265enc name=edit_video_encoder bitrate=60000 key-int-max=120 ! h265parse config-interval=-1 ! video/x-h265,stream-format=hvc1,alignment=au",
+                source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_encoder: "avenc_aac bitrate=320000 ! aacparse",
+                muxer: "mp4mux faststart=true fragment-duration=2000 streamable=true",
+                container_marker: b"ftyp",
+                video_marker: b"hvc1",
+                audio_marker: b"mp4a",
+            }
+        }
+        (NativeStudioExportProfile::NativeArchiveMatroska, EncoderBackend::Software) => {
+            NativeStudioEncodingConfig {
+                video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=3840,height=2160,framerate=60/1,colorimetry=1:3:5:1",
+                video_encoder: "avenc_ffv1 name=edit_video_encoder",
+                source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=S24_32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
+                audio_encoder: "flacenc",
+                muxer: "matroskamux streamable=false",
+                container_marker: b"matroska",
+                video_marker: b"V_FFV1",
+                audio_marker: b"A_FLAC",
+            }
+        }
+        (
+            NativeStudioExportProfile::EditableWebM
+            | NativeStudioExportProfile::NativeHighQualityWebM
+            | NativeStudioExportProfile::NativeHighQualityHevcMp4
+            | NativeStudioExportProfile::NativeArchiveMatroska,
+            EncoderBackend::Hardware,
+        ) => return Err(NativeExecutionError::InvalidGraph),
+    };
+    Ok(config)
+}
+
+/// Report whether the trusted macOS runtime exposes the hardware-only
+/// VideoToolbox encoder required by an approved Studio profile.
+#[must_use]
+pub fn native_studio_hardware_encoder_available(profile: NativeStudioExportProfile) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(factory_name) = hardware_encoder_factory(profile) else {
+            return false;
+        };
+        if prepare_runtime().is_err() {
+            return false;
+        }
+        gst::ElementFactory::find(factory_name)
+            .as_ref()
+            .is_some_and(crate::runtime::factory_has_trusted_provenance)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = profile;
+        false
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+const fn hardware_encoder_factory(profile: NativeStudioExportProfile) -> Option<&'static str> {
     match profile {
-        NativeStudioExportProfile::EditableWebM => NativeStudioEncodingConfig {
-            video_transform: "videoconvert",
-            video_encoder: "vp8enc name=edit_video_encoder deadline=1",
-            source_audio_transform: "audioconvert ! audioresample",
-            audio_transform: "audioconvert ! audioresample",
-            audio_encoder: "opusenc",
-            muxer: "webmmux streamable=false",
-            container_marker: b"webm",
-            video_marker: b"V_VP8",
-            audio_marker: b"A_OPUS",
-        },
-        NativeStudioExportProfile::DistributionMasterMp4 => NativeStudioEncodingConfig {
-            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=1920,height=1080,framerate=30/1,colorimetry=2:3:5:1",
-            video_encoder: "x264enc name=edit_video_encoder bitrate=12000 tune=zerolatency key-int-max=60 byte-stream=false ! h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au",
-            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_encoder: "avenc_aac bitrate=256000 ! aacparse",
-            muxer: "mp4mux faststart=true fragment-duration=2000 streamable=true",
-            container_marker: b"ftyp",
-            video_marker: b"avc1",
-            audio_marker: b"mp4a",
-        },
-        NativeStudioExportProfile::NativeHighQualityWebM => NativeStudioEncodingConfig {
-            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=2560,height=1440,framerate=60/1,colorimetry=1:3:5:1",
-            video_encoder: "vp8enc name=edit_video_encoder deadline=1 target-bitrate=24000000 keyframe-max-dist=120",
-            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_encoder: "opusenc bitrate=320000",
-            muxer: "webmmux streamable=false",
-            container_marker: b"webm",
-            video_marker: b"V_VP8",
-            audio_marker: b"A_OPUS",
-        },
-        NativeStudioExportProfile::NativeHighQualityHevcMp4 => NativeStudioEncodingConfig {
-            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=3840,height=2160,framerate=60/1,colorimetry=1:3:7:11",
-            video_encoder: "x265enc name=edit_video_encoder bitrate=60000 key-int-max=120 ! h265parse config-interval=-1 ! video/x-h265,stream-format=hvc1,alignment=au",
-            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_encoder: "avenc_aac bitrate=320000 ! aacparse",
-            muxer: "mp4mux faststart=true fragment-duration=2000 streamable=true",
-            container_marker: b"ftyp",
-            video_marker: b"hvc1",
-            audio_marker: b"mp4a",
-        },
-        NativeStudioExportProfile::NativeArchiveMatroska => NativeStudioEncodingConfig {
-            video_transform: "videoscale add-borders=true ! videorate ! videoconvert gamma-mode=remap primaries-mode=fast ! video/x-raw,format=I420,width=3840,height=2160,framerate=60/1,colorimetry=1:3:5:1",
-            video_encoder: "avenc_ffv1 name=edit_video_encoder",
-            source_audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_transform: "audioconvert ! audioresample ! audio/x-raw,format=S24_32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3",
-            audio_encoder: "flacenc",
-            muxer: "matroskamux streamable=false",
-            container_marker: b"matroska",
-            video_marker: b"V_FFV1",
-            audio_marker: b"A_FLAC",
-        },
+        NativeStudioExportProfile::DistributionMasterMp4 => Some("vtenc_h264_hw"),
+        NativeStudioExportProfile::EditableWebM
+        | NativeStudioExportProfile::NativeHighQualityWebM
+        | NativeStudioExportProfile::NativeHighQualityHevcMp4
+        | NativeStudioExportProfile::NativeArchiveMatroska => None,
     }
 }
 
@@ -1700,9 +1801,10 @@ fn build_edit_pipeline(
     sources: &CanonicalSources,
     output: StudioEditOutput<'_>,
     profile: NativeStudioExportProfile,
+    backend: EncoderBackend,
 ) -> Result<gst::Pipeline, NativeExecutionError> {
     prepare_runtime().map_err(|_| NativeExecutionError::MissingFactory)?;
-    let config = studio_encoding_config(profile);
+    let config = studio_encoding_config(profile, backend)?;
     let output_sink = match output {
         StudioEditOutput::Path(_) => "filesink name=edit_output sync=false async=false",
         #[cfg(unix)]
@@ -2195,7 +2297,7 @@ fn validate_edited_output(
             file.read_exact(&mut prefix)
         })
         .map_err(|_| NativeExecutionError::Filesystem)?;
-    let config = studio_encoding_config(profile);
+    let config = studio_encoding_config(profile, EncoderBackend::Software)?;
     let container_marker = config.container_marker;
     let playable_container_marker = prefix
         .windows(container_marker.len())
@@ -2453,6 +2555,40 @@ mod tests {
         record_synthetic_studio_tracks,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn hardware_encoding_is_limited_to_the_h264_distribution_profile() {
+        let distribution = studio_encoding_config(
+            NativeStudioExportProfile::DistributionMasterMp4,
+            EncoderBackend::Hardware,
+        )
+        .expect("approved hardware profile");
+        assert!(distribution.video_encoder.starts_with("vtenc_h264_hw "));
+        assert_eq!(
+            hardware_encoder_factory(NativeStudioExportProfile::DistributionMasterMp4),
+            Some("vtenc_h264_hw")
+        );
+        assert!(crate::runtime_manifest().factories.iter().any(|factory| {
+            factory.factory == "vtenc_h264_hw"
+                && factory.capability == crate::RuntimeCapability::HardwareH264
+                && factory.requirement == crate::FactoryRequirement::Optional
+                && factory.platform == crate::PlatformScope::MacOs
+        }));
+
+        for profile in [
+            NativeStudioExportProfile::EditableWebM,
+            NativeStudioExportProfile::NativeHighQualityWebM,
+            NativeStudioExportProfile::NativeHighQualityHevcMp4,
+            NativeStudioExportProfile::NativeArchiveMatroska,
+        ] {
+            assert!(matches!(
+                studio_encoding_config(profile, EncoderBackend::Hardware),
+                Err(NativeExecutionError::InvalidGraph)
+            ));
+            assert_eq!(hardware_encoder_factory(profile), None);
+            assert!(studio_encoding_config(profile, EncoderBackend::Software).is_ok());
+        }
+    }
 
     fn media_duration(path: &Path) -> gst::ClockTime {
         prepare_runtime().expect("trusted test runtime");

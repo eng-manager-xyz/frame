@@ -120,21 +120,28 @@ one-shot preview event crosses into the WebView; raw RGB bytes never persist in
 the runtime snapshot. The Leptos editor paints that frame into a canvas and
 announces the mapped source position plus microphone/system-audio decisions.
 
-The macOS export call now dispatches its software graph through
+The macOS export call now dispatches its graph through
 `StudioRenderCoordinator`. The render reservation is CAS-persisted before a
 bounded worker starts; payload-free polling carries monotonic progress, and
 terminal publication is accepted only after exact inode/hash/length probing and
 a durable receipt. Cancellation waits for the worker, conditionally deletes
 the exact private inode, proves absence, and persists `RenderCancelled`.
-Runtime tests cover monotonic completion, backend-confirmed cancellation, and
-quarantine when cleanup is unconfirmed. The adapter still does not assemble
-arbitrary asset-offset ranges and fails closed for camera, cursor, background,
-camera-only, and side-by-side composition. Hardware selection/identical-plan
-software fallback and native staging-identity reconstruction after process
-restart are also not connected. Therefore these paths cannot yet satisfy
-complete desktop Studio composition, complete decoded
-preview/export/reference goldens, long-project effects, or hardware-fallback
-acceptance criteria.
+Distribution master prefers the trusted hardware-only VideoToolbox H.264
+factory when present. A deterministic native integration test forces that
+hardware attempt to fail, proves exact partial cleanup, reopens and rehashes
+the originals, starts the identical graph in software under new
+operation/export and staging identities, and verifies a committed playable
+artifact with an empty staging directory. Runtime tests also cover monotonic
+completion, backend-confirmed cancellation, and quarantine when cleanup is
+unconfirmed.
+
+The adapter still does not assemble arbitrary asset-offset ranges and fails
+closed for camera, cursor, background, camera-only, and side-by-side
+composition. Native staging-identity reconstruction after process restart is
+also not connected. Therefore the remaining paths cannot yet satisfy complete
+desktop Studio composition, complete decoded preview/export/reference goldens,
+or long-project effects. Representative physical-hardware fallback remains
+protected evidence rather than a repository-local claim.
 
 Separately, `NativeStudioPreviewEngine` opens the complete immutable
 `StudioPreviewGraphSpec`, verifies every original against its durable sidecar
@@ -286,10 +293,11 @@ edit-save boundaries into a reminted ready-project handle, and archives only a
 proven-empty attempt without deleting media. The editor now initiates bounded
 trim/delete/split/speed/audio-gain drafts and persists them through the durable
 edit-save journal transaction. A clean aligned screen/audio project can now
-render and identity-publish a verified distribution master from the desktop.
-It does not yet composite the recorded camera/cursor/background tracks into
-native preview/export, run export asynchronously through the durable
-coordinator, or prove the remaining long-project goldens/fallback matrix, so
+asynchronously render and identity-publish a verified distribution master
+through the durable coordinator, including hardware-first H.264 with an
+identical-plan software fallback. It does not yet composite the recorded
+camera/cursor/background tracks into native preview/export or prove the
+remaining long-project goldens and representative physical-hardware matrix, so
 issue 27 remains open.
 
 Focused command:
@@ -302,6 +310,11 @@ GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
   cargo test --locked -p frame-desktop-core \
   --features tauri-app,macos-native --all-targets
 
+GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
+  scripts/ci/gstreamer-sanitized-exec cargo test --locked \
+  -p frame-desktop-core --features macos-native,custom-protocol \
+  production_coordinator_commits_and_cancels_exact_preopened_outputs
+
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
 FRAME_NATIVE_HEVC_AAC_APPROVED=approved-v1 \
 GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
@@ -310,8 +323,10 @@ GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
 ```
 
 These commands exercise the provider-neutral Studio contract, production
-isolated-track recorder, and synthetic native-execution helper. Their results
-must not be reused as evidence that the new macOS display source was exercised.
+isolated-track recorder, synthetic native-execution helper, and forced
+hardware-failure/native-software-retry coordinator path. Their results must not
+be reused as evidence that the macOS display source or a representative
+physical hardware-failure matrix was exercised.
 
 Full media command (using the audited plugin root discovered for this build):
 

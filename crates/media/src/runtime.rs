@@ -10,7 +10,7 @@ use gstreamer as gst;
 
 use crate::MediaError;
 
-pub const RUNTIME_MANIFEST_VERSION: u16 = 9;
+pub const RUNTIME_MANIFEST_VERSION: u16 = 10;
 pub const MEDIA_APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MINIMUM_GSTREAMER_VERSION: (u32, u32, u32) = (1, 22, 0);
 pub const MINIMUM_GSTREAMER_VERSION_TEXT: &str = "1.22.0";
@@ -64,6 +64,7 @@ pub enum RuntimeCapability {
     DecodeAnalysis,
     Mp4Muxing,
     QuickTimeMuxing,
+    HardwareH264,
     SoftwareH264,
     SoftwareH265,
     SoftwareFfv1,
@@ -92,6 +93,7 @@ impl fmt::Display for RuntimeCapability {
             Self::DecodeAnalysis => "decode_analysis",
             Self::Mp4Muxing => "mp4_muxing",
             Self::QuickTimeMuxing => "quicktime_muxing",
+            Self::HardwareH264 => "hardware_h264",
             Self::SoftwareH264 => "software_h264",
             Self::SoftwareH265 => "software_h265",
             Self::SoftwareFfv1 => "software_ffv1",
@@ -358,6 +360,12 @@ const FACTORIES: &[FactorySpec] = &[
         capability: RuntimeCapability::SoftwareH264,
         requirement: FactoryRequirement::Optional,
         platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "vtenc_h264_hw",
+        capability: RuntimeCapability::HardwareH264,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::MacOs,
     },
     FactorySpec {
         factory: "avenc_aac",
@@ -855,7 +863,7 @@ fn trusted_plugin_path_matches(value: &OsStr) -> bool {
         .is_ok_and(|configured| configured == Path::new(BUILD_GSTREAMER_PLUGIN_DIR))
 }
 
-fn factory_has_trusted_provenance(factory: &gst::ElementFactory) -> bool {
+pub(crate) fn factory_has_trusted_provenance(factory: &gst::ElementFactory) -> bool {
     let Some(filename) = factory.plugin().and_then(|plugin| plugin.filename()) else {
         return false;
     };

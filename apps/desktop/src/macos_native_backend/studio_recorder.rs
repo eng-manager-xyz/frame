@@ -6,6 +6,7 @@
 
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
 };
@@ -424,6 +425,15 @@ pub(super) fn random_export_id() -> Result<frame_media::StudioExportId, NativeDe
 
 pub(super) fn random_worker_id() -> Result<StudioWorkerId, NativeDesktopBackendError> {
     StudioWorkerId::from_csprng(random_identity()?).map_err(map_studio_error)
+}
+
+pub(super) fn random_storage_token() -> Result<String, NativeDesktopBackendError> {
+    let bytes = random_identity()?;
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut token, "{byte:02x}").map_err(|_| NativeDesktopBackendError::Internal)?;
+    }
+    Ok(token)
 }
 
 fn random_identity() -> Result<[u8; 16], NativeDesktopBackendError> {

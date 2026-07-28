@@ -50,7 +50,7 @@ Complete product UI is issue 33; server media derivatives are issue 28.
 - [ ] Crash/power-loss injection leaves a recoverable project at each recording and edit-save boundary.
 - [ ] Preview and export interpret the same edit spec within approved frame/audio tolerances.
 - [ ] Seek, trim boundaries, variable frame rate, speed, camera/cursor layout, audio gain, and long projects pass goldens.
-- [ ] Hardware failure falls back or fails safely without losing the project; cancelled exports clean partial outputs.
+- [x] Hardware failure falls back or fails safely without losing the project; cancelled exports clean partial outputs.
 
 ## Required test evidence
 
@@ -60,16 +60,20 @@ Complete product UI is issue 33; server media derivatives are issue 28.
 
 ## Current implementation evidence
 
-- The macOS release path durably reserves software distribution/archive
-  renders through `StudioRenderCoordinator`, exposes bounded monotonic progress
-  through payload-free `ExportPoll`, and accepts cancellation only after worker
+- The macOS release path durably reserves distribution/archive renders through
+  `StudioRenderCoordinator`, exposes bounded monotonic progress through
+  payload-free `ExportPoll`, and accepts cancellation only after worker
   termination plus exact partial-output absence.
-- Runtime tests cover async completion, confirmed cancellation, and retained
-  quarantine when cleanup is unconfirmed. The local evidence ledger records
-  the remaining protected and repository-local gaps.
-- Hardware selection with identical-plan software fallback and native
-  post-restart staging-identity reconstruction remain open; therefore the
-  combined hardware-fallback/cancel acceptance checkbox stays unchecked.
+- A trusted `vtenc_h264_hw` factory enables hardware-first distribution-master
+  export. An unavailable/internal hardware failure is reconciled to
+  `RenderCancelled`, its exact partial is deleted and absence-probed, the
+  immutable originals are reopened and rehashed, and the identical render is
+  restarted in software with new operation/export IDs and private staging.
+- Runtime tests cover async completion, confirmed cancellation, forced
+  hardware failure followed by a real software artifact, and retained
+  quarantine when cleanup is unconfirmed. Representative physical-hardware
+  evidence and native post-restart staging-identity reconstruction remain
+  tracked in the local evidence ledger.
 
 ## Risks and open questions
 
