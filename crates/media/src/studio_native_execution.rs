@@ -3077,10 +3077,10 @@ mod tests {
             (preview.frame.width, preview.frame.height),
             (decoded.width, decoded.height)
         );
-        let (mean_error, peak_error) = rgb_error(&preview.frame.rgb, &decoded.rgb);
+        let (mean_error, p99_error) = rgb_error(&preview.frame.rgb, &decoded.rgb);
         assert!(
-            mean_error <= 8 && peak_error <= 64,
-            "decoded preview/export frame drift exceeded the golden tolerance: mean={mean_error}, peak={peak_error}"
+            mean_error <= 8 && p99_error <= 48,
+            "decoded preview/export frame drift exceeded the golden tolerance: mean={mean_error}, p99={p99_error}"
         );
 
         let cancelled_output = directory.path().join("cancelled-after-progress.webm");
@@ -3115,15 +3115,44 @@ mod tests {
 
     fn rgb_error(expected: &[u8], actual: &[u8]) -> (u64, u8) {
         assert_eq!(expected.len(), actual.len(), "RGB frame shape");
+        assert!(!expected.is_empty(), "RGB frame must be nonempty");
         let mut total = 0_u64;
-        let mut peak = 0_u8;
+        let mut histogram = [0_u64; 256];
         for (&expected, &actual) in expected.iter().zip(actual) {
             let error = expected.abs_diff(actual);
             total = total.saturating_add(u64::from(error));
-            peak = peak.max(error);
+            histogram[usize::from(error)] = histogram[usize::from(error)].saturating_add(1);
         }
-        let mean = total / u64::try_from(expected.len()).expect("bounded frame length");
-        (mean, peak)
+        let length = u64::try_from(expected.len()).expect("bounded frame length");
+        let mean = total / length;
+        let percentile_rank = length
+            .checked_mul(99)
+            .expect("bounded frame percentile")
+            .div_ceil(100);
+        let mut cumulative = 0_u64;
+        let p99 = histogram
+            .iter()
+            .position(|count| {
+                cumulative = cumulative.saturating_add(*count);
+                cumulative >= percentile_rank
+            })
+            .and_then(|error| u8::try_from(error).ok())
+            .expect("nonempty RGB frame");
+        (mean, p99)
+    }
+
+    #[test]
+    fn rgb_golden_ignores_one_lossy_outlier_but_rejects_widespread_drift() {
+        let expected = vec![0_u8; 1_000];
+        let mut isolated = expected.clone();
+        isolated[500] = u8::MAX;
+        assert_eq!(rgb_error(&expected, &isolated), (0, 0));
+
+        let mut widespread = expected.clone();
+        widespread[..20].fill(u8::MAX);
+        let (mean, p99) = rgb_error(&expected, &widespread);
+        assert!(mean > 0);
+        assert_eq!(p99, u8::MAX);
     }
 
     #[test]
