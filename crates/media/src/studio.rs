@@ -991,6 +991,14 @@ pub enum JournalBoundary {
 }
 
 impl JournalBoundary {
+    /// Stable canonical tag used by durable, domain-separated lifecycle
+    /// digests outside this module. Debug formatting is intentionally not a
+    /// persistence format.
+    #[must_use]
+    pub const fn canonical_tag(self) -> u8 {
+        self.tag()
+    }
+
     const fn tag(self) -> u8 {
         match self {
             Self::Created => 1,
@@ -5829,6 +5837,26 @@ impl FilesystemStudioProjectStore {
         }
         let bytes = StudioDocumentCodec::encode_project(project)?;
         atomic_replace_file(&path, &bytes, project.revision)
+    }
+
+    /// Return the canonical path only after the durable document has been
+    /// decoded, identity-checked, and validated. Native adapters use this to
+    /// bind a project handle without reconstructing the store's filename
+    /// convention or exposing a path before the manifest is trustworthy.
+    pub fn verified_project_path(
+        &mut self,
+        project_id: StudioProjectId,
+    ) -> Result<PathBuf, StudioError> {
+        let project = self
+            .read_project(project_id)?
+            .ok_or(StudioError::EditSaveMismatch)?;
+        project.validate()?;
+        let path = self.project_path(project_id);
+        let metadata = fs::symlink_metadata(&path).map_err(|_| StudioError::StorageIo)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(StudioError::UnsafeStoragePath);
+        }
+        fs::canonicalize(path).map_err(|_| StudioError::StorageIo)
     }
 
     fn project_path(&self, project_id: StudioProjectId) -> PathBuf {

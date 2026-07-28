@@ -751,7 +751,9 @@ fn validate_extension(path: &Path, usage: PathUse) -> Result<(), IpcError> {
         .map(str::to_ascii_lowercase)
         .ok_or(IpcError::UnsupportedPathType)?;
     let allowed: &[&str] = match usage {
-        PathUse::ProjectRead | PathUse::ProjectDelete => &["cap", "frame", "json"],
+        PathUse::ProjectRead | PathUse::ProjectDelete => {
+            &["cap", "frame", "json", "studio-project"]
+        }
         PathUse::MediaRead => &["mp4", "mov", "webm", "mkv", "wav", "m4a", "aac"],
         PathUse::ExportWrite => &["mp4", "mov", "webm", "mkv"],
     };
@@ -1391,6 +1393,14 @@ mod tests {
             .expect("path");
         assert!(accepted.requires_no_follow());
         assert!(!format!("{accepted:?}").contains("demo.frame"));
+        let studio = policy
+            .validate(
+                &absolute_test_path(&["safe", "projects", "recording.studio-project"]),
+                PathUse::ProjectRead,
+            )
+            .expect("canonical Studio project path");
+        assert!(studio.requires_no_follow());
+        assert!(!format!("{studio:?}").contains("recording.studio-project"));
     }
 
     #[test]

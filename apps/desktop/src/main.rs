@@ -379,7 +379,11 @@ fn main() {
             #[cfg(all(target_os = "macos", feature = "macos-native"))]
             let (adapter, native_backend) = if requested_adapter == DesktopAdapterKind::NativeMacOs
             {
-                match MacOsNativeDesktopBackend::new(data.join("media"), exports) {
+                match MacOsNativeDesktopBackend::new(
+                    data.join("projects"),
+                    data.join("media"),
+                    exports,
+                ) {
                     Ok(backend) => (DesktopAdapterKind::NativeMacOs, Some(Mutex::new(backend))),
                     Err(error) => {
                         eprintln!("Frame native capture adapter is unavailable: {error}");

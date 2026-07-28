@@ -2043,6 +2043,15 @@ fn filesystem_original_and_project_stores_commit_atomically_and_preserve_origina
     projects
         .create_project(&current)
         .expect("create canonical project");
+    let verified_path = projects
+        .verified_project_path(current.id)
+        .expect("verified canonical project path");
+    assert!(verified_path.is_file());
+    assert_eq!(
+        StudioDocumentCodec::decode_project(&fs::read(verified_path).expect("project bytes"))
+            .expect("canonical project document"),
+        current
+    );
     let mut next_edits = current.edits.clone();
     next_edits.revision = current.revision + 1;
     let saved = commit_edit_save(

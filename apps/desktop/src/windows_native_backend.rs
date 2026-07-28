@@ -327,6 +327,7 @@ impl WindowsNativeDesktopBackend {
             bytes_written: artifact.bytes,
             media_path: path_text(&artifact.path)?,
             editable_webm_output_path: Some(path_text(&export)?),
+            studio_project_path: None,
         };
         self.artifact = Some(StoredArtifact {
             token,
