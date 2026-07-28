@@ -1584,15 +1584,15 @@ pub fn decode_studio_preview_frame(
         .property("max-buffers", 1_u32)
         .property("drop", true)
         .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?
+        .downcast::<gst_app::AppSink>()
         .map_err(|_| NativeExecutionError::MissingFactory)?;
-    video_sink.set_property(
-        "caps",
-        gst::Caps::builder("video/x-raw")
-            .field("format", "RGB")
-            .field("width", 320_i32)
-            .field("height", 180_i32)
-            .build(),
-    );
+    let preview_caps = gst::Caps::builder("video/x-raw")
+        .field("format", "RGB")
+        .field("width", 320_i32)
+        .field("height", 180_i32)
+        .build();
+    video_sink.set_caps(Some(&preview_caps));
     let audio_sink = gst::ElementFactory::make("fakesink")
         .property("sync", false)
         .build()
@@ -1619,8 +1619,15 @@ pub fn decode_studio_preview_frame(
         let _ = pipeline.set_state(gst::State::Null);
         return Err(NativeExecutionError::UntrustedFactory);
     }
-    if !position.is_zero()
-        && player
+    let sample = if position.is_zero() {
+        video_sink.try_pull_preroll(gst::ClockTime::from_seconds(15))
+    } else {
+        // Consume the initial paused preroll before the flushing seek so the
+        // returned sample is bound to the requested position on every
+        // GStreamer implementation. A one-frame preview remains Paused and
+        // consumes the replacement preroll instead of racing Playing/EOS.
+        let _ = video_sink.try_pull_preroll(gst::ClockTime::ZERO);
+        if player
             .seek_simple(
                 gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
                 gst::ClockTime::from_nseconds(
@@ -1629,17 +1636,21 @@ pub fn decode_studio_preview_frame(
                 ),
             )
             .is_err()
-    {
-        let _ = pipeline.set_state(gst::State::Null);
-        return Err(NativeExecutionError::InvalidOutput);
-    }
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|_| NativeExecutionError::Pipeline)?;
-    let sample = video_sink.emit_by_name::<Option<gst::Sample>>(
-        "try-pull-sample",
-        &[&gst::ClockTime::from_seconds(15)],
-    );
+        {
+            let _ = pipeline.set_state(gst::State::Null);
+            return Err(NativeExecutionError::InvalidOutput);
+        }
+        // A flushing seek while Paused starts a second asynchronous preroll.
+        // Wait for that state transition to settle before reading AppSink:
+        // older GStreamer releases can otherwise return the cached pre-seek
+        // preroll nondeterministically under runner load.
+        let (transition, current, _) = pipeline.state(STUDIO_PREVIEW_STATE_TIMEOUT);
+        if transition.is_err() || current != gst::State::Paused {
+            let _ = pipeline.set_state(gst::State::Null);
+            return Err(NativeExecutionError::Pipeline);
+        }
+        video_sink.try_pull_preroll(gst::ClockTime::from_seconds(15))
+    };
     let result = (|| {
         if cancellation.is_cancelled() {
             return Err(NativeExecutionError::Cancelled);
@@ -1662,7 +1673,10 @@ pub fn decode_studio_preview_frame(
         )
         .map_err(|_| NativeExecutionError::InvalidOutput)?;
         let buffer = sample.buffer().ok_or(NativeExecutionError::InvalidOutput)?;
-        let pts_ns = buffer.pts().map_or(0, gst::ClockTime::nseconds);
+        let pts_ns = buffer
+            .pts()
+            .ok_or(NativeExecutionError::InvalidOutput)?
+            .nseconds();
         let map = buffer
             .map_readable()
             .map_err(|_| NativeExecutionError::InvalidOutput)?;

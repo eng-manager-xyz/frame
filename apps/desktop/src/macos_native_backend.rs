@@ -2336,16 +2336,16 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             .map_err(studio_export::map_native_error)?;
         let output_duration_ms = exact_duration_millis_ceil(preview.snapshot().output_duration)?;
         let source_position_ms = exact_duration_millis(sample.source_time)?;
-        let screen = sample.screen.frame;
+        let composited = sample.composited;
         Ok(NativeStudioPreviewOutcome {
             editor_revision: request.editor_revision,
             project_revision: manifest.revision,
             position_ms: request.position_ms,
             source_position_ms,
             output_duration_ms,
-            width: screen.width,
-            height: screen.height,
-            rgb: screen.rgb,
+            width: composited.width,
+            height: composited.height,
+            rgb: composited.rgb,
             plan_sha256: sample.plan_digest.to_hex(),
             source_set_sha256: sample.source_set_digest.to_hex(),
             microphone: NativeStudioPreviewAudioState {

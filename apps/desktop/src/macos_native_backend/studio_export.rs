@@ -63,6 +63,8 @@ impl PreparedStudioExport {
         let mut store =
             FilesystemStudioOriginalStore::new(studio_root).map_err(map_studio_error)?;
         let mut screen = None;
+        let mut camera = None;
+        let mut cursor = None;
         let mut microphone = None;
         let mut system_audio = None;
         let mut originals = Vec::with_capacity(manifest.assets.len());
@@ -93,11 +95,10 @@ impl PreparedStudioExport {
                 .map_err(|_| NativeDesktopBackendError::Filesystem)?;
             let slot = match asset.track {
                 TrackKind::Screen => &mut screen,
+                TrackKind::Camera => &mut camera,
+                TrackKind::Cursor => &mut cursor,
                 TrackKind::Microphone => &mut microphone,
                 TrackKind::SystemAudio => &mut system_audio,
-                TrackKind::Camera => {
-                    return Err(NativeDesktopBackendError::InvalidEdit);
-                }
             };
             if slot.replace(source).is_some() {
                 return Err(NativeDesktopBackendError::InvalidEdit);
@@ -113,6 +114,8 @@ impl PreparedStudioExport {
             project_revision: manifest.revision,
             sources: NativeStudioAlignedFileSources {
                 screen: screen.ok_or(NativeDesktopBackendError::InvalidEdit)?,
+                camera,
+                cursor,
                 microphone,
                 system_audio,
             },
@@ -180,7 +183,10 @@ fn native_profile(profile: ExportProfile) -> NativeStudioExportProfile {
 }
 
 fn source_count(sources: &NativeStudioAlignedFileSources) -> usize {
-    1 + usize::from(sources.microphone.is_some()) + usize::from(sources.system_audio.is_some())
+    1 + usize::from(sources.camera.is_some())
+        + usize::from(sources.cursor.is_some())
+        + usize::from(sources.microphone.is_some())
+        + usize::from(sources.system_audio.is_some())
 }
 
 fn map_studio_error(error: frame_media::StudioError) -> NativeDesktopBackendError {
@@ -346,7 +352,9 @@ mod tests {
                 }),
                 time_base: TimeBase::new(48_000).expect("audio time base"),
             },
-            TrackKind::Camera | TrackKind::Microphone => unreachable!("fixture track"),
+            TrackKind::Camera | TrackKind::Microphone | TrackKind::Cursor => {
+                unreachable!("fixture track")
+            }
         };
         let temporary = StudioAsset {
             version: STUDIO_ASSET_VERSION,

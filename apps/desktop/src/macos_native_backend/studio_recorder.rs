@@ -538,6 +538,7 @@ fn branch(
         TrackKind::Camera => CaptureElementFamily::NativeCameraBridge,
         TrackKind::Microphone => CaptureElementFamily::NativeMicrophoneBridge,
         TrackKind::SystemAudio => CaptureElementFamily::NativeSystemAudioBridge,
+        TrackKind::Cursor => CaptureElementFamily::NativeCursorMetadataBridge,
     };
     Ok(IsolatedTrackBranch {
         track,

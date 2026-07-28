@@ -60,6 +60,10 @@ fn recording_encoding(track: TrackKind) -> StudioAssetEncoding {
             })
             .expect("Opus/WebM recording encoding")
         }
+        TrackKind::Cursor => StudioAssetEncoding::CursorTimelineV1 {
+            frame_width: 1_280,
+            frame_height: 720,
+        },
     }
 }
 
@@ -324,6 +328,7 @@ fn legacy_v1_asset_payload(marker: u8, track: TrackKind) -> Vec<u8> {
         TrackKind::Camera => 2,
         TrackKind::Microphone => 3,
         TrackKind::SystemAudio => 4,
+        TrackKind::Cursor => 5,
     });
     payload.extend_from_slice(
         &u16::try_from(source_name.len())
@@ -403,6 +408,43 @@ fn v1_assets_migrate_to_an_explicit_unprobed_encoding() {
         .expect("persist a probed replacement descriptor");
     assert!(!resolved.requires_encoding_probe());
     assert_eq!(resolved.checksum, project.assets[0].checksum);
+}
+
+#[test]
+fn v2_encoded_assets_upgrade_without_reinterpreting_cursor_schema() {
+    let original = asset(21, TrackKind::Screen);
+    let current = StudioDocumentCodec::encode_asset(&original).expect("current asset document");
+    let payload_len = usize::try_from(u32::from_be_bytes(
+        current[7..11].try_into().expect("payload length"),
+    ))
+    .expect("bounded payload length");
+    let mut v2_payload = current[11..11 + payload_len].to_vec();
+    v2_payload[..2].copy_from_slice(&2_u16.to_be_bytes());
+    let upgraded =
+        StudioDocumentCodec::decode_asset(&legacy_document(4, 2, &v2_payload)).expect("v2 asset");
+    assert_eq!(upgraded, original);
+    assert_eq!(upgraded.version, STUDIO_ASSET_VERSION);
+
+    let cursor = asset(22, TrackKind::Cursor);
+    assert_eq!(
+        StudioDocumentCodec::decode_asset(
+            &StudioDocumentCodec::encode_asset(&cursor).expect("cursor asset")
+        )
+        .expect("cursor round trip"),
+        cursor
+    );
+    let current_cursor =
+        StudioDocumentCodec::encode_asset(&cursor).expect("current cursor document");
+    let cursor_payload_len = usize::try_from(u32::from_be_bytes(
+        current_cursor[7..11].try_into().expect("payload length"),
+    ))
+    .expect("bounded payload length");
+    let mut forged_v2_cursor = current_cursor[11..11 + cursor_payload_len].to_vec();
+    forged_v2_cursor[..2].copy_from_slice(&2_u16.to_be_bytes());
+    assert_eq!(
+        StudioDocumentCodec::decode_asset(&legacy_document(4, 2, &forged_v2_cursor)),
+        Err(StudioError::MalformedDocument)
+    );
 }
 
 #[test]
@@ -730,18 +772,29 @@ fn branch(marker: u8, track: TrackKind) -> IsolatedTrackBranch {
     IsolatedTrackBranch {
         track,
         asset_id: asset_id(marker),
-        temporary_name: StudioSourceName::new(format!("temp-{marker}.webm")).expect("temp"),
+        temporary_name: StudioSourceName::new(if track == TrackKind::Cursor {
+            format!("temp-{marker}.frame-cursor")
+        } else {
+            format!("temp-{marker}.webm")
+        })
+        .expect("temp"),
         source: match track {
             TrackKind::Screen => CaptureElementFamily::NativeScreenBridge,
             TrackKind::Camera => CaptureElementFamily::NativeCameraBridge,
             TrackKind::Microphone => CaptureElementFamily::NativeMicrophoneBridge,
             TrackKind::SystemAudio => CaptureElementFamily::NativeSystemAudioBridge,
+            TrackKind::Cursor => CaptureElementFamily::NativeCursorMetadataBridge,
         },
         encoder: match track {
             TrackKind::Screen | TrackKind::Camera => CaptureElementFamily::Vp8Encoder,
             TrackKind::Microphone | TrackKind::SystemAudio => CaptureElementFamily::OpusEncoder,
+            TrackKind::Cursor => CaptureElementFamily::CursorTimelineEncoder,
         },
-        muxer: CaptureElementFamily::WebMMux,
+        muxer: if track == TrackKind::Cursor {
+            CaptureElementFamily::CursorTimelineMux
+        } else {
+            CaptureElementFamily::WebMMux
+        },
         encoding: recording_encoding(track),
         queue: BoundedMediaQueue {
             max_buffers: 64,
@@ -758,6 +811,7 @@ fn recording_graph_requires_screen_and_accepts_each_optional_track() {
         branch(2, TrackKind::Camera),
         branch(3, TrackKind::Microphone),
         branch(4, TrackKind::SystemAudio),
+        branch(5, TrackKind::Cursor),
     ];
     StudioRecordingGraphSpec::new(project_id(1), operation_id(2), branches.clone())
         .expect("isolated graph");
@@ -766,6 +820,7 @@ fn recording_graph_requires_screen_and_accepts_each_optional_track() {
         Some(TrackKind::Camera),
         Some(TrackKind::Microphone),
         Some(TrackKind::SystemAudio),
+        Some(TrackKind::Cursor),
     ] {
         let mut enabled = vec![branch(10, TrackKind::Screen)];
         if let Some(track) = optional {

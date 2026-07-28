@@ -92,8 +92,12 @@ approved H.264/AAC distribution MP4 profile. Export reauthenticates every
 original sidecar, opens and hashes each original through the pinned Studio
 directory, and retains those exact descriptors while the seekable decoder reads
 them through `/dev/fd`. It renders to a preopened private staging inode, then
-publishes and rehashes that inode through the pinned export directory. Camera/
-cursor/background composition and segmented-source assembly remain fail-closed.
+publishes and rehashes that inode through the pinned export directory. Native
+camera layouts, cursor masks, and cursor metadata are baked into each aligned
+BGRA buffer from its output timestamp; the first video buffer is anchored to
+the exact edit-window boundary, and per-window audio gain is installed behind
+the decoder segment-start barrier. Queued media therefore cannot observe a
+later edit window. Multi-asset segmented-source assembly remains fail-closed.
 Distribution and archive export dispatch through the durable
 `StudioRenderCoordinator`: a bounded worker publishes phase/basis-point
 progress through the payload-free `ExportPoll` command, and cancellation does

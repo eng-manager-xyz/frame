@@ -2,11 +2,10 @@
 //!
 //! This is deliberately the smallest production slice that can execute rather
 //! than merely describe an edit. It supports one required aligned screen
-//! original plus independently optional aligned microphone and system-audio
-//! originals. Temporal edits, rational speed, audio coverage gaps, gain, and
-//! mute are applied from the shared executor. Camera composition, transformed
-//! cursor metadata, nontransparent backgrounds, and camera-only/side-by-side
-//! layouts fail closed until their native compositor is connected.
+//! original plus independently optional aligned camera, cursor, microphone,
+//! and system-audio originals. Temporal edits, rational speed, audio coverage
+//! gaps, gain, mute, camera layouts, and cursor transforms are applied from the
+//! shared executor. Multi-asset segmented-source assembly remains fail closed.
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -19,7 +18,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
-        mpsc::{Receiver, sync_channel},
+        mpsc::{Receiver, RecvTimeoutError, sync_channel},
     },
     time::{Duration, Instant},
 };
@@ -34,23 +33,26 @@ use crate::native_execution::{
     set_null, sha256_file_with_budget, sync_directory,
 };
 use crate::{
-    BackgroundStyle, CancellationToken, CanonicalEditPlan, EncoderBackend, ExactDuration,
+    CancellationToken, CanonicalEditPlan, CursorStyle, EncoderBackend, ExactDuration,
     ExportProfileSpec, FilesystemStudioOriginalStore, FrameRate, LayoutPreset,
-    MAX_STUDIO_EDIT_EXECUTION_BATCH, MAX_STUDIO_EDIT_EXECUTION_WINDOWS, NativeExecutionError,
-    NativeStudioExportProfile, NativeStudioPreviewFrame, RenderPhase, Sha256Digest, StudioAsset,
-    StudioAssetId, StudioColorSpace, StudioEditExecutionError, StudioEditExecutionWindow,
-    StudioEditExecutor, StudioPreviewGraphSpec, TrackKind, decode_studio_preview_frame,
+    MAX_STUDIO_CURSOR_TIMELINE_BYTES, MAX_STUDIO_EDIT_EXECUTION_BATCH,
+    MAX_STUDIO_EDIT_EXECUTION_WINDOWS, MAX_STUDIO_QUEUE_BYTES, NativeExecutionError,
+    NativeStudioExportProfile, NativeStudioPreviewFrame, PixelFormat, RenderPhase, Sha256Digest,
+    StudioAsset, StudioAssetEncoding, StudioAssetId, StudioColorSpace, StudioCursorTimeline,
+    StudioEditExecutionError, StudioEditExecutionWindow, StudioEditExecutor,
+    StudioPreviewGraphSpec, TrackKind, compose_studio_frame, decode_studio_preview_frame,
     pipeline_has_only_declared_authored_factories, pipeline_has_trusted_factory_provenance,
     prepare_runtime,
 };
 
 const EDIT_EXECUTION_DEADLINE: Duration = Duration::from_secs(120);
-const EDIT_STATE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(10);
+const EDIT_STATE_TIMEOUT_DURATION: Duration = Duration::from_secs(30);
+const EDIT_STATE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(30);
 const EDIT_BUS_POLL: gst::ClockTime = gst::ClockTime::from_mseconds(25);
 const MAX_EDIT_BUS_MESSAGES: usize = 100_000;
 const MAX_EDIT_OUTPUT_PROBE_BYTES: u64 = 4 * 1024 * 1024;
 const OUTPUT_RESERVATION_ATTEMPTS: usize = 8;
-const MAX_STUDIO_ALIGNED_SOURCES: usize = 3;
+const MAX_STUDIO_ALIGNED_SOURCES: usize = 4;
 const MAX_STUDIO_SEGMENT_BARRIER_BRANCHES: usize = MAX_STUDIO_ALIGNED_SOURCES;
 const SEGMENT_COMPLETION_CHANNEL_CAPACITY: usize = MAX_STUDIO_SEGMENT_BARRIER_BRANCHES * 2;
 const MAX_STUDIO_VIDEO_CLOSE_HOLD_NS: u64 = 1_000_000_000;
@@ -61,6 +63,8 @@ const MAX_STUDIO_VIDEO_CLOSE_HOLD_NS: u64 = 1_000_000_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeStudioAlignedSources {
     pub screen: PathBuf,
+    pub camera: Option<PathBuf>,
+    pub cursor: Option<PathBuf>,
     pub microphone: Option<PathBuf>,
     pub system_audio: Option<PathBuf>,
 }
@@ -75,6 +79,8 @@ pub struct NativeStudioAlignedSources {
 #[cfg(unix)]
 pub struct NativeStudioAlignedFileSources {
     pub screen: File,
+    pub camera: Option<File>,
+    pub cursor: Option<File>,
     pub microphone: Option<File>,
     pub system_audio: Option<File>,
 }
@@ -85,6 +91,8 @@ impl fmt::Debug for NativeStudioAlignedFileSources {
         formatter
             .debug_struct("NativeStudioAlignedFileSources")
             .field("screen", &"<descriptor>")
+            .field("camera", &self.camera.as_ref().map(|_| "<descriptor>"))
+            .field("cursor", &self.cursor.as_ref().map(|_| "<descriptor>"))
             .field(
                 "microphone",
                 &self.microphone.as_ref().map(|_| "<descriptor>"),
@@ -195,6 +203,7 @@ pub struct NativeStudioPreviewSample {
     pub source_time: ExactDuration,
     pub screen: NativeStudioPreviewVideoComponent,
     pub camera: Option<NativeStudioPreviewVideoComponent>,
+    pub composited: NativeStudioPreviewFrame,
     pub microphone: NativeStudioPreviewAudioDecision,
     pub system_audio: NativeStudioPreviewAudioDecision,
     pub execution: StudioEditExecutionWindow,
@@ -212,6 +221,7 @@ impl fmt::Debug for NativeStudioPreviewSample {
             .field("source_time", &self.source_time)
             .field("screen", &self.screen)
             .field("camera", &self.camera)
+            .field("composited", &"<bounded RGB frame>")
             .field("microphone", &self.microphone)
             .field("system_audio", &self.system_audio)
             .field("execution", &self.execution)
@@ -238,6 +248,7 @@ struct NativeStudioPreviewAssetBinding {
     asset: StudioAsset,
     path: PathBuf,
     identity: Handle,
+    cursor_timeline: Option<StudioCursorTimeline>,
 }
 
 /// Stateful, bounded native preview owner for one immutable Studio source set.
@@ -316,10 +327,34 @@ impl NativeStudioPreviewEngine {
             {
                 return Err(NativeExecutionError::InvalidGraph);
             }
+            let cursor_timeline = if let StudioAssetEncoding::CursorTimelineV1 {
+                frame_width,
+                frame_height,
+            } = asset.encoding
+            {
+                let maximum = u64::try_from(MAX_STUDIO_CURSOR_TIMELINE_BYTES)
+                    .map_err(|_| NativeExecutionError::ResourceLimit)?;
+                if asset.track != TrackKind::Cursor || asset.byte_len > maximum {
+                    return Err(NativeExecutionError::InvalidGraph);
+                }
+                let bytes = fs::read(&path).map_err(|_| NativeExecutionError::Filesystem)?;
+                let timeline = StudioCursorTimeline::decode(&bytes)
+                    .map_err(|_| NativeExecutionError::InvalidOutput)?;
+                if timeline.frame_dimensions() != (frame_width, frame_height) {
+                    return Err(NativeExecutionError::InvalidOutput);
+                }
+                Some(timeline)
+            } else {
+                if asset.track == TrackKind::Cursor {
+                    return Err(NativeExecutionError::InvalidGraph);
+                }
+                None
+            };
             assets.push(NativeStudioPreviewAssetBinding {
                 asset: asset.clone(),
                 path,
                 identity,
+                cursor_timeline,
             });
         }
         let mapped_vfr_points = graph
@@ -471,11 +506,30 @@ impl NativeStudioPreviewEngine {
             execution.system_audio.style.gain_millibels,
             execution.system_audio.style.muted,
         )?;
+        let cursor = self.cursor_at(source_time)?;
+        let source_time_ns = u64::try_from(
+            exact_duration_to_std(
+                cursor
+                    .as_ref()
+                    .map_or(source_time, |(_, position)| *position),
+            )?
+            .as_nanos(),
+        )
+        .map_err(|_| NativeExecutionError::ResourceLimit)?;
+        let composited = compose_studio_frame(
+            &screen.frame,
+            camera.as_ref().map(|component| &component.frame),
+            cursor.map(|(timeline, _)| timeline),
+            source_time_ns,
+            execution.style,
+        )
+        .map_err(|_| NativeExecutionError::InvalidGraph)?;
         Ok(NativeStudioPreviewSample {
             output_time,
             source_time,
             screen,
             camera,
+            composited,
             microphone,
             system_audio,
             execution,
@@ -531,6 +585,26 @@ impl NativeStudioPreviewEngine {
             gain_millibels,
             muted,
         })
+    }
+
+    fn cursor_at(
+        &self,
+        source_time: ExactDuration,
+    ) -> Result<Option<(&StudioCursorTimeline, ExactDuration)>, NativeExecutionError> {
+        let has_cursor = self
+            .assets
+            .iter()
+            .any(|binding| binding.asset.track == TrackKind::Cursor);
+        if !has_cursor {
+            return Ok(None);
+        }
+        let (binding, position) = self.binding_at(TrackKind::Cursor, source_time)?;
+        binding.verify_identity()?;
+        let timeline = binding
+            .cursor_timeline
+            .as_ref()
+            .ok_or(NativeExecutionError::InvalidGraph)?;
+        Ok(Some((timeline, position)))
     }
 
     fn binding_at(
@@ -854,6 +928,7 @@ pub fn render_studio_export_with_edits_preopened_for_backend_and_progress(
             .map_err(map_execution_error)?;
     validate_supported_composition_presence(
         executor.windows(),
+        sources.camera.is_some(),
         sources.microphone.is_some(),
         sources.system_audio.is_some(),
     )?;
@@ -1155,6 +1230,8 @@ fn reject_existing_output(path: &Path) -> Result<(), NativeExecutionError> {
 #[derive(Debug)]
 struct CanonicalSources {
     screen: PathBuf,
+    camera: Option<PathBuf>,
+    cursor: Option<StudioCursorTimeline>,
     microphone: Option<PathBuf>,
     system_audio: Option<PathBuf>,
 }
@@ -1166,6 +1243,19 @@ struct DecoderDispatchBarrier {
 
 struct TimelinePrerollBarrier {
     probes: Vec<(gst::Pad, gst::PadProbeId)>,
+    receiver: Receiver<usize>,
+    overflowed: Arc<AtomicBool>,
+}
+
+struct SegmentStartBarrier {
+    probes: Vec<(gst::Pad, gst::PadProbeId)>,
+    receiver: Receiver<usize>,
+    overflowed: Arc<AtomicBool>,
+    invalid: Arc<AtomicBool>,
+}
+
+struct DecoderDownstreamFlushGuard {
+    probes: Vec<(gst::Pad, gst::PadProbeId)>,
 }
 
 impl TimelinePrerollBarrier {
@@ -1174,22 +1264,72 @@ impl TimelinePrerollBarrier {
         sources: &CanonicalSources,
     ) -> Result<Self, NativeExecutionError> {
         let mut probes = Vec::with_capacity(MAX_STUDIO_ALIGNED_SOURCES);
-        for name in sources.timeline_element_names() {
+        let (sender, receiver) = sync_channel(MAX_STUDIO_ALIGNED_SOURCES);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        for (branch, name) in sources.timeline_element_names().enumerate() {
             let pad = pipeline
                 .by_name(name)
                 .and_then(|element| element.static_pad("src"))
                 .ok_or(NativeExecutionError::InvalidGraph)?;
+            let branch_sender = sender.clone();
+            let branch_overflowed = Arc::clone(&overflowed);
             let probe = pad
                 .add_probe(
                     gst::PadProbeType::BLOCK
                         | gst::PadProbeType::BUFFER
                         | gst::PadProbeType::BUFFER_LIST,
-                    |_, _| gst::PadProbeReturn::Ok,
+                    move |_, _| {
+                        if branch_sender.try_send(branch).is_err() {
+                            branch_overflowed.store(true, AtomicOrdering::Release);
+                        }
+                        gst::PadProbeReturn::Ok
+                    },
                 )
                 .ok_or(NativeExecutionError::Pipeline)?;
             probes.push((pad, probe));
         }
-        Ok(Self { probes })
+        Ok(Self {
+            probes,
+            receiver,
+            overflowed,
+        })
+    }
+
+    fn wait_until_blocked(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), NativeExecutionError> {
+        let expected = self.probes.len();
+        let mut observed = [false; MAX_STUDIO_ALIGNED_SOURCES];
+        let mut observed_count = 0_usize;
+        let deadline = Instant::now() + EDIT_STATE_TIMEOUT_DURATION;
+        while observed_count < expected {
+            if cancellation.is_cancelled() {
+                return Err(NativeExecutionError::Cancelled);
+            }
+            if self.overflowed.load(AtomicOrdering::Acquire) {
+                return Err(NativeExecutionError::ResourceLimit);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(NativeExecutionError::Pipeline);
+            };
+            match self
+                .receiver
+                .recv_timeout(remaining.min(Duration::from_millis(25)))
+            {
+                Ok(branch) if branch < expected => {
+                    if !observed[branch] {
+                        observed[branch] = true;
+                        observed_count += 1;
+                    }
+                }
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => {
+                    return Err(NativeExecutionError::Pipeline);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+        Ok(())
     }
 
     fn release(mut self) {
@@ -1204,6 +1344,217 @@ impl TimelinePrerollBarrier {
 }
 
 impl Drop for TimelinePrerollBarrier {
+    fn drop(&mut self) {
+        self.remove_all();
+    }
+}
+
+fn rebase_time_segment_event(
+    event: &gst::Event,
+    output_start: gst::ClockTime,
+) -> Result<gst::Event, NativeExecutionError> {
+    let gst::EventView::Segment(segment_event) = event.view() else {
+        return Err(NativeExecutionError::InvalidGraph);
+    };
+    let mut segment = segment_event
+        .segment()
+        .clone()
+        .downcast::<gst::ClockTime>()
+        .map_err(|_| NativeExecutionError::InvalidGraph)?;
+    segment.set_base(output_start);
+    let mut replacement = gst::event::Segment::builder(&segment)
+        .seqnum(event.seqnum())
+        .build();
+    replacement
+        .get_mut()
+        .ok_or(NativeExecutionError::Pipeline)?
+        .set_running_time_offset(event.running_time_offset());
+    Ok(replacement)
+}
+
+fn consumed_event_probe_return() -> gst::PadProbeReturn {
+    // gstreamer-rs takes ownership of the event while invoking a probe. The
+    // supported GStreamer 1.24 runtime unconditionally unrefs a DROP event
+    // after the binding has already consumed it and cleared the C probe data,
+    // which reaches gst_mini_object_unref(NULL). HANDLED has the same
+    // downstream suppression semantics while explicitly transferring event
+    // disposal to the probe binding on every supported runtime.
+    gst::PadProbeReturn::Handled
+}
+
+impl SegmentStartBarrier {
+    fn install(
+        pipeline: &gst::Pipeline,
+        sources: &CanonicalSources,
+        expected_seqnum: gst::Seqnum,
+        output_start: gst::ClockTime,
+    ) -> Result<Self, NativeExecutionError> {
+        let mut probes = Vec::with_capacity(MAX_STUDIO_SEGMENT_BARRIER_BRANCHES);
+        let (sender, receiver) = sync_channel(MAX_STUDIO_SEGMENT_BARRIER_BRANCHES);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let invalid = Arc::new(AtomicBool::new(false));
+        for (branch, name) in sources.decode_element_names().enumerate() {
+            let decoder = pipeline
+                .by_name(name)
+                .ok_or(NativeExecutionError::InvalidGraph)?;
+            let mut linked_pads = decoder.src_pads().into_iter().filter(gst::Pad::is_linked);
+            let pad = linked_pads
+                .next()
+                .ok_or(NativeExecutionError::InvalidGraph)?;
+            if linked_pads.next().is_some() {
+                return Err(NativeExecutionError::InvalidGraph);
+            }
+            let branch_sender = sender.clone();
+            let branch_overflowed = Arc::clone(&overflowed);
+            let branch_invalid = Arc::clone(&invalid);
+            let probe = pad
+                .add_probe(
+                    gst::PadProbeType::BLOCK | gst::PadProbeType::EVENT_DOWNSTREAM,
+                    move |_, information| {
+                        let Some(gst::PadProbeData::Event(event)) = information.data.as_ref()
+                        else {
+                            return gst::PadProbeReturn::Pass;
+                        };
+                        if !matches!(event.view(), gst::EventView::Segment(_)) {
+                            return gst::PadProbeReturn::Pass;
+                        }
+                        if event.seqnum() != expected_seqnum {
+                            return gst::PadProbeReturn::Pass;
+                        }
+                        let replacement = match rebase_time_segment_event(event, output_start) {
+                            Ok(replacement) => replacement,
+                            Err(_) => {
+                                branch_invalid.store(true, AtomicOrdering::Release);
+                                return consumed_event_probe_return();
+                            }
+                        };
+                        information.data = Some(gst::PadProbeData::Event(replacement));
+                        if branch_sender.try_send(branch).is_err() {
+                            branch_overflowed.store(true, AtomicOrdering::Release);
+                        }
+                        gst::PadProbeReturn::Ok
+                    },
+                )
+                .ok_or(NativeExecutionError::Pipeline)?;
+            probes.push((pad, probe));
+        }
+        if probes.is_empty() || probes.len() > MAX_STUDIO_SEGMENT_BARRIER_BRANCHES {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
+        Ok(Self {
+            probes,
+            receiver,
+            overflowed,
+            invalid,
+        })
+    }
+
+    fn wait_until_blocked(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), NativeExecutionError> {
+        let expected = self.probes.len();
+        let mut observed = [false; MAX_STUDIO_SEGMENT_BARRIER_BRANCHES];
+        let mut observed_count = 0_usize;
+        let deadline = Instant::now() + EDIT_STATE_TIMEOUT_DURATION;
+        while observed_count < expected {
+            if cancellation.is_cancelled() {
+                return Err(NativeExecutionError::Cancelled);
+            }
+            if self.overflowed.load(AtomicOrdering::Acquire) {
+                return Err(NativeExecutionError::ResourceLimit);
+            }
+            if self.invalid.load(AtomicOrdering::Acquire) {
+                return Err(NativeExecutionError::InvalidGraph);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(NativeExecutionError::Pipeline);
+            };
+            match self
+                .receiver
+                .recv_timeout(remaining.min(Duration::from_millis(25)))
+            {
+                Ok(branch) if branch < expected => {
+                    if !observed[branch] {
+                        observed[branch] = true;
+                        observed_count += 1;
+                    }
+                }
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => {
+                    return Err(NativeExecutionError::Pipeline);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn release(mut self) {
+        self.remove_all();
+    }
+
+    fn remove_all(&mut self) {
+        for (pad, probe) in self.probes.drain(..) {
+            pad.remove_probe(probe);
+        }
+    }
+}
+
+impl Drop for SegmentStartBarrier {
+    fn drop(&mut self) {
+        self.remove_all();
+    }
+}
+
+impl DecoderDownstreamFlushGuard {
+    fn install(
+        pipeline: &gst::Pipeline,
+        sources: &CanonicalSources,
+    ) -> Result<Self, NativeExecutionError> {
+        let mut probes = Vec::with_capacity(MAX_STUDIO_ALIGNED_SOURCES);
+        for name in sources.decode_element_names() {
+            let decoder = pipeline
+                .by_name(name)
+                .ok_or(NativeExecutionError::InvalidGraph)?;
+            let mut linked_pads = decoder.src_pads().into_iter().filter(gst::Pad::is_linked);
+            let pad = linked_pads
+                .next()
+                .ok_or(NativeExecutionError::InvalidGraph)?;
+            if linked_pads.next().is_some() {
+                return Err(NativeExecutionError::InvalidGraph);
+            }
+            let probe = pad
+                .add_probe(
+                    gst::PadProbeType::EVENT_DOWNSTREAM | gst::PadProbeType::EVENT_FLUSH,
+                    |_, information| {
+                        if let Some(gst::PadProbeData::Event(event)) = information.data.as_ref()
+                            && matches!(
+                                event.view(),
+                                gst::EventView::FlushStart(_) | gst::EventView::FlushStop(_)
+                            )
+                        {
+                            return consumed_event_probe_return();
+                        }
+                        gst::PadProbeReturn::Pass
+                    },
+                )
+                .ok_or(NativeExecutionError::Pipeline)?;
+            probes.push((pad, probe));
+        }
+        if probes.is_empty() || probes.len() > MAX_STUDIO_ALIGNED_SOURCES {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
+        Ok(Self { probes })
+    }
+
+    fn remove_all(&mut self) {
+        for (pad, probe) in self.probes.drain(..) {
+            pad.remove_probe(probe);
+        }
+    }
+}
+
+impl Drop for DecoderDownstreamFlushGuard {
     fn drop(&mut self) {
         self.remove_all();
     }
@@ -1369,6 +1720,65 @@ impl Drop for ClosingVideoFrameMonitor {
     }
 }
 
+struct CompositedSegmentCompletionMonitor {
+    pad: gst::Pad,
+    probe: Option<gst::PadProbeId>,
+    receiver: Receiver<gst::Seqnum>,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl CompositedSegmentCompletionMonitor {
+    fn install(pipeline: &gst::Pipeline) -> Result<Self, NativeExecutionError> {
+        let pad = pipeline
+            .by_name("edit_video_compositor")
+            .and_then(|compositor| compositor.static_pad("src"))
+            .ok_or(NativeExecutionError::InvalidGraph)?;
+        let (sender, receiver) = sync_channel(SEGMENT_COMPLETION_CHANNEL_CAPACITY);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let overflowed_by_probe = Arc::clone(&overflowed);
+        let probe = pad
+            .add_probe(
+                gst::PadProbeType::EVENT_DOWNSTREAM,
+                move |_, information| {
+                    if let Some(gst::PadProbeData::Event(event)) = information.data.as_ref()
+                        && matches!(event.view(), gst::EventView::SegmentDone(_))
+                        && sender.try_send(event.seqnum()).is_err()
+                    {
+                        overflowed_by_probe.store(true, AtomicOrdering::Release);
+                    }
+                    gst::PadProbeReturn::Ok
+                },
+            )
+            .ok_or(NativeExecutionError::Pipeline)?;
+        Ok(Self {
+            pad,
+            probe: Some(probe),
+            receiver,
+            overflowed,
+        })
+    }
+
+    fn completed(&self, expected_seqnum: gst::Seqnum) -> Result<bool, NativeExecutionError> {
+        if self.overflowed.load(AtomicOrdering::Acquire) {
+            return Err(NativeExecutionError::ResourceLimit);
+        }
+        while let Ok(seqnum) = self.receiver.try_recv() {
+            if seqnum == expected_seqnum {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+impl Drop for CompositedSegmentCompletionMonitor {
+    fn drop(&mut self) {
+        if let Some(probe) = self.probe.take() {
+            self.pad.remove_probe(probe);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BranchSegmentCompletion {
     branch: usize,
@@ -1491,6 +1901,7 @@ impl CanonicalSources {
     fn source_element_names(&self) -> impl Iterator<Item = &'static str> {
         [
             Some("edit_screen_source"),
+            self.camera.as_ref().map(|_| "edit_camera_source"),
             self.microphone.as_ref().map(|_| "edit_microphone_source"),
             self.system_audio
                 .as_ref()
@@ -1503,6 +1914,7 @@ impl CanonicalSources {
     fn decode_element_names(&self) -> impl Iterator<Item = &'static str> {
         [
             Some("edit_screen_decode"),
+            self.camera.as_ref().map(|_| "edit_camera_decode"),
             self.microphone.as_ref().map(|_| "edit_microphone_decode"),
             self.system_audio
                 .as_ref()
@@ -1515,6 +1927,7 @@ impl CanonicalSources {
     fn timeline_element_names(&self) -> impl Iterator<Item = &'static str> {
         [
             Some("edit_screen_timeline"),
+            self.camera.as_ref().map(|_| "edit_camera_timeline"),
             self.microphone.as_ref().map(|_| "edit_microphone_timeline"),
             self.system_audio
                 .as_ref()
@@ -1526,13 +1939,16 @@ impl CanonicalSources {
 
     fn segment_completion_probe_specs(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
         [
-            Some(("edit_screen_timeline", "sink")),
+            Some(("edit_screen_compositor_queue", "sink")),
+            self.camera
+                .as_ref()
+                .map(|_| ("edit_camera_compositor_queue", "sink")),
             self.microphone
                 .as_ref()
-                .map(|_| ("edit_microphone_timeline", "sink")),
+                .map(|_| ("edit_microphone_volume", "src")),
             self.system_audio
                 .as_ref()
-                .map(|_| ("edit_system_audio_timeline", "sink")),
+                .map(|_| ("edit_system_audio_volume", "src")),
         ]
         .into_iter()
         .flatten()
@@ -1544,6 +1960,16 @@ fn canonicalize_sources(
 ) -> Result<CanonicalSources, NativeExecutionError> {
     Ok(CanonicalSources {
         screen: canonical_regular_file(&sources.screen)?,
+        camera: sources
+            .camera
+            .as_ref()
+            .map(|path| canonical_regular_file(path))
+            .transpose()?,
+        cursor: sources
+            .cursor
+            .as_ref()
+            .map(|path| read_cursor_timeline(path))
+            .transpose()?,
         microphone: sources
             .microphone
             .as_ref()
@@ -1563,6 +1989,16 @@ fn canonicalize_file_sources(
 ) -> Result<CanonicalSources, NativeExecutionError> {
     Ok(CanonicalSources {
         screen: canonical_file_descriptor(&mut sources.screen)?,
+        camera: sources
+            .camera
+            .as_mut()
+            .map(canonical_file_descriptor)
+            .transpose()?,
+        cursor: sources
+            .cursor
+            .as_mut()
+            .map(read_cursor_timeline_file)
+            .transpose()?,
         microphone: sources
             .microphone
             .as_mut()
@@ -1599,12 +2035,54 @@ fn canonical_regular_file(path: &Path) -> Result<PathBuf, NativeExecutionError> 
     Ok(canonical)
 }
 
+fn read_cursor_timeline(path: &Path) -> Result<StudioCursorTimeline, NativeExecutionError> {
+    let canonical = canonical_regular_file(path)?;
+    let metadata =
+        fs::symlink_metadata(&canonical).map_err(|_| NativeExecutionError::Filesystem)?;
+    if metadata.len()
+        > u64::try_from(MAX_STUDIO_CURSOR_TIMELINE_BYTES)
+            .map_err(|_| NativeExecutionError::ResourceLimit)?
+    {
+        return Err(NativeExecutionError::ResourceLimit);
+    }
+    StudioCursorTimeline::decode(
+        &fs::read(canonical).map_err(|_| NativeExecutionError::Filesystem)?,
+    )
+    .map_err(|_| NativeExecutionError::InvalidOutput)
+}
+
+#[cfg(unix)]
+fn read_cursor_timeline_file(
+    file: &mut File,
+) -> Result<StudioCursorTimeline, NativeExecutionError> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    if !metadata.file_type().is_file()
+        || metadata.len() == 0
+        || metadata.len()
+            > u64::try_from(MAX_STUDIO_CURSOR_TIMELINE_BYTES)
+                .map_err(|_| NativeExecutionError::ResourceLimit)?
+    {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).map_err(|_| NativeExecutionError::ResourceLimit)?,
+    );
+    file.read_to_end(&mut bytes)
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    StudioCursorTimeline::decode(&bytes).map_err(|_| NativeExecutionError::InvalidOutput)
+}
+
 fn validate_supported_composition(
     windows: &[StudioEditExecutionWindow],
     sources: &NativeStudioAlignedSources,
 ) -> Result<(), NativeExecutionError> {
     validate_supported_composition_presence(
         windows,
+        sources.camera.is_some(),
         sources.microphone.is_some(),
         sources.system_audio.is_some(),
     )
@@ -1612,18 +2090,17 @@ fn validate_supported_composition(
 
 fn validate_supported_composition_presence(
     windows: &[StudioEditExecutionWindow],
+    camera_supplied: bool,
     microphone_supplied: bool,
     system_audio_supplied: bool,
 ) -> Result<(), NativeExecutionError> {
-    let default = crate::CompositeStyle::default();
+    let camera_required = windows.iter().any(|window| window.camera_source_available);
+    validate_audio_source(camera_required, camera_supplied)?;
     for window in windows {
-        if window.camera_source_available
-            || !matches!(
-                window.style.layout,
-                LayoutPreset::ScreenOnly | LayoutPreset::CameraBubble
-            )
-            || window.style.cursor != default.cursor
-            || window.style.background != BackgroundStyle::Transparent
+        if matches!(
+            window.style.layout,
+            LayoutPreset::SideBySide | LayoutPreset::CameraFull
+        ) && !window.camera_source_available
         {
             return Err(NativeExecutionError::InvalidGraph);
         }
@@ -1671,7 +2148,7 @@ const fn studio_encoding_config(
         (NativeStudioExportProfile::EditableWebM, EncoderBackend::Software) => {
             NativeStudioEncodingConfig {
                 video_transform: "videoconvert",
-                video_encoder: "vp8enc name=edit_video_encoder deadline=1",
+                video_encoder: "vp8enc name=edit_video_encoder deadline=1 target-bitrate=24000000 keyframe-max-dist=120",
                 source_audio_transform: "audioconvert ! audioresample",
                 audio_transform: "audioconvert ! audioresample",
                 audio_encoder: "opusenc",
@@ -1813,17 +2290,36 @@ fn build_edit_pipeline(
     let mut description = format!(
         concat!(
             "{muxer} name=edit_mux ! {output_sink} ",
+            "compositor name=edit_video_compositor background=transparent ",
+            "! queue name=edit_compositor_output_queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
+            "! {video_transform} ! {video_encoder} ",
+            "! queue name=edit_video_output_queue max-size-buffers=64 max-size-bytes=67108864 max-size-time=2000000000 ! edit_mux. ",
             "filesrc name=edit_screen_source ! decodebin name=edit_screen_decode ",
             "edit_screen_decode. ! queue name=edit_screen_input_queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
-            "! videoconvert ! identity name=edit_screen_timeline single-segment=true ",
-            "! {video_transform} ! {video_encoder} ",
-            "! queue name=edit_video_output_queue max-size-buffers=64 max-size-bytes=67108864 max-size-time=2000000000 ! edit_mux. "
+            "! videoconvert ! video/x-raw,format=BGRA ",
+            "! identity name=edit_screen_cursor ",
+            "! identity name=edit_screen_timeline single-segment=true ",
+            "! queue name=edit_screen_compositor_queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
+            "! edit_video_compositor. "
         ),
         muxer = config.muxer,
         output_sink = output_sink,
         video_transform = config.video_transform,
         video_encoder = config.video_encoder,
     );
+    if sources.camera.is_some() {
+        description.push_str(
+            concat!(
+                "filesrc name=edit_camera_source ! decodebin name=edit_camera_decode ",
+                "edit_camera_decode. ! queue name=edit_camera_input_queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
+                "! videoconvert ! video/x-raw,format=BGRA ",
+                "! identity name=edit_camera_mask ",
+                "! identity name=edit_camera_timeline single-segment=true ",
+                "! queue name=edit_camera_compositor_queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
+                "! edit_video_compositor. "
+            ),
+        );
+    }
     if sources.audio_track_count() > 0 {
         description.push_str(&format!(
             concat!(
@@ -1875,6 +2371,12 @@ fn build_edit_pipeline(
             .ok_or(NativeExecutionError::InvalidGraph)?
             .set_property("location", path);
     }
+    if let Some(path) = &sources.camera {
+        pipeline
+            .by_name("edit_camera_source")
+            .ok_or(NativeExecutionError::InvalidGraph)?
+            .set_property("location", path);
+    }
     if let Some(path) = &sources.system_audio {
         pipeline
             .by_name("edit_system_audio_source")
@@ -1913,6 +2415,736 @@ fn require_trusted(pipeline: &gst::Pipeline) -> Result<(), NativeExecutionError>
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ScheduledCompositionWindow {
+    execution: StudioEditExecutionWindow,
+    output_start_ns: u64,
+    output_end_ns: u64,
+}
+
+#[derive(Debug)]
+struct StudioCompositionScheduleInner {
+    windows: Box<[ScheduledCompositionWindow]>,
+}
+
+#[derive(Debug, Clone)]
+struct StudioCompositionSchedule(Arc<StudioCompositionScheduleInner>);
+
+impl StudioCompositionSchedule {
+    fn new(windows: &[StudioEditExecutionWindow]) -> Result<Self, NativeExecutionError> {
+        if windows.is_empty() || windows.len() > MAX_STUDIO_EDIT_EXECUTION_WINDOWS {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
+        let mut scheduled = Vec::with_capacity(windows.len());
+        for &execution in windows {
+            let output_start_ns =
+                exact_duration_to_clock_time_ceil(execution.output_start)?.nseconds();
+            let output_end_ns = exact_duration_to_clock_time_ceil(execution.output_end)?.nseconds();
+            if output_start_ns >= output_end_ns
+                || scheduled
+                    .last()
+                    .is_some_and(|previous: &ScheduledCompositionWindow| {
+                        previous.output_end_ns != output_start_ns
+                    })
+            {
+                return Err(NativeExecutionError::InvalidGraph);
+            }
+            scheduled.push(ScheduledCompositionWindow {
+                execution,
+                output_start_ns,
+                output_end_ns,
+            });
+        }
+        if scheduled[0].output_start_ns != 0 {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
+        Ok(Self(Arc::new(StudioCompositionScheduleInner {
+            windows: scheduled.into_boxed_slice(),
+        })))
+    }
+
+    fn windows(&self) -> &[ScheduledCompositionWindow] {
+        &self.0.windows
+    }
+
+    fn at_output_time(&self, output: gst::ClockTime) -> Option<ScheduledCompositionWindow> {
+        let output_ns = output.nseconds();
+        let index = self
+            .windows()
+            .partition_point(|window| window.output_start_ns <= output_ns)
+            .checked_sub(1)?;
+        self.windows()
+            .get(index)
+            .copied()
+            .filter(|window| output_ns < window.output_end_ns)
+    }
+
+    fn source_time_ns(
+        &self,
+        output: gst::ClockTime,
+    ) -> Result<(ScheduledCompositionWindow, u64), NativeExecutionError> {
+        let window = self
+            .at_output_time(output)
+            .ok_or(NativeExecutionError::InvalidOutput)?;
+        let output = ExactDuration::new(u128::from(output.nseconds()), 1_000_000_000)
+            .map_err(|_| NativeExecutionError::InvalidGraph)?;
+        let source = window
+            .execution
+            .source_time_at_output(output)
+            .map_err(map_execution_error)?;
+        let source_ns = source
+            .numerator()
+            .checked_mul(1_000_000_000)
+            .ok_or(NativeExecutionError::ResourceLimit)?
+            / source.denominator();
+        Ok((
+            window,
+            u64::try_from(source_ns).map_err(|_| NativeExecutionError::ResourceLimit)?,
+        ))
+    }
+}
+
+fn first_window_buffer_pts(
+    output_time: gst::ClockTime,
+    window: ScheduledCompositionWindow,
+    active_window: &Mutex<Option<u64>>,
+) -> Result<Option<gst::ClockTime>, NativeExecutionError> {
+    // An accurate segmented seek can still expose its first decoded video
+    // frame after the logical output boundary, especially for VFR or
+    // inter-frame sources. Anchor that first frame to the canonical boundary
+    // so the compositor holds the new window's immutable pixels instead of
+    // repeating the preceding window while decoder preroll catches up.
+    let mut active_window = active_window
+        .lock()
+        .map_err(|_| NativeExecutionError::Pipeline)?;
+    if *active_window == Some(window.output_start_ns) {
+        return Ok(None);
+    }
+    *active_window = Some(window.output_start_ns);
+    if output_time.nseconds() < window.output_start_ns {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    Ok((output_time.nseconds() > window.output_start_ns)
+        .then(|| gst::ClockTime::from_nseconds(window.output_start_ns)))
+}
+
+#[derive(Clone)]
+struct StudioVisualState {
+    invalid: Arc<AtomicBool>,
+}
+
+fn install_visual_probes(
+    pipeline: &gst::Pipeline,
+    sources: &CanonicalSources,
+    schedule: &StudioCompositionSchedule,
+) -> Result<StudioVisualState, NativeExecutionError> {
+    let state = StudioVisualState {
+        invalid: Arc::new(AtomicBool::new(false)),
+    };
+    let pad = pipeline
+        .by_name("edit_screen_timeline")
+        .and_then(|timeline| timeline.static_pad("src"))
+        .ok_or(NativeExecutionError::InvalidGraph)?;
+    let screen_schedule = schedule.clone();
+    let timeline = sources.cursor.clone();
+    let scratch = Arc::new(Mutex::new(Vec::new()));
+    let scratch_by_probe = Arc::clone(&scratch);
+    let active_window = Arc::new(Mutex::new(None::<u64>));
+    let active_window_by_probe = Arc::clone(&active_window);
+    let invalid = Arc::clone(&state.invalid);
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, information| {
+        let result = (|| {
+            let (width, height) = raw_bgra_dimensions(pad)?;
+            let Some(gst::PadProbeData::Buffer(buffer)) = information.data.as_mut() else {
+                return Err(NativeExecutionError::Pipeline);
+            };
+            let output_time = buffer.pts().ok_or(NativeExecutionError::InvalidOutput)?;
+            let (window, source_time_ns) = screen_schedule.source_time_ns(output_time)?;
+            let retimed_pts =
+                first_window_buffer_pts(output_time, window, active_window_by_probe.as_ref())?;
+            let style = window.execution.style.cursor;
+            let writable = buffer.make_mut();
+            if let Some(retimed_pts) = retimed_pts {
+                writable.set_pts(retimed_pts);
+            }
+            let mut mapped = writable
+                .map_writable()
+                .map_err(|_| NativeExecutionError::Pipeline)?;
+            if !style.hidden
+                && let Some(timeline) = timeline.as_ref()
+            {
+                overlay_cursor_bgra(
+                    mapped.as_mut_slice(),
+                    width,
+                    height,
+                    timeline,
+                    source_time_ns,
+                    style,
+                )?;
+            }
+            let (screen, _) = canvas_layout(width, height, window.execution)?;
+            let mut scratch = scratch_by_probe
+                .lock()
+                .map_err(|_| NativeExecutionError::Pipeline)?;
+            apply_bgra_canvas_layout(mapped.as_mut_slice(), width, height, screen, &mut scratch)
+        })();
+        if result.is_err() {
+            invalid.store(true, AtomicOrdering::Release);
+        }
+        gst::PadProbeReturn::Ok
+    })
+    .ok_or(NativeExecutionError::Pipeline)?;
+    if sources.camera.is_some() {
+        let pad = pipeline
+            .by_name("edit_camera_timeline")
+            .and_then(|timeline| timeline.static_pad("src"))
+            .ok_or(NativeExecutionError::InvalidGraph)?;
+        let schedule = schedule.clone();
+        let scratch = Arc::new(Mutex::new(Vec::new()));
+        let scratch_by_probe = Arc::clone(&scratch);
+        let active_window = Arc::new(Mutex::new(None::<u64>));
+        let active_window_by_probe = Arc::clone(&active_window);
+        let invalid = Arc::clone(&state.invalid);
+        pad.add_probe(gst::PadProbeType::BUFFER, move |pad, information| {
+            let result = (|| {
+                let Some(gst::PadProbeData::Buffer(buffer)) = information.data.as_mut() else {
+                    return Err(NativeExecutionError::Pipeline);
+                };
+                let output_time = buffer.pts().ok_or(NativeExecutionError::InvalidOutput)?;
+                let window = schedule
+                    .at_output_time(output_time)
+                    .ok_or(NativeExecutionError::InvalidOutput)?;
+                let retimed_pts =
+                    first_window_buffer_pts(output_time, window, active_window_by_probe.as_ref())?;
+                let radius_milli = if window.execution.style.layout == LayoutPreset::CameraBubble {
+                    window.execution.style.camera.corner_radius_milli
+                } else {
+                    0
+                };
+                let (width, height) = raw_bgra_dimensions(pad)?;
+                let writable = buffer.make_mut();
+                if let Some(retimed_pts) = retimed_pts {
+                    writable.set_pts(retimed_pts);
+                }
+                let mut mapped = writable
+                    .map_writable()
+                    .map_err(|_| NativeExecutionError::Pipeline)?;
+                if radius_milli != 0 {
+                    apply_rounded_bgra_mask(mapped.as_mut_slice(), width, height, radius_milli)?;
+                }
+                let (_, camera) = canvas_layout(width, height, window.execution)?;
+                let mut scratch = scratch_by_probe
+                    .lock()
+                    .map_err(|_| NativeExecutionError::Pipeline)?;
+                apply_bgra_canvas_layout(mapped.as_mut_slice(), width, height, camera, &mut scratch)
+            })();
+            if result.is_err() {
+                invalid.store(true, AtomicOrdering::Release);
+            }
+            gst::PadProbeReturn::Ok
+        })
+        .ok_or(NativeExecutionError::Pipeline)?;
+    }
+    Ok(state)
+}
+
+fn raw_bgra_dimensions(pad: &gst::Pad) -> Result<(u32, u32), NativeExecutionError> {
+    let caps = pad
+        .current_caps()
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let structure = caps
+        .structure(0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    if structure.name() != "video/x-raw"
+        || structure.get::<String>("format").as_deref() != Ok("BGRA")
+    {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let width = structure
+        .get::<i32>("width")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let height = structure
+        .get::<i32>("height")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    Ok((width, height))
+}
+
+fn overlay_cursor_bgra(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    timeline: &StudioCursorTimeline,
+    source_time_ns: u64,
+    style: CursorStyle,
+) -> Result<(), NativeExecutionError> {
+    let stride = bgra_stride(frame.len(), width, height)?;
+    if !(100..=4_000).contains(&style.scale_milli) {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let Some(observation) = timeline.observation_at_ns(source_time_ns) else {
+        return Ok(());
+    };
+    let Some((frame_x, frame_y)) = observation.frame_position() else {
+        return Ok(());
+    };
+    let Some(image) = observation
+        .image_revision()
+        .and_then(|revision| timeline.image(revision))
+    else {
+        return Ok(());
+    };
+    let (timeline_width, timeline_height) = timeline.frame_dimensions();
+    let target_width = scaled_cursor_axis(
+        u32::from(image.dimensions().0),
+        width,
+        timeline_width,
+        style.scale_milli,
+    )?;
+    let target_height = scaled_cursor_axis(
+        u32::from(image.dimensions().1),
+        height,
+        timeline_height,
+        style.scale_milli,
+    )?;
+    let hotspot_x = scaled_cursor_axis(
+        u32::from(image.hotspot().0),
+        width,
+        timeline_width,
+        style.scale_milli,
+    )?;
+    let hotspot_y = scaled_cursor_axis(
+        u32::from(image.hotspot().1),
+        height,
+        timeline_height,
+        style.scale_milli,
+    )?;
+    let anchor_x = u64::from(frame_x) * u64::from(width) / u64::from(timeline_width);
+    let anchor_y = u64::from(frame_y) * u64::from(height) / u64::from(timeline_height);
+    let origin_x = i64::try_from(anchor_x).map_err(|_| NativeExecutionError::ResourceLimit)?
+        - i64::from(hotspot_x);
+    let origin_y = i64::try_from(anchor_y).map_err(|_| NativeExecutionError::ResourceLimit)?
+        - i64::from(hotspot_y);
+    for target_y in 0..target_height {
+        for target_x in 0..target_width {
+            let output_x = origin_x + i64::from(target_x);
+            let output_y = origin_y + i64::from(target_y);
+            if output_x < 0
+                || output_y < 0
+                || output_x >= i64::from(width)
+                || output_y >= i64::from(height)
+            {
+                continue;
+            }
+            let source_x =
+                u64::from(target_x) * u64::from(image.dimensions().0) / u64::from(target_width);
+            let source_y =
+                u64::from(target_y) * u64::from(image.dimensions().1) / u64::from(target_height);
+            let source_offset =
+                usize::try_from((source_y * u64::from(image.dimensions().0) + source_x) * 4)
+                    .map_err(|_| NativeExecutionError::ResourceLimit)?;
+            let output_offset = bgra_offset(
+                stride,
+                u32::try_from(output_x).map_err(|_| NativeExecutionError::ResourceLimit)?,
+                u32::try_from(output_y).map_err(|_| NativeExecutionError::ResourceLimit)?,
+            )?;
+            blend_cursor_bgra(
+                &mut frame[output_offset..output_offset + 4],
+                &image.pixels()[source_offset..source_offset + 4],
+                image.pixel_format(),
+            );
+        }
+    }
+    if observation.primary_click() || observation.secondary_click() {
+        draw_click_bgra(
+            frame,
+            width,
+            height,
+            stride,
+            u32::try_from(anchor_x).map_err(|_| NativeExecutionError::ResourceLimit)?,
+            u32::try_from(anchor_y).map_err(|_| NativeExecutionError::ResourceLimit)?,
+            observation.primary_click(),
+        )?;
+    }
+    Ok(())
+}
+
+fn scaled_cursor_axis(
+    value: u32,
+    target: u32,
+    source: u32,
+    scale_milli: u16,
+) -> Result<u32, NativeExecutionError> {
+    if value == 0 {
+        return Ok(0);
+    }
+    u32::try_from(
+        u64::from(value)
+            .checked_mul(u64::from(target))
+            .and_then(|value| value.checked_mul(u64::from(scale_milli)))
+            .ok_or(NativeExecutionError::ResourceLimit)?
+            .div_ceil(
+                u64::from(source)
+                    .checked_mul(1_000)
+                    .ok_or(NativeExecutionError::ResourceLimit)?,
+            ),
+    )
+    .map(|value| value.max(1))
+    .map_err(|_| NativeExecutionError::ResourceLimit)
+}
+
+fn blend_cursor_bgra(target: &mut [u8], source: &[u8], format: PixelFormat) {
+    let (blue, green, red, alpha) = match format {
+        PixelFormat::Bgra8 => (source[0], source[1], source[2], source[3]),
+        PixelFormat::Rgba8 => (source[2], source[1], source[0], source[3]),
+        PixelFormat::Nv12 | PixelFormat::I420 => return,
+    };
+    let alpha = u16::from(alpha);
+    let inverse = 255 - alpha;
+    target[0] = ((u16::from(blue) * alpha + u16::from(target[0]) * inverse + 127) / 255) as u8;
+    target[1] = ((u16::from(green) * alpha + u16::from(target[1]) * inverse + 127) / 255) as u8;
+    target[2] = ((u16::from(red) * alpha + u16::from(target[2]) * inverse + 127) / 255) as u8;
+    target[3] = 255;
+}
+
+fn draw_click_bgra(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    center_x: u32,
+    center_y: u32,
+    primary: bool,
+) -> Result<(), NativeExecutionError> {
+    let color = if primary {
+        [0, 196, 255, 255]
+    } else {
+        [255, 196, 0, 255]
+    };
+    let radius = 5_i64;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let distance = dx * dx + dy * dy;
+            if !(16..=25).contains(&distance) {
+                continue;
+            }
+            let x = i64::from(center_x) + dx;
+            let y = i64::from(center_y) + dy;
+            if x < 0 || y < 0 || x >= i64::from(width) || y >= i64::from(height) {
+                continue;
+            }
+            let offset = bgra_offset(
+                stride,
+                u32::try_from(x).map_err(|_| NativeExecutionError::ResourceLimit)?,
+                u32::try_from(y).map_err(|_| NativeExecutionError::ResourceLimit)?,
+            )?;
+            frame[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+    Ok(())
+}
+
+fn apply_rounded_bgra_mask(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    radius_milli: u16,
+) -> Result<(), NativeExecutionError> {
+    let stride = bgra_stride(frame.len(), width, height)?;
+    if radius_milli > 1_000 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let radius = u32::try_from(u64::from(width.min(height)) * u64::from(radius_milli) / 2_000)
+        .map_err(|_| NativeExecutionError::ResourceLimit)?;
+    if radius == 0 {
+        return Ok(());
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let right = width - 1 - x;
+            let bottom = height - 1 - y;
+            let corner = if x < radius && y < radius {
+                Some((radius - x, radius - y))
+            } else if right < radius && y < radius {
+                Some((radius - right, radius - y))
+            } else if x < radius && bottom < radius {
+                Some((radius - x, radius - bottom))
+            } else if right < radius && bottom < radius {
+                Some((radius - right, radius - bottom))
+            } else {
+                None
+            };
+            if corner.is_some_and(|(dx, dy)| {
+                u64::from(dx) * u64::from(dx) + u64::from(dy) * u64::from(dy)
+                    > u64::from(radius) * u64::from(radius)
+            }) {
+                let alpha = bgra_offset(stride, x, y)?
+                    .checked_add(3)
+                    .ok_or(NativeExecutionError::ResourceLimit)?;
+                frame[alpha] = 0;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bgra_stride(buffer_len: usize, width: u32, height: u32) -> Result<usize, NativeExecutionError> {
+    let height = usize::try_from(height).map_err(|_| NativeExecutionError::ResourceLimit)?;
+    let row_bytes = usize::try_from(width)
+        .map_err(|_| NativeExecutionError::ResourceLimit)?
+        .checked_mul(4)
+        .ok_or(NativeExecutionError::ResourceLimit)?;
+    if height == 0 || row_bytes == 0 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let stride = buffer_len / height;
+    let required = stride
+        .checked_mul(height - 1)
+        .and_then(|offset| offset.checked_add(row_bytes))
+        .ok_or(NativeExecutionError::ResourceLimit)?;
+    if stride < row_bytes || required > buffer_len {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    Ok(stride)
+}
+
+fn bgra_offset(stride: usize, x: u32, y: u32) -> Result<usize, NativeExecutionError> {
+    usize::try_from(y)
+        .map_err(|_| NativeExecutionError::ResourceLimit)?
+        .checked_mul(stride)
+        .and_then(|offset| {
+            usize::try_from(x)
+                .ok()
+                .and_then(|x| x.checked_mul(4))
+                .and_then(|x| offset.checked_add(x))
+        })
+        .ok_or(NativeExecutionError::ResourceLimit)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CanvasPlacement {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    visible: bool,
+}
+
+fn canvas_layout(
+    width: u32,
+    height: u32,
+    window: StudioEditExecutionWindow,
+) -> Result<(CanvasPlacement, CanvasPlacement), NativeExecutionError> {
+    if width == 0 || height == 0 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let placement = |x: u32, y: u32, width: u32, height: u32, visible: bool| CanvasPlacement {
+        x,
+        y,
+        width,
+        height,
+        visible,
+    };
+    let scale_millionths = |extent: u32, millionths: u32| {
+        u32::try_from(
+            u64::from(extent)
+                .checked_mul(u64::from(millionths))
+                .ok_or(NativeExecutionError::ResourceLimit)?
+                / 1_000_000,
+        )
+        .map_err(|_| NativeExecutionError::ResourceLimit)
+    };
+    match window.style.layout {
+        LayoutPreset::ScreenOnly => Ok((
+            placement(0, 0, width, height, true),
+            placement(0, 0, width, height, false),
+        )),
+        LayoutPreset::CameraBubble => {
+            let rect = window
+                .style
+                .camera
+                .rect
+                .validate()
+                .map_err(|_| NativeExecutionError::InvalidGraph)?;
+            let x = scale_millionths(width, rect.x_millionths)?;
+            let y = scale_millionths(height, rect.y_millionths)?;
+            let right = scale_millionths(
+                width,
+                rect.x_millionths
+                    .checked_add(rect.width_millionths)
+                    .ok_or(NativeExecutionError::ResourceLimit)?,
+            )?;
+            let bottom = scale_millionths(
+                height,
+                rect.y_millionths
+                    .checked_add(rect.height_millionths)
+                    .ok_or(NativeExecutionError::ResourceLimit)?,
+            )?;
+            let camera_width = right
+                .checked_sub(x)
+                .filter(|value| *value > 0)
+                .ok_or(NativeExecutionError::InvalidOutput)?;
+            let camera_height = bottom
+                .checked_sub(y)
+                .filter(|value| *value > 0)
+                .ok_or(NativeExecutionError::InvalidOutput)?;
+            Ok((
+                placement(0, 0, width, height, true),
+                placement(
+                    x,
+                    y,
+                    camera_width,
+                    camera_height,
+                    window.camera_source_available,
+                ),
+            ))
+        }
+        LayoutPreset::SideBySide => {
+            let left = width / 2;
+            let right = width
+                .checked_sub(left)
+                .filter(|value| *value > 0)
+                .ok_or(NativeExecutionError::InvalidOutput)?;
+            if left == 0 {
+                return Err(NativeExecutionError::InvalidOutput);
+            }
+            Ok((
+                placement(0, 0, left, height, true),
+                placement(left, 0, right, height, window.camera_source_available),
+            ))
+        }
+        LayoutPreset::CameraFull => Ok((
+            placement(0, 0, width, height, false),
+            placement(0, 0, width, height, window.camera_source_available),
+        )),
+    }
+}
+
+fn apply_bgra_canvas_layout(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    placement: CanvasPlacement,
+    scratch: &mut Vec<u8>,
+) -> Result<(), NativeExecutionError> {
+    let stride = bgra_stride(frame.len(), width, height)?;
+    let right = placement
+        .x
+        .checked_add(placement.width)
+        .filter(|right| *right <= width)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    let bottom = placement
+        .y
+        .checked_add(placement.height)
+        .filter(|bottom| *bottom <= height)
+        .ok_or(NativeExecutionError::InvalidOutput)?;
+    if placement.width == 0 || placement.height == 0 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    if !placement.visible {
+        frame.fill(0);
+        return Ok(());
+    }
+    if placement.x == 0
+        && placement.y == 0
+        && placement.width == width
+        && placement.height == height
+    {
+        return Ok(());
+    }
+    if u64::try_from(frame.len()).map_err(|_| NativeExecutionError::ResourceLimit)?
+        > MAX_STUDIO_QUEUE_BYTES
+    {
+        return Err(NativeExecutionError::ResourceLimit);
+    }
+    scratch.clear();
+    if scratch.capacity() < frame.len() {
+        scratch
+            .try_reserve_exact(frame.len())
+            .map_err(|_| NativeExecutionError::ResourceLimit)?;
+    }
+    scratch.extend_from_slice(frame);
+    frame.fill(0);
+    for target_y in placement.y..bottom {
+        let local_y = target_y - placement.y;
+        let source_y = u32::try_from(
+            u64::from(local_y)
+                .checked_mul(u64::from(height))
+                .ok_or(NativeExecutionError::ResourceLimit)?
+                / u64::from(placement.height),
+        )
+        .map_err(|_| NativeExecutionError::ResourceLimit)?
+        .min(height - 1);
+        for target_x in placement.x..right {
+            let local_x = target_x - placement.x;
+            let source_x = u32::try_from(
+                u64::from(local_x)
+                    .checked_mul(u64::from(width))
+                    .ok_or(NativeExecutionError::ResourceLimit)?
+                    / u64::from(placement.width),
+            )
+            .map_err(|_| NativeExecutionError::ResourceLimit)?
+            .min(width - 1);
+            let source = bgra_offset(stride, source_x, source_y)?;
+            let target = bgra_offset(stride, target_x, target_y)?;
+            frame[target..target + 4].copy_from_slice(&scratch[source..source + 4]);
+        }
+    }
+    Ok(())
+}
+
+fn configure_static_compositor(
+    pipeline: &gst::Pipeline,
+    sources: &CanonicalSources,
+) -> Result<(), NativeExecutionError> {
+    if sources.camera.is_none() {
+        return Ok(());
+    }
+    let (width, height) = pipeline
+        .by_name("edit_screen_timeline")
+        .and_then(|timeline| timeline.static_pad("sink"))
+        .as_ref()
+        .ok_or(NativeExecutionError::InvalidGraph)
+        .and_then(raw_bgra_dimensions)?;
+    let screen_pad = compositor_pad(pipeline, "edit_screen_compositor_queue")?;
+    set_static_compositor_pad(&screen_pad, width, height, 0)?;
+    let camera_pad = compositor_pad(pipeline, "edit_camera_compositor_queue")?;
+    set_static_compositor_pad(&camera_pad, width, height, 1)
+}
+
+fn set_static_compositor_pad(
+    pad: &gst::Pad,
+    width: u32,
+    height: u32,
+    zorder: u32,
+) -> Result<(), NativeExecutionError> {
+    let width = i32::try_from(width).map_err(|_| NativeExecutionError::ResourceLimit)?;
+    let height = i32::try_from(height).map_err(|_| NativeExecutionError::ResourceLimit)?;
+    pad.set_property("xpos", 0_i32);
+    pad.set_property("ypos", 0_i32);
+    pad.set_property("width", width);
+    pad.set_property("height", height);
+    pad.set_property("alpha", 1.0_f64);
+    pad.set_property("zorder", zorder);
+    Ok(())
+}
+
+fn compositor_pad(
+    pipeline: &gst::Pipeline,
+    queue_name: &str,
+) -> Result<gst::Pad, NativeExecutionError> {
+    pipeline
+        .by_name(queue_name)
+        .and_then(|queue| queue.static_pad("src"))
+        .and_then(|pad| pad.peer())
+        .ok_or(NativeExecutionError::InvalidGraph)
+}
+
 fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
     pipeline: &gst::Pipeline,
     executor: &mut StudioEditExecutor,
@@ -1925,9 +3157,11 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
         return Err(NativeExecutionError::Cancelled);
     }
     // Non-live file sources can otherwise run through EOS while an async=false
-    // output sink lets the graph settle in Paused. Hold one buffer per aligned
-    // timeline before preroll so the first canonical FLUSH seek discards all
-    // speculative bytes before any encoder can finalize.
+    // output sink lets the graph settle in Paused before upstream negotiation
+    // finishes. Hold and observe one buffer per aligned timeline so fixed caps
+    // exist before static compositor geometry is installed, then let the
+    // canonical FLUSH seek discard every speculative byte before an encoder
+    // can finalize.
     let mut initial_preroll = Some(TimelinePrerollBarrier::install(pipeline, sources)?);
     if pipeline.set_state(gst::State::Paused).is_err() {
         return Err(NativeExecutionError::Pipeline);
@@ -1936,17 +3170,31 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
     if transition.is_err() || current != gst::State::Paused {
         return Err(NativeExecutionError::Pipeline);
     }
+    initial_preroll
+        .as_ref()
+        .ok_or(NativeExecutionError::Pipeline)?
+        .wait_until_blocked(cancellation)?;
     // decodebin descendants do not exist at authored-graph validation time.
     // Once preroll has autoplugged them, every decoder/demuxer must still come
     // from the build-time trusted plugin root before any edited bytes execute.
     if !pipeline_has_trusted_factory_provenance(pipeline) {
         return Err(NativeExecutionError::UntrustedFactory);
     }
+    // Geometry never changes after preroll. Each decoded BGRA buffer is
+    // transformed into its timestamp-selected full canvas before it enters
+    // these pads, so already queued frames cannot observe a later window.
+    configure_static_compositor(pipeline, sources)?;
+    // Install timestamp-driven transforms only after speculative preroll is
+    // blocked. The first canonical FLUSH seek discards that unscheduled source
+    // buffer before it can reach these probes.
+    let schedule = StudioCompositionSchedule::new(executor.windows())?;
+    let visual_state = install_visual_probes(pipeline, sources, &schedule)?;
     let flushed_encoder_caps = flushed_encoder_caps(profile)?;
     progress.emit(RenderPhase::Decoding, 1_000, 0)?;
     let bus = pipeline.bus().ok_or(NativeExecutionError::Pipeline)?;
     let segment_monitor = SegmentCompletionMonitor::install(pipeline, sources)?;
     let closing_video_frame = ClosingVideoFrameMonitor::install(pipeline)?;
+    let composited_segment = CompositedSegmentCompletionMonitor::install(pipeline)?;
     progress.emit(RenderPhase::Compositing, 2_000, 0)?;
     let output_end = exact_duration_to_clock_time_ceil(executor.output_duration())?;
     let deadline = Instant::now() + EDIT_EXECUTION_DEADLINE;
@@ -1971,11 +3219,7 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
                     return Err(NativeExecutionError::Pipeline);
                 }
             }
-            apply_audio_window(pipeline, window, sources)?;
-            let mut flags = gst::SeekFlags::ACCURATE | gst::SeekFlags::SEGMENT;
-            if first {
-                flags |= gst::SeekFlags::FLUSH;
-            }
+            let flags = gst::SeekFlags::ACCURATE | gst::SeekFlags::SEGMENT | gst::SeekFlags::FLUSH;
             let rate = f64::from(window.speed_numerator) / f64::from(window.speed_denominator);
             let start = rational_to_clock_time(window.source_start, false)?;
             let stop = rational_to_clock_time(window.source_end, true)?;
@@ -1984,7 +3228,27 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
             // a whole short segment fits in downstream preroll, no fast branch
             // can complete before all branches own the shared sequence number.
             let dispatch_barrier = DecoderDispatchBarrier::install(pipeline, sources)?;
+            // Reset demuxer/codec EOS and keyframe state between windows while
+            // keeping branch-local flush events out of the already encoded
+            // downstream timeline. The segment-start barrier rebases each
+            // post-flush segment to its canonical accumulated output offset.
+            let downstream_flush_guard = if first {
+                None
+            } else {
+                Some(DecoderDownstreamFlushGuard::install(pipeline, sources)?)
+            };
             let segment_seqnum = gst::Seqnum::next();
+            let segment_start = if first {
+                apply_audio_window(pipeline, sources, window)?;
+                None
+            } else {
+                Some(SegmentStartBarrier::install(
+                    pipeline,
+                    sources,
+                    segment_seqnum,
+                    exact_duration_to_clock_time_ceil(window.output_start)?,
+                )?)
+            };
             if first {
                 reassert_flushed_encoder_caps(pipeline, flushed_encoder_caps.as_ref())?;
             }
@@ -2006,11 +3270,26 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
                     return Err(NativeExecutionError::Pipeline);
                 }
             }
+            let resumed_for_segment_start = segment_start.is_some();
+            if resumed_for_segment_start && pipeline.set_state(gst::State::Playing).is_err() {
+                return Err(NativeExecutionError::Pipeline);
+            }
+            if let Some(segment_start) = segment_start {
+                // New segment events reach every decoded branch while its
+                // first buffer remains blocked. Install this window's gain,
+                // then release the serialized events before matching audio
+                // samples can follow. Visual state is already immutable in
+                // each timestamp-transformed BGRA buffer.
+                segment_start.wait_until_blocked(cancellation)?;
+                apply_audio_window(pipeline, sources, window)?;
+                segment_start.release();
+            }
+            drop(downstream_flush_guard);
             dispatch_barrier.release();
             if let Some(barrier) = initial_preroll.take() {
                 barrier.release();
             }
-            if pipeline.set_state(gst::State::Playing).is_err() {
+            if !resumed_for_segment_start && pipeline.set_state(gst::State::Playing).is_err() {
                 return Err(NativeExecutionError::Pipeline);
             }
             if first {
@@ -2024,9 +3303,27 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
                 deadline,
                 &mut messages,
             )?;
-            completed_windows = completed_windows
+            let next_completed_windows = completed_windows
                 .checked_add(1)
                 .ok_or(NativeExecutionError::ResourceLimit)?;
+            if next_completed_windows < progress.total_windows {
+                // Each following seek is dispatched only after the compositor
+                // has forwarded the current segment marker. This preserves
+                // aligned branch ordering on slower runtimes while per-buffer
+                // visual transforms keep layout independent of host scheduling.
+                wait_for_composited_segment(
+                    &bus,
+                    &composited_segment,
+                    segment_seqnum,
+                    cancellation,
+                    deadline,
+                    &mut messages,
+                )?;
+            }
+            if visual_state.invalid.load(AtomicOrdering::Acquire) {
+                return Err(NativeExecutionError::InvalidOutput);
+            }
+            completed_windows = next_completed_windows;
             let completed = u64::try_from(completed_windows)
                 .map_err(|_| NativeExecutionError::ResourceLimit)?;
             let total = u64::try_from(progress.total_windows)
@@ -2098,48 +3395,45 @@ fn reassert_flushed_encoder_caps(
     }
 }
 
-fn apply_audio_window(
-    pipeline: &gst::Pipeline,
-    window: StudioEditExecutionWindow,
-    sources: &CanonicalSources,
-) -> Result<(), NativeExecutionError> {
-    if sources.microphone.is_some() {
-        set_volume(
-            pipeline,
-            "edit_microphone_volume",
-            window.microphone.source_available,
-            window.microphone.style.gain_millibels,
-            window.microphone.style.muted,
-        )?;
-    }
-    if sources.system_audio.is_some() {
-        set_volume(
-            pipeline,
-            "edit_system_audio_volume",
-            window.system_audio.source_available,
-            window.system_audio.style.gain_millibels,
-            window.system_audio.style.muted,
-        )?;
-    }
-    Ok(())
-}
-
-fn set_volume(
-    pipeline: &gst::Pipeline,
-    name: &str,
-    source_available: bool,
-    gain_millibels: i32,
-    muted: bool,
-) -> Result<(), NativeExecutionError> {
-    let volume = if source_available && !muted {
+fn audio_volume(source_available: bool, gain_millibels: i32, muted: bool) -> f64 {
+    if source_available && !muted {
         10_f64.powf(f64::from(gain_millibels) / 2_000.0)
     } else {
         0.0
-    };
-    pipeline
-        .by_name(name)
-        .ok_or(NativeExecutionError::InvalidGraph)?
-        .set_property("volume", volume);
+    }
+}
+
+fn apply_audio_window(
+    pipeline: &gst::Pipeline,
+    sources: &CanonicalSources,
+    window: StudioEditExecutionWindow,
+) -> Result<(), NativeExecutionError> {
+    for (present, name, audio) in [
+        (
+            sources.microphone.is_some(),
+            "edit_microphone_volume",
+            window.microphone,
+        ),
+        (
+            sources.system_audio.is_some(),
+            "edit_system_audio_volume",
+            window.system_audio,
+        ),
+    ] {
+        if present {
+            pipeline
+                .by_name(name)
+                .ok_or(NativeExecutionError::InvalidGraph)?
+                .set_property(
+                    "volume",
+                    audio_volume(
+                        audio.source_available,
+                        audio.style.gain_millibels,
+                        audio.style.muted,
+                    ),
+                );
+        }
+    }
     Ok(())
 }
 
@@ -2160,6 +3454,29 @@ fn wait_for_segment_done(
             state.observe_branch(completion)?;
         }
         if state.complete() {
+            return Ok(());
+        }
+        let Some(message) = poll_message(bus, cancellation, deadline, messages)? else {
+            continue;
+        };
+        match message.view() {
+            gst::MessageView::Error(_) => return Err(NativeExecutionError::Pipeline),
+            gst::MessageView::Eos(_) => return Err(NativeExecutionError::InvalidOutput),
+            _ => {}
+        }
+    }
+}
+
+fn wait_for_composited_segment(
+    bus: &gst::Bus,
+    monitor: &CompositedSegmentCompletionMonitor,
+    expected_seqnum: gst::Seqnum,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+    messages: &mut usize,
+) -> Result<(), NativeExecutionError> {
+    loop {
+        if monitor.completed(expected_seqnum)? {
             return Ok(());
         }
         let Some(message) = poll_message(bus, cancellation, deadline, messages)? else {
@@ -2547,8 +3864,9 @@ mod tests {
     use super::*;
     use crate::{
         AssetChecksum, AssetCommitState, AudioSampleFormat, EditOperation, EditSpec,
-        NativeStudioTrackRole, PixelFormat, SourceCoverage, StudioAssetCodec, StudioAssetEncoding,
-        StudioAssetRawCaps, StudioAudioCodec, StudioAudioRawCaps, StudioProjectId,
+        FrameTimestamp, NativeStudioTrackRole, NormalizedRect, PixelFormat, SourceCoverage,
+        StudioAssetCodec, StudioAssetEncoding, StudioAssetRawCaps, StudioAudioCodec,
+        StudioAudioRawCaps, StudioCursorImage, StudioCursorObservation, StudioProjectId,
         StudioProjectManifest, StudioSourceName, StudioSourceSet, StudioState,
         StudioTimelineCompiler, StudioVideoCodec, StudioVideoRawCaps, TempAssetCommitTicket,
         TimeBase, TimelineSource, TrackKind, commit_verified_temporary,
@@ -2678,6 +3996,175 @@ mod tests {
             },
         )
         .expect("edited plan")
+    }
+
+    fn composition_plan() -> CanonicalEditPlan {
+        let time_base = TimeBase::new(30).expect("30 Hz timebase");
+        let at = |ticks| crate::RationalTime::new(ticks, time_base);
+        let coverage = [TrackKind::Screen, TrackKind::Camera, TrackKind::SystemAudio]
+            .into_iter()
+            .map(|track| SourceCoverage {
+                track,
+                start: at(0),
+                end: at(60),
+            })
+            .collect();
+        let mut vfr_video_pts = BTreeMap::new();
+        vfr_video_pts.insert(
+            TrackKind::Screen,
+            vec![
+                at(0),
+                at(1),
+                at(3),
+                at(4),
+                at(7),
+                at(11),
+                at(18),
+                at(30),
+                at(45),
+            ],
+        );
+        StudioTimelineCompiler::compile(
+            &TimelineSource {
+                duration: at(60),
+                coverage,
+                vfr_video_pts,
+            },
+            &EditSpec {
+                version: crate::STUDIO_EDIT_VERSION,
+                revision: 9,
+                operations: vec![
+                    EditOperation::Trim {
+                        start: at(3),
+                        end: at(57),
+                    },
+                    EditOperation::DeleteRange {
+                        start: at(15),
+                        end: at(21),
+                    },
+                    EditOperation::Speed {
+                        start: at(30),
+                        end: at(45),
+                        numerator: 2,
+                        denominator: 1,
+                    },
+                    EditOperation::Layout {
+                        start: at(3),
+                        end: at(30),
+                        preset: LayoutPreset::SideBySide,
+                    },
+                    EditOperation::Layout {
+                        start: at(30),
+                        end: at(39),
+                        preset: LayoutPreset::CameraFull,
+                    },
+                    EditOperation::CameraTransform {
+                        start: at(39),
+                        end: at(57),
+                        rect: NormalizedRect {
+                            x_millionths: 650_000,
+                            y_millionths: 550_000,
+                            width_millionths: 300_000,
+                            height_millionths: 350_000,
+                        },
+                        corner_radius_milli: 700,
+                    },
+                    EditOperation::CursorTransform {
+                        start: at(3),
+                        end: at(45),
+                        scale_milli: 1_500,
+                        hidden: false,
+                    },
+                    EditOperation::CursorTransform {
+                        start: at(45),
+                        end: at(57),
+                        scale_milli: 1_000,
+                        hidden: true,
+                    },
+                    EditOperation::AudioGain {
+                        track: TrackKind::SystemAudio,
+                        start: at(30),
+                        end: at(45),
+                        gain_millibels: -900,
+                        muted: false,
+                    },
+                    EditOperation::Background {
+                        start: at(3),
+                        end: at(57),
+                        style: crate::BackgroundStyle::SolidRgb {
+                            red: 8,
+                            green: 12,
+                            blue: 20,
+                        },
+                    },
+                ],
+            },
+        )
+        .expect("composition plan")
+    }
+
+    fn cursor_timeline() -> StudioCursorTimeline {
+        let image = StudioCursorImage::new(
+            1,
+            12,
+            16,
+            1,
+            1,
+            PixelFormat::Rgba8,
+            (0..12 * 16)
+                .flat_map(|index| {
+                    if index % 5 == 0 {
+                        [255, 64, 32, 255]
+                    } else {
+                        [255, 255, 255, 220]
+                    }
+                })
+                .collect(),
+        )
+        .expect("cursor image");
+        StudioCursorTimeline::new(
+            320,
+            180,
+            vec![
+                StudioCursorObservation::new(
+                    1,
+                    FrameTimestamp::new(0, 500_000_000).expect("cursor timestamp"),
+                    true,
+                    64,
+                    45,
+                    Some(1),
+                    false,
+                    false,
+                    Some(image),
+                )
+                .expect("first cursor observation"),
+                StudioCursorObservation::new(
+                    2,
+                    FrameTimestamp::new(500_000_000, 500_000_000).expect("cursor timestamp"),
+                    true,
+                    160,
+                    90,
+                    Some(1),
+                    true,
+                    false,
+                    None,
+                )
+                .expect("click cursor observation"),
+                StudioCursorObservation::new(
+                    3,
+                    FrameTimestamp::new(1_000_000_000, 1_000_000_000).expect("cursor timestamp"),
+                    true,
+                    250,
+                    120,
+                    Some(1),
+                    false,
+                    false,
+                    None,
+                )
+                .expect("final cursor observation"),
+            ],
+        )
+        .expect("cursor timeline")
     }
 
     fn short_profile_plan(with_audio: bool) -> CanonicalEditPlan {
@@ -2816,6 +4303,46 @@ mod tests {
         .expect("commit preview audio")
     }
 
+    fn commit_preview_cursor_asset(
+        store: &mut FilesystemStudioOriginalStore,
+        project_id: StudioProjectId,
+        id_marker: u8,
+        operation_marker: u8,
+    ) -> StudioAsset {
+        let bytes = cursor_timeline().encode().expect("cursor timeline bytes");
+        let asset = StudioAsset {
+            version: crate::STUDIO_ASSET_VERSION,
+            id: StudioAssetId::from_csprng([id_marker; 16]).expect("asset ID"),
+            track: TrackKind::Cursor,
+            source_name: StudioSourceName::new("cursor-000.frame-cursor")
+                .expect("portable cursor name"),
+            byte_len: u64::try_from(bytes.len()).expect("cursor asset length"),
+            start: quarter(0),
+            duration: quarter(8),
+            checksum: AssetChecksum::from_content(&bytes),
+            commit_state: AssetCommitState::Temporary,
+            encoding: StudioAssetEncoding::CursorTimelineV1 {
+                frame_width: 320,
+                frame_height: 180,
+            },
+        };
+        store
+            .stage_temporary_bytes(project_id, &asset, &bytes)
+            .expect("stage preview cursor");
+        commit_verified_temporary(
+            store,
+            TempAssetCommitTicket::new(
+                project_id,
+                crate::StudioOperationId::from_csprng([operation_marker; 16])
+                    .expect("operation ID"),
+                1,
+                asset,
+            )
+            .expect("cursor commit ticket"),
+        )
+        .expect("commit preview cursor")
+    }
+
     fn preview_graph_fixture(
         directory: &Path,
     ) -> (
@@ -2881,6 +4408,7 @@ mod tests {
             75,
             85,
         );
+        let cursor = commit_preview_cursor_asset(&mut store, project_id, 76, 86);
         let edits = EditSpec {
             version: crate::STUDIO_EDIT_VERSION,
             revision: 1,
@@ -2897,7 +4425,13 @@ mod tests {
             id: project_id,
             revision: 1,
             state: StudioState::Editing,
-            assets: vec![first_screen, second_screen.clone(), camera, system_audio],
+            assets: vec![
+                first_screen,
+                second_screen.clone(),
+                camera,
+                system_audio,
+                cursor,
+            ],
             edits: edits.clone(),
         };
         let timeline = TimelineSource {
@@ -2920,6 +4454,11 @@ mod tests {
                 },
                 SourceCoverage {
                     track: TrackKind::SystemAudio,
+                    start: quarter(0),
+                    end: quarter(8),
+                },
+                SourceCoverage {
+                    track: TrackKind::Cursor,
                     start: quarter(0),
                     end: quarter(8),
                 },
@@ -2989,6 +4528,171 @@ mod tests {
             bounded_video_close_hold_ns(10, 11 + MAX_STUDIO_VIDEO_CLOSE_HOLD_NS),
             Err(NativeExecutionError::InvalidOutput)
         ));
+    }
+
+    #[test]
+    fn first_window_video_buffer_is_anchored_once_to_its_exact_boundary() {
+        let executor = StudioEditExecutor::compile(
+            &composition_plan(),
+            MAX_STUDIO_EDIT_EXECUTION_WINDOWS,
+            &CancellationToken::new(),
+        )
+        .expect("composition executor");
+        let schedule =
+            StudioCompositionSchedule::new(executor.windows()).expect("composition schedule");
+        let first = schedule.windows()[0];
+        let second = schedule.windows()[1];
+        let active_window = Mutex::new(None);
+
+        assert_eq!(
+            first_window_buffer_pts(
+                gst::ClockTime::from_nseconds(first.output_start_ns + 33_000_000),
+                first,
+                &active_window,
+            )
+            .expect("delayed first frame"),
+            Some(gst::ClockTime::from_nseconds(first.output_start_ns))
+        );
+        assert_eq!(
+            first_window_buffer_pts(
+                gst::ClockTime::from_nseconds(first.output_start_ns + 66_000_000),
+                first,
+                &active_window,
+            )
+            .expect("later frame"),
+            None
+        );
+        assert_eq!(
+            first_window_buffer_pts(
+                gst::ClockTime::from_nseconds(second.output_start_ns),
+                second,
+                &active_window,
+            )
+            .expect("exact next boundary"),
+            None
+        );
+    }
+
+    #[test]
+    fn flushing_segment_rebase_preserves_source_mapping_and_event_identity() {
+        prepare_runtime().expect("trusted GStreamer runtime");
+        assert_eq!(
+            consumed_event_probe_return(),
+            gst::PadProbeReturn::Handled,
+            "consumed events must remain ownership-safe on GStreamer 1.24"
+        );
+        let mut segment = gst::FormattedSegment::<gst::ClockTime>::new();
+        segment.set_rate(2.0);
+        segment.set_base(gst::ClockTime::ZERO);
+        segment.set_start(gst::ClockTime::from_seconds(3));
+        segment.set_stop(gst::ClockTime::from_seconds(5));
+        let seqnum = gst::Seqnum::next();
+        let mut event = gst::event::Segment::builder(&segment)
+            .seqnum(seqnum)
+            .build();
+        event
+            .get_mut()
+            .expect("unique segment event")
+            .set_running_time_offset(19);
+
+        let output_start = gst::ClockTime::from_mseconds(700);
+        let rebased =
+            rebase_time_segment_event(&event, output_start).expect("rebased time segment");
+        assert_eq!(rebased.seqnum(), seqnum);
+        assert_eq!(rebased.running_time_offset(), 19);
+        let gst::EventView::Segment(rebased_event) = rebased.view() else {
+            panic!("rebased event kind");
+        };
+        let rebased_segment = rebased_event
+            .segment()
+            .downcast_ref::<gst::ClockTime>()
+            .expect("time segment");
+        assert_eq!(rebased_segment.rate(), 2.0);
+        assert_eq!(rebased_segment.base(), Some(output_start));
+        assert_eq!(
+            rebased_segment.start(),
+            Some(gst::ClockTime::from_seconds(3))
+        );
+        assert_eq!(
+            rebased_segment.stop(),
+            Some(gst::ClockTime::from_seconds(5))
+        );
+    }
+
+    #[test]
+    fn bgra_effects_honor_padded_rows() {
+        let mut frame = vec![0_u8; 32];
+        for row in 0..2 {
+            let row_start = row * 16;
+            for pixel in 0..3 {
+                frame[row_start + pixel * 4 + 3] = u8::MAX;
+            }
+            frame[row_start + 12..row_start + 16].fill(0xa5);
+        }
+
+        apply_rounded_bgra_mask(&mut frame, 3, 2, 1_000).expect("padded BGRA frame");
+
+        assert_eq!(frame[12..16], [0xa5; 4]);
+        assert_eq!(frame[28..32], [0xa5; 4]);
+        assert!(matches!(
+            apply_rounded_bgra_mask(&mut frame[..23], 3, 2, 1_000),
+            Err(NativeExecutionError::InvalidOutput)
+        ));
+    }
+
+    #[test]
+    fn bgra_canvas_layout_scales_into_padded_rows_and_clears_the_remainder() {
+        let mut frame = vec![0xa5_u8; 32];
+        for (row, base) in [(0_usize, 1_u8), (1, 11)] {
+            let row_start = row * 16;
+            for pixel in 0..3 {
+                let value = base + u8::try_from(pixel).expect("bounded pixel");
+                frame[row_start + pixel * 4..row_start + pixel * 4 + 4].copy_from_slice(&[
+                    value,
+                    value,
+                    value,
+                    u8::MAX,
+                ]);
+            }
+        }
+        let mut scratch = Vec::new();
+        apply_bgra_canvas_layout(
+            &mut frame,
+            3,
+            2,
+            CanvasPlacement {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                visible: true,
+            },
+            &mut scratch,
+        )
+        .expect("bounded padded canvas");
+
+        assert_eq!(&frame[0..4], &[1, 1, 1, u8::MAX]);
+        assert_eq!(&frame[4..8], &[2, 2, 2, u8::MAX]);
+        assert_eq!(&frame[8..16], &[0; 8]);
+        assert_eq!(&frame[16..20], &[11, 11, 11, u8::MAX]);
+        assert_eq!(&frame[20..24], &[12, 12, 12, u8::MAX]);
+        assert_eq!(&frame[24..32], &[0; 8]);
+
+        apply_bgra_canvas_layout(
+            &mut frame,
+            3,
+            2,
+            CanvasPlacement {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 2,
+                visible: false,
+            },
+            &mut scratch,
+        )
+        .expect("hidden canvas");
+        assert!(frame.iter().all(|byte| *byte == 0));
     }
 
     #[test]
@@ -3066,6 +4770,14 @@ mod tests {
                 .map(|camera| (camera.frame.width, camera.frame.height)),
             Some((320, 180))
         );
+        assert_eq!(
+            (sample.composited.width, sample.composited.height),
+            (320, 180)
+        );
+        assert_ne!(
+            sample.composited.rgb, sample.screen.frame.rgb,
+            "camera/cursor composition must be the preview product"
+        );
         assert!(sample.microphone.silent());
         assert!(!sample.system_audio.silent());
         assert_eq!(sample.system_audio.gain_millibels, -600);
@@ -3136,6 +4848,8 @@ mod tests {
         let mut progress = Vec::new();
         let aligned = NativeStudioAlignedSources {
             screen: path(NativeStudioTrackRole::Screen),
+            camera: None,
+            cursor: None,
             microphone: None,
             system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
         };
@@ -3249,6 +4963,155 @@ mod tests {
         );
     }
 
+    #[test]
+    fn camera_cursor_layout_vfr_speed_audio_and_long_seek_share_one_golden() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let tracks = record_synthetic_studio_tracks(
+            directory.path(),
+            Duration::from_secs(2),
+            &CancellationToken::new(),
+        )
+        .expect("synthetic composition originals");
+        let path = |role| {
+            tracks
+                .iter()
+                .find(|track| track.role == role)
+                .expect("requested original")
+                .path
+                .clone()
+        };
+        let cursor = cursor_timeline();
+        let cursor_path = directory.path().join("cursor.frame-cursor");
+        fs::write(
+            &cursor_path,
+            cursor.encode().expect("encode cursor timeline"),
+        )
+        .expect("write cursor timeline");
+        let plan = composition_plan();
+        let executor = StudioEditExecutor::compile(
+            &plan,
+            MAX_STUDIO_EDIT_EXECUTION_WINDOWS,
+            &CancellationToken::new(),
+        )
+        .expect("composition executor");
+        let output = directory.path().join("composited.webm");
+        let sources = NativeStudioAlignedSources {
+            screen: path(NativeStudioTrackRole::Screen),
+            camera: Some(path(NativeStudioTrackRole::Camera)),
+            cursor: Some(cursor_path),
+            microphone: None,
+            system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
+        };
+        let mut render_progress = Vec::new();
+        let artifact = render_studio_export_with_edits_and_progress(
+            &sources,
+            &output,
+            &plan,
+            NativeStudioExportProfile::EditableWebM,
+            &CancellationToken::new(),
+            |event| render_progress.push(event),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "camera/cursor composition export failed: {error:?}; progress={render_progress:?}"
+            )
+        });
+        assert_eq!(artifact.plan_digest, plan.digest());
+        assert_eq!(artifact.execution_windows, executor.windows().len());
+        assert_eq!(artifact.audio_tracks, 1);
+        let duration_ns = media_duration(&artifact.path).nseconds();
+        let expected_ns = u64::try_from(
+            exact_duration_to_std(plan.output_duration)
+                .expect("output duration")
+                .as_nanos(),
+        )
+        .expect("bounded duration");
+        assert!(
+            duration_ns.abs_diff(expected_ns) <= 100_000_000,
+            "composited duration {duration_ns}ns drifted from {expected_ns}ns"
+        );
+
+        for output_time in [
+            ExactDuration::new(1, 4).expect("side-by-side time"),
+            ExactDuration::new(4, 5).expect("camera-full time"),
+            ExactDuration::new(6, 5).expect("camera-bubble time"),
+        ] {
+            let execution = executor
+                .window_at_output(output_time, &CancellationToken::new())
+                .expect("execution window");
+            let source_time = execution
+                .source_time_at_output(output_time)
+                .expect("source time");
+            let source_position = exact_duration_to_std(source_time).expect("source position");
+            let screen = decode_studio_preview_frame(
+                &sources.screen,
+                source_position,
+                &CancellationToken::new(),
+            )
+            .expect("screen reference");
+            let camera = decode_studio_preview_frame(
+                sources.camera.as_ref().expect("camera path"),
+                source_position,
+                &CancellationToken::new(),
+            )
+            .expect("camera reference");
+            let source_time_ns =
+                u64::try_from(source_position.as_nanos()).expect("bounded source time");
+            let reference = compose_studio_frame(
+                &screen,
+                Some(&camera),
+                Some(&cursor),
+                source_time_ns,
+                execution.style,
+            )
+            .expect("reference composition");
+            let decoded = decode_studio_preview_frame(
+                &artifact.path,
+                exact_duration_to_std(output_time).expect("output position"),
+                &CancellationToken::new(),
+            )
+            .expect("decoded composited export");
+            let (mean_error, p99_error) = rgb_error(&reference.rgb, &decoded.rgb);
+            let severe_outlier_basis_points =
+                rgb_outlier_basis_points(&reference.rgb, &decoded.rgb, 96);
+            assert!(
+                mean_error <= 14 && severe_outlier_basis_points <= 500,
+                "composition golden drift at {output_time:?}: mean={mean_error}, p99={p99_error}, severe_outliers={severe_outlier_basis_points}bp, decoded_pts_ns={}, source_time_ns={source_time_ns}, screen_pts_ns={}, camera_pts_ns={}",
+                decoded.pts_ns,
+                screen.pts_ns,
+                camera.pts_ns,
+            );
+        }
+
+        let day = StudioCursorTimeline::new(
+            320,
+            180,
+            (0..86_400_u64)
+                .map(|second| {
+                    StudioCursorObservation::new(
+                        second + 1,
+                        FrameTimestamp::new(second * 1_000_000_000, 1_000_000_000)
+                            .expect("day-scale cursor timestamp"),
+                        false,
+                        0,
+                        0,
+                        None,
+                        false,
+                        false,
+                        None,
+                    )
+                    .expect("day-scale cursor observation")
+                })
+                .collect(),
+        )
+        .expect("day-scale sparse cursor timeline");
+        assert_eq!(
+            day.observation_at_ns(86_399_999_999_999)
+                .map(StudioCursorObservation::sequence),
+            Some(86_400)
+        );
+    }
+
     fn rgb_error(expected: &[u8], actual: &[u8]) -> (u64, u8) {
         assert_eq!(expected.len(), actual.len(), "RGB frame shape");
         assert!(!expected.is_empty(), "RGB frame must be nonempty");
@@ -3275,6 +5138,20 @@ mod tests {
             .and_then(|error| u8::try_from(error).ok())
             .expect("nonempty RGB frame");
         (mean, p99)
+    }
+
+    fn rgb_outlier_basis_points(expected: &[u8], actual: &[u8], threshold: u8) -> u64 {
+        assert_eq!(expected.len(), actual.len(), "RGB frame shape");
+        let outliers = expected
+            .iter()
+            .zip(actual)
+            .filter(|(expected, actual)| expected.abs_diff(**actual) > threshold)
+            .count();
+        u64::try_from(outliers)
+            .expect("bounded outlier count")
+            .checked_mul(10_000)
+            .expect("bounded basis points")
+            / u64::try_from(expected.len()).expect("bounded frame length")
     }
 
     #[test]
@@ -3310,6 +5187,8 @@ mod tests {
         };
         let sources = NativeStudioAlignedSources {
             screen: path(NativeStudioTrackRole::Screen),
+            camera: None,
+            cursor: None,
             microphone: None,
             system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
         };
@@ -3334,7 +5213,7 @@ mod tests {
                 profile,
                 &CancellationToken::new(),
             )
-            .expect("exact approved native profile");
+            .unwrap_or_else(|error| panic!("exact approved {profile:?} profile: {error:?}"));
             assert_eq!(artifact.approved_profile, Some(expected));
             assert_eq!(artifact.video.width, expected.resolution.width);
             assert_eq!(artifact.video.height, expected.resolution.height);
@@ -3355,6 +5234,8 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let sources = NativeStudioAlignedSources {
             screen: directory.path().join("unused-screen.webm"),
+            camera: None,
+            cursor: None,
             microphone: None,
             system_audio: Some(directory.path().join("unused-system-audio.webm")),
         };
@@ -3363,6 +5244,8 @@ mod tests {
             render_studio_export_with_edits(
                 &NativeStudioAlignedSources {
                     screen: directory.path().join("unused-screen.webm"),
+                    camera: None,
+                    cursor: None,
                     microphone: None,
                     system_audio: None,
                 },
@@ -3447,6 +5330,8 @@ mod tests {
         let artifact = render_studio_export_with_edits(
             &NativeStudioAlignedSources {
                 screen: path(NativeStudioTrackRole::Screen),
+                camera: None,
+                cursor: None,
                 microphone: None,
                 system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
             },
@@ -3504,6 +5389,8 @@ mod tests {
         let artifact = render_studio_export_with_edits(
             &NativeStudioAlignedSources {
                 screen: path(NativeStudioTrackRole::Screen),
+                camera: None,
+                cursor: None,
                 microphone: None,
                 system_audio: Some(path(NativeStudioTrackRole::SystemAudio)),
             },
@@ -3555,6 +5442,8 @@ mod tests {
             render_studio_export_with_edits(
                 &NativeStudioAlignedSources {
                     screen: PathBuf::from("unused-screen.webm"),
+                    camera: None,
+                    cursor: None,
                     microphone: None,
                     system_audio: Some(PathBuf::from("unused-audio.webm")),
                 },
@@ -3595,6 +5484,8 @@ mod tests {
                 }],
                 &NativeStudioAlignedSources {
                     screen: PathBuf::from("screen.webm"),
+                    camera: None,
+                    cursor: None,
                     microphone: None,
                     system_audio: Some(PathBuf::from("audio.webm")),
                 },
