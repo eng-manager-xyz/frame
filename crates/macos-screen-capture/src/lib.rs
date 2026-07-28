@@ -166,6 +166,7 @@ pub struct MacOsCaptureFrame {
     target: ScreenTargetBinding,
     sequence: u64,
     source_pts_ns: Option<u64>,
+    master_arrival_ns: Option<u64>,
     timestamp: FrameTimestamp,
     spec: VideoFrameSpec,
     pixels: Vec<u8>,
@@ -188,6 +189,15 @@ impl MacOsCaptureFrame {
     #[must_use]
     pub const fn source_pts_ns(&self) -> Option<u64> {
         self.source_pts_ns
+    }
+
+    /// Callback arrival on the caller-supplied host-monotonic master clock.
+    ///
+    /// Production shared-clock starts always populate this value. Portable
+    /// timestamp tests and legacy single-source starts may leave it absent.
+    #[must_use]
+    pub const fn master_arrival_ns(&self) -> Option<u64> {
+        self.master_arrival_ns
     }
 
     #[must_use]

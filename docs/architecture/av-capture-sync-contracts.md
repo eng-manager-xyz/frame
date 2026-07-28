@@ -190,11 +190,10 @@ timebase before committing any cursor. Existing session-queue buffers and the
 authenticated tail are then pushed through their owned appsrc edges before
 graph EOS. Cancel never publishes a tail. An adapter that cannot reproduce a
 confirmed tail cannot reconcile Stop as successful.
-The runtime owns a validated bounded EOS deadline,
-rejects a regressing caller clock, and rotates its first-polled source so a
-one-buffer poll budget cannot starve later sources. This runtime is currently a
-preview/execution foundation. Explicit `quiesce` makes one terminal
-reconciliation/stop attempt and independently confirms GStreamer `Null`; it may
+The runtime owns a validated bounded EOS deadline, rejects a regressing caller
+clock, and rotates its first-polled source so a one-buffer poll budget cannot
+starve later sources. Explicit `quiesce` makes one terminal reconciliation/stop
+attempt and independently confirms GStreamer `Null`; it may
 retry the same sticky terminal authority after an unconfirmed result. Dropping
 a runtime still in `Playing` or `EosRequested` invokes that same one-attempt
 path. Adapter and graph unwinds are contained separately so a hostile native
@@ -203,8 +202,9 @@ does not wait for EOS and does not claim a completed artifact. Native calls are
 bounded by their operation-ticket timeout contract, but safe Rust cannot
 preempt an adapter that blocks after violating that contract; production
 adapters still need their platform watchdog/process-isolation policy. The
-runtime does not yet parse `level` messages into production meters or connect
-its returned samples to the desktop recording mux.
+desktop owner derives coarse meters from isolated typed audio outputs and routes
+the runtime's mixed audio into the final WebM plus isolated audio/camera outputs
+into Studio originals; no raw media crosses IPC.
 
 ## Current macOS system-audio primitive
 
@@ -238,10 +238,9 @@ stop; resume starts a new epoch and cannot reuse the prior calibration.
 
 Because this ScreenCaptureKit mix is one virtual source, it has no physical
 default-route or hotplug choice; catalog revision advances on permission
-changes. The adapter still does not provide microphone or camera capture, and
-the normalized runtime remains a preview/execution foundation whose
-authenticated terminal output is not yet connected to the desktop recording
-mux.
+changes. The single-source adapter remains available as a primitive, while the
+desktop product uses the combined adapter below when any optional input is
+requested.
 
 `MacOsDeviceAvBridge` is the production combined optional-input adapter. It
 places that virtual system-audio source and the GStreamer microphone/camera
@@ -250,7 +249,28 @@ origin, and rebases ScreenCaptureKit callback arrival to that origin before
 the ordinary per-source calibration. One session therefore owns
 microphone/system mixing, isolated audio originals, camera record/preview, a
 single permission/hotplug/power event stream, and one terminal reconciliation
-tail. This combined bridge remains unwired to the desktop recording owner.
+tail. The desktop recording owner consumes it through the wrapper below.
+
+`MacOsOptionalInputRecording` is the product-facing owner around that combined
+bridge. It requests only selected permissions, resolves each confirmed current
+default without authorizing silent default changes, falls back when an optional
+source is denied or absent, builds the recording-mode graph, and exposes
+bounded poll/control/terminal operations. The macOS desktop starts
+ScreenCaptureKit with the same host-monotonic origin, calibrates five screen
+callback arrivals into a `SourceTimebase`, and feeds corrected screen plus mixed
+audio into the final recording graph. In Studio mode it also feeds screen,
+isolated microphone/system-audio originals, and camera into the journaled
+multi-track owner.
+
+Pause stops the native optional inputs while the desktop drops screen frames
+from the declared timeline. Resume validates a fresh catalog, rotates every
+optional source epoch, recalibrates it, and rebases the screen timebase without
+replacing either output graph. Wake invokes that same fresh-epoch recovery.
+Permission revocation and catalog/profile loss disable the affected source and
+serialize EOS on its graph branch when another optional source remains; the
+screen recording continues. When all requested optional sources are unavailable
+the wrapper retains a terminally accountable no-op input session and the
+desktop records screen-only.
 
 ## Master clock and declared timeline
 

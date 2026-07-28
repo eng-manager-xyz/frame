@@ -9,7 +9,7 @@ use std::{collections::HashSet, fmt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ipc::{CaptureTargetKind, RecorderMode, ValidatedPath, valid_opaque_id};
+use crate::ipc::{CaptureTargetKind, DeviceClass, RecorderMode, ValidatedPath, valid_opaque_id};
 
 pub const CAPTURE_TARGET_CATALOG_VERSION: u16 = 1;
 pub const CAPTURE_ARTIFACT_SUMMARY_VERSION: u16 = 1;
@@ -509,6 +509,12 @@ pub struct NativeCaptureStartRequest {
     /// Request system audio when the native backend can start it safely.
     /// A backend may report a verified screen-only fallback in its outcome.
     pub system_audio_enabled: bool,
+    /// Request the confirmed default microphone through the normalized
+    /// native-input bridge. Denial may fall back to the remaining sources.
+    pub microphone_enabled: bool,
+    /// Request the confirmed default camera as an isolated Studio original.
+    /// Visual composition remains owned by the Studio editor.
+    pub camera_enabled: bool,
 }
 
 impl fmt::Debug for NativeCaptureStartRequest {
@@ -521,6 +527,8 @@ impl fmt::Debug for NativeCaptureStartRequest {
             .field("frame_rate", &self.frame_rate)
             .field("exclude_frame_windows", &self.exclude_frame_windows)
             .field("system_audio_enabled", &self.system_audio_enabled)
+            .field("microphone_enabled", &self.microphone_enabled)
+            .field("camera_enabled", &self.camera_enabled)
             .finish()
     }
 }
@@ -532,6 +540,8 @@ pub struct NativeRecordingStartOutcome {
     pub recording_token: String,
     /// True only when the owned recording graph accepted system-audio PCM.
     pub system_audio_included: bool,
+    pub microphone_included: bool,
+    pub camera_included: bool,
 }
 
 impl fmt::Debug for NativeRecordingStartOutcome {
@@ -542,6 +552,8 @@ impl fmt::Debug for NativeRecordingStartOutcome {
             .field("target_token", &"<redacted>")
             .field("recording_token", &"<redacted>")
             .field("system_audio_included", &self.system_audio_included)
+            .field("microphone_included", &self.microphone_included)
+            .field("camera_included", &self.camera_included)
             .finish()
     }
 }
@@ -549,6 +561,28 @@ impl fmt::Debug for NativeRecordingStartOutcome {
 #[derive(Clone, PartialEq, Eq)]
 pub struct NativeRecordingControlRequest {
     pub recording_token: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeRecordingInputControlRequest {
+    pub recording_token: String,
+    pub class: DeviceClass,
+    pub gain_milli: u16,
+    pub muted: bool,
+    pub enabled: bool,
+}
+
+impl fmt::Debug for NativeRecordingInputControlRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeRecordingInputControlRequest")
+            .field("recording_token", &"<redacted>")
+            .field("class", &self.class)
+            .field("gain_milli", &self.gain_milli)
+            .field("muted", &self.muted)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 impl fmt::Debug for NativeRecordingControlRequest {
@@ -687,7 +721,17 @@ pub struct NativeEditableWebmExportOutcome {
 /// Privacy-safe, raw-media-free telemetry for one active native recording.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeRecordingMeter {
+    pub microphone_basis_points: u16,
     pub system_audio_basis_points: u16,
+    pub camera_active: bool,
+}
+
+/// Bounded, label-free inventory for native optional inputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeInputDeviceCounts {
+    pub microphones: u16,
+    pub system_audio_sources: u16,
+    pub cameras: u16,
 }
 
 impl fmt::Debug for NativeEditableWebmExportOutcome {
@@ -707,6 +751,12 @@ pub trait NativeDesktopBackend {
     fn prepare_capture(&mut self) -> Result<NativePermissionOutcome, NativeDesktopBackendError>;
 
     fn enumerate_targets(&mut self) -> Result<CaptureTargetCatalog, NativeDesktopBackendError>;
+
+    fn enumerate_input_devices(
+        &mut self,
+    ) -> Result<NativeInputDeviceCounts, NativeDesktopBackendError> {
+        Ok(NativeInputDeviceCounts::default())
+    }
 
     fn select_target(
         &mut self,
@@ -741,6 +791,27 @@ pub trait NativeDesktopBackend {
         _request: &NativeRecordingControlRequest,
     ) -> Result<NativeRecordingMeter, NativeDesktopBackendError> {
         Ok(NativeRecordingMeter::default())
+    }
+
+    fn pause_recording(
+        &mut self,
+        _request: &NativeRecordingControlRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
+    fn resume_recording(
+        &mut self,
+        _request: &NativeRecordingControlRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
+    fn set_recording_input(
+        &mut self,
+        _request: &NativeRecordingInputControlRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
     }
 
     fn stop_recording(

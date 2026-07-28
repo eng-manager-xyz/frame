@@ -1,28 +1,31 @@
 # Audio/camera synchronization local evidence
 
-Status: provider-free contracts, a concrete bounded GStreamer appsrc runtime,
-descriptor-rooted macOS settings, production macOS `NativeAvBridge`
-implementations for ScreenCaptureKit system audio and GStreamer-backed
-microphone/camera inputs, plus a server-throttled production desktop
-telemetry/Leptos consumer path. This record does not claim normalized desktop
-recording integration, lossless terminal-tail mux, physical permission
-success, Bluetooth recovery, wall-clock soak, or performance completion.
+Status: repository-local integration complete, protected hardware evidence
+pending. The production macOS desktop owns one shared host-monotonic screen/A/V
+timeline, a bounded GStreamer appsrc runtime for microphone, system audio, and
+camera, mixed audio into the final WebM, isolated Studio originals, live
+controls, epoch-rotating pause/resume and wake recovery, source-loss fallback,
+and server-throttled telemetry consumed by Leptos. This record does not claim
+physical permission success, audible/visual continuity, Bluetooth recovery,
+wall-clock soak, cross-OS parity, or performance completion.
 
 ## Closure ledger boundary
 
-Issue 25 checkbox 1 is now locally satisfied by the normalized contracts plus
-the production macOS system-audio and microphone/camera native-to-appsrc
-bridges. Checkboxes 6, 7, and 8 remain repository-local gaps. Checkbox 4 is
-locally satisfied by the validated V2 codec, migration rules, and the
+Issue 25 checkbox 1 is locally satisfied by the normalized contracts plus the
+production macOS system-audio and microphone/camera native-to-appsrc bridges.
+Checkbox 4 is locally satisfied by the validated V2 codec, migration rules, and the
 revisioned descriptor-rooted `DurableAvSettingsStore` implementation of the
 provider-neutral `AvSettingsStorage` boundary. Checkbox 5 is locally satisfied
 by the versioned desktop input-telemetry event, native meter adapter, runtime
 throttle/coalescer, strict WebView decoder, and Leptos meter/preview-state
 consumer. Checkboxes 2, 3, 9, and 10 remain locally satisfied by the executable
 graph, clock/timestamp logic, optional-device negotiation, and privacy-safe
-diagnostic model. No issue-25 checkbox is currently `protected_pending`; the
-hardware portions of checkboxes 6–8 become meaningful only after the remaining
-local integration gaps close.
+diagnostic model. The repository-local portions of checkboxes 6, 7, and 8 are
+now satisfied by the product recording owner described below. Those three
+checkboxes are `protected_pending` because their remaining claims require
+representative physical devices, recorded media, and the declared OS matrix.
+Issue 25 has no remaining repository-local gap, but it is not production
+complete.
 
 `MacOsNativeAvBridge` now pumps the production ScreenCaptureKit source through
 the real owned-byte `NativeAvAppSrc` runtime. It supplies callback-derived
@@ -46,16 +49,29 @@ hotplug/default changes. All three optional source classes share one
 master-arrival origin, calibrate per epoch, poll fairly, and confirm
 multi-source teardown.
 
-The macOS desktop composition still muxes `MacOsSystemAudioSource` with selected
-display/window/region video through the direct worker and computes a bounded
-coarse system-audio peak. In Studio mode that worker also sends the corrected
-screen and included system-audio samples to isolated recording branches under
-the private Studio root, commits those verified originals through the durable
-Studio journal, and publishes an authenticated canonical project to Rust-only
-desktop authority. It does not yet use `MacOsDeviceAvBridge`, so
-microphone/camera and mixed-audio outputs remain disconnected. Only Instant
-screen-only recording uses the normalized screen ingress/pump. The recorder
-health command is a bounded trigger at 100 ms, but
+The macOS desktop now selects `MacOsDeviceAvBridge` whenever microphone, system
+audio, or camera is requested. `MacOsOptionalInputRecording` owns permission
+fallback, exact default-device resolution, the negotiated recording-mode
+GStreamer graph, and terminal reconciliation. ScreenCaptureKit starts with the
+same `Instant` used by the optional-input bridge. Five callback-arrival samples
+calibrate the screen `SourceTimebase`; each optional source independently
+calibrates to that same host-monotonic origin. The worker sends corrected screen
+frames and mixed audio to the final WebM and sends corrected screen, isolated
+microphone/system originals, and camera samples to the journal-fenced Studio
+recording. The older direct source remains only for the screen-only path.
+
+Live microphone/system controls change the owned mixer branch without replacing
+the graph or isolated original. Camera track inclusion gates new Studio camera
+samples; pausing stops every optional native input, drops screen frames from the
+declared timeline, and resume rotates/recalibrates source epochs in the same
+output graph. Wake performs that same fresh-catalog epoch recovery
+automatically. Permission revocation, unplug, default change, wireless-profile
+change, and format change retire the affected graph branch when another source
+remains. If no optional source is available, the product owner retains a
+screen-only recording instead of failing start. Privacy-safe diagnostic
+class/capability/timing codes are logged without labels or native identifiers.
+
+The recorder health command is a bounded trigger at 100 ms, but
 the native runtime is the authority for whether a UI event may be emitted. It
 coalesces repeated observations, emits at most once per 100 ms, and sends only
 0..=10,000 microphone/system levels plus `disabled`/`unavailable`/`active`
@@ -66,23 +82,25 @@ retains the last displayed meter rather than reading an unthrottled snapshot.
 Unknown telemetry fields fail deserialization, and raw PCM/video, paths, labels,
 and device identities have no field in the event.
 
-The normalized A/V runtime now has a recording mode that returns bounded,
+The normalized A/V runtime has a recording mode that returns bounded,
 typed mixed-audio, isolated microphone/system-audio original, and camera
 samples and holds EOS completion until every recording sink is drained. The
 isolated audio branches tee before gain/mute. Stop now authenticates every
 retained session buffer and the
 complete replayable native callback tail, pushes them before graph EOS, and
 replays the identical tail after a lost acknowledgement without a second
-native release. The combined runtime's mixed/isolated-audio and camera outputs
-are still not connected to the desktop mux or Studio originals store; the
-current Studio system-audio branch is fed by the older direct source. Shared screen/A/V
-runtime ownership, lossless desktop mux proof, continuous mixed-source
-controls, and product recovery remain absent.
+native release. The desktop optional-input worker consumes all four output
+kinds, preserves their timestamps and per-branch sequences, and drains the
+runtime to confirmed EOS/`Null` before finishing either the flattened artifact
+or Studio originals. The shared-clock normalizer rejects pre-origin samples,
+enforces the startup and long-run sync policies, rebases screen and optional
+inputs across pause/resume, and does not publish an optimistic artifact after a
+terminal failure.
 GStreamer-version-specific incomplete terminal `GAP` sentinels are consumed
 without being exposed as media, every consumed sentinel counts against the
 same bounded pull budget, and incomplete non-`GAP` samples still fail closed.
-Consequently these local results satisfy checkboxes 1 and 5 but do not yet
-satisfy checkboxes 6–8.
+Consequently no issue-25 checkbox remains a repository-local gap. The physical
+observations required by checkboxes 6–8 remain protected pending.
 
 ## Contract surface exercised locally
 
@@ -193,7 +211,11 @@ prove that recording sinks cannot silently switch to drop, one over-budget
 output remains recoverable, poll output stays inside sample/byte limits with
 monotonic per-branch sequences, an undersized fixed
 budget is rejected at attach, and `Null` is refused until queued EOS output is
-drained. Running and EOS-requested abandonment tests prove that Drop attempts
+drained. Live-control cases prove that microphone/system gain and mute preserve
+one graph and isolated originals, explicit pause/resume rotates and recalibrates
+source epochs, sleep/wake performs the same recovery automatically, and
+permission loss retires only the failed branch before a clean terminal drain.
+Running and EOS-requested abandonment tests prove that Drop attempts
 native quiescence and confirms the graph `Null` without a second release. A
 hostile adapter-panic test
 proves the unwind is contained, the graph is still confirmed `Null`, and native
@@ -201,11 +223,11 @@ authority remains explicitly unconfirmed; explicit `quiesce` then reconciles
 the same terminal ID on retry. This is a one-attempt destructor safeguard, not
 a hard preemption boundary: an adapter that ignores its operation-ticket
 timeout can still block its caller and needs a platform watchdog or process
-isolation. The suite does not push a physical production device buffer or mux
-the returned mixed-media samples into a desktop recording. The desktop suite
-does exercise the production system-audio meter adapter boundary, server-side
-coalescing, strict raw-media-free event shape, and Leptos release compilation.
-The macOS
+isolation. The suite does not push a physical production device buffer. The
+desktop suite exercises the shared screen clock, typed mixed/isolated/camera
+output routing, Studio optional-track ownership, backend-confirmed
+pause/resume/live controls, server-side telemetry coalescing, strict
+raw-media-free IPC, and Leptos release compilation. The macOS
 bridge suites push fake-native system-audio, microphone, and camera buffers
 through the exact bridge cores and real GStreamer appsrc runtime; physical
 ScreenCaptureKit, `osxaudiosrc`, and `avfvideosrc` execution remains protected.
@@ -256,9 +278,8 @@ this document intentionally does not copy machine-specific paths or logs.
 
 ## Hardware evidence not yet valid
 
-The following will remain protected evidence after the repository-local gaps
-close. It must not currently be used to reclassify those gaps as protected or
-be inferred from local tests:
+The following is protected evidence after the repository-local integration
+closed. It cannot be inferred from local tests:
 
 - macOS, Windows, and Linux physical microphones and cameras across the declared
   built-in, wired, virtual, and wireless route matrix;
@@ -276,8 +297,8 @@ be inferred from local tests:
   continues; and
 - product, media, privacy, accessibility, and release-owner signoff.
 
-Until shared-clock screen/audio composition, lossless desktop mux proof,
-continuous mixed-source controls, and physical device recovery integration
-exist, this slice is suitable for native adapter development and local
-conformance only. Later hardware records cannot repair the absent release code
-and do not authorize production promotion.
+The repository-local product path now owns shared-clock screen/audio
+composition, desktop mux routing, mixed-source controls, and defined recovery.
+Only representative hardware evidence can close the protected rows above; local
+tests cannot manufacture that evidence and do not authorize production
+promotion.

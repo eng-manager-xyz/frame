@@ -3,7 +3,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
         mpsc::Receiver,
     },
     thread,
@@ -11,31 +11,141 @@ use std::{
 };
 
 use frame_macos_av_capture::{
-    MacOsSystemAudioChunk, MacOsSystemAudioDiagnostics, MacOsSystemAudioSource,
-    MacOsSystemAudioStopError,
+    MacOsOptionalInputRecording, MacOsSystemAudioChunk, MacOsSystemAudioDiagnostics,
+    MacOsSystemAudioSource, MacOsSystemAudioStopError,
 };
 use frame_macos_screen_capture::{
-    MacOsCaptureDiagnostics, MacOsCaptureStopError, MacOsScreenCaptureSource,
+    MacOsCaptureDiagnostics, MacOsCaptureFrame, MacOsCaptureStopError, MacOsScreenCaptureSource,
 };
 use frame_media::{
-    BgraScreenFrame, CancellationToken, F32StereoAudioChunk, FrameTimestamp, ScreenAudioRecording,
-    ScreenRecording, ScreenRecordingError,
+    AudioSourceMixSettings, AvDiagnostic, AvSourceClass, AvSyncPolicy, BgraScreenFrame,
+    CalibrationSample, CancellationToken, F32StereoAudioChunk, FrameTimestamp, LatencyConfidence,
+    MonotonicTimeNs, NativeAvGraphOutputKind, NativeAvGraphOutputSample, NativeAvGraphTeardown,
+    NativeAvRuntimeOutcome, NativeAvSourceTeardown, ScreenAudioRecording, ScreenRecording,
+    ScreenRecordingError, SourceLatency, SourceTimebase, StartupCalibration,
 };
 
 use super::{
     CompletedRecordingArtifact, DesktopStudioRecording, NativeDesktopBackendError,
-    WORKER_IDLE_POLL, WorkerCompletion, WorkerControl, WorkerOutcome, all_av_teardown_confirmed,
-    diagnostic_delta, diagnostics_failed, map_capture_error, map_recording_error,
-    map_system_audio_error, recording_finish_teardown_confirmed, system_audio_diagnostic_delta,
-    system_audio_diagnostics_failed,
+    PendingRecordingGraph, WORKER_IDLE_POLL, WorkerCompletion, WorkerControl, WorkerOutcome,
+    all_av_teardown_confirmed, diagnostic_delta, diagnostics_failed, map_capture_error,
+    map_recording_error, map_system_audio_error, recording_finish_teardown_confirmed,
+    system_audio_diagnostic_delta, system_audio_diagnostics_failed,
 };
+use crate::DeviceClass;
 
 const STARTUP_CALIBRATION_TIMEOUT: Duration = Duration::from_millis(80);
+const SCREEN_STARTUP_CALIBRATION_SAMPLES: usize = 5;
+const OPTIONAL_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) struct AvWorkerTelemetry {
     pub(super) screen_diagnostic_baseline: MacOsCaptureDiagnostics,
     pub(super) audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
     pub(super) system_audio_meter: Arc<AtomicU16>,
+}
+
+pub(super) struct OptionalWorkerTelemetry {
+    pub(super) screen_diagnostic_baseline: MacOsCaptureDiagnostics,
+    pub(super) microphone_meter: Arc<AtomicU16>,
+    pub(super) system_audio_meter: Arc<AtomicU16>,
+    pub(super) camera_active: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct SharedScreenClock {
+    source_origin_ns: Option<u64>,
+    calibration: Vec<CalibrationSample>,
+    timebase: Option<SourceTimebase>,
+}
+
+impl SharedScreenClock {
+    fn normalize(
+        &mut self,
+        frame: MacOsCaptureFrame,
+    ) -> Result<Option<(u64, FrameTimestamp, Vec<u8>)>, NativeDesktopBackendError> {
+        let sequence = frame.sequence();
+        let source_pts_ns = frame
+            .source_pts_ns()
+            .ok_or(NativeDesktopBackendError::Internal)?;
+        let master_arrival = MonotonicTimeNs::new(
+            frame
+                .master_arrival_ns()
+                .ok_or(NativeDesktopBackendError::Internal)?,
+        );
+        let duration_ns = frame.timestamp().duration_ns;
+        let discontinuity = frame.timestamp().discontinuity;
+        let origin = *self.source_origin_ns.get_or_insert(source_pts_ns);
+        let source_pts_ns = source_pts_ns
+            .checked_sub(origin)
+            .ok_or(NativeDesktopBackendError::Internal)?;
+        let latency = SourceLatency {
+            reported_ns: 0,
+            confidence: LatencyConfidence::Unknown,
+        };
+        if self.timebase.is_none() {
+            self.calibration.push(CalibrationSample {
+                master_arrival,
+                source_pts_ns,
+                latency,
+            });
+            if self.calibration.len() < SCREEN_STARTUP_CALIBRATION_SAMPLES {
+                return Ok(None);
+            }
+            if self.calibration.len() > SCREEN_STARTUP_CALIBRATION_SAMPLES {
+                return Err(NativeDesktopBackendError::Internal);
+            }
+            let startup = StartupCalibration::measure(&self.calibration)
+                .map_err(|_| NativeDesktopBackendError::Internal)?;
+            let anchor = *self
+                .calibration
+                .last()
+                .ok_or(NativeDesktopBackendError::Internal)?;
+            self.timebase = Some(
+                SourceTimebase::new(AvSyncPolicy::default(), startup, anchor)
+                    .map_err(|_| NativeDesktopBackendError::Internal)?,
+            );
+            self.calibration.clear();
+            return Ok(None);
+        }
+        let timestamp = self
+            .timebase
+            .as_mut()
+            .ok_or(NativeDesktopBackendError::Internal)?
+            .observe(
+                source_pts_ns,
+                duration_ns,
+                master_arrival,
+                latency,
+                discontinuity,
+            )
+            .map_err(|_| NativeDesktopBackendError::Internal)?
+            .frame;
+        Ok(Some((sequence, timestamp, frame.into_pixels())))
+    }
+
+    fn pause(&mut self, now: MonotonicTimeNs) -> Result<(), NativeDesktopBackendError> {
+        if let Some(timebase) = self.timebase.as_mut() {
+            timebase
+                .pause(now)
+                .map_err(|_| NativeDesktopBackendError::Internal)?;
+        } else {
+            self.source_origin_ns = None;
+            self.calibration.clear();
+        }
+        Ok(())
+    }
+
+    fn resume(&mut self, now: MonotonicTimeNs) -> Result<(), NativeDesktopBackendError> {
+        if let Some(timebase) = self.timebase.as_mut() {
+            timebase
+                .resume(now)
+                .map_err(|_| NativeDesktopBackendError::Internal)?;
+        } else {
+            self.source_origin_ns = None;
+            self.calibration.clear();
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -101,6 +211,610 @@ impl SharedClockNormalizer {
     }
 }
 
+pub(super) fn run_optional_av_capture_worker(
+    mut source: MacOsScreenCaptureSource,
+    mut optional: MacOsOptionalInputRecording,
+    mut recording: PendingRecordingGraph,
+    mut studio: Option<DesktopStudioRecording>,
+    control: Receiver<WorkerControl>,
+    telemetry: OptionalWorkerTelemetry,
+) -> WorkerCompletion {
+    let mut screen_clock = SharedScreenClock::default();
+    let mut paused = false;
+    let mut camera_enabled = optional.selection().camera;
+    loop {
+        match control.try_recv() {
+            Ok(WorkerControl::Stop) => {
+                let outcome = finish_optional_worker(
+                    &mut source,
+                    &mut optional,
+                    recording,
+                    studio,
+                    &mut screen_clock,
+                    &telemetry,
+                    camera_enabled,
+                );
+                return WorkerCompletion { outcome };
+            }
+            Ok(WorkerControl::Cancel) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let outcome = cancel_optional_worker(
+                    &mut source,
+                    &mut optional,
+                    recording,
+                    studio,
+                    &telemetry,
+                );
+                return WorkerCompletion { outcome };
+            }
+            Ok(WorkerControl::Pause(reply)) => {
+                let now = optional.master_now();
+                let result = screen_clock.pause(now).and_then(|()| {
+                    optional
+                        .pause()
+                        .map_err(|_| NativeDesktopBackendError::Internal)
+                });
+                let _ = reply.send(result);
+                if result.is_err() {
+                    let outcome = fail_optional_worker(
+                        &mut source,
+                        &mut optional,
+                        recording,
+                        studio,
+                        &telemetry,
+                        NativeDesktopBackendError::Internal,
+                    );
+                    return WorkerCompletion { outcome };
+                }
+                paused = true;
+            }
+            Ok(WorkerControl::Resume(reply)) => {
+                let result = optional
+                    .resume()
+                    .map_err(|_| NativeDesktopBackendError::Internal)
+                    .and_then(|()| screen_clock.resume(optional.master_now()));
+                let _ = reply.send(result);
+                if result.is_err() {
+                    let outcome = fail_optional_worker(
+                        &mut source,
+                        &mut optional,
+                        recording,
+                        studio,
+                        &telemetry,
+                        NativeDesktopBackendError::Internal,
+                    );
+                    return WorkerCompletion { outcome };
+                }
+                paused = false;
+            }
+            Ok(WorkerControl::Input { request, reply }) => {
+                let result = match request.class {
+                    DeviceClass::Microphone if optional.selection().microphone => optional
+                        .set_audio_mix(
+                            AvSourceClass::Microphone,
+                            AudioSourceMixSettings {
+                                gain_milli: request.gain_milli,
+                                muted: request.muted || !request.enabled,
+                                ramp_frames: 480,
+                            },
+                        )
+                        .map_err(|_| NativeDesktopBackendError::Internal),
+                    DeviceClass::SystemAudio if optional.selection().system_audio => optional
+                        .set_audio_mix(
+                            AvSourceClass::SystemAudio,
+                            AudioSourceMixSettings {
+                                gain_milli: request.gain_milli,
+                                muted: request.muted || !request.enabled,
+                                ramp_frames: 480,
+                            },
+                        )
+                        .map_err(|_| NativeDesktopBackendError::Internal),
+                    DeviceClass::Camera if optional.selection().camera => {
+                        camera_enabled = request.enabled;
+                        if !camera_enabled {
+                            telemetry.camera_active.store(false, Ordering::Release);
+                        }
+                        Ok(())
+                    }
+                    DeviceClass::Display
+                    | DeviceClass::Microphone
+                    | DeviceClass::SystemAudio
+                    | DeviceClass::Camera => Err(NativeDesktopBackendError::TargetUnavailable),
+                };
+                let _ = reply.send(result);
+                if result.is_err() {
+                    continue;
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+
+        let mut made_progress = false;
+        match source.poll_frame() {
+            Ok(Some(frame)) => {
+                made_progress = true;
+                if !paused {
+                    match screen_clock.normalize(frame) {
+                        Ok(Some((sequence, timestamp, pixels))) => {
+                            if let Err(error) = push_normalized_screen(
+                                &mut recording,
+                                studio.as_mut(),
+                                sequence,
+                                timestamp,
+                                pixels,
+                            ) {
+                                let outcome = fail_optional_worker(
+                                    &mut source,
+                                    &mut optional,
+                                    recording,
+                                    studio,
+                                    &telemetry,
+                                    error,
+                                );
+                                return WorkerCompletion { outcome };
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let outcome = fail_optional_worker(
+                                &mut source,
+                                &mut optional,
+                                recording,
+                                studio,
+                                &telemetry,
+                                error,
+                            );
+                            return WorkerCompletion { outcome };
+                        }
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let outcome = fail_optional_worker(
+                    &mut source,
+                    &mut optional,
+                    recording,
+                    studio,
+                    &telemetry,
+                    map_capture_error(error),
+                );
+                return WorkerCompletion { outcome };
+            }
+        }
+
+        match optional.poll() {
+            Ok(report) if report.termination.is_none() => {
+                made_progress |= !report.output_samples.is_empty();
+                record_optional_diagnostics(&report.diagnostics, &telemetry);
+                if let Err(error) = push_optional_outputs(
+                    &mut recording,
+                    studio.as_mut(),
+                    report.output_samples,
+                    &telemetry,
+                    camera_enabled,
+                ) {
+                    let outcome = fail_optional_worker(
+                        &mut source,
+                        &mut optional,
+                        recording,
+                        studio,
+                        &telemetry,
+                        error,
+                    );
+                    return WorkerCompletion { outcome };
+                }
+            }
+            Ok(report) => {
+                record_optional_diagnostics(&report.diagnostics, &telemetry);
+                let _ = push_optional_outputs(
+                    &mut recording,
+                    studio.as_mut(),
+                    report.output_samples,
+                    &telemetry,
+                    camera_enabled,
+                );
+                let termination = report
+                    .termination
+                    .expect("guard: terminal optional-input report");
+                let outcome = fail_optional_worker_after_optional_terminal(
+                    &mut source,
+                    recording,
+                    studio,
+                    &telemetry,
+                    termination_confirmed(&termination),
+                );
+                return WorkerCompletion { outcome };
+            }
+            Err(_) => {
+                let outcome = fail_optional_worker(
+                    &mut source,
+                    &mut optional,
+                    recording,
+                    studio,
+                    &telemetry,
+                    NativeDesktopBackendError::Internal,
+                );
+                return WorkerCompletion { outcome };
+            }
+        }
+        if !made_progress {
+            thread::park_timeout(WORKER_IDLE_POLL);
+        }
+    }
+}
+
+fn record_optional_diagnostics(diagnostics: &[AvDiagnostic], telemetry: &OptionalWorkerTelemetry) {
+    for diagnostic in diagnostics {
+        if let Some(class) = diagnostic.class {
+            match class {
+                AvSourceClass::Microphone => {
+                    telemetry.microphone_meter.store(0, Ordering::Release);
+                }
+                AvSourceClass::SystemAudio => {
+                    telemetry.system_audio_meter.store(0, Ordering::Release);
+                }
+                AvSourceClass::Camera => {
+                    telemetry.camera_active.store(false, Ordering::Release);
+                }
+            }
+        }
+        eprintln!(
+            "Frame optional-input diagnostic: class={:?} route={:?} capability={:?} timing={:?} code={:?}",
+            diagnostic.class,
+            diagnostic.route,
+            diagnostic.capability,
+            diagnostic.timing,
+            diagnostic.code
+        );
+    }
+}
+
+fn push_normalized_screen(
+    recording: &mut PendingRecordingGraph,
+    studio: Option<&mut DesktopStudioRecording>,
+    sequence: u64,
+    timestamp: FrameTimestamp,
+    pixels: Vec<u8>,
+) -> Result<(), NativeDesktopBackendError> {
+    if let Some(studio) = studio {
+        studio.push_screen(sequence, timestamp, pixels.clone())?;
+    }
+    let frame = BgraScreenFrame::new(sequence, timestamp, pixels).map_err(map_recording_error)?;
+    match recording {
+        PendingRecordingGraph::ScreenOnly(recording) => recording.push_frame(frame).map(drop),
+        PendingRecordingGraph::ScreenAudio(recording) => {
+            recording.push_video_frame(frame).map(drop)
+        }
+    }
+    .map_err(map_recording_error)
+}
+
+fn push_optional_outputs(
+    recording: &mut PendingRecordingGraph,
+    mut studio: Option<&mut DesktopStudioRecording>,
+    samples: Vec<NativeAvGraphOutputSample>,
+    telemetry: &OptionalWorkerTelemetry,
+    camera_enabled: bool,
+) -> Result<(), NativeDesktopBackendError> {
+    for sample in samples {
+        let kind = sample.kind();
+        let sequence = sample.sequence();
+        let timestamp = sample.timestamp();
+        let bytes = sample.into_bytes();
+        match kind {
+            NativeAvGraphOutputKind::MixedAudio => {
+                let PendingRecordingGraph::ScreenAudio(recording) = recording else {
+                    return Err(NativeDesktopBackendError::Internal);
+                };
+                recording
+                    .push_audio_chunk(
+                        F32StereoAudioChunk::new(
+                            sequence,
+                            timestamp.pts_ns,
+                            timestamp.duration_ns,
+                            timestamp.discontinuity,
+                            bytes,
+                        )
+                        .map_err(map_recording_error)?,
+                    )
+                    .map(drop)
+                    .map_err(map_recording_error)?;
+            }
+            NativeAvGraphOutputKind::MicrophoneRecord => {
+                telemetry
+                    .microphone_meter
+                    .store(audio_level_basis_points(&bytes), Ordering::Release);
+                if let Some(studio) = studio.as_deref_mut() {
+                    studio.push_microphone(sequence, timestamp, bytes)?;
+                }
+            }
+            NativeAvGraphOutputKind::SystemAudioRecord => {
+                telemetry
+                    .system_audio_meter
+                    .store(audio_level_basis_points(&bytes), Ordering::Release);
+                if let Some(studio) = studio.as_deref_mut() {
+                    studio.push_system_audio(sequence, timestamp, bytes)?;
+                }
+            }
+            NativeAvGraphOutputKind::CameraRecord => {
+                telemetry
+                    .camera_active
+                    .store(camera_enabled, Ordering::Release);
+                if camera_enabled && let Some(studio) = studio.as_deref_mut() {
+                    studio.push_camera(sequence, timestamp, bytes)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn finish_optional_worker(
+    source: &mut MacOsScreenCaptureSource,
+    optional: &mut MacOsOptionalInputRecording,
+    mut recording: PendingRecordingGraph,
+    mut studio: Option<DesktopStudioRecording>,
+    screen_clock: &mut SharedScreenClock,
+    telemetry: &OptionalWorkerTelemetry,
+    camera_enabled: bool,
+) -> WorkerOutcome {
+    let (screen_tail, screen_teardown_confirmed, screen_error) =
+        classify_screen_stop(source.stop_and_drain_frames());
+    if let Some(error) = screen_error {
+        return fail_optional_recorders(
+            optional.cancel().is_ok() && screen_teardown_confirmed,
+            recording,
+            studio,
+            error,
+        );
+    }
+    for frame in screen_tail {
+        match screen_clock.normalize(frame) {
+            Ok(Some((sequence, timestamp, pixels))) => {
+                if let Err(error) = push_normalized_screen(
+                    &mut recording,
+                    studio.as_mut(),
+                    sequence,
+                    timestamp,
+                    pixels,
+                ) {
+                    return fail_optional_recorders(
+                        optional.cancel().is_ok(),
+                        recording,
+                        studio,
+                        error,
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return fail_optional_recorders(
+                    optional.cancel().is_ok(),
+                    recording,
+                    studio,
+                    error,
+                );
+            }
+        }
+    }
+    if optional.request_stop().is_err() {
+        return fail_optional_recorders(
+            false,
+            recording,
+            studio,
+            NativeDesktopBackendError::Internal,
+        );
+    }
+    let deadline = Instant::now() + OPTIONAL_STOP_TIMEOUT;
+    let optional_teardown_confirmed = loop {
+        match optional.poll() {
+            Ok(report) => {
+                record_optional_diagnostics(&report.diagnostics, telemetry);
+                if let Err(error) = push_optional_outputs(
+                    &mut recording,
+                    studio.as_mut(),
+                    report.output_samples,
+                    telemetry,
+                    camera_enabled,
+                ) {
+                    return fail_optional_recorders(
+                        optional.cancel().is_ok(),
+                        recording,
+                        studio,
+                        error,
+                    );
+                }
+                if let Some(termination) = report.termination {
+                    break termination.outcome == NativeAvRuntimeOutcome::Completed
+                        && termination_confirmed(&termination);
+                }
+            }
+            Err(_) => break false,
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::park_timeout(WORKER_IDLE_POLL);
+    };
+    if !optional_teardown_confirmed {
+        return fail_optional_recorders(
+            false,
+            recording,
+            studio,
+            NativeDesktopBackendError::Internal,
+        );
+    }
+    if diagnostics_failed(telemetry.screen_diagnostic_baseline, source.diagnostics()) {
+        return fail_optional_recorders(
+            true,
+            recording,
+            studio,
+            NativeDesktopBackendError::Internal,
+        );
+    }
+    finish_optional_recorders(recording, studio)
+}
+
+fn finish_optional_recorders(
+    recording: PendingRecordingGraph,
+    mut studio: Option<DesktopStudioRecording>,
+) -> WorkerOutcome {
+    let artifact = match recording {
+        PendingRecordingGraph::ScreenOnly(mut recording) => {
+            if let Err(error) = recording.end_of_stream() {
+                return WorkerOutcome::Failed {
+                    error: map_recording_error(error),
+                    teardown_confirmed: recording.abort().is_ok(),
+                };
+            }
+            match recording.finish(&CancellationToken::new()) {
+                Ok(artifact) => CompletedRecordingArtifact::from(artifact),
+                Err(error) => {
+                    return WorkerOutcome::Failed {
+                        teardown_confirmed: recording_finish_teardown_confirmed(&error),
+                        error: map_recording_error(error),
+                    };
+                }
+            }
+        }
+        PendingRecordingGraph::ScreenAudio(mut recording) => {
+            if let Err(error) = recording.end_of_stream() {
+                return WorkerOutcome::Failed {
+                    error: map_recording_error(error),
+                    teardown_confirmed: recording.abort().is_ok(),
+                };
+            }
+            match recording.finish(&CancellationToken::new()) {
+                Ok(artifact) => CompletedRecordingArtifact::from(artifact),
+                Err(error) => {
+                    return WorkerOutcome::Failed {
+                        teardown_confirmed: recording_finish_teardown_confirmed(&error),
+                        error: map_recording_error(error),
+                    };
+                }
+            }
+        }
+    };
+    match studio
+        .take()
+        .map(DesktopStudioRecording::finish)
+        .transpose()
+    {
+        Ok(studio) => {
+            let mut artifact = artifact;
+            artifact.studio_project = studio.map(|artifact| artifact.project);
+            WorkerOutcome::Finished(artifact)
+        }
+        Err(failure) => WorkerOutcome::Failed {
+            error: failure.error,
+            teardown_confirmed: failure.teardown_confirmed,
+        },
+    }
+}
+
+fn cancel_optional_worker(
+    source: &mut MacOsScreenCaptureSource,
+    optional: &mut MacOsOptionalInputRecording,
+    recording: PendingRecordingGraph,
+    studio: Option<DesktopStudioRecording>,
+    telemetry: &OptionalWorkerTelemetry,
+) -> WorkerOutcome {
+    let (_, screen_teardown_confirmed, screen_error) =
+        classify_screen_stop(source.stop_and_drain_frames());
+    let optional_teardown_confirmed = optional.cancel().is_ok();
+    let recorder_teardown_confirmed = abort_pending_recording(recording);
+    let studio_teardown_confirmed = abort_studio(studio);
+    telemetry.microphone_meter.store(0, Ordering::Release);
+    telemetry.system_audio_meter.store(0, Ordering::Release);
+    telemetry.camera_active.store(false, Ordering::Release);
+    if let Some(error) = screen_error {
+        WorkerOutcome::Failed {
+            error,
+            teardown_confirmed: screen_teardown_confirmed
+                && optional_teardown_confirmed
+                && recorder_teardown_confirmed
+                && studio_teardown_confirmed,
+        }
+    } else if screen_teardown_confirmed
+        && optional_teardown_confirmed
+        && recorder_teardown_confirmed
+        && studio_teardown_confirmed
+    {
+        WorkerOutcome::Cancelled
+    } else {
+        WorkerOutcome::Failed {
+            error: NativeDesktopBackendError::Internal,
+            teardown_confirmed: false,
+        }
+    }
+}
+
+fn fail_optional_worker(
+    source: &mut MacOsScreenCaptureSource,
+    optional: &mut MacOsOptionalInputRecording,
+    recording: PendingRecordingGraph,
+    studio: Option<DesktopStudioRecording>,
+    telemetry: &OptionalWorkerTelemetry,
+    error: NativeDesktopBackendError,
+) -> WorkerOutcome {
+    let (_, screen_teardown_confirmed, _) = classify_screen_stop(source.stop_and_drain_frames());
+    let optional_teardown_confirmed = optional.cancel().is_ok();
+    telemetry.microphone_meter.store(0, Ordering::Release);
+    telemetry.system_audio_meter.store(0, Ordering::Release);
+    telemetry.camera_active.store(false, Ordering::Release);
+    fail_optional_recorders(
+        screen_teardown_confirmed && optional_teardown_confirmed,
+        recording,
+        studio,
+        error,
+    )
+}
+
+fn fail_optional_worker_after_optional_terminal(
+    source: &mut MacOsScreenCaptureSource,
+    recording: PendingRecordingGraph,
+    studio: Option<DesktopStudioRecording>,
+    telemetry: &OptionalWorkerTelemetry,
+    optional_teardown_confirmed: bool,
+) -> WorkerOutcome {
+    let (_, screen_teardown_confirmed, _) = classify_screen_stop(source.stop_and_drain_frames());
+    telemetry.microphone_meter.store(0, Ordering::Release);
+    telemetry.system_audio_meter.store(0, Ordering::Release);
+    telemetry.camera_active.store(false, Ordering::Release);
+    fail_optional_recorders(
+        screen_teardown_confirmed && optional_teardown_confirmed,
+        recording,
+        studio,
+        NativeDesktopBackendError::Internal,
+    )
+}
+
+fn fail_optional_recorders(
+    native_teardown_confirmed: bool,
+    recording: PendingRecordingGraph,
+    studio: Option<DesktopStudioRecording>,
+    error: NativeDesktopBackendError,
+) -> WorkerOutcome {
+    WorkerOutcome::Failed {
+        error,
+        teardown_confirmed: native_teardown_confirmed
+            && abort_pending_recording(recording)
+            && abort_studio(studio),
+    }
+}
+
+fn abort_pending_recording(recording: PendingRecordingGraph) -> bool {
+    match recording {
+        PendingRecordingGraph::ScreenOnly(recording) => recording.abort().is_ok(),
+        PendingRecordingGraph::ScreenAudio(recording) => recording.abort().is_ok(),
+    }
+}
+
+fn termination_confirmed(termination: &frame_media::NativeAvTermination) -> bool {
+    termination.source_teardown == NativeAvSourceTeardown::Confirmed
+        && termination.graph_teardown == NativeAvGraphTeardown::NullReached
+}
+
 pub(super) fn run_screen_studio_capture_worker(
     mut source: MacOsScreenCaptureSource,
     mut recording: ScreenRecording,
@@ -129,6 +843,12 @@ pub(super) fn run_screen_studio_capture_worker(
                     diagnostic_baseline,
                 );
                 return WorkerCompletion { outcome };
+            }
+            Ok(WorkerControl::Pause(reply) | WorkerControl::Resume(reply)) => {
+                let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
+            }
+            Ok(WorkerControl::Input { reply, .. }) => {
+                let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
@@ -358,6 +1078,12 @@ pub(super) fn run_av_capture_worker(
                     telemetry.audio_diagnostic_baseline,
                 );
                 return WorkerCompletion { outcome };
+            }
+            Ok(WorkerControl::Pause(reply) | WorkerControl::Resume(reply)) => {
+                let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
+            }
+            Ok(WorkerControl::Input { reply, .. }) => {
+                let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }

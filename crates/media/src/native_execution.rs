@@ -23,10 +23,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    AudioSampleFormat, AvFormat, AvPipelineGraphSpec, AvQueueSpec, AvSourceClass,
-    CancellationToken, ExactCapsSpec, ExportProfile, FrameTimestamp, InstantPipelineRequest,
-    InstantVideoCaps, PixelFormat, RationalTime, pipeline_has_trusted_factory_provenance,
-    prepare_runtime,
+    AudioSampleFormat, AudioSourceMixSettings, AvFormat, AvPipelineGraphSpec, AvQueueSpec,
+    AvSourceClass, CancellationToken, ExactCapsSpec, ExportProfile, FrameTimestamp,
+    InstantPipelineRequest, InstantVideoCaps, PixelFormat, RationalTime,
+    pipeline_has_trusted_factory_provenance, prepare_runtime,
 };
 
 const BUS_POLL: Duration = Duration::from_millis(25);
@@ -199,6 +199,7 @@ pub struct NativeAvGstreamerGraph {
     output_cursor: usize,
     output_sequences: [u64; 4],
     pending_outputs: VecDeque<NativeAvGraphOutputSample>,
+    disabled_sources: Vec<AvSourceClass>,
     state: NativeAvGraphState,
 }
 
@@ -407,6 +408,7 @@ impl NativeAvGstreamerGraph {
             output_cursor: 0,
             output_sequences: [0; 4],
             pending_outputs: VecDeque::new(),
+            disabled_sources: Vec::new(),
             state: NativeAvGraphState::Null,
         })
     }
@@ -425,6 +427,67 @@ impl NativeAvGstreamerGraph {
 
     pub fn source_appsrc(&self, class: AvSourceClass) -> Option<gst_app::AppSrc> {
         self.source(class)?.downcast::<gst_app::AppSrc>().ok()
+    }
+
+    #[must_use]
+    pub fn source_is_disabled(&self, class: AvSourceClass) -> bool {
+        self.disabled_sources.contains(&class)
+    }
+
+    /// Applies one bounded audio control without rebuilding the live graph.
+    ///
+    /// This mutates only the per-source `volume` element downstream of the
+    /// isolated-original tee. Recording PTS, the isolated source, and the
+    /// shared mixer request pad therefore remain continuous and unchanged.
+    pub fn set_audio_mix(
+        &mut self,
+        class: AvSourceClass,
+        settings: AudioSourceMixSettings,
+    ) -> Result<(), NativeAvGraphFailure> {
+        if !matches!(
+            self.state,
+            NativeAvGraphState::Playing | NativeAvGraphState::EosRequested
+        ) || !matches!(
+            class,
+            AvSourceClass::Microphone | AvSourceClass::SystemAudio
+        ) || settings.validate().is_err()
+        {
+            return Err(NativeAvGraphFailure::OutputContract);
+        }
+        let name = match class {
+            AvSourceClass::Microphone => "microphone_src_volume",
+            AvSourceClass::SystemAudio => "system_audio_src_volume",
+            AvSourceClass::Camera => return Err(NativeAvGraphFailure::OutputContract),
+        };
+        let volume = self
+            .pipeline
+            .by_name(name)
+            .ok_or(NativeAvGraphFailure::OutputContract)?;
+        volume.set_property("volume", f64::from(settings.gain_milli) / 1_000.0);
+        volume.set_property("mute", settings.muted);
+        Ok(())
+    }
+
+    /// Ends one optional source after a native permission/device failure.
+    ///
+    /// The source appsrc is serialized to EOS while the remaining graph stays
+    /// live. This is the fail-closed screen/remaining-input fallback; a source
+    /// can be re-added only by starting a fresh negotiated session.
+    pub fn disable_source(&mut self, class: AvSourceClass) -> Result<(), NativeAvGraphFailure> {
+        if self.state != NativeAvGraphState::Playing {
+            return Err(NativeAvGraphFailure::OutputContract);
+        }
+        if self.disabled_sources.contains(&class) {
+            return Ok(());
+        }
+        let source = self
+            .source_appsrc(class)
+            .ok_or(NativeAvGraphFailure::OutputContract)?;
+        if !source.send_event(gst::event::Eos::new()) {
+            return Err(NativeAvGraphFailure::EosRequest);
+        }
+        self.disabled_sources.push(class);
+        Ok(())
     }
 
     #[must_use]
@@ -868,6 +931,9 @@ impl NativeAvGstreamerGraph {
             return Err(NativeAvGraphFailure::StateChange);
         }
         for (class, _) in &self.source_names {
+            if self.disabled_sources.contains(class) {
+                continue;
+            }
             // GstBaseSrc controlled shutdown must enter through appsrc's
             // serialized event queue. That guarantees StreamStart, exact Caps,
             // and a TIME Segment precede EOS even when no buffer was pushed;

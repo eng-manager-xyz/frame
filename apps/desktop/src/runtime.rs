@@ -33,11 +33,11 @@ use crate::{
         CaptureTargetSummary, NativeCaptureArtifact, NativeCaptureStartRequest,
         NativeDesktopBackend, NativeDesktopBackendError, NativeEditableWebmExportRequest,
         NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
-        NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
-        NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioProjectCatalog,
-        NativeStudioProjectOpenRequest, NativeStudioProjectStatus, NativeStudioRecoveryAction,
-        NativeStudioRecoveryRequest, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
-        STUDIO_PROJECT_CATALOG_VERSION,
+        NativeRecordingInputControlRequest, NativeRecordingStartOutcome,
+        NativeRecordingStopOutcome, NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome,
+        NativeRegionDefinitionRequest, NativeStudioProjectCatalog, NativeStudioProjectOpenRequest,
+        NativeStudioProjectStatus, NativeStudioRecoveryAction, NativeStudioRecoveryRequest,
+        NativeTargetSelectionOutcome, NativeTargetSelectionRequest, STUDIO_PROJECT_CATALOG_VERSION,
     },
     workflow::{
         BackendEvent, BackendEventEnvelope, DesktopWorkflow, DeviceCounts, DeviceState,
@@ -1039,13 +1039,15 @@ impl DesktopRuntime {
                         recording_token: recording.recording_token.clone(),
                     })
                     .map_err(ExecutionFailure::native_backend)?;
-                if meter.system_audio_basis_points > 10_000 {
+                if meter.microphone_basis_points > 10_000
+                    || meter.system_audio_basis_points > 10_000
+                {
                     return Err(ExecutionFailure::invalid_backend_response());
                 }
                 self.meter = AudioMeterSnapshot {
-                    microphone_basis_points: 0,
+                    microphone_basis_points: meter.microphone_basis_points,
                     system_audio_basis_points: meter.system_audio_basis_points,
-                    camera_active: false,
+                    camera_active: meter.camera_active,
                 };
                 let failure = backend
                     .poll_recording_terminal_failure(&NativeRecordingControlRequest {
@@ -1098,6 +1100,9 @@ impl DesktopRuntime {
                         .count(),
                 )
                 .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let input_counts = backend
+                    .enumerate_input_devices()
+                    .map_err(ExecutionFailure::native_backend)?;
                 let keep_selection =
                     self.selected_capture_target
                         .as_ref()
@@ -1115,9 +1120,9 @@ impl DesktopRuntime {
                         BackendEvent::DevicesReady {
                             counts: DeviceCounts {
                                 displays: display_count,
-                                microphones: 0,
-                                system_audio_sources: 0,
-                                cameras: 0,
+                                microphones: input_counts.microphones,
+                                system_audio_sources: input_counts.system_audio_sources,
+                                cameras: input_counts.cameras,
                             },
                         },
                     ],
@@ -1129,6 +1134,40 @@ impl DesktopRuntime {
                     self.selected_sources.display_selected = false;
                 }
                 self.announcement = "Native capture-target catalog refreshed.".into();
+                Ok(events)
+            }
+            IpcCommand::DeviceEnumerate { .. } => {
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::DevicesRefresh)?;
+                let counts = backend
+                    .enumerate_input_devices()
+                    .map_err(ExecutionFailure::native_backend)?;
+                let displays = u16::try_from(
+                    self.capture_targets
+                        .targets
+                        .iter()
+                        .filter(|target| target.kind == CaptureTargetKind::Display)
+                        .count(),
+                )
+                .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::DevicesRefresh,
+                    vec![
+                        BackendEvent::DevicesEnumerating {
+                            intent_id: intent_id.clone(),
+                        },
+                        BackendEvent::DevicesReady {
+                            counts: DeviceCounts {
+                                displays,
+                                microphones: counts.microphones,
+                                system_audio_sources: counts.system_audio_sources,
+                                cameras: counts.cameras,
+                            },
+                        },
+                    ],
+                )?;
+                self.announcement = "Native optional-input catalog refreshed.".into();
                 Ok(events)
             }
             IpcCommand::CaptureTargetSelect { kind, target_token } => {
@@ -1224,14 +1263,9 @@ impl DesktopRuntime {
                         "Confirm screen recording permission before recording.",
                     ));
                 }
-                if self.settings.microphone_enabled
-                    || self.settings.camera_enabled
-                    || self.selected_sources.microphone_selected
-                    || self.selected_sources.system_audio_selected
-                    || self.selected_sources.camera_selected
-                {
+                if self.settings.camera_enabled && self.settings.mode != RecorderMode::Studio {
                     return Err(ExecutionFailure::invalid(
-                        "Native capture supports selected-target video with optional system audio only.",
+                        "Camera capture is available only as an isolated Studio original.",
                     ));
                 }
                 let target = self
@@ -1258,6 +1292,8 @@ impl DesktopRuntime {
                         frame_rate: self.settings.frame_rate,
                         exclude_frame_windows: self.recorder_configuration.exclude_frame_windows,
                         system_audio_enabled: self.settings.system_audio_enabled,
+                        microphone_enabled: self.settings.microphone_enabled,
+                        camera_enabled: self.settings.camera_enabled,
                     })
                     .map_err(ExecutionFailure::native_backend)?;
                 validate_start_outcome(
@@ -1265,6 +1301,8 @@ impl DesktopRuntime {
                     self.capture_targets.generation,
                     &target.token,
                     self.settings.system_audio_enabled,
+                    self.settings.microphone_enabled,
+                    self.settings.camera_enabled,
                 )?;
                 let events = self.transition(
                     intent_id,
@@ -1290,15 +1328,99 @@ impl DesktopRuntime {
                     system_audio_basis_points: 0,
                     camera_active: false,
                 };
-                self.announcement = if outcome.system_audio_included {
-                    "Native display and system-audio recording started."
-                } else if self.settings.system_audio_enabled {
-                    "System audio was unavailable; verified screen-only recording started."
+                self.announcement = if outcome.microphone_included
+                    || outcome.system_audio_included
+                    || outcome.camera_included
+                {
+                    "Native capture started with the available confirmed optional inputs."
+                } else if self.settings.microphone_enabled
+                    || self.settings.system_audio_enabled
+                    || self.settings.camera_enabled
+                {
+                    "Optional inputs were unavailable; verified screen-only recording started."
                 } else {
                     "Native display recording started."
                 }
                 .into();
                 Ok(events)
+            }
+            IpcCommand::RecorderPause { intent_id } => {
+                let recording = self
+                    .native_recording
+                    .clone()
+                    .ok_or_else(|| ExecutionFailure::conflict("No native recording is active."))?;
+                self.preflight_transition(intent_id, IntentKind::RecorderPause)?;
+                backend
+                    .pause_recording(&NativeRecordingControlRequest {
+                        recording_token: recording.recording_token,
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                let events = self.transition(
+                    intent_id,
+                    IntentKind::RecorderPause,
+                    vec![BackendEvent::RecorderPaused {
+                        intent_id: intent_id.clone(),
+                    }],
+                )?;
+                self.announcement = "Native recording paused on a continuous timeline.".into();
+                Ok(events)
+            }
+            IpcCommand::RecorderResume { intent_id } => {
+                let recording = self
+                    .native_recording
+                    .clone()
+                    .ok_or_else(|| ExecutionFailure::conflict("No native recording is active."))?;
+                self.preflight_transition(intent_id, IntentKind::RecorderResume)?;
+                backend
+                    .resume_recording(&NativeRecordingControlRequest {
+                        recording_token: recording.recording_token,
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                let events = self.transition(
+                    intent_id,
+                    IntentKind::RecorderResume,
+                    vec![BackendEvent::RecorderResumed {
+                        intent_id: intent_id.clone(),
+                    }],
+                )?;
+                self.announcement = "Native recording resumed with fresh input epochs.".into();
+                Ok(events)
+            }
+            IpcCommand::RecorderInputSet {
+                class,
+                gain_milli,
+                muted,
+                enabled,
+                ..
+            } => {
+                if !matches!(
+                    self.workflow.recorder(),
+                    RecorderState::Recording | RecorderState::Paused
+                ) {
+                    return Err(ExecutionFailure::conflict(
+                        "Native input controls require an active recording.",
+                    ));
+                }
+                let recording = self
+                    .native_recording
+                    .clone()
+                    .ok_or_else(|| ExecutionFailure::conflict("No native recording is active."))?;
+                backend
+                    .set_recording_input(&NativeRecordingInputControlRequest {
+                        recording_token: recording.recording_token,
+                        class: *class,
+                        gain_milli: *gain_milli,
+                        muted: *muted,
+                        enabled: *enabled,
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                if *class == DeviceClass::Camera && !*enabled {
+                    self.meter.camera_active = false;
+                    self.camera_preview = CameraPreviewState::Disabled;
+                }
+                self.announcement =
+                    "Native input control applied without replacing the recording graph.".into();
+                Ok(Vec::new())
             }
             IpcCommand::RecorderStop { intent_id } => {
                 let recording = self
@@ -1711,11 +1833,18 @@ impl DesktopRuntime {
                 camera_enabled,
                 reduced_motion,
             } => {
-                if *microphone_enabled
-                    || *camera_enabled
-                    || (self.adapter == DesktopAdapterKind::NativeWindows && *system_audio_enabled)
+                if self.adapter == DesktopAdapterKind::NativeWindows
+                    && (*microphone_enabled || *system_audio_enabled || *camera_enabled)
                 {
                     return Err(ExecutionFailure::unavailable());
+                }
+                if self.adapter == DesktopAdapterKind::NativeMacOs
+                    && *camera_enabled
+                    && *mode != RecorderMode::Studio
+                {
+                    return Err(ExecutionFailure::invalid(
+                        "Camera capture requires Studio mode.",
+                    ));
                 }
                 if self.settings.revision != *expected_revision {
                     return Err(ExecutionFailure::conflict(
@@ -1726,13 +1855,13 @@ impl DesktopRuntime {
                     revision: expected_revision.saturating_add(1),
                     mode: *mode,
                     frame_rate: *frame_rate,
-                    microphone_enabled: false,
+                    microphone_enabled: *microphone_enabled,
                     system_audio_enabled: *system_audio_enabled,
-                    camera_enabled: false,
+                    camera_enabled: *camera_enabled,
                     reduced_motion: *reduced_motion,
                 };
                 self.recorder_configuration.mode = *mode;
-                self.announcement = "Native system-audio preference saved.".into();
+                self.announcement = "Native optional-input preferences saved.".into();
                 Ok(Vec::new())
             }
             _ => Err(ExecutionFailure::unavailable()),
@@ -1826,6 +1955,47 @@ impl DesktopRuntime {
                         intent_id: intent_id.clone(),
                     }],
                 )
+            }
+            IpcCommand::RecorderInputSet {
+                class,
+                gain_milli,
+                muted,
+                enabled,
+                ..
+            } => {
+                self.require_fake_execution()?;
+                if !matches!(
+                    self.workflow.recorder(),
+                    RecorderState::Recording | RecorderState::Paused
+                ) {
+                    return Err(ExecutionFailure::conflict(
+                        "Input controls require an active recording.",
+                    ));
+                }
+                let level = if *enabled && !*muted {
+                    u16::try_from(
+                        u32::from(*gain_milli)
+                            .saturating_mul(4_200)
+                            .checked_div(1_000)
+                            .unwrap_or(0)
+                            .min(10_000),
+                    )
+                    .unwrap_or(10_000)
+                } else {
+                    0
+                };
+                match class {
+                    DeviceClass::Microphone => self.meter.microphone_basis_points = level,
+                    DeviceClass::SystemAudio => self.meter.system_audio_basis_points = level,
+                    DeviceClass::Camera => self.meter.camera_active = *enabled,
+                    DeviceClass::Display => {
+                        return Err(ExecutionFailure::invalid(
+                            "Display is not an optional recording input.",
+                        ));
+                    }
+                }
+                self.announcement = "Live input control applied.".into();
+                Ok(Vec::new())
             }
             IpcCommand::RecorderStop { intent_id } => {
                 self.lifecycle.overlay_visible = false;
@@ -2686,12 +2856,16 @@ fn validate_start_outcome(
     catalog_generation: u64,
     target_token: &str,
     system_audio_requested: bool,
+    microphone_requested: bool,
+    camera_requested: bool,
 ) -> Result<(), ExecutionFailure> {
     if outcome.catalog_generation != catalog_generation
         || outcome.target_token != target_token
         || !valid_opaque_id(&outcome.target_token)
         || !valid_opaque_id(&outcome.recording_token)
         || (outcome.system_audio_included && !system_audio_requested)
+        || (outcome.microphone_included && !microphone_requested)
+        || (outcome.camera_included && !camera_requested)
     {
         Err(ExecutionFailure::invalid_backend_response())
     } else {
@@ -2887,6 +3061,7 @@ mod tests {
         cancel_error: Option<NativeDesktopBackendError>,
         cancel_failure: Option<NativeRecordingTerminalFailure>,
         cancel_token_override: Option<String>,
+        last_input: Option<NativeRecordingInputControlRequest>,
         export_calls: usize,
         studio_catalog: NativeStudioProjectCatalog,
         studio_open_outcome: NativeStudioProjectOpenOutcome,
@@ -2924,6 +3099,7 @@ mod tests {
                 cancel_error: None,
                 cancel_failure: None,
                 cancel_token_override: None,
+                last_input: None,
                 export_calls: 0,
                 studio_catalog: NativeStudioProjectCatalog {
                     schema_version: STUDIO_PROJECT_CATALOG_VERSION,
@@ -3016,6 +3192,8 @@ mod tests {
                 target_token: request.target.token.clone(),
                 recording_token: "recording-token-1".into(),
                 system_audio_included: request.system_audio_enabled,
+                microphone_included: request.microphone_enabled,
+                camera_included: request.camera_enabled,
             })
         }
 
@@ -3031,6 +3209,31 @@ mod tests {
                 Some(failure) => NativeRecordingStopOutcome::Failed(failure),
                 None => NativeRecordingStopOutcome::Sealed(self.stop_artifact.clone()),
             })
+        }
+
+        fn pause_recording(
+            &mut self,
+            _request: &NativeRecordingControlRequest,
+        ) -> Result<(), NativeDesktopBackendError> {
+            self.calls.push("pause");
+            Ok(())
+        }
+
+        fn resume_recording(
+            &mut self,
+            _request: &NativeRecordingControlRequest,
+        ) -> Result<(), NativeDesktopBackendError> {
+            self.calls.push("resume");
+            Ok(())
+        }
+
+        fn set_recording_input(
+            &mut self,
+            request: &NativeRecordingInputControlRequest,
+        ) -> Result<(), NativeDesktopBackendError> {
+            self.calls.push("input");
+            self.last_input = Some(request.clone());
+            Ok(())
         }
 
         fn poll_recording_terminal_failure(
@@ -3724,6 +3927,128 @@ mod tests {
         assert_eq!(
             backend.calls,
             ["enumerate", "select", "prepare", "start", "stop", "export"]
+        );
+    }
+
+    #[test]
+    fn native_optional_inputs_pause_resume_and_live_controls_follow_backend_truth() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        let settings = request(
+            &runtime,
+            WindowRole::Settings,
+            1,
+            "native-optional-settings",
+            IpcCommand::SettingsApply {
+                expected_revision: 1,
+                mode: RecorderMode::Studio,
+                frame_rate: 30,
+                microphone_enabled: true,
+                system_audio_enabled: true,
+                camera_enabled: true,
+                reduced_motion: false,
+            },
+        );
+        ok(&runtime
+            .dispatch_native(settings, &mut backend)
+            .expect("optional-input settings"));
+        prepare_native_recording(&mut runtime, &mut backend);
+
+        for (sequence, id, command, expected_state) in [
+            (
+                4,
+                "native-optional-start",
+                IpcCommand::RecorderStart {
+                    intent_id: "native-optional-start".into(),
+                },
+                RecorderState::Recording,
+            ),
+            (
+                5,
+                "native-optional-pause",
+                IpcCommand::RecorderPause {
+                    intent_id: "native-optional-pause".into(),
+                },
+                RecorderState::Paused,
+            ),
+            (
+                6,
+                "native-camera-disable",
+                IpcCommand::RecorderInputSet {
+                    intent_id: "native-camera-disable".into(),
+                    class: DeviceClass::Camera,
+                    gain_milli: 1_000,
+                    muted: false,
+                    enabled: false,
+                },
+                RecorderState::Paused,
+            ),
+            (
+                7,
+                "native-optional-resume",
+                IpcCommand::RecorderResume {
+                    intent_id: "native-optional-resume".into(),
+                },
+                RecorderState::Recording,
+            ),
+            (
+                8,
+                "native-microphone-gain",
+                IpcCommand::RecorderInputSet {
+                    intent_id: "native-microphone-gain".into(),
+                    class: DeviceClass::Microphone,
+                    gain_milli: 500,
+                    muted: false,
+                    enabled: true,
+                },
+                RecorderState::Recording,
+            ),
+        ] {
+            let dispatch = runtime
+                .dispatch_native(
+                    request(&runtime, WindowRole::Recorder, sequence, id, command),
+                    &mut backend,
+                )
+                .expect("bounded native live control");
+            ok(&dispatch);
+            assert_eq!(dispatch.snapshot.recorder, expected_state);
+        }
+        assert_eq!(
+            backend.last_input,
+            Some(NativeRecordingInputControlRequest {
+                recording_token: "recording-token-1".into(),
+                class: DeviceClass::Microphone,
+                gain_milli: 500,
+                muted: false,
+                enabled: true,
+            })
+        );
+
+        let stop = request(
+            &runtime,
+            WindowRole::Recorder,
+            9,
+            "native-optional-stop",
+            IpcCommand::RecorderStop {
+                intent_id: "native-optional-stop".into(),
+            },
+        );
+        ok(&runtime
+            .dispatch_native(stop, &mut backend)
+            .expect("native optional stop"));
+        assert_eq!(
+            backend.calls,
+            [
+                "enumerate",
+                "select",
+                "prepare",
+                "start",
+                "pause",
+                "input",
+                "resume",
+                "input",
+                "stop"
+            ]
         );
     }
 
@@ -4907,34 +5232,37 @@ mod tests {
             .expect("native window stop"));
         let calls_after_window_capture = backend.calls.len();
 
-        for (sequence, id, command) in [
-            (
-                6,
-                "native-microphones",
-                IpcCommand::DeviceEnumerate {
-                    class: DeviceClass::Microphone,
-                },
-            ),
-            (
-                7,
-                "native-pause",
-                IpcCommand::RecorderPause {
-                    intent_id: "native-pause".into(),
-                },
-            ),
-        ] {
-            let envelope = request(&runtime, WindowRole::Recorder, sequence, id, command);
-            let rejected = runtime
-                .dispatch_native(envelope, &mut backend)
-                .expect("bounded unsupported response");
-            assert_eq!(
-                rejected.response.outcome,
-                CommandOutcome::Error {
-                    code: PublicErrorCode::Unavailable,
-                    retryable: true,
-                }
-            );
-        }
+        let devices = request(
+            &runtime,
+            WindowRole::Recorder,
+            6,
+            "native-microphones",
+            IpcCommand::DeviceEnumerate {
+                class: DeviceClass::Microphone,
+            },
+        );
+        ok(&runtime
+            .dispatch_native(devices, &mut backend)
+            .expect("bounded native input catalog"));
+        let pause = request(
+            &runtime,
+            WindowRole::Recorder,
+            7,
+            "native-pause",
+            IpcCommand::RecorderPause {
+                intent_id: "native-pause".into(),
+            },
+        );
+        let rejected = runtime
+            .dispatch_native(pause, &mut backend)
+            .expect("bounded inactive pause response");
+        assert!(matches!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Unavailable | PublicErrorCode::Conflict,
+                ..
+            }
+        ));
 
         let settings = request(
             &runtime,
@@ -4943,7 +5271,7 @@ mod tests {
             "native-av-settings",
             IpcCommand::SettingsApply {
                 expected_revision: 1,
-                mode: RecorderMode::Instant,
+                mode: RecorderMode::Studio,
                 frame_rate: 30,
                 microphone_enabled: true,
                 system_audio_enabled: true,
@@ -4951,19 +5279,13 @@ mod tests {
                 reduced_motion: false,
             },
         );
-        let rejected = runtime
+        let applied = runtime
             .dispatch_native(settings, &mut backend)
-            .expect("bounded unsupported settings response");
-        assert!(matches!(
-            rejected.response.outcome,
-            CommandOutcome::Error {
-                code: PublicErrorCode::Unavailable,
-                ..
-            }
-        ));
-        assert!(!rejected.snapshot.settings.microphone_enabled);
-        assert!(!rejected.snapshot.settings.system_audio_enabled);
-        assert!(!rejected.snapshot.settings.camera_enabled);
+            .expect("bounded native settings response");
+        ok(&applied);
+        assert!(applied.snapshot.settings.microphone_enabled);
+        assert!(applied.snapshot.settings.system_audio_enabled);
+        assert!(applied.snapshot.settings.camera_enabled);
 
         let mp4 = request(
             &runtime,
@@ -5020,6 +5342,42 @@ mod tests {
         assert!(!applied.snapshot.settings.microphone_enabled);
         assert!(applied.snapshot.settings.system_audio_enabled);
         assert!(!applied.snapshot.settings.camera_enabled);
+    }
+
+    #[test]
+    fn native_camera_settings_require_studio_mode_without_mutating_preferences() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        let settings = request(
+            &runtime,
+            WindowRole::Settings,
+            1,
+            "native-instant-camera-settings",
+            IpcCommand::SettingsApply {
+                expected_revision: 1,
+                mode: RecorderMode::Instant,
+                frame_rate: 30,
+                microphone_enabled: false,
+                system_audio_enabled: false,
+                camera_enabled: true,
+                reduced_motion: false,
+            },
+        );
+
+        let rejected = runtime
+            .dispatch_native(settings, &mut backend)
+            .expect("bounded native camera settings response");
+
+        assert!(matches!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::InvalidRequest,
+                retryable: false,
+            }
+        ));
+        assert_eq!(rejected.snapshot.settings.revision, 1);
+        assert_eq!(rejected.snapshot.settings.mode, RecorderMode::Instant);
+        assert!(!rejected.snapshot.settings.camera_enabled);
     }
 
     #[test]
@@ -5085,13 +5443,15 @@ mod tests {
             target_token: "display-token-1".into(),
             recording_token: "recording-token-1".into(),
             system_audio_included: true,
+            microphone_included: false,
+            camera_included: false,
         };
 
         assert!(
-            validate_start_outcome(&outcome, 7, "display-token-1", false).is_err(),
+            validate_start_outcome(&outcome, 7, "display-token-1", false, false, false).is_err(),
             "the backend must not add an unrequested native source"
         );
-        assert!(validate_start_outcome(&outcome, 7, "display-token-1", true).is_ok());
+        assert!(validate_start_outcome(&outcome, 7, "display-token-1", true, false, false).is_ok());
     }
 
     #[test]

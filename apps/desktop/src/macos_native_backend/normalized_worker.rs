@@ -6,7 +6,7 @@
 //! provider-neutral contracts.
 
 use std::{
-    sync::mpsc::{Receiver, TryRecvError},
+    sync::mpsc::{Receiver, SyncSender, TryRecvError},
     thread,
     time::{Duration, Instant},
 };
@@ -22,7 +22,7 @@ use frame_media::{
     TargetRecoveryPolicy, VideoFrameSpec, negotiate_screen_capture,
 };
 
-use crate::NativeDesktopBackendError;
+use crate::{NativeDesktopBackendError, NativeRecordingInputControlRequest};
 
 const SOURCE_CALL_TIMEOUT: Duration = Duration::from_secs(1);
 const STOP_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -48,10 +48,16 @@ pub(crate) trait NativeScreenSource:
     fn protected_content_policy() -> ProtectedContentPolicy;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum WorkerControl {
     Stop,
     Cancel,
+    Pause(SyncSender<Result<(), NativeDesktopBackendError>>),
+    Resume(SyncSender<Result<(), NativeDesktopBackendError>>),
+    Input {
+        request: NativeRecordingInputControlRequest,
+        reply: SyncSender<Result<(), NativeDesktopBackendError>>,
+    },
 }
 
 pub(crate) struct WorkerCompletion {
@@ -393,6 +399,12 @@ impl<S: NativeScreenSource> ScreenWorkerStart<S> {
                     return WorkerCompletion {
                         outcome: cancel(&mut source, &mut session, pump, diagnostic_baseline),
                     };
+                }
+                Ok(WorkerControl::Pause(reply) | WorkerControl::Resume(reply)) => {
+                    let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
+                }
+                Ok(WorkerControl::Input { reply, .. }) => {
+                    let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
                 }
                 Err(TryRecvError::Empty) => {}
             }

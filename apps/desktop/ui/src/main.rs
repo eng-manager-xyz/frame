@@ -605,6 +605,11 @@ mod browser {
                 )
             })
         };
+        let is_macos_native = move || {
+            snapshot
+                .get()
+                .is_some_and(|state| state.adapter == DesktopAdapterKind::NativeMacOs)
+        };
         let supports_capture_targets = move || is_fake() || is_native();
         let can_start = move || {
             snapshot.get().is_some_and(|state| {
@@ -615,8 +620,6 @@ mod browser {
                         | DesktopAdapterKind::NativeWindows
                 ) && state.permission == frame_desktop_core::PermissionState::Granted
                     && state.selected_sources.target.is_some()
-                    && (state.adapter == DesktopAdapterKind::DeterministicFake
-                        || (!state.settings.microphone_enabled && !state.settings.camera_enabled))
                     && matches!(
                         state.recorder,
                         RecorderState::Idle | RecorderState::Ready | RecorderState::Failed { .. }
@@ -624,18 +627,22 @@ mod browser {
             }) && !busy.get()
         };
         let can_pause = move || {
-            is_fake()
-                && snapshot
-                    .get()
-                    .is_some_and(|state| state.recorder == RecorderState::Recording)
-                && !busy.get()
+            snapshot.get().is_some_and(|state| {
+                (state.adapter == DesktopAdapterKind::DeterministicFake
+                    || (state.adapter == DesktopAdapterKind::NativeMacOs
+                        && (state.settings.microphone_enabled
+                            || state.settings.system_audio_enabled
+                            || state.settings.camera_enabled)))
+                    && state.recorder == RecorderState::Recording
+            }) && !busy.get()
         };
         let can_resume = move || {
-            is_fake()
-                && snapshot
-                    .get()
-                    .is_some_and(|state| state.recorder == RecorderState::Paused)
-                && !busy.get()
+            snapshot.get().is_some_and(|state| {
+                matches!(
+                    state.adapter,
+                    DesktopAdapterKind::DeterministicFake | DesktopAdapterKind::NativeMacOs
+                ) && state.recorder == RecorderState::Paused
+            }) && !busy.get()
         };
         let can_stop = move || {
             snapshot.get().is_some_and(|state| {
@@ -647,7 +654,10 @@ mod browser {
                     || (matches!(
                         state.adapter,
                         DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
-                    ) && state.recorder == RecorderState::Recording)
+                    ) && matches!(
+                        state.recorder,
+                        RecorderState::Recording | RecorderState::Paused
+                    ))
             }) && !busy.get()
         };
         let can_configure_native_audio = move || {
@@ -747,38 +757,68 @@ mod browser {
                             <Button variant=ButtonVariant::Outline
                                 attr:r#type="button"
                                 attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Instant)
-                                attr:disabled=move || !is_fake() || busy.get()
-                                on:click=move |_| submit(
-                                    client,
-                                    snapshot,
-                                    status,
-                                    error,
-                                    busy,
-                                    WindowRole::Recorder,
-                                    IpcCommand::RecorderConfigure {
-                                        mode: RecorderMode::Instant,
-                                        countdown_seconds: 3,
-                                        exclude_frame_windows: true,
-                                    },
-                                )
+                                attr:disabled=move || (!is_fake() && !is_macos_native()) || busy.get()
+                                on:click=move |_| {
+                                    if let Some(state) = snapshot.get_untracked() {
+                                        let (role, command) = if state.adapter == DesktopAdapterKind::NativeMacOs {
+                                            (
+                                                WindowRole::Settings,
+                                                IpcCommand::SettingsApply {
+                                                    expected_revision: state.settings.revision,
+                                                    mode: RecorderMode::Instant,
+                                                    frame_rate: state.settings.frame_rate,
+                                                    microphone_enabled: state.settings.microphone_enabled,
+                                                    system_audio_enabled: state.settings.system_audio_enabled,
+                                                    camera_enabled: false,
+                                                    reduced_motion: state.settings.reduced_motion,
+                                                },
+                                            )
+                                        } else {
+                                            (
+                                                WindowRole::Recorder,
+                                                IpcCommand::RecorderConfigure {
+                                                    mode: RecorderMode::Instant,
+                                                    countdown_seconds: 3,
+                                                    exclude_frame_windows: true,
+                                                },
+                                            )
+                                        };
+                                        submit(client, snapshot, status, error, busy, role, command);
+                                    }
+                                }
                             >"Instant"</Button>
                             <Button variant=ButtonVariant::Outline
                                 attr:r#type="button"
                                 attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.recorder_configuration.mode == RecorderMode::Studio)
-                                attr:disabled=move || !is_fake() || busy.get()
-                                on:click=move |_| submit(
-                                    client,
-                                    snapshot,
-                                    status,
-                                    error,
-                                    busy,
-                                    WindowRole::Recorder,
-                                    IpcCommand::RecorderConfigure {
-                                        mode: RecorderMode::Studio,
-                                        countdown_seconds: 3,
-                                        exclude_frame_windows: true,
-                                    },
-                                )
+                                attr:disabled=move || (!is_fake() && !is_macos_native()) || busy.get()
+                                on:click=move |_| {
+                                    if let Some(state) = snapshot.get_untracked() {
+                                        let (role, command) = if state.adapter == DesktopAdapterKind::NativeMacOs {
+                                            (
+                                                WindowRole::Settings,
+                                                IpcCommand::SettingsApply {
+                                                    expected_revision: state.settings.revision,
+                                                    mode: RecorderMode::Studio,
+                                                    frame_rate: state.settings.frame_rate,
+                                                    microphone_enabled: state.settings.microphone_enabled,
+                                                    system_audio_enabled: state.settings.system_audio_enabled,
+                                                    camera_enabled: state.settings.camera_enabled,
+                                                    reduced_motion: state.settings.reduced_motion,
+                                                },
+                                            )
+                                        } else {
+                                            (
+                                                WindowRole::Recorder,
+                                                IpcCommand::RecorderConfigure {
+                                                    mode: RecorderMode::Studio,
+                                                    countdown_seconds: 3,
+                                                    exclude_frame_windows: true,
+                                                },
+                                            )
+                                        };
+                                        submit(client, snapshot, status, error, busy, role, command);
+                                    }
+                                }
                             >"Studio"</Button>
                         </ToggleGroup>
                     </FieldGroup>
@@ -865,7 +905,7 @@ mod browser {
                             <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !supports_capture_targets() || busy.get() on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Recorder,
                                 IpcCommand::RecorderPrepare
-                            )>{move || if is_native() { "Check macOS access" } else { "Confirm permissions" }}</Button>
+                            )>{move || if is_macos_native() { "Check macOS access" } else { "Confirm permissions" }}</Button>
                         </ButtonGroup>
                         <p class="device-summary">{move || match snapshot.get().map(|state| state.devices) {
                             Some(DeviceState::Ready(counts)) => format!(
@@ -893,9 +933,99 @@ mod browser {
                             }}</output>
                         </div>
                     </Show>
-                    <Show when=move || is_native()>
+                    <Show when=move || is_macos_native()>
+                        <ButtonGroup class="button-row" attr:aria-label="Live native input controls">
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::Microphone,
+                                        gain_milli: 1_000,
+                                        muted: false,
+                                        enabled: true,
+                                    });
+                                }
+                            }>"Unmute microphone"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::Microphone,
+                                        gain_milli: 500,
+                                        muted: false,
+                                        enabled: true,
+                                    });
+                                }
+                            }>"Microphone 50%"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::Microphone,
+                                        gain_milli: 1_000,
+                                        muted: true,
+                                        enabled: true,
+                                    });
+                                }
+                            }>"Mute microphone"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::SystemAudio,
+                                        gain_milli: 1_000,
+                                        muted: false,
+                                        enabled: true,
+                                    });
+                                }
+                            }>"Unmute system audio"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::SystemAudio,
+                                        gain_milli: 500,
+                                        muted: false,
+                                        enabled: true,
+                                    });
+                                }
+                            }>"System audio 50%"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::SystemAudio,
+                                        gain_milli: 1_000,
+                                        muted: true,
+                                        enabled: true,
+                                    });
+                                }
+                            }>"Mute system audio"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::Camera,
+                                        gain_milli: 1_000,
+                                        muted: false,
+                                        enabled: true,
+                                    });
+                                }
+                            }>"Include camera track"</Button>
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !can_stop() || busy.get() on:click=move |_| {
+                                if let Some(client_value) = client.get_untracked() {
+                                    submit(client, snapshot, status, error, busy, WindowRole::Recorder, IpcCommand::RecorderInputSet {
+                                        intent_id: client_value.next_intent_id(),
+                                        class: DeviceClass::Camera,
+                                        gain_milli: 1_000,
+                                        muted: false,
+                                        enabled: false,
+                                    });
+                                }
+                            }>"Exclude camera track"</Button>
+                        </ButtonGroup>
                         <p class="privacy-note">
-                            "Native macOS capture records the selected target and can optionally include system audio. Microphone, camera, pause/resume, and MP4 export remain unavailable; native export is Editable WebM."
+                            "Native macOS capture records the selected target with any enabled confirmed microphone, system-audio, and camera inputs. Excluding the live camera track stops new camera samples from entering the Studio original, while the session-owned camera remains active until pause or stop. Native export is Editable WebM."
                         </p>
                     </Show>
 
@@ -1238,45 +1368,83 @@ mod browser {
                         || "Settings are loading.".into(),
                         |state| format!("Settings revision {}. {} frames per second.", state.settings.revision, state.settings.frame_rate),
                     )}</p>
-                    <Show when=move || is_native()>
+                    <Show when=move || is_macos_native()>
                         <div class="privacy-note" aria-labelledby="native-audio-heading">
-                            <h3 id="native-audio-heading">"Native macOS system audio"</h3>
+                            <h3 id="native-audio-heading">"Native macOS inputs"</h3>
                             <p id="native-audio-help">
-                                "System audio is optional and uses macOS Screen & System Audio Recording access. Frame excludes its own process audio. Microphone and camera remain off."
+                                "Microphone, system audio, and camera are optional. Frame uses the confirmed macOS defaults, excludes its own process audio, and stores camera as an isolated Studio original."
                             </p>
-                            <Button variant=ButtonVariant::Outline
-                                attr:r#type="button"
-                                attr:aria-describedby="native-audio-help"
-                                attr:aria-pressed=move || snapshot
-                                    .get()
-                                    .is_some_and(|state| state.settings.system_audio_enabled)
-                                attr:disabled=move || !can_configure_native_audio()
-                                on:click=move |_| {
-                                    if let Some(state) = snapshot.get_untracked() {
-                                        submit(
-                                            client,
-                                            snapshot,
-                                            status,
-                                            error,
-                                            busy,
-                                            WindowRole::Settings,
-                                            IpcCommand::SettingsApply {
+                            <ButtonGroup class="button-row">
+                                <Button variant=ButtonVariant::Outline
+                                    attr:r#type="button"
+                                    attr:aria-describedby="native-audio-help"
+                                    attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.settings.microphone_enabled)
+                                    attr:disabled=move || !can_configure_native_audio()
+                                    on:click=move |_| {
+                                        if let Some(state) = snapshot.get_untracked() {
+                                            submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::SettingsApply {
                                                 expected_revision: state.settings.revision,
                                                 mode: state.settings.mode,
                                                 frame_rate: state.settings.frame_rate,
-                                                microphone_enabled: false,
-                                                system_audio_enabled: !state.settings.system_audio_enabled,
-                                                camera_enabled: false,
+                                                microphone_enabled: !state.settings.microphone_enabled,
+                                                system_audio_enabled: state.settings.system_audio_enabled,
+                                                camera_enabled: state.settings.camera_enabled,
                                                 reduced_motion: state.settings.reduced_motion,
-                                            },
-                                        );
+                                            });
+                                        }
                                     }
-                                }
-                            >{move || if snapshot.get().is_some_and(|state| state.settings.system_audio_enabled) {
-                                "Include system audio: on"
-                            } else {
-                                "Include system audio: off"
-                            }}</Button>
+                                >{move || if snapshot.get().is_some_and(|state| state.settings.microphone_enabled) {
+                                    "Microphone: on"
+                                } else {
+                                    "Microphone: off"
+                                }}</Button>
+                                <Button variant=ButtonVariant::Outline
+                                    attr:r#type="button"
+                                    attr:aria-describedby="native-audio-help"
+                                    attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.settings.system_audio_enabled)
+                                    attr:disabled=move || !can_configure_native_audio()
+                                    on:click=move |_| {
+                                        if let Some(state) = snapshot.get_untracked() {
+                                            submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::SettingsApply {
+                                                expected_revision: state.settings.revision,
+                                                mode: state.settings.mode,
+                                                frame_rate: state.settings.frame_rate,
+                                                microphone_enabled: state.settings.microphone_enabled,
+                                                system_audio_enabled: !state.settings.system_audio_enabled,
+                                                camera_enabled: state.settings.camera_enabled,
+                                                reduced_motion: state.settings.reduced_motion,
+                                            });
+                                        }
+                                    }
+                                >{move || if snapshot.get().is_some_and(|state| state.settings.system_audio_enabled) {
+                                    "System audio: on"
+                                } else {
+                                    "System audio: off"
+                                }}</Button>
+                                <Button variant=ButtonVariant::Outline
+                                    attr:r#type="button"
+                                    attr:aria-describedby="native-audio-help"
+                                    attr:aria-pressed=move || snapshot.get().is_some_and(|state| state.settings.camera_enabled)
+                                    attr:disabled=move || !can_configure_native_audio() || snapshot.get().is_some_and(|state| state.settings.mode != RecorderMode::Studio && !state.settings.camera_enabled)
+                                    on:click=move |_| {
+                                        if let Some(state) = snapshot.get_untracked() {
+                                            submit(client, snapshot, status, error, busy, WindowRole::Settings, IpcCommand::SettingsApply {
+                                                expected_revision: state.settings.revision,
+                                                mode: state.settings.mode,
+                                                frame_rate: state.settings.frame_rate,
+                                                microphone_enabled: state.settings.microphone_enabled,
+                                                system_audio_enabled: state.settings.system_audio_enabled,
+                                                camera_enabled: !state.settings.camera_enabled,
+                                                reduced_motion: state.settings.reduced_motion,
+                                            });
+                                        }
+                                    }
+                                >{move || if snapshot.get().is_some_and(|state| state.settings.camera_enabled) {
+                                    "Camera: on"
+                                } else {
+                                    "Camera: off"
+                                }}</Button>
+                            </ButtonGroup>
                         </div>
                     </Show>
                     <ButtonGroup class="button-row">

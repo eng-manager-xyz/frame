@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use apple_cf::dispatch_queue::{DispatchQoS, DispatchQueue, dispatch_async_and_wait};
@@ -102,15 +102,20 @@ struct ActiveCapture {
     _pending_native_call: Option<PendingNativeCall>,
     callback_queue: DispatchQueue,
     output_handler_id: Option<usize>,
-    receiver: Receiver<CMSampleBuffer>,
+    receiver: Receiver<CallbackSample>,
     delegate_dropped: Receiver<()>,
     unexpected_stop: Arc<AtomicBool>,
     frames: FrameAssembler,
 }
 
 struct DetachedCaptureTail {
-    samples: Vec<CMSampleBuffer>,
+    samples: Vec<CallbackSample>,
     output_handler_registered: bool,
+}
+
+struct CallbackSample {
+    sample: CMSampleBuffer,
+    master_arrival_ns: u64,
 }
 
 struct CaptureDelegate {
@@ -510,6 +515,16 @@ impl MacOsScreenCaptureSource {
     }
 
     pub fn start(&mut self, config: MacOsCaptureConfig) -> Result<(), MacOsCaptureError> {
+        self.start_with_master_origin(config, Instant::now())
+    }
+
+    /// Starts screen capture on the same host-monotonic origin used by the
+    /// optional microphone/system-audio/camera bridge.
+    pub fn start_with_master_origin(
+        &mut self,
+        config: MacOsCaptureConfig,
+        master_origin: Instant,
+    ) -> Result<(), MacOsCaptureError> {
         match &self.capture {
             NativeCaptureLifecycle::Ready => {}
             NativeCaptureLifecycle::Running(_) => return Err(MacOsCaptureError::AlreadyRunning),
@@ -584,7 +599,16 @@ impl MacOsScreenCaptureSource {
                         increment(&callback_diagnostics.invalid_samples);
                         return;
                     }
-                    deliver_callback_sample(&sender, sample, &callback_diagnostics);
+                    let master_arrival_ns =
+                        u64::try_from(master_origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    deliver_callback_sample(
+                        &sender,
+                        CallbackSample {
+                            sample,
+                            master_arrival_ns,
+                        },
+                        &callback_diagnostics,
+                    );
                 },
                 SCStreamOutputType::Screen,
                 Some(&active.callback_queue),
@@ -673,7 +697,7 @@ impl MacOsScreenCaptureSource {
                     return Err(MacOsCaptureError::CaptureTeardownUnconfirmed);
                 }
             };
-            let sample = match received {
+            let callback = match received {
                 Ok(sample) => sample,
                 Err(TryRecvError::Empty) => return Ok(None),
                 Err(TryRecvError::Disconnected) => {
@@ -684,9 +708,12 @@ impl MacOsScreenCaptureSource {
                 }
             };
             let processed = match &mut self.capture {
-                NativeCaptureLifecycle::Running(active) => {
-                    process_sample(active, &sample, &self.diagnostics)
-                }
+                NativeCaptureLifecycle::Running(active) => process_sample(
+                    active,
+                    &callback.sample,
+                    callback.master_arrival_ns,
+                    &self.diagnostics,
+                ),
                 NativeCaptureLifecycle::Ready
                 | NativeCaptureLifecycle::StopUnconfirmed { .. }
                 | NativeCaptureLifecycle::NativeOperationUnconfirmed { .. } => {
@@ -782,8 +809,13 @@ impl MacOsScreenCaptureSource {
             return Err(MacOsCaptureStopError::CaptureFailedAfterTeardown(error));
         }
         let mut tail = Vec::with_capacity(detached.samples.len());
-        for sample in detached.samples {
-            match process_sample(&mut active, &sample, &self.diagnostics) {
+        for callback in detached.samples {
+            match process_sample(
+                &mut active,
+                &callback.sample,
+                callback.master_arrival_ns,
+                &self.diagnostics,
+            ) {
                 Ok(ProcessedSample::Frame(frame)) => tail.push(frame),
                 Ok(ProcessedSample::Ignored) => {}
                 Ok(ProcessedSample::Terminal) => break,
@@ -1059,6 +1091,7 @@ enum ProcessedSample {
 fn process_sample(
     active: &mut ActiveCapture,
     sample: &CMSampleBuffer,
+    master_arrival_ns: u64,
     diagnostics: &DiagnosticCounters,
 ) -> Result<ProcessedSample, MacOsCaptureError> {
     let status = sample
@@ -1067,14 +1100,18 @@ fn process_sample(
     let assembly = match frame_status_disposition(status) {
         FrameStatusDisposition::Content => {
             let (pixels, pts, duration) = extract_owned_bgra(sample, active.frames.spec())?;
-            Some(active.frames.accept_complete(pixels, pts, duration)?)
+            Some(
+                active
+                    .frames
+                    .accept_complete(pixels, pts, duration, master_arrival_ns)?,
+            )
         }
         FrameStatusDisposition::RepeatLastContent => {
             if !sample.is_valid() {
                 return Err(MacOsCaptureError::InvalidSampleBuffer);
             }
             let pts = raw_media_time(sample.presentation_timestamp());
-            active.frames.accept_idle(pts)?
+            active.frames.accept_idle(pts, master_arrival_ns)?
         }
         FrameStatusDisposition::ContentUnavailable => {
             increment(&diagnostics.ignored_non_content_samples);
@@ -1538,14 +1575,15 @@ mod tests {
                 pixels.clone(),
                 RawMediaTime::numeric(0, 30, 0),
                 RawMediaTime::numeric(1, 30, 0),
+                10,
             )
             .expect("complete");
         let first_idle = frames
-            .accept_idle(RawMediaTime::numeric(1, 30, 0))
+            .accept_idle(RawMediaTime::numeric(1, 30, 0), 20)
             .expect("first idle")
             .expect("cached frame");
         let second_idle = frames
-            .accept_idle(RawMediaTime::numeric(2, 30, 0))
+            .accept_idle(RawMediaTime::numeric(2, 30, 0), 30)
             .expect("second idle")
             .expect("cached frame");
 
@@ -1560,6 +1598,9 @@ mod tests {
         assert_eq!(second_idle.frame.timestamp().pts_ns, 66_666_666);
         assert_eq!(first_idle.frame.timestamp().duration_ns, 33_333_333);
         assert_eq!(second_idle.frame.timestamp().duration_ns, 33_333_333);
+        assert_eq!(complete.frame.master_arrival_ns(), Some(10));
+        assert_eq!(first_idle.frame.master_arrival_ns(), Some(20));
+        assert_eq!(second_idle.frame.master_arrival_ns(), Some(30));
         assert!(!first_idle.used_nominal_duration);
         assert!(!second_idle.used_nominal_duration);
     }
@@ -1581,7 +1622,7 @@ mod tests {
         let mut frames = FrameAssembler::new(target, spec);
         assert!(
             frames
-                .accept_idle(RawMediaTime::numeric(1, 30, 0))
+                .accept_idle(RawMediaTime::numeric(1, 30, 0), 10)
                 .expect("idle")
                 .is_none()
         );
@@ -1607,11 +1648,12 @@ mod tests {
                 vec![1, 2, 3, 4],
                 RawMediaTime::numeric(0, 30, 0),
                 RawMediaTime::numeric(1, 30, 0),
+                10,
             )
             .expect("complete");
         frames.mark_non_content_discontinuity();
         let idle = frames
-            .accept_idle(RawMediaTime::numeric(1, 30, 0))
+            .accept_idle(RawMediaTime::numeric(1, 30, 0), 20)
             .expect("idle")
             .expect("cached frame");
 
