@@ -58,6 +58,19 @@ Complete product UI is issue 33; server media derivatives are issue 28.
 - Frame/audio diff between preview/export/reference.
 - Crash recovery, long-project, seek, memory, and export benchmark report.
 
+## Current implementation evidence
+
+- The macOS release path durably reserves software distribution/archive
+  renders through `StudioRenderCoordinator`, exposes bounded monotonic progress
+  through payload-free `ExportPoll`, and accepts cancellation only after worker
+  termination plus exact partial-output absence.
+- Runtime tests cover async completion, confirmed cancellation, and retained
+  quarantine when cleanup is unconfirmed. The local evidence ledger records
+  the remaining protected and repository-local gaps.
+- Hardware selection with identical-plan software fallback and native
+  post-restart staging-identity reconstruction remain open; therefore the
+  combined hardware-fallback/cancel acceptance checkbox stays unchecked.
+
 ## Risks and open questions
 
 - Editor parity is larger than media encoding and may expose hidden format assumptions.

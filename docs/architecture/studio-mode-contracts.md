@@ -350,10 +350,21 @@ short artifact. The initial barrier also prevents a non-live source from
 finalizing a muxer before the first canonical seek; HEVC receives its exact
 input caps before that flushing seek so x265 can reinitialize deterministically.
 Camera composition, transformed cursor metadata, nontransparent backgrounds,
-camera-only/side-by-side layouts, arbitrary asset-offset assembly, and wiring
-this adapter into `StudioRenderCoordinator` still fail closed or remain
-unimplemented; the screen/audio preview path does not weaken those fail-closed
-boundaries.
+camera-only/side-by-side layouts, and arbitrary asset-offset assembly still
+fail closed or remain unimplemented; the screen/audio preview path does not
+weaken those fail-closed boundaries.
+
+The macOS release adapter dispatches the same canonical graph through
+`StudioRenderCoordinator` with software capabilities. A bounded worker renders
+only into a pre-opened private inode and reports monotonic phase/basis-point
+progress through a one-slot completion channel. The desktop polls through a
+payload-free, editor/export-scoped IPC command. Cancellation waits for worker
+termination, conditionally removes only the exact staging/output inode, probes
+absence, and advances the journal to `RenderCancelled` before the UI can report
+success. Commit verifies and publishes the exact inode, probes its checksum and
+length, and CAS-persists `RenderFinalizing`/`RenderCommitted` plus the terminal
+receipt before releasing authority. Hardware selection and identical-plan
+software fallback are not yet enabled by this adapter.
 
 Approved profiles are exact:
 
@@ -401,10 +412,14 @@ retain a quarantined session that cannot be released or replaced. A terminal
 session becomes releasable only after an exact committed receipt or confirmed
 partial absence.
 
-On process restart, the shell opens every Studio journal before allowing new
-render dispatch, consumes each durable pending render into a non-forgeable
-authorization, and supplies all recovered authorizations to
-`StudioRenderCoordinator::new`. Recovered
+The provider-neutral restart contract opens every Studio journal before
+allowing a new render dispatch, consumes each durable pending render into a
+non-forgeable authorization, and supplies all recovered authorizations to
+`StudioRenderCoordinator::new`. The filesystem reference renderer implements
+this complete adoption path. The macOS release backend currently quarantines a
+preterminal render journal as recovery-required after restart; it does not yet
+reconstruct the exact private staging identity, so it cannot claim native
+adoption or cleanup. Recovered
 running/partial outputs remain reserved until exact cancellation, cleanup, and
 absence probing succeed. `PendingRender` carries the structured terminal
 receipt (project/export/operation identity, immutable renderer fence, source,

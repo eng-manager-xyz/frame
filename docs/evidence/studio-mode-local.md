@@ -120,13 +120,19 @@ one-shot preview event crosses into the WebView; raw RGB bytes never persist in
 the runtime snapshot. The Leptos editor paints that frame into a canvas and
 announces the mapped source position plus microphone/system-audio decisions.
 
-The export call remains synchronous, publishes only terminal progress, and is
-not wired to `StudioRenderCoordinator`; cancellation cannot currently race a
-running desktop render. The adapter does not assemble arbitrary asset-offset
-ranges and fails closed for camera, cursor, background, camera-only, and
-side-by-side composition. The reference renderer still writes a checksum-bound
-bundle rather than dispatching the native adapter. Therefore these paths cannot
-yet satisfy complete desktop Studio composition, complete decoded
+The macOS export call now dispatches its software graph through
+`StudioRenderCoordinator`. The render reservation is CAS-persisted before a
+bounded worker starts; payload-free polling carries monotonic progress, and
+terminal publication is accepted only after exact inode/hash/length probing and
+a durable receipt. Cancellation waits for the worker, conditionally deletes
+the exact private inode, proves absence, and persists `RenderCancelled`.
+Runtime tests cover monotonic completion, backend-confirmed cancellation, and
+quarantine when cleanup is unconfirmed. The adapter still does not assemble
+arbitrary asset-offset ranges and fails closed for camera, cursor, background,
+camera-only, and side-by-side composition. Hardware selection/identical-plan
+software fallback and native staging-identity reconstruction after process
+restart are also not connected. Therefore these paths cannot yet satisfy
+complete desktop Studio composition, complete decoded
 preview/export/reference goldens, long-project effects, or hardware-fallback
 acceptance criteria.
 

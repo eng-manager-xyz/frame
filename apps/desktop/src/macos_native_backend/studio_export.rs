@@ -9,8 +9,8 @@ use std::{fs::File, path::Path};
 use frame_media::{
     AssetChecksum, CancellationToken, FilesystemStudioOriginalStore, NativeExecutionError,
     NativeStudioAlignedFileSources, NativeStudioEditedExportArtifact, NativeStudioExportProfile,
-    StudioProjectManifest, StudioTimelineCompiler, TimelineSource, TrackKind,
-    render_studio_export_with_edits_preopened,
+    NativeStudioRenderProgress, StudioProjectManifest, StudioTimelineCompiler, TimelineSource,
+    TrackKind, render_studio_export_with_edits_preopened_and_progress,
 };
 
 use crate::{
@@ -126,18 +126,29 @@ impl PreparedStudioExport {
     }
 
     pub(super) fn render_preopened(
-        mut self,
+        self,
         artifact_path: &Path,
         output: File,
         cancellation: &CancellationToken,
     ) -> Result<NativeStudioEditedExportArtifact, NativeDesktopBackendError> {
-        let artifact = render_studio_export_with_edits_preopened(
+        self.render_preopened_with_progress(artifact_path, output, cancellation, |_| {})
+    }
+
+    pub(super) fn render_preopened_with_progress(
+        mut self,
+        artifact_path: &Path,
+        output: File,
+        cancellation: &CancellationToken,
+        progress: impl FnMut(NativeStudioRenderProgress),
+    ) -> Result<NativeStudioEditedExportArtifact, NativeDesktopBackendError> {
+        let artifact = render_studio_export_with_edits_preopened_and_progress(
             self.sources,
             artifact_path,
             output,
             &self.plan,
             self.profile,
             cancellation,
+            progress,
         )
         .map_err(map_native_error)?;
         for original in &mut self.originals {

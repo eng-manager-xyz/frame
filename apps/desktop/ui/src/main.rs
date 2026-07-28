@@ -734,6 +734,31 @@ mod browser {
             }
         });
 
+        Effect::new(move |_| {
+            if let Ok(handle) = set_interval_with_handle(
+                move || {
+                    let should_poll = snapshot.get_untracked().is_some_and(|state| {
+                        state.adapter == DesktopAdapterKind::NativeMacOs
+                            && matches!(state.export, ExportState::Running { .. })
+                    });
+                    if should_poll && !busy.get_untracked() {
+                        submit(
+                            client,
+                            snapshot,
+                            status,
+                            error,
+                            busy,
+                            WindowRole::Editor,
+                            IpcCommand::ExportPoll,
+                        );
+                    }
+                },
+                RECORDER_POLL_INTERVAL,
+            ) {
+                on_cleanup(move || handle.clear());
+            }
+        });
+
         let is_fake = move || {
             snapshot
                 .get()
@@ -1580,7 +1605,7 @@ mod browser {
                                         "Start export"
                                     }
                                 }}</Button>
-                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || !snapshot.get().is_some_and(|state| matches!(state.export, ExportState::Running { .. })) || busy.get() on:click=move |_| {
+                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !snapshot.get().is_some_and(|state| matches!(state.adapter, DesktopAdapterKind::DeterministicFake | DesktopAdapterKind::NativeMacOs) && matches!(state.export, ExportState::Running { .. })) || busy.get() on:click=move |_| {
                                     if let Some(client_value) = client.get_untracked() {
                                         let intent_id = client_value.next_intent_id();
                                         submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::ExportCancel { intent_id });

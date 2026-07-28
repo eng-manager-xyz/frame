@@ -93,8 +93,16 @@ original sidecar, opens and hashes each original through the pinned Studio
 directory, and retains those exact descriptors while the seekable decoder reads
 them through `/dev/fd`. It renders to a preopened private staging inode, then
 publishes and rehashes that inode through the pinned export directory. Camera/
-cursor/background composition, segmented-source assembly, asynchronous progress
-and cancellation, and durable render-coordinator recovery remain fail-closed.
+cursor/background composition and segmented-source assembly remain fail-closed.
+Distribution and archive export dispatch through the durable
+`StudioRenderCoordinator`: a bounded worker publishes phase/basis-point
+progress through the payload-free `ExportPoll` command, and cancellation does
+not complete until the worker stops, its exact fenced staging identity is
+deleted, and absence is proven. The final inode is published only after the
+coordinator has accepted 10000 basis points; its checksum/length receipt is
+CAS-persisted before authority is released. Hardware encoder selection,
+identical-plan software fallback, and native post-restart render adoption
+remain fail-closed.
 
 The native Windows implementation uses Windows Graphics Capture permission
 availability and bounded privacy-safe display/non-Frame-window enumeration.

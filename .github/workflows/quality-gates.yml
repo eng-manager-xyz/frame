@@ -114,11 +114,7 @@ jobs:
           cache-on-failure: false
       - name: Install GStreamer build and runtime libraries
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-libav ripgrep
+          scripts/ci/install-gstreamer-ubuntu.sh --libav --ripgrep
           plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
           test -d "${plugin_dir}"
           echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"
@@ -278,12 +274,7 @@ jobs:
           cache-on-failure: false
       - name: Install GStreamer build and runtime libraries
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good \
-            gstreamer1.0-libav
+          scripts/ci/install-gstreamer-ubuntu.sh --libav --tools --base-apps
           plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
           test -d "${plugin_dir}"
           echo "GST_PLUGIN_SYSTEM_PATH_1_0=${plugin_dir}" >> "${GITHUB_ENV}"

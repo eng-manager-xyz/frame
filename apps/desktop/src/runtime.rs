@@ -36,11 +36,11 @@ use crate::{
         NativeRecordingInputControlRequest, NativeRecordingStartOutcome,
         NativeRecordingStopOutcome, NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome,
         NativeRegionDefinitionRequest, NativeStudioEditApplyRequest, NativeStudioEditMutation,
-        NativeStudioEditSaveRequest, NativeStudioExportRequest, NativeStudioPreviewAudioState,
-        NativeStudioPreviewOutcome, NativeStudioPreviewRequest, NativeStudioProjectCatalog,
-        NativeStudioProjectOpenRequest, NativeStudioProjectStatus, NativeStudioRecoveryAction,
-        NativeStudioRecoveryRequest, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
-        STUDIO_PROJECT_CATALOG_VERSION,
+        NativeStudioEditSaveRequest, NativeStudioExportPollOutcome, NativeStudioExportRequest,
+        NativeStudioExportStartOutcome, NativeStudioPreviewAudioState, NativeStudioPreviewOutcome,
+        NativeStudioPreviewRequest, NativeStudioProjectCatalog, NativeStudioProjectOpenRequest,
+        NativeStudioProjectStatus, NativeStudioRecoveryAction, NativeStudioRecoveryRequest,
+        NativeTargetSelectionOutcome, NativeTargetSelectionRequest, STUDIO_PROJECT_CATALOG_VERSION,
     },
     workflow::{
         BackendEvent, BackendEventEnvelope, DesktopWorkflow, DeviceCounts, DeviceState,
@@ -402,6 +402,7 @@ pub struct DesktopRuntime {
     native_export_paths: PathPolicy,
     native_export_root: String,
     studio_export_destination: Option<StudioExportDestination>,
+    native_studio_export: Option<NativeStudioExportRequest>,
     settings: DesktopSettingsSnapshot,
     lifecycle: LifecycleSnapshot,
     update: UpdateState,
@@ -554,6 +555,7 @@ impl DesktopRuntime {
             native_export_paths,
             native_export_root: roots.exports,
             studio_export_destination: None,
+            native_studio_export: None,
             settings: DesktopSettingsSnapshot {
                 revision: 1,
                 mode: RecorderMode::Instant,
@@ -1738,6 +1740,7 @@ impl DesktopRuntime {
                 catalog_generation,
                 project_token,
             } => {
+                self.require_studio_export_idle()?;
                 let selected = self
                     .studio_projects
                     .projects
@@ -1772,7 +1775,7 @@ impl DesktopRuntime {
                 }
                 self.studio_export_destination = Some(StudioExportDestination {
                     output_path: Path::new(&self.native_export_root)
-                        .join(format!("Frame-Studio-{project_token}.mp4"))
+                        .join(format!("frame-studio-{project_token}.mp4"))
                         .to_string_lossy()
                         .into_owned(),
                     profile: ExportProfile::DistributionMp4,
@@ -1799,6 +1802,7 @@ impl DesktopRuntime {
                 base_revision,
                 mutation,
             } => {
+                self.require_studio_export_idle()?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
                 self.preflight_transition(
                     &intent_id,
@@ -1830,6 +1834,7 @@ impl DesktopRuntime {
                 Ok(events)
             }
             IpcCommand::EditorSave { expected_revision } => {
+                self.require_studio_export_idle()?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
                 self.preflight_transition(
                     &intent_id,
@@ -1862,7 +1867,7 @@ impl DesktopRuntime {
                     .map_err(|_| ExecutionFailure::invalid_backend_response())?;
                 self.studio_export_destination = Some(StudioExportDestination {
                     output_path: Path::new(&self.native_export_root)
-                        .join(format!("Frame-Studio-{}.mp4", outcome.project_token))
+                        .join(format!("frame-studio-{}.mp4", outcome.project_token))
                         .to_string_lossy()
                         .into_owned(),
                     profile: ExportProfile::DistributionMp4,
@@ -1878,6 +1883,7 @@ impl DesktopRuntime {
                 editor_revision,
                 position_ms,
             } => {
+                self.require_studio_export_idle()?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
                 let request = NativeStudioPreviewRequest {
                     editor_revision: *editor_revision,
@@ -1938,31 +1944,156 @@ impl DesktopRuntime {
                     },
                 )?;
                 let outcome = backend
-                    .export_studio_project(&request)
+                    .start_studio_export(&request)
                     .map_err(ExecutionFailure::native_backend)?;
                 outcome
                     .validate_for(&request)
                     .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let (events, completed_bytes) = match outcome {
+                    NativeStudioExportStartOutcome::Running {
+                        progress_basis_points,
+                    } => {
+                        self.native_studio_export = Some(request);
+                        let mut events = vec![BackendEvent::ExportStarted {
+                            intent_id: intent_id.clone(),
+                            project_revision: *project_revision,
+                        }];
+                        if progress_basis_points > 0 {
+                            events.push(BackendEvent::ExportProgress {
+                                progress_basis_points,
+                            });
+                        }
+                        (events, None)
+                    }
+                    NativeStudioExportStartOutcome::Completed(outcome) => (
+                        vec![
+                            BackendEvent::ExportStarted {
+                                intent_id: intent_id.clone(),
+                                project_revision: *project_revision,
+                            },
+                            BackendEvent::ExportProgress {
+                                progress_basis_points: 10_000,
+                            },
+                            BackendEvent::ExportCompleted,
+                        ],
+                        Some(outcome.bytes_written),
+                    ),
+                };
                 let events = self.transition(
                     &intent_id,
                     IntentKind::ExportStart {
                         project_revision: *project_revision,
                     },
+                    events,
+                )?;
+                self.announcement = completed_bytes.map_or_else(
+                    || "Studio export started with durable native progress.".into(),
+                    |bytes| format!("Studio export completed with {bytes} verified bytes."),
+                );
+                Ok(events)
+            }
+            IpcCommand::ExportPoll => {
+                let request = self.native_studio_export.clone().ok_or_else(|| {
+                    ExecutionFailure::conflict("No native Studio export is active.")
+                })?;
+                let ExportState::Running {
+                    progress_basis_points: current_progress,
+                    ..
+                } = self.workflow.export()
+                else {
+                    return Err(ExecutionFailure::conflict(
+                        "Native Studio export can only be polled while running.",
+                    ));
+                };
+                let outcome = backend
+                    .poll_studio_export(&request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                outcome
+                    .validate_for(&request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let events = match outcome {
+                    NativeStudioExportPollOutcome::Running {
+                        progress_basis_points,
+                        ..
+                    } if progress_basis_points > current_progress => {
+                        vec![BackendEvent::ExportProgress {
+                            progress_basis_points,
+                        }]
+                    }
+                    NativeStudioExportPollOutcome::Running { .. } => Vec::new(),
+                    NativeStudioExportPollOutcome::Completed(outcome) => {
+                        self.native_studio_export = None;
+                        self.announcement = format!(
+                            "Studio export completed with {} verified bytes.",
+                            outcome.bytes_written
+                        );
+                        let mut events = Vec::with_capacity(2);
+                        if current_progress < 10_000 {
+                            events.push(BackendEvent::ExportProgress {
+                                progress_basis_points: 10_000,
+                            });
+                        }
+                        events.push(BackendEvent::ExportCompleted);
+                        events
+                    }
+                    NativeStudioExportPollOutcome::Failed {
+                        error,
+                        cleanup_confirmed,
+                        ..
+                    } => {
+                        if !cleanup_confirmed {
+                            return Err(ExecutionFailure::native_backend(error));
+                        }
+                        let (code, retryable) = native_export_failure_state(error);
+                        self.native_studio_export = None;
+                        self.announcement =
+                            "Native Studio export failed and its render authority was retired."
+                                .into();
+                        vec![BackendEvent::ExportFailed { code, retryable }]
+                    }
+                };
+                self.apply_unsolicited(&events)
+                    .map_err(|_| ExecutionFailure::internal())?;
+                if !events.iter().any(|event| {
+                    matches!(
+                        event,
+                        BackendEvent::ExportCompleted | BackendEvent::ExportFailed { .. }
+                    )
+                }) {
+                    let progress = events
+                        .iter()
+                        .find_map(|event| match event {
+                            BackendEvent::ExportProgress {
+                                progress_basis_points,
+                            } => Some(*progress_basis_points),
+                            _ => None,
+                        })
+                        .unwrap_or(current_progress);
+                    self.announcement =
+                        format!("Studio export is {} percent complete.", progress / 100);
+                }
+                Ok(events)
+            }
+            IpcCommand::ExportCancel { intent_id } => {
+                let request = self.native_studio_export.clone().ok_or_else(|| {
+                    ExecutionFailure::conflict("No native Studio export is active.")
+                })?;
+                self.preflight_transition(intent_id, IntentKind::ExportCancel)?;
+                backend
+                    .cancel_studio_export(&request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                let events = self.transition(
+                    intent_id,
+                    IntentKind::ExportCancel,
                     vec![
-                        BackendEvent::ExportStarted {
+                        BackendEvent::ExportCancelling {
                             intent_id: intent_id.clone(),
-                            project_revision: *project_revision,
                         },
-                        BackendEvent::ExportProgress {
-                            progress_basis_points: 10_000,
-                        },
-                        BackendEvent::ExportCompleted,
+                        BackendEvent::ExportCancelled,
                     ],
                 )?;
-                self.announcement = format!(
-                    "Studio export completed with {} verified bytes.",
-                    outcome.bytes_written
-                );
+                self.native_studio_export = None;
+                self.announcement = "Studio export cancelled and partial output removed.".into();
                 Ok(events)
             }
             IpcCommand::ExportStart {
@@ -2093,6 +2224,7 @@ impl DesktopRuntime {
                 Ok(Vec::new())
             }
             IpcCommand::RecorderPoll => Err(ExecutionFailure::unavailable()),
+            IpcCommand::ExportPoll => Err(ExecutionFailure::unavailable()),
             IpcCommand::RecorderStart { intent_id } => {
                 if self.adapter != DesktopAdapterKind::DeterministicFake {
                     return self.transition(
@@ -2982,6 +3114,19 @@ impl DesktopRuntime {
             Err(ExecutionFailure::unavailable())
         }
     }
+
+    fn require_studio_export_idle(&self) -> Result<(), ExecutionFailure> {
+        if matches!(
+            self.workflow.export(),
+            ExportState::Running { .. } | ExportState::Cancelling { .. }
+        ) {
+            Err(ExecutionFailure::conflict(
+                "Wait for the active Studio export to finish or cancel it before editing.",
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[must_use]
@@ -3175,6 +3320,20 @@ fn native_terminal_failure_state(
     }
 }
 
+const fn native_export_failure_state(error: NativeDesktopBackendError) -> (SafeFailureCode, bool) {
+    match error {
+        NativeDesktopBackendError::PermissionDenied => (SafeFailureCode::PermissionDenied, true),
+        NativeDesktopBackendError::StaleCatalog
+        | NativeDesktopBackendError::TargetUnavailable
+        | NativeDesktopBackendError::InvalidEdit => (SafeFailureCode::InvalidProject, false),
+        NativeDesktopBackendError::Unavailable => (SafeFailureCode::BackendUnavailable, true),
+        NativeDesktopBackendError::Filesystem => (SafeFailureCode::DiskFull, true),
+        NativeDesktopBackendError::Cancelled => (SafeFailureCode::Cancelled, false),
+        NativeDesktopBackendError::Busy => (SafeFailureCode::ExportFailed, true),
+        NativeDesktopBackendError::Internal => (SafeFailureCode::ExportFailed, false),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExecutionFailure {
     code: PublicErrorCode,
@@ -3348,7 +3507,7 @@ impl DesktopRuntimeError {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::VecDeque, path::PathBuf};
 
     use super::*;
     use crate::ipc::{EditorMutation, ExportProfile, IPC_PROTOCOL_VERSION, RequestId};
@@ -3377,6 +3536,10 @@ mod tests {
         cancel_token_override: Option<String>,
         last_input: Option<NativeRecordingInputControlRequest>,
         export_calls: usize,
+        studio_async: bool,
+        studio_poll_outcomes:
+            VecDeque<Result<NativeStudioExportPollOutcome, NativeDesktopBackendError>>,
+        studio_cancel_error: Option<NativeDesktopBackendError>,
         studio_catalog: NativeStudioProjectCatalog,
         studio_open_outcome: NativeStudioProjectOpenOutcome,
         studio_opened: bool,
@@ -3416,6 +3579,9 @@ mod tests {
                 cancel_token_override: None,
                 last_input: None,
                 export_calls: 0,
+                studio_async: false,
+                studio_poll_outcomes: VecDeque::new(),
+                studio_cancel_error: None,
                 studio_catalog: NativeStudioProjectCatalog {
                     schema_version: STUDIO_PROJECT_CATALOG_VERSION,
                     generation: 1,
@@ -3671,6 +3837,39 @@ mod tests {
             })
         }
 
+        fn start_studio_export(
+            &mut self,
+            request: &NativeStudioExportRequest,
+        ) -> Result<NativeStudioExportStartOutcome, NativeDesktopBackendError> {
+            if self.studio_async {
+                self.calls.push("start_studio_export");
+                Ok(NativeStudioExportStartOutcome::Running {
+                    progress_basis_points: 0,
+                })
+            } else {
+                self.export_studio_project(request)
+                    .map(NativeStudioExportStartOutcome::Completed)
+            }
+        }
+
+        fn poll_studio_export(
+            &mut self,
+            _request: &NativeStudioExportRequest,
+        ) -> Result<NativeStudioExportPollOutcome, NativeDesktopBackendError> {
+            self.calls.push("poll_studio_export");
+            self.studio_poll_outcomes
+                .pop_front()
+                .unwrap_or(Err(NativeDesktopBackendError::Internal))
+        }
+
+        fn cancel_studio_export(
+            &mut self,
+            _request: &NativeStudioExportRequest,
+        ) -> Result<(), NativeDesktopBackendError> {
+            self.calls.push("cancel_studio_export");
+            self.studio_cancel_error.map_or(Ok(()), Err)
+        }
+
         fn inspect_studio_recovery(
             &mut self,
             request: &NativeStudioRecoveryRequest,
@@ -3832,6 +4031,36 @@ mod tests {
                 .expect("native preparation command");
             ok(&dispatch);
         }
+    }
+
+    fn open_test_studio_project(runtime: &mut DesktopRuntime, backend: &mut TestNativeBackend) {
+        ok(&runtime
+            .dispatch_native(
+                request(
+                    runtime,
+                    WindowRole::Recovery,
+                    1,
+                    "test-studio-scan",
+                    IpcCommand::RecoveryScan,
+                ),
+                backend,
+            )
+            .expect("scan test Studio projects"));
+        ok(&runtime
+            .dispatch_native(
+                request(
+                    runtime,
+                    WindowRole::Editor,
+                    1,
+                    "test-studio-open",
+                    IpcCommand::EditorOpen {
+                        catalog_generation: 1,
+                        project_token: "studio-project-token-1".into(),
+                    },
+                ),
+                backend,
+            )
+            .expect("open test Studio project"));
     }
 
     fn ok(dispatch: &DesktopDispatch) {
@@ -4550,7 +4779,7 @@ mod tests {
         assert!(
             destination
                 .output_path
-                .ends_with("Frame-Studio-studio-project-token-1.mp4")
+                .ends_with("frame-studio-studio-project-token-1.mp4")
         );
         assert_eq!(destination.profile, ExportProfile::DistributionMp4);
         assert!(!format!("{destination:?}").contains("/frame/exports"));
@@ -4578,6 +4807,268 @@ mod tests {
             }
         );
         assert_eq!(backend.call_count("export_studio"), 1);
+    }
+
+    #[test]
+    fn native_studio_async_export_polls_monotonic_progress_and_commits() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        backend.studio_async = true;
+        backend.studio_poll_outcomes = VecDeque::from([
+            Ok(NativeStudioExportPollOutcome::Running {
+                project_revision: 3,
+                profile: ExportProfile::DistributionMp4,
+                progress_basis_points: 4_250,
+            }),
+            Ok(NativeStudioExportPollOutcome::Completed(
+                NativeStudioExportOutcome {
+                    project_revision: 3,
+                    profile: ExportProfile::DistributionMp4,
+                    bytes_written: 512_000,
+                    sha256: "ab".repeat(32),
+                },
+            )),
+        ]);
+        open_test_studio_project(&mut runtime, &mut backend);
+        let destination = runtime
+            .snapshot()
+            .studio_export_destination
+            .expect("Studio export destination");
+
+        let started = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    2,
+                    "studio-async-start",
+                    IpcCommand::ExportStart {
+                        project_revision: 3,
+                        output_path: destination.output_path,
+                        profile: destination.profile,
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("start asynchronous Studio export");
+        ok(&started);
+        assert_eq!(
+            started.snapshot.export,
+            ExportState::Running {
+                project_revision: 3,
+                progress_basis_points: 0,
+            }
+        );
+        assert!(runtime.native_studio_export.is_some());
+
+        let progress = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    3,
+                    "studio-async-progress",
+                    IpcCommand::ExportPoll,
+                ),
+                &mut backend,
+            )
+            .expect("poll Studio progress");
+        ok(&progress);
+        assert_eq!(
+            progress.snapshot.export,
+            ExportState::Running {
+                project_revision: 3,
+                progress_basis_points: 4_250,
+            }
+        );
+
+        let completed = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    4,
+                    "studio-async-complete",
+                    IpcCommand::ExportPoll,
+                ),
+                &mut backend,
+            )
+            .expect("poll Studio completion");
+        ok(&completed);
+        assert_eq!(
+            completed.snapshot.export,
+            ExportState::Completed {
+                project_revision: 3,
+            }
+        );
+        assert!(runtime.native_studio_export.is_none());
+        assert_eq!(backend.call_count("start_studio_export"), 1);
+        assert_eq!(backend.call_count("poll_studio_export"), 2);
+    }
+
+    #[test]
+    fn native_studio_async_cancel_requires_backend_cleanup_confirmation() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        backend.studio_async = true;
+        open_test_studio_project(&mut runtime, &mut backend);
+        let destination = runtime
+            .snapshot()
+            .studio_export_destination
+            .expect("Studio export destination");
+        ok(&runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    2,
+                    "studio-cancel-start",
+                    IpcCommand::ExportStart {
+                        project_revision: 3,
+                        output_path: destination.output_path,
+                        profile: destination.profile,
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("start asynchronous Studio export"));
+
+        backend.studio_cancel_error = Some(NativeDesktopBackendError::Busy);
+        let rejected = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    3,
+                    "studio-cancel-busy",
+                    IpcCommand::ExportCancel {
+                        intent_id: "studio-cancel-busy".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("bounded cancellation failure");
+        assert!(matches!(
+            rejected.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Busy,
+                retryable: true,
+            }
+        ));
+        assert!(matches!(
+            rejected.snapshot.export,
+            ExportState::Running { .. }
+        ));
+        assert!(runtime.native_studio_export.is_some());
+
+        backend.studio_cancel_error = None;
+        let cancelled = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    4,
+                    "studio-cancel-confirmed",
+                    IpcCommand::ExportCancel {
+                        intent_id: "studio-cancel-confirmed".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("confirmed native cancellation");
+        ok(&cancelled);
+        assert_eq!(cancelled.snapshot.export, ExportState::Idle);
+        assert!(runtime.native_studio_export.is_none());
+        assert_eq!(backend.call_count("cancel_studio_export"), 2);
+    }
+
+    #[test]
+    fn native_studio_async_failure_retires_authority_only_after_cleanup_proof() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        backend.studio_async = true;
+        backend.studio_poll_outcomes = VecDeque::from([
+            Ok(NativeStudioExportPollOutcome::Failed {
+                project_revision: 3,
+                profile: ExportProfile::DistributionMp4,
+                error: NativeDesktopBackendError::Busy,
+                cleanup_confirmed: false,
+            }),
+            Ok(NativeStudioExportPollOutcome::Failed {
+                project_revision: 3,
+                profile: ExportProfile::DistributionMp4,
+                error: NativeDesktopBackendError::Filesystem,
+                cleanup_confirmed: true,
+            }),
+        ]);
+        open_test_studio_project(&mut runtime, &mut backend);
+        let destination = runtime
+            .snapshot()
+            .studio_export_destination
+            .expect("Studio export destination");
+        ok(&runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    2,
+                    "studio-failure-start",
+                    IpcCommand::ExportStart {
+                        project_revision: 3,
+                        output_path: destination.output_path,
+                        profile: destination.profile,
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("start asynchronous Studio export"));
+
+        let unconfirmed = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    3,
+                    "studio-failure-unconfirmed",
+                    IpcCommand::ExportPoll,
+                ),
+                &mut backend,
+            )
+            .expect("bounded unconfirmed failure");
+        assert!(matches!(
+            unconfirmed.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Busy,
+                retryable: true,
+            }
+        ));
+        assert!(matches!(
+            unconfirmed.snapshot.export,
+            ExportState::Running { .. }
+        ));
+        assert!(runtime.native_studio_export.is_some());
+
+        let confirmed = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    4,
+                    "studio-failure-confirmed",
+                    IpcCommand::ExportPoll,
+                ),
+                &mut backend,
+            )
+            .expect("confirmed terminal failure");
+        ok(&confirmed);
+        assert_eq!(
+            confirmed.snapshot.export,
+            ExportState::Failed {
+                code: SafeFailureCode::DiskFull,
+                retryable: true,
+            }
+        );
+        assert!(runtime.native_studio_export.is_none());
     }
 
     #[test]

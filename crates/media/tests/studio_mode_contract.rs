@@ -4,6 +4,7 @@ use std::{
     fs,
     path::Path,
     rc::Rc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -1091,12 +1092,12 @@ struct JournalState {
 
 #[derive(Debug, Clone, Default)]
 struct FakeJournal {
-    state: Rc<RefCell<JournalState>>,
+    state: Arc<Mutex<JournalState>>,
 }
 
 impl FakeJournal {
     fn lose_next_ack(&self) {
-        self.state.borrow_mut().lose_next_ack = true;
+        self.state.lock().expect("journal lock").lose_next_ack = true;
     }
 }
 
@@ -1107,7 +1108,8 @@ impl StudioJournalPort for FakeJournal {
     ) -> Result<Option<StudioJournalSnapshot>, StudioError> {
         Ok(self
             .state
-            .borrow()
+            .lock()
+            .expect("journal lock")
             .snapshot
             .clone()
             .filter(|snapshot| snapshot.project_id == project_id))
@@ -1117,7 +1119,7 @@ impl StudioJournalPort for FakeJournal {
         &mut self,
         initial: StudioJournalSnapshot,
     ) -> Result<StudioPortOutcome<StudioJournalSnapshot>, StudioError> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().expect("journal lock");
         if let Some(existing) = state.snapshot.clone() {
             return Ok(StudioPortOutcome::Conflict(Box::new(existing)));
         }
@@ -1133,7 +1135,7 @@ impl StudioJournalPort for FakeJournal {
         &mut self,
         request: StudioJournalCasRequest,
     ) -> Result<StudioPortOutcome<StudioJournalSnapshot>, StudioError> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().expect("journal lock");
         let current = state.snapshot.clone().ok_or(StudioError::JournalCorrupt)?;
         if current.project_id != request.project_id
             || current.revision != request.expected_revision
