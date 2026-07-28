@@ -39,6 +39,7 @@ jobs:
         run: |
           python3 scripts/ci/check-workflow-policy.py
           python3 -I scripts/ci/test-workflow-policy.py
+          python3 -I scripts/ci/test-wrangler-bootstrap.py
           python3 -I scripts/ci/test-desktop-real-hardware.py
           python3 -I scripts/ci/test-release-change-plan.py
           python3 -I scripts/ci/test-legacy-api-parity-runner.py
