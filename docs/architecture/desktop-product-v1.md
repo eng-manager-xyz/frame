@@ -144,8 +144,8 @@ permission preparation, display/window refresh and selection, bounded region
 definition and selection, target-video start, stop, cancel, and Editable WebM
 export. macOS alone optionally supports exact 48 kHz stereo system audio; the
 Windows composition rejects audio. The remaining represented operations continue to return unavailable
-or stay disabled. In particular, a sealed native recording is not yet a Studio
-project even when isolated temporary originals were sealed, export progress is
+or stay disabled. In particular, a sealed native recording is not a Studio project
+even when isolated temporary originals were sealed, export progress is
 not a cancellable edit-aware render, and no native recording journal/recovery
 owner is wired.
 
