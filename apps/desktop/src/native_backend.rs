@@ -1123,8 +1123,19 @@ const fn target_kind_tag(kind: CaptureTargetKind) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::{PathPolicy, PathUse, RootAccess};
+
+    fn absolute_test_path(components: &[&str]) -> PathBuf {
+        #[cfg(windows)]
+        let mut path = PathBuf::from(r"C:\");
+        #[cfg(not(windows))]
+        let mut path = PathBuf::from("/");
+        path.extend(components);
+        path
+    }
 
     #[test]
     fn catalog_json_has_only_coarse_geometry_and_opaque_identity() {
@@ -1347,9 +1358,11 @@ mod tests {
 
     #[test]
     fn studio_export_outcome_is_revision_profile_and_digest_bound() {
+        let root = absolute_test_path(&["frame-native-export-contract"]);
+        let output = root.join("output.mp4").to_string_lossy().into_owned();
         let policy = PathPolicy::empty()
             .allow_root(
-                "/private/tmp/frame-native-export-contract",
+                &root,
                 RootAccess {
                     read: false,
                     write: true,
@@ -1360,10 +1373,7 @@ mod tests {
         let request = NativeStudioExportRequest {
             project_revision: 9,
             output_path: policy
-                .validate(
-                    "/private/tmp/frame-native-export-contract/output.mp4",
-                    PathUse::ExportWrite,
-                )
+                .validate(&output, PathUse::ExportWrite)
                 .expect("validated export"),
             profile: ExportProfile::DistributionMp4,
         };
