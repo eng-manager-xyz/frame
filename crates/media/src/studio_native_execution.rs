@@ -2021,10 +2021,7 @@ fn probe_edited_output(
     if cancellation.is_cancelled() {
         return Err(NativeExecutionError::Cancelled);
     }
-    let player = gst::ElementFactory::make("playbin3")
-        .name("studio_export_probe_player")
-        .build()
-        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    let player = software_output_probe_player()?;
     let video_sink = gst::ElementFactory::make("fakesink")
         .name("studio_export_probe_video")
         .property("sync", false)
@@ -2078,6 +2075,26 @@ fn probe_edited_output(
     })();
     set_null(&pipeline)?;
     result
+}
+
+fn software_output_probe_player() -> Result<gst::Element, NativeExecutionError> {
+    // playbin3 documents that its software-decoder flag has no effect. Use
+    // playbin2 for the postcondition probe so a failing platform decoder cannot
+    // mask a valid software-encoded artifact.
+    let player = gst::ElementFactory::make("playbin")
+        .name("studio_export_probe_player")
+        .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    let flags_spec = player
+        .find_property("flags")
+        .ok_or(NativeExecutionError::MissingFactory)?;
+    let flags = gst::glib::Value::deserialize_with_pspec(
+        "video+audio+soft-volume+force-sw-decoders",
+        &flags_spec,
+    )
+    .map_err(|_| NativeExecutionError::MissingFactory)?;
+    player.set_property_from_value("flags", &flags);
+    Ok(player)
 }
 
 fn output_video_from_caps(
@@ -2961,6 +2978,24 @@ mod tests {
                 Err(NativeExecutionError::CodecApprovalRequired)
             ));
         }
+    }
+
+    #[test]
+    fn export_postcondition_probe_forces_the_software_decoder_path() {
+        prepare_runtime().expect("trusted runtime");
+        let player = software_output_probe_player().expect("software output probe");
+        assert_eq!(
+            player.factory().expect("player factory").name().as_str(),
+            "playbin"
+        );
+        let flags = player.property_value("flags");
+        let (_, values) =
+            gst::glib::FlagsValue::from_value(&flags).expect("playbin flags property");
+        assert!(
+            values
+                .iter()
+                .any(|value| value.nick() == "force-sw-decoders")
+        );
     }
 
     #[test]

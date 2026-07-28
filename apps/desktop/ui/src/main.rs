@@ -679,6 +679,33 @@ mod browser {
                     })
             })
         };
+        let recovery_project = move || {
+            snapshot.get().and_then(|state| {
+                state
+                    .studio_projects
+                    .projects
+                    .iter()
+                    .find(|project| project.status == NativeStudioProjectStatus::RecoveryRequired)
+                    .or_else(|| {
+                        state.studio_projects.projects.iter().find(|project| {
+                            project.status == NativeStudioProjectStatus::AttentionRequired
+                        })
+                    })
+                    .map(|project| {
+                        (
+                            state.studio_projects.generation,
+                            project.project_token.clone(),
+                        )
+                    })
+            })
+        };
+        let recovery_selection = move || {
+            if is_native() {
+                recovery_project()
+            } else {
+                ready_project()
+            }
+        };
 
         view! {
             <UiStyles/>
@@ -1019,21 +1046,26 @@ mod browser {
                             <h2 id="recovery-heading">"Recovery"</h2>
                         </div>
                     </div>
-                    <p>"Recovery opens a preserved copy. Discard is explicit and never mutates the source project silently."</p>
+                    <p>"Recovery verifies the durable journal and immutable originals before creating or opening a project. Empty interrupted attempts can be archived explicitly; captured media is never silently deleted."</p>
                     <ButtonGroup class="button-row">
                         <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || (!is_fake() && !is_native()) || busy.get() on:click=move |_| submit(
                             client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryScan
                         )>"Scan for recovery"</Button>
-                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || ready_project().is_none() || busy.get() on:click=move |_| {
-                            if let Some((catalog_generation, project_token)) = ready_project() {
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || recovery_selection().is_none() || busy.get() on:click=move |_| {
+                            if let Some((catalog_generation, project_token)) = recovery_selection() {
+                                submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryInspect { catalog_generation, project_token });
+                            }
+                        }>"Inspect recovery"</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || recovery_selection().is_none() || busy.get() on:click=move |_| {
+                            if let Some((catalog_generation, project_token)) = recovery_selection() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryOpen { catalog_generation, project_token });
                             }
-                        }>"Open recovered copy"</Button>
-                        <Button variant=ButtonVariant::Destructive attr:r#type="button" attr:disabled=move || !is_fake() || ready_project().is_none() || busy.get() on:click=move |_| {
-                            if let Some((catalog_generation, project_token)) = ready_project() {
+                        }>{move || if is_native() { "Recover durable project" } else { "Open sample recovery" }}</Button>
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || recovery_selection().is_none() || busy.get() on:click=move |_| {
+                            if let Some((catalog_generation, project_token)) = recovery_selection() {
                                 submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryDiscard { catalog_generation, project_token });
                             }
-                        }>"Discard recovery copy"</Button>
+                        }>{move || if is_native() { "Archive empty attempt" } else { "Discard sample recovery" }}</Button>
                     </ButtonGroup>
                 </Card>
 

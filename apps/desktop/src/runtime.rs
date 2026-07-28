@@ -35,8 +35,9 @@ use crate::{
         NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
         NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
         NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioProjectCatalog,
-        NativeStudioProjectOpenRequest, NativeStudioProjectStatus, NativeTargetSelectionOutcome,
-        NativeTargetSelectionRequest, STUDIO_PROJECT_CATALOG_VERSION,
+        NativeStudioProjectOpenRequest, NativeStudioProjectStatus, NativeStudioRecoveryAction,
+        NativeStudioRecoveryRequest, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
+        STUDIO_PROJECT_CATALOG_VERSION,
     },
     workflow::{
         BackendEvent, BackendEventEnvelope, DesktopWorkflow, DeviceCounts, DeviceState,
@@ -1449,6 +1450,142 @@ impl DesktopRuntime {
                 };
                 Ok(events)
             }
+            IpcCommand::RecoveryInspect {
+                catalog_generation,
+                project_token,
+            } => {
+                self.studio_projects
+                    .projects
+                    .iter()
+                    .find(|project| {
+                        self.studio_projects.generation == *catalog_generation
+                            && project.project_token == *project_token
+                    })
+                    .ok_or_else(|| {
+                        ExecutionFailure::conflict("The Studio project catalog changed.")
+                    })?;
+                let request = NativeStudioRecoveryRequest {
+                    catalog_generation: *catalog_generation,
+                    project_token: project_token.clone(),
+                };
+                let inspection = backend
+                    .inspect_studio_recovery(&request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                inspection
+                    .validate_for(&request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                self.announcement = match inspection.action {
+                    NativeStudioRecoveryAction::ArchiveUnstartedAttempt => {
+                        "The interrupted attempt contains no captured media. It can be archived without deleting source bytes."
+                    }
+                    NativeStudioRecoveryAction::RecoverRecording => {
+                        "Captured Studio tracks are available for journal-fenced recovery."
+                    }
+                    NativeStudioRecoveryAction::ReconcileEditSave => {
+                        "The pending edit save can be reconciled against its exact durable revision."
+                    }
+                    NativeStudioRecoveryAction::OpenEditor => {
+                        "This Studio project is complete and can be opened in the editor."
+                    }
+                    NativeStudioRecoveryAction::RequiresOperatorDecision => {
+                        "This Studio project needs manual review; Frame will not mutate it automatically."
+                    }
+                }
+                .into();
+                Ok(Vec::new())
+            }
+            IpcCommand::RecoveryOpen {
+                catalog_generation,
+                project_token,
+            } => {
+                self.studio_projects
+                    .projects
+                    .iter()
+                    .find(|project| {
+                        self.studio_projects.generation == *catalog_generation
+                            && project.project_token == *project_token
+                            && project.status == NativeStudioProjectStatus::RecoveryRequired
+                    })
+                    .ok_or_else(|| {
+                        ExecutionFailure::conflict(
+                            "The Studio project catalog changed or the project is not recoverable.",
+                        )
+                    })?;
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::RecoveryOpen)?;
+                let request = NativeStudioRecoveryRequest {
+                    catalog_generation: *catalog_generation,
+                    project_token: project_token.clone(),
+                };
+                let outcome = backend
+                    .recover_studio_project(&request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                outcome
+                    .validate_for(&request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::RecoveryOpen,
+                    vec![
+                        BackendEvent::RecoveryOpening {
+                            intent_id: intent_id.clone(),
+                        },
+                        BackendEvent::RecoveryOpened,
+                    ],
+                )?;
+                self.recovery_projects = u16::try_from(outcome.catalog.projects.len())
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                self.studio_projects = outcome.catalog;
+                self.announcement =
+                    "Studio recovery committed exact immutable originals and a durable project. Open it in the editor."
+                        .into();
+                Ok(events)
+            }
+            IpcCommand::RecoveryDiscard {
+                catalog_generation,
+                project_token,
+            } => {
+                self.studio_projects
+                    .projects
+                    .iter()
+                    .find(|project| {
+                        self.studio_projects.generation == *catalog_generation
+                            && project.project_token == *project_token
+                            && project.status == NativeStudioProjectStatus::RecoveryRequired
+                    })
+                    .ok_or_else(|| {
+                        ExecutionFailure::conflict(
+                            "The Studio project catalog changed or cannot be archived.",
+                        )
+                    })?;
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::RecoveryDiscard)?;
+                let request = NativeStudioRecoveryRequest {
+                    catalog_generation: *catalog_generation,
+                    project_token: project_token.clone(),
+                };
+                let outcome = backend
+                    .archive_studio_recovery(&request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                outcome
+                    .validate_for(&request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let remaining = u16::try_from(outcome.catalog.projects.len())
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                self.studio_projects = outcome.catalog;
+                self.recovery_projects = remaining;
+                self.announcement =
+                    "The empty interrupted attempt was archived. No captured media or completed project was deleted."
+                        .into();
+                self.transition(
+                    &intent_id,
+                    IntentKind::RecoveryDiscard,
+                    vec![BackendEvent::RecoveryDiscarded {
+                        intent_id: intent_id.clone(),
+                        remaining,
+                    }],
+                )
+            }
             IpcCommand::EditorOpen {
                 catalog_generation,
                 project_token,
@@ -1818,7 +1955,8 @@ impl DesktopRuntime {
                     project_token,
                 )?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
-                self.announcement = "Recovered project opened from a preserved copy.".into();
+                self.announcement =
+                    "Sample recovery opened by the deterministic test adapter.".into();
                 self.transition(
                     &intent_id,
                     IntentKind::RecoveryOpen,
@@ -1850,7 +1988,8 @@ impl DesktopRuntime {
                     .ok_or_else(ExecutionFailure::internal)?;
                 self.recovery_projects = u16::try_from(self.studio_projects.projects.len())
                     .map_err(|_| ExecutionFailure::internal())?;
-                self.announcement = "Recovery copy discarded after explicit confirmation.".into();
+                self.announcement =
+                    "Sample recovery removed from the deterministic test catalog.".into();
                 self.transition(
                     &intent_id,
                     IntentKind::RecoveryDiscard,
@@ -2951,6 +3090,57 @@ mod tests {
             Ok(self.studio_open_outcome.clone())
         }
 
+        fn inspect_studio_recovery(
+            &mut self,
+            request: &NativeStudioRecoveryRequest,
+        ) -> Result<crate::NativeStudioRecoveryInspection, NativeDesktopBackendError> {
+            self.calls.push("inspect_studio_recovery");
+            Ok(crate::NativeStudioRecoveryInspection {
+                catalog_generation: request.catalog_generation,
+                project_token: request.project_token.clone(),
+                status: NativeStudioProjectStatus::RecoveryRequired,
+                action: NativeStudioRecoveryAction::RecoverRecording,
+            })
+        }
+
+        fn recover_studio_project(
+            &mut self,
+            request: &NativeStudioRecoveryRequest,
+        ) -> Result<crate::NativeStudioRecoveryOutcome, NativeDesktopBackendError> {
+            self.calls.push("recover_studio");
+            self.studio_catalog = NativeStudioProjectCatalog {
+                schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+                generation: request.catalog_generation.saturating_add(1),
+                projects: vec![crate::NativeStudioProjectSummary {
+                    project_token: "studio-project-recovered".into(),
+                    project_revision: Some(1),
+                    asset_count: 2,
+                    status: NativeStudioProjectStatus::Ready,
+                }],
+            };
+            Ok(crate::NativeStudioRecoveryOutcome {
+                catalog: self.studio_catalog.clone(),
+                recovered_project_token: "studio-project-recovered".into(),
+                project_revision: 1,
+                duration_ms: 3_000,
+            })
+        }
+
+        fn archive_studio_recovery(
+            &mut self,
+            request: &NativeStudioRecoveryRequest,
+        ) -> Result<crate::NativeStudioRecoveryArchiveOutcome, NativeDesktopBackendError> {
+            self.calls.push("archive_studio");
+            self.studio_catalog = NativeStudioProjectCatalog {
+                schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+                generation: request.catalog_generation.saturating_add(1),
+                projects: Vec::new(),
+            };
+            Ok(crate::NativeStudioRecoveryArchiveOutcome {
+                catalog: self.studio_catalog.clone(),
+            })
+        }
+
         fn export_editable_webm(
             &mut self,
             request: &NativeEditableWebmExportRequest,
@@ -3617,6 +3807,146 @@ mod tests {
                 duration_ms: 4_000,
                 dirty: false,
             }
+        );
+    }
+
+    #[test]
+    fn native_studio_recovery_inspects_and_reconciles_a_reminted_ready_project() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        backend.studio_catalog.projects = vec![crate::NativeStudioProjectSummary {
+            project_token: "studio-project-interrupted".into(),
+            project_revision: None,
+            asset_count: 0,
+            status: NativeStudioProjectStatus::RecoveryRequired,
+        }];
+
+        let scan = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Recovery,
+                    1,
+                    "studio-recovery-scan",
+                    IpcCommand::RecoveryScan,
+                ),
+                &mut backend,
+            )
+            .expect("bounded recovery scan");
+        ok(&scan);
+        assert_eq!(
+            scan.snapshot.recovery,
+            RecoveryState::Available { projects: 1 }
+        );
+
+        let inspected = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Recovery,
+                    2,
+                    "studio-recovery-inspect",
+                    IpcCommand::RecoveryInspect {
+                        catalog_generation: 1,
+                        project_token: "studio-project-interrupted".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("bounded recovery inspection");
+        ok(&inspected);
+        assert_eq!(backend.call_count("inspect_studio_recovery"), 1);
+        assert!(
+            inspected
+                .snapshot
+                .announcement
+                .contains("journal-fenced recovery")
+        );
+
+        let recovered = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Recovery,
+                    3,
+                    "studio-recovery-open",
+                    IpcCommand::RecoveryOpen {
+                        catalog_generation: 1,
+                        project_token: "studio-project-interrupted".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("journal-fenced recovery");
+        ok(&recovered);
+        assert_eq!(backend.call_count("recover_studio"), 1);
+        assert_eq!(recovered.snapshot.recovery, RecoveryState::Opened);
+        assert_eq!(recovered.snapshot.studio_projects.generation, 2);
+        assert_eq!(
+            recovered.snapshot.studio_projects.projects,
+            vec![crate::NativeStudioProjectSummary {
+                project_token: "studio-project-recovered".into(),
+                project_revision: Some(1),
+                asset_count: 2,
+                status: NativeStudioProjectStatus::Ready,
+            }]
+        );
+        let encoded = serde_json::to_string(&recovered.snapshot).expect("snapshot JSON");
+        assert!(!encoded.contains(".studio-project"));
+        assert!(!encoded.contains(".studio-journal"));
+        assert!(!encoded.contains("/frame/projects"));
+    }
+
+    #[test]
+    fn native_studio_recovery_archives_only_an_empty_attempt_without_deleting_media() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        backend.studio_catalog.projects = vec![crate::NativeStudioProjectSummary {
+            project_token: "studio-project-empty-attempt".into(),
+            project_revision: None,
+            asset_count: 0,
+            status: NativeStudioProjectStatus::RecoveryRequired,
+        }];
+
+        let scan = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Recovery,
+                    1,
+                    "studio-archive-scan",
+                    IpcCommand::RecoveryScan,
+                ),
+                &mut backend,
+            )
+            .expect("bounded recovery scan");
+        ok(&scan);
+
+        let archived = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Recovery,
+                    2,
+                    "studio-archive-empty-attempt",
+                    IpcCommand::RecoveryDiscard {
+                        catalog_generation: 1,
+                        project_token: "studio-project-empty-attempt".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("archive empty attempt");
+        ok(&archived);
+        assert_eq!(backend.call_count("archive_studio"), 1);
+        assert_eq!(archived.snapshot.recovery, RecoveryState::Hidden);
+        assert_eq!(archived.snapshot.studio_projects.generation, 2);
+        assert!(archived.snapshot.studio_projects.projects.is_empty());
+        assert!(
+            archived
+                .snapshot
+                .announcement
+                .contains("No captured media or completed project was deleted")
         );
     }
 

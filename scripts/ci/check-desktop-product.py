@@ -59,6 +59,9 @@ def main() -> int:
     macos_studio_projects = text(
         "apps/desktop/src/macos_native_backend/studio_projects.rs"
     )
+    macos_studio_recovery = text(
+        "apps/desktop/src/macos_native_backend/studio_recovery.rs"
+    )
     macos_normalized_worker = text(
         "apps/desktop/src/macos_native_backend/normalized_worker.rs"
     )
@@ -213,6 +216,9 @@ def main() -> int:
             "pub enum NativeStudioProjectStatus",
             "fn scan_studio_projects",
             "fn open_studio_project",
+            "fn inspect_studio_recovery",
+            "fn recover_studio_project",
+            "fn archive_studio_recovery",
             "fn export_editable_webm",
         ),
         "native desktop contract",
@@ -252,8 +258,28 @@ def main() -> int:
             "fn scan_studio_projects",
             "fn open_studio_project",
             "authenticate_ready(&self.projects_directory",
+            "fn inspect_studio_recovery",
+            "fn recover_studio_project",
+            "fn archive_studio_recovery",
         ),
         "macOS target and system-audio backend",
+    )
+    require(
+        macos_studio_recovery,
+        (
+            "fn recover_project_with_probe",
+            "take_recovery_ownership",
+            "recover_reconciling_originals",
+            "finish_recovered",
+            "JournalBoundary::RecordingStopped",
+            "fn recover_edit_save",
+            "JournalBoundary::EditSaveCommitted",
+            "fn archive_unstarted_project",
+            "archive_current_journal",
+            "recording_recovery_finishes_every_persisted_asset_boundary_idempotently",
+            "edit_save_recovery_handles_precommit_and_lost_ack_without_changing_originals",
+        ),
+        "macOS Studio recovery",
     )
     require(
         macos_normalized_worker,
@@ -665,7 +691,8 @@ def main() -> int:
             "optional exact 48 kHz stereo system audio",
             "not an edit-aware Studio export",
             "fresh opaque tokens plus coarse status",
-            "does not yet inspect or reconcile an incomplete",
+            "Recovery inspection reauthenticates the exact journal",
+            "archives only a\nproven-empty attempt without deleting media",
             "does not request capture permission",
             "release desktop bridge for screen plus optional system audio",
             "not yet connected to the\ncombined microphone/camera source or the Studio coordinator",
@@ -681,9 +708,9 @@ def main() -> int:
             "screen-only recording uses the normalized",
             "Optional macOS system audio is the only native audio source currently supported",
             "descriptor-rooted,",
-            "incomplete-project reconciliation",
+            "Recording and\nedit-save boundaries can be inspected and reconciled",
             "Protected evidence still required",
-            "publication journey; the native WebM path",
+            "native Studio recovery path proves journal-fenced",
             "--expected-adapter native_macos_display",
         ),
         "evidence report",
@@ -694,8 +721,8 @@ def main() -> int:
             "Build modes and current boundary",
             "direct A/V worker can optionally mux exact 48 kHz stereo system audio",
             "Crash and recovery",
-            "implements only its read-only discovery boundary",
-            "cannot yet inspect",
+            "A recovery worker takes a new ownership",
+            "Offer archive only for a backend-proven empty attempt",
             "workflow and validator are not evidence that a physical run occurred",
             "current `macos-native` target-capture slice cannot execute this rollback procedure",
             "--expected-adapter unavailable",
@@ -752,6 +779,7 @@ def main() -> int:
         "apps/desktop/src/macos_native_backend/normalized_worker.rs",
         "apps/desktop/src/macos_native_backend/studio_recorder.rs",
         "apps/desktop/src/macos_native_backend/studio_projects.rs",
+        "apps/desktop/src/macos_native_backend/studio_recovery.rs",
         "apps/desktop/src/windows_native_backend.rs",
         "apps/desktop/src/rooted_io.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
@@ -804,6 +832,7 @@ def main() -> int:
             "macos_normalized_screen_only_worker": True,
             "macos_studio_isolated_originals_bridge": True,
             "macos_studio_project_catalog_contract": True,
+            "macos_studio_recovery_contract": True,
             "windows_normalized_screen_only_worker": True,
             "windows_native_target_source_contract": True,
             "native_cursor_metadata_contract": True,

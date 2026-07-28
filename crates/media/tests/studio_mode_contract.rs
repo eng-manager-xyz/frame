@@ -839,6 +839,48 @@ fn v1_recording_graphs_fail_with_an_explicit_version_boundary() {
 }
 
 #[test]
+fn persisted_recording_graph_round_trips_and_is_discovered_by_exact_identity() {
+    let directory = tempfile::tempdir().expect("recording graph directory");
+    let store = FilesystemStudioOriginalStore::new(directory.path()).expect("original store");
+    let graph = StudioRecordingGraphSpec::new(
+        project_id(17),
+        operation_id(18),
+        vec![
+            branch(19, TrackKind::Screen),
+            branch(20, TrackKind::SystemAudio),
+        ],
+    )
+    .expect("recording graph");
+    let document = PersistedStudioRecordingGraph {
+        graph: graph.clone(),
+        maximum_track_bytes: 4_096,
+    };
+    let encoded =
+        StudioDocumentCodec::encode_recording_graph(&document).expect("canonical recording graph");
+    assert_eq!(
+        StudioDocumentCodec::decode_recording_graph(&encoded).expect("decoded recording graph"),
+        document
+    );
+    let session =
+        FilesystemStudioRecordingSession::begin(&store, graph, 4_096).expect("persist graph");
+    drop(session);
+    assert_eq!(
+        store
+            .find_persisted_recording_graph(project_id(17))
+            .expect("bounded graph discovery"),
+        Some(document)
+    );
+
+    let mut corrupt = encoded;
+    let final_byte = corrupt.last_mut().expect("checksum byte");
+    *final_byte ^= 0xff;
+    assert_eq!(
+        StudioDocumentCodec::decode_recording_graph(&corrupt),
+        Err(StudioError::CorruptDocument)
+    );
+}
+
+#[test]
 fn filesystem_recording_session_seals_only_enabled_independent_originals() {
     let directory = tempfile::tempdir().expect("recording directory");
     let mut store = FilesystemStudioOriginalStore::new(directory.path()).expect("original store");
@@ -888,6 +930,67 @@ fn filesystem_recording_session_seals_only_enabled_independent_originals() {
             Some(committed)
         );
     }
+}
+
+#[test]
+fn recording_recovery_reuses_committed_originals_and_seals_only_remaining_tracks() {
+    let directory = tempfile::tempdir().expect("recording recovery directory");
+    let mut store = FilesystemStudioOriginalStore::new(directory.path()).expect("original store");
+    let graph = StudioRecordingGraphSpec::new(
+        project_id(207),
+        operation_id(208),
+        vec![
+            branch(209, TrackKind::Screen),
+            branch(210, TrackKind::Microphone),
+        ],
+    )
+    .expect("recording graph");
+    let mut recording = FilesystemStudioRecordingSession::begin(&store, graph.clone(), 1_024)
+        .expect("begin recording");
+    recording
+        .write_encoded_chunk(TrackKind::Screen, b"durable-screen")
+        .expect("screen bytes");
+    recording
+        .write_encoded_chunk(TrackKind::Microphone, b"pending-microphone")
+        .expect("microphone bytes");
+    let temporary = recording
+        .finish(seconds(0), seconds(2))
+        .expect("sealed tracks");
+    let screen = temporary
+        .iter()
+        .find(|asset| asset.track == TrackKind::Screen)
+        .expect("screen asset")
+        .clone();
+    let durable_screen = commit_verified_temporary(
+        &mut store,
+        TempAssetCommitTicket::new(project_id(207), operation_id(211), 3, screen)
+            .expect("screen commit ticket"),
+    )
+    .expect("durable screen");
+
+    let recovered =
+        FilesystemStudioRecordingSession::recover_reconciling_originals(&mut store, graph, 1_024)
+            .expect("reconcile exact original");
+    let assets = recovered
+        .finish_recovered(Some(seconds(0)), |track, _path| {
+            assert_eq!(track, TrackKind::Microphone);
+            Ok(seconds(3))
+        })
+        .expect("seal only remaining track");
+    assert_eq!(assets.len(), 2);
+    assert_eq!(
+        assets
+            .iter()
+            .find(|asset| asset.track == TrackKind::Screen)
+            .expect("reused screen"),
+        &durable_screen
+    );
+    let microphone = assets
+        .into_iter()
+        .find(|asset| asset.track == TrackKind::Microphone)
+        .expect("recovered microphone");
+    assert_eq!(microphone.commit_state, AssetCommitState::Temporary);
+    assert_eq!(microphone.duration, seconds(3));
 }
 
 #[test]

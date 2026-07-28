@@ -8,10 +8,11 @@ It does not classify the complete Studio product path as locally implemented.
 
 ## Closure ledger boundary
 
-Issue 27 checkboxes 8, 9, 10, and 11 are repository-local gaps. Checkboxes 1–6
-are locally satisfied by the versioned project format, production
+Issue 27 checkboxes 9, 10, and 11 are repository-local gaps. Checkboxes 1–6
+and 8 are locally satisfied by the versioned project format, production
 isolated-track recorder, source-set-bound native preview engine, exact
-aligned-source export profiles, and production filesystem legacy importer.
+aligned-source export profiles, production filesystem legacy importer, and
+journal-fenced native recording/edit-save recovery.
 Checkbox 7 alone remains `protected_pending`, because the
 non-mutating importer/reporting path exists but still needs a reviewed
 representative legacy-project corpus.
@@ -49,9 +50,20 @@ fresh opaque tokens plus coarse status. A completed `OpenEditor` boundary can
 be opened only after both documents are re-read through the pinned root and
 authenticated; its real revision and duration drive the editor snapshot.
 Interrupted capture is surfaced as `RecoveryRequired` and cannot be opened as
-a completed project. This does not yet inspect or reconcile an incomplete
-journal, preserve a recovered copy, execute explicit discard, or feed the
-combined microphone/camera bridge into Studio. The
+a completed project. Recovery inspection reauthenticates the exact journal
+through the pinned projects directory and reports only a coarse action through
+the opaque generation-fenced handle. The native recovery worker takes a new
+journal fence, reopens the one checksummed recording graph, reconciles already
+committed originals, probes retained WebM duration, commits remaining
+temporaries through every durable asset boundary, and creates the canonical
+revision-one project. An `EditSavePrepared` boundary either commits the exact
+next manifest or reconciles its lost acknowledgement while retaining the
+original asset records byte-for-byte. `Created` and
+`RecordingGraphPrepared` attempts can be archived only after proving that the
+session is empty; the journal is descriptor-moved to a private archive and no
+media, graph, or completed project is deleted. Captured attempts cannot enter
+that archive action. The combined microphone/camera bridge is not yet fed into
+Studio. The
 artifact-backed Editable WebM copy/publication remains the flattened recorder
 output and is not an edit-aware Studio export. A separate narrow native adapter does execute
 the shared canonical plan for a clock-aligned screen original plus optional
@@ -66,9 +78,8 @@ occurs before publication. It is not wired to the desktop or
 fails closed for camera, cursor, background, camera-only, and side-by-side
 composition. The reference renderer still writes a checksum-bound bundle
 rather than dispatching that native adapter. Therefore these paths cannot yet
-satisfy complete desktop Studio composition, every-boundary production
-recovery, decoded preview/export/reference goldens, long-project effects, or
-hardware-fallback acceptance criteria.
+satisfy complete desktop Studio composition, decoded preview/export/reference
+goldens, long-project effects, or hardware-fallback acceptance criteria.
 
 Separately, `NativeStudioPreviewEngine` opens the complete immutable
 `StudioPreviewGraphSpec`, verifies every original against its durable sidecar
@@ -145,6 +156,11 @@ The external contract suite exercises:
   asset/edit/render carry-forward and exact resolution from recoverable failure,
   rejection of identity-dropping recovery exits, and every declared power-loss
   boundary, using both fake stores and the production filesystem journal store;
+- production macOS recovery at every recording and edit-save crash boundary:
+  empty Created/GraphPrepared attempts are archived without deleting their
+  graph, CaptureStarted and every temporary/commit boundary converge on the
+  same immutable original and revision-one project, and edit saves reconcile
+  both precommit and lost-acknowledgement states without changing originals;
 - journal-minted render authorization, rejection of dispatch without a durable
   `RenderPrepared` reservation, on-disk coordinator reservation reconstruction,
   and delayed renderer publication after an initial `Absent` probe while the
@@ -208,10 +224,11 @@ Editable WebM export. That makes the narrow recorder/export adapter functional;
 Studio mode additionally commits screen and optional system-audio originals
 through a durable journal and creates an authenticated canonical Studio
 project. The desktop now discovers that project without exposing its path and
-opens a descriptor-reauthenticated completed project in the editor. It also
-surfaces interrupted entries as recovery-required, but cannot yet inspect,
-reconcile, preserve, or discard them. The editor does not yet persist or
-interpret edits, feed the combined microphone/camera bridge, or render a
+opens a descriptor-reauthenticated completed project in the editor. It
+inspects interrupted entries through opaque handles, recovers recording and
+edit-save boundaries into a reminted ready-project handle, and archives only a
+proven-empty attempt without deleting media. The editor does not yet initiate
+or persist new edits, feed the combined microphone/camera bridge, or render a
 distribution master, so issue 27 remains open.
 
 Focused command:
@@ -219,6 +236,10 @@ Focused command:
 ```text
 cargo test -p frame-media --test studio_mode_contract
 cargo test -p frame-media --test studio_native_recording
+
+GST_PLUGIN_SYSTEM_PATH_1_0=/exact/pinned/gstreamer/plugin/root \
+  cargo test --locked -p frame-desktop-core \
+  --features tauri-app,macos-native --all-targets
 
 FRAME_NATIVE_H264_AAC_APPROVED=approved-v1 \
 FRAME_NATIVE_HEVC_AAC_APPROVED=approved-v1 \

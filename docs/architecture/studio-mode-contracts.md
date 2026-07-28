@@ -195,6 +195,20 @@ render finalization, and cancellation are explicit journal boundaries. Every
 boundary maps to one recovery directive; there is no generic “continue” branch.
 See [Studio recovery](../operations/studio-mode-recovery.md).
 
+The macOS production adapter exposes recording/edit recovery through a
+generation-fenced opaque handle; neither the WebView nor the request supplies a
+path, project ID, checksum, or durable asset identity. Before mutation it
+re-reads the selected journal through the pinned projects descriptor, compares
+the complete discovered snapshot, and takes a new ownership fence. Recording
+recovery discovers the one canonical graph document, reconciles exact original
+sidecars, authenticates retained media durations with GStreamer, and advances
+each temporary through its journal boundary before creating the idempotent
+revision-one project. Edit recovery compares the complete pending edit to the
+persisted revision and handles both precommit and lost-acknowledgement states.
+The only archive operation is limited to a proven-empty `Created` or
+`RecordingGraphPrepared` session and descriptor-moves its journal without
+deleting a graph, media file, or project.
+
 ## One deterministic timeline
 
 `StudioTimelineCompiler` is the sole edit interpreter. Preview and export each

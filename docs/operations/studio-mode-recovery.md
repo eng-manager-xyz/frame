@@ -25,13 +25,13 @@ codec or checksum failure.
 
 | Last durable boundary | Recovery action |
 | --- | --- |
-| `Created`, `RecordingGraphPrepared` | delete only unstarted temporary files; no original exists |
-| `CaptureStarted` | reopen the exact graph with `FilesystemStudioRecordingSession::recover`, then ask the native bridge to resume each partial or seal all isolated tracks independently |
-| `TempAssetReserved` | delete the named uncommitted temporary asset |
+| `Created`, `RecordingGraphPrepared` | after proving every graph sink is empty, archive only the journal; preserve the graph and sinks, and refuse this action if any captured bytes or durable original exists |
+| `CaptureStarted` | reopen the exact graph, hash each retained partial/temporary, probe its real media duration, and seal all isolated tracks independently |
+| `TempAssetReserved` | verify the exact named temporary, advance its durable boundary, and commit it through the normal fenced path |
 | `TempAssetDurable`, `AssetCommitRequested` | probe the exact ID/name/track/timing/checksum/length identity, then atomically commit or reconcile the original |
-| `AssetCommitted` | retain the immutable original and continue recording |
+| `AssetCommitted` | retain and re-probe the immutable original, clear the exact pending boundary, and finish the recovered project |
 | `RecordingStopped`, `EditSaveCommitted` | open the editor at the durable revision |
-| `EditSavePrepared` | compare the pending edit digest with the persisted project; commit exactly once or retain the prior revision |
+| `EditSavePrepared` | compare the complete pending edit with the persisted project; commit exactly once or reconcile the already-persisted next revision |
 | `RenderPrepared`, `RenderRunning`, `RenderFinalizing`, `RenderCancelled` | match the full render-spec identity, cancel if still active, delete the exact partial output, probe for absence, then open the editor |
 | `RenderCommitted` | match the full render-spec identity and verify the final output checksum/length and receipt, then open the editor |
 | `FailedRecoverably` | preserve artifacts and the exact pending identity; require an explicit operator/user decision |
@@ -45,14 +45,22 @@ journal rejects an exit that drops or substitutes the pending value.
 At no point is a temporary file renamed over an existing original. The commit
 adapter must return the exact durable metadata or the core rejects it.
 
+The production desktop request carries only a catalog generation and opaque
+project token. The backend reauthenticates the complete discovered journal
+through its pinned directory descriptor, takes a new ownership fence, and
+remints the catalog after recovery. A stale token, changed visible root,
+changed journal, noncanonical graph, ambiguous project, or media checksum
+mismatch fails closed.
+
 An interrupted recording seal may contain a mixture of
 `recording-partials/<asset>.recording-partial` and
 `temporary/<asset>.media`. Reopen only with the exact persisted enabled-track
 graph and byte ceiling. Recovery rehashes every retained file, appends only to
 partials, and refuses to mutate a track already sealed into the temporary
 namespace.
-Dropping the session preserves these files; deletion requires the separate
-journal recovery decision for that exact asset identity.
+Dropping the session preserves these files. The desktop archive action never
+deletes them and is available only when the session proves no captured bytes
+or original exists.
 
 ## Lost acknowledgements
 
@@ -61,6 +69,10 @@ journal recovery decision for that exact asset identity.
 - Temporary asset commit: probe the opaque original ID and require every stored
   field to match the temporary descriptor with only its state changed to
   `DurableOriginal`.
+- Edit save: if the prior project revision is present, commit the complete next
+  manifest with the new journal fence. If the next revision is already present,
+  require the exact pending edit and durable originals before acknowledging the
+  lost response. Never reconstruct or rewrite original asset records.
 - Render start: probe export ID. Accept only the exact fence and full render-spec
   digest (source set, plan, profile, and output). A matching partial is deleted;
   an absent or mismatched result is ambiguous and is not blindly retried.

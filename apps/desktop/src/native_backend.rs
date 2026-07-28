@@ -276,6 +276,150 @@ impl fmt::Debug for NativeStudioProjectOpenOutcome {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioRecoveryRequest {
+    pub catalog_generation: u64,
+    pub project_token: String,
+}
+
+impl fmt::Debug for NativeStudioRecoveryRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioRecoveryRequest")
+            .field("catalog_generation", &self.catalog_generation)
+            .field("project_token", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeStudioRecoveryAction {
+    ArchiveUnstartedAttempt,
+    RecoverRecording,
+    ReconcileEditSave,
+    OpenEditor,
+    RequiresOperatorDecision,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioRecoveryInspection {
+    pub catalog_generation: u64,
+    pub project_token: String,
+    pub status: NativeStudioProjectStatus,
+    pub action: NativeStudioRecoveryAction,
+}
+
+impl NativeStudioRecoveryInspection {
+    pub fn validate_for(
+        &self,
+        request: &NativeStudioRecoveryRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        let valid_action = matches!(
+            (self.status, self.action),
+            (
+                NativeStudioProjectStatus::RecoveryRequired,
+                NativeStudioRecoveryAction::ArchiveUnstartedAttempt
+                    | NativeStudioRecoveryAction::RecoverRecording
+                    | NativeStudioRecoveryAction::ReconcileEditSave
+            ) | (
+                NativeStudioProjectStatus::Ready,
+                NativeStudioRecoveryAction::OpenEditor
+            ) | (
+                NativeStudioProjectStatus::AttentionRequired,
+                NativeStudioRecoveryAction::RequiresOperatorDecision
+            )
+        );
+        if self.catalog_generation != request.catalog_generation
+            || self.project_token != request.project_token
+            || !valid_action
+        {
+            return Err(NativeDesktopContractError::InvalidStudioRecovery);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeStudioRecoveryInspection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioRecoveryInspection")
+            .field("catalog_generation", &self.catalog_generation)
+            .field("project_token", &"<redacted>")
+            .field("status", &self.status)
+            .field("action", &self.action)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioRecoveryOutcome {
+    pub catalog: NativeStudioProjectCatalog,
+    pub recovered_project_token: String,
+    pub project_revision: u64,
+    pub duration_ms: u64,
+}
+
+impl NativeStudioRecoveryOutcome {
+    pub fn validate_for(
+        &self,
+        request: &NativeStudioRecoveryRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        self.catalog.validate_enumeration()?;
+        let project = self
+            .catalog
+            .projects
+            .iter()
+            .find(|project| project.project_token == self.recovered_project_token)
+            .ok_or(NativeDesktopContractError::InvalidStudioRecovery)?;
+        if self.catalog.generation <= request.catalog_generation
+            || self.recovered_project_token == request.project_token
+            || self.project_revision == 0
+            || self.duration_ms == 0
+            || project.status != NativeStudioProjectStatus::Ready
+            || project.project_revision != Some(self.project_revision)
+        {
+            return Err(NativeDesktopContractError::InvalidStudioRecovery);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeStudioRecoveryOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioRecoveryOutcome")
+            .field("catalog", &self.catalog)
+            .field("recovered_project_token", &"<redacted>")
+            .field("project_revision", &self.project_revision)
+            .field("duration_ms", &self.duration_ms)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeStudioRecoveryArchiveOutcome {
+    pub catalog: NativeStudioProjectCatalog,
+}
+
+impl NativeStudioRecoveryArchiveOutcome {
+    pub fn validate_for(
+        &self,
+        request: &NativeStudioRecoveryRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        self.catalog.validate_enumeration()?;
+        if self.catalog.generation <= request.catalog_generation
+            || self
+                .catalog
+                .projects
+                .iter()
+                .any(|project| project.project_token == request.project_token)
+        {
+            return Err(NativeDesktopContractError::InvalidStudioRecovery);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePermissionOutcome {
     Granted,
@@ -631,6 +775,27 @@ pub trait NativeDesktopBackend {
         Err(NativeDesktopBackendError::Unavailable)
     }
 
+    fn inspect_studio_recovery(
+        &mut self,
+        _request: &NativeStudioRecoveryRequest,
+    ) -> Result<NativeStudioRecoveryInspection, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
+    fn recover_studio_project(
+        &mut self,
+        _request: &NativeStudioRecoveryRequest,
+    ) -> Result<NativeStudioRecoveryOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
+    fn archive_studio_recovery(
+        &mut self,
+        _request: &NativeStudioRecoveryRequest,
+    ) -> Result<NativeStudioRecoveryArchiveOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
     fn export_editable_webm(
         &mut self,
         request: &NativeEditableWebmExportRequest,
@@ -677,6 +842,8 @@ pub enum NativeDesktopContractError {
     TooManyStudioProjects,
     #[error("Studio project catalog contains a duplicate")]
     DuplicateStudioProject,
+    #[error("Studio recovery response is invalid")]
+    InvalidStudioRecovery,
 }
 
 const fn target_kind_tag(kind: CaptureTargetKind) -> u8 {
@@ -810,6 +977,56 @@ mod tests {
         assert_eq!(
             duplicate.validate_enumeration(),
             Err(NativeDesktopContractError::DuplicateStudioProject)
+        );
+    }
+
+    #[test]
+    fn recovery_outcomes_are_generation_fenced_and_redact_tokens() {
+        let request = NativeStudioRecoveryRequest {
+            catalog_generation: 4,
+            project_token: "interrupted-project-token".into(),
+        };
+        let inspection = NativeStudioRecoveryInspection {
+            catalog_generation: 4,
+            project_token: "interrupted-project-token".into(),
+            status: NativeStudioProjectStatus::RecoveryRequired,
+            action: NativeStudioRecoveryAction::RecoverRecording,
+        };
+        inspection
+            .validate_for(&request)
+            .expect("valid recovery inspection");
+        assert!(!format!("{inspection:?}").contains("interrupted-project-token"));
+
+        let catalog = NativeStudioProjectCatalog {
+            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+            generation: 5,
+            projects: vec![NativeStudioProjectSummary {
+                project_token: "recovered-project-token".into(),
+                project_revision: Some(1),
+                asset_count: 2,
+                status: NativeStudioProjectStatus::Ready,
+            }],
+        };
+        let outcome = NativeStudioRecoveryOutcome {
+            catalog: catalog.clone(),
+            recovered_project_token: "recovered-project-token".into(),
+            project_revision: 1,
+            duration_ms: 2_000,
+        };
+        outcome
+            .validate_for(&request)
+            .expect("generation-fenced recovery");
+        assert!(!format!("{outcome:?}").contains("recovered-project-token"));
+
+        let stale = NativeStudioRecoveryArchiveOutcome {
+            catalog: NativeStudioProjectCatalog {
+                generation: request.catalog_generation,
+                ..catalog
+            },
+        };
+        assert_eq!(
+            stale.validate_for(&request),
+            Err(NativeDesktopContractError::InvalidStudioRecovery)
         );
     }
 }
