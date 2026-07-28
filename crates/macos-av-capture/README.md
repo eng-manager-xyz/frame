@@ -1,8 +1,9 @@
 # frame-macos-av-capture
 
 Safe, target-gated native A/V capture for Issue 25. The crate captures the
-macOS system/application mix through ScreenCaptureKit and supplies a separate
-GStreamer-backed microphone/camera bridge. It does not claim that the desktop
+macOS system/application mix through ScreenCaptureKit and supplies one
+GStreamer-backed optional-input bridge for system audio, microphone, and
+camera. It does not claim that the desktop
 recording composition or normalized preview runtime losslessly muxes those
 inputs into one recording artifact.
 
@@ -10,10 +11,12 @@ inputs into one recording artifact.
 
 `MacOsSystemAudioSource` remains the narrow raw native system-audio owner.
 `MacOsNativeAvBridge` wraps it in the provider-neutral session contract.
-`MacOsDeviceAvBridge` separately owns microphone/camera device monitoring and
-capture:
+`MacOsDeviceAvBridge` composes that system-audio source with
+microphone/camera device monitoring and capture under one adapter identity and
+one session clock:
 
-- one secret-bound virtual device and one secret-bound adapter identity;
+- one secret-bound virtual system-audio device and one secret-bound adapter
+  identity;
 - secret-bound, label-free microphone/camera IDs derived from GStreamer
   provider identity without exporting the provider value;
 - audited `osxaudiosrc` and `avfvideosrc` device elements feeding exact
@@ -29,10 +32,13 @@ capture:
   UI/diagnostic events.
 
 The system-audio source has no physical default-route or hotplug choice: it
-represents the single ScreenCaptureKit application/system mix. The device
-bridge enumerates physical microphone/camera sources with `GstDeviceMonitor`,
-retains the exact provider object for selection, and uses only an HMAC token in
-the public catalog. The desktop recording composition still uses its direct
+represents the single ScreenCaptureKit application/system mix. The combined
+device bridge enumerates physical microphone/camera sources with
+`GstDeviceMonitor`, retains the exact provider object for selection, and uses
+only an HMAC token in the public catalog. All enabled inputs start from one
+host-monotonic origin, and system-audio callback arrival is rebased to that
+same origin before session calibration. The desktop recording composition
+still uses its direct
 screen/system-audio worker until shared recording ownership and the Studio
 journal can authenticate and drain the normalized runtime's terminal callback
 tail.

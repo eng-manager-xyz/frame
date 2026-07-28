@@ -32,6 +32,8 @@ const BUS_POLL: Duration = Duration::from_millis(25);
 const AV_GRAPH_STATE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(5);
 const MIXED_AUDIO_SINK_MAX_BUFFERS: u32 = 128;
 const MIXED_AUDIO_SINK_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const ISOLATED_AUDIO_SINK_MAX_BUFFERS: u32 = 128;
+const ISOLATED_AUDIO_SINK_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const CAMERA_RECORD_SINK_MAX_BUFFERS: u32 = 8;
 const CAMERA_RECORD_SINK_MAX_BYTES: u64 = 128 * 1024 * 1024;
 const CAMERA_PREVIEW_SINK_MAX_BUFFERS: u32 = 2;
@@ -117,6 +119,8 @@ pub enum NativeAvGraphOutputMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeAvGraphOutputKind {
     MixedAudio,
+    MicrophoneRecord,
+    SystemAudioRecord,
     CameraRecord,
 }
 
@@ -176,8 +180,8 @@ pub struct NativeAvGraphOutputReport {
 }
 
 /// A real A/V capture graph. Native bridges push master-corrected buffers into
-/// the named appsrc elements; mixed audio and camera branches terminate at
-/// bounded appsinks owned by the recording mode.
+/// the named appsrc elements; mixed audio, isolated audio originals, and
+/// camera branches terminate at bounded appsinks owned by the recording mode.
 pub struct NativeAvGstreamerGraph {
     pipeline: gst::Pipeline,
     source_names: Vec<(AvSourceClass, &'static str)>,
@@ -186,11 +190,13 @@ pub struct NativeAvGstreamerGraph {
     source_ingress_budgets: Vec<(AvSourceClass, AvQueueSpec)>,
     queue_names: Vec<(AvSourceClass, &'static str)>,
     mixed_audio_sink: Option<&'static str>,
+    microphone_record_sink: Option<&'static str>,
+    system_audio_record_sink: Option<&'static str>,
     camera_record_sink: Option<&'static str>,
     camera_preview_sink: Option<&'static str>,
     output_mode: NativeAvGraphOutputMode,
     output_cursor: usize,
-    output_sequences: [u64; 2],
+    output_sequences: [u64; 4],
     pending_outputs: VecDeque<NativeAvGraphOutputSample>,
     state: NativeAvGraphState,
 }
@@ -202,6 +208,11 @@ impl std::fmt::Debug for NativeAvGstreamerGraph {
             .field("sources", &self.source_names)
             .field("state", &self.state)
             .field("mixed_audio", &self.mixed_audio_sink.is_some())
+            .field("microphone_record", &self.microphone_record_sink.is_some())
+            .field(
+                "system_audio_record",
+                &self.system_audio_record_sink.is_some(),
+            )
             .field("camera_record", &self.camera_record_sink.is_some())
             .field("camera_preview", &self.camera_preview_sink.is_some())
             .field("output_mode", &self.output_mode)
@@ -276,19 +287,37 @@ impl NativeAvGstreamerGraph {
                         AvSourceClass::SystemAudio => "system_audio_ingress_queue",
                         AvSourceClass::Camera => unreachable!(),
                     };
+                    let (record_queue_name, record_sink_name) = match class {
+                        AvSourceClass::Microphone => {
+                            ("microphone_record_output_queue", "microphone_record_sink")
+                        }
+                        AvSourceClass::SystemAudio => (
+                            "system_audio_record_output_queue",
+                            "system_audio_record_sink",
+                        ),
+                        AvSourceClass::Camera => unreachable!(),
+                    };
                     source_names.push((class, name));
                     source_formats.push((class, AvFormat::Audio(input.format)));
                     source_ingress_budgets.push((class, source.queue));
                     queue_names.push((class, queue_name));
                     let input_caps = audio_caps(input.format, input.interleaved);
                     let output_caps = audio_caps(output.format, output.interleaved);
+                    let record_drop = output_mode == NativeAvGraphOutputMode::Preview;
+                    let record_leaky = if record_drop { "downstream" } else { "no" };
                     description.push_str(&format!(
                         "appsrc name={name} is-live=true do-timestamp=false block=false format=time \
                          max-buffers={} max-bytes={} max-time={} leaky-type=downstream caps=\"{input_caps}\" \
                          ! queue name={queue_name} max-size-buffers={} max-size-bytes={} max-size-time={} leaky=downstream \
-                         ! audioconvert ! audioresample ! capsfilter caps=\"{output_caps}\" \
-                         ! volume name={name}_volume ! level name={name}_level interval=100000000 post-messages=true \
-                         ! audio_mixer. ",
+                         ! audioconvert ! audioresample ! capsfilter caps=\"{output_caps}\" ! tee name={name}_record_tee \
+                         {name}_record_tee. ! queue name={name}_mix_output_queue max-size-buffers=128 \
+                         max-size-bytes=8388608 max-size-time=2000000000 leaky={record_leaky} \
+                         ! volume name={name}_volume \
+                         ! level name={name}_level interval=100000000 post-messages=true ! audio_mixer. \
+                         {name}_record_tee. ! queue name={record_queue_name} max-size-buffers=128 \
+                         max-size-bytes=8388608 max-size-time=2000000000 leaky={record_leaky} \
+                         ! appsink name={record_sink_name} sync=false async=false wait-on-eos=false \
+                         enable-last-sample=false max-buffers=128 drop={record_drop} ",
                         stages.appsrc.max_buffers,
                         stages.appsrc.max_bytes,
                         stages.appsrc.max_age_ns,
@@ -357,6 +386,16 @@ impl NativeAvGstreamerGraph {
             source_ingress_budgets,
             queue_names,
             mixed_audio_sink: has_audio.then_some("mixed_audio_sink"),
+            microphone_record_sink: spec
+                .sources
+                .iter()
+                .any(|source| source.class == AvSourceClass::Microphone)
+                .then_some("microphone_record_sink"),
+            system_audio_record_sink: spec
+                .sources
+                .iter()
+                .any(|source| source.class == AvSourceClass::SystemAudio)
+                .then_some("system_audio_record_sink"),
             camera_record_sink: spec
                 .sources
                 .iter()
@@ -365,7 +404,7 @@ impl NativeAvGstreamerGraph {
             camera_preview_sink: spec.camera_preview_enabled.then_some("camera_preview_sink"),
             output_mode,
             output_cursor: 0,
-            output_sequences: [0; 2],
+            output_sequences: [0; 4],
             pending_outputs: VecDeque::new(),
             state: NativeAvGraphState::Null,
         })
@@ -427,6 +466,34 @@ impl NativeAvGstreamerGraph {
                 2_000_000_000_u64,
             ),
             (
+                self.microphone_record_sink,
+                "microphone_record_output_queue",
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
+                ISOLATED_AUDIO_SINK_MAX_BYTES,
+                2_000_000_000_u64,
+            ),
+            (
+                self.microphone_record_sink,
+                "microphone_src_mix_output_queue",
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
+                ISOLATED_AUDIO_SINK_MAX_BYTES,
+                2_000_000_000_u64,
+            ),
+            (
+                self.system_audio_record_sink,
+                "system_audio_record_output_queue",
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
+                ISOLATED_AUDIO_SINK_MAX_BYTES,
+                2_000_000_000_u64,
+            ),
+            (
+                self.system_audio_record_sink,
+                "system_audio_src_mix_output_queue",
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
+                ISOLATED_AUDIO_SINK_MAX_BYTES,
+                2_000_000_000_u64,
+            ),
+            (
                 self.camera_record_sink,
                 "camera_record_output_queue",
                 CAMERA_RECORD_SINK_MAX_BUFFERS,
@@ -455,6 +522,16 @@ impl NativeAvGstreamerGraph {
             (
                 self.mixed_audio_sink,
                 MIXED_AUDIO_SINK_MAX_BUFFERS,
+                recording_drop,
+            ),
+            (
+                self.microphone_record_sink,
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
+                recording_drop,
+            ),
+            (
+                self.system_audio_record_sink,
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
                 recording_drop,
             ),
             (
@@ -521,6 +598,10 @@ impl NativeAvGstreamerGraph {
         }
         [
             self.mixed_audio_sink.map(|_| MIXED_AUDIO_SINK_MAX_BYTES),
+            self.microphone_record_sink
+                .map(|_| ISOLATED_AUDIO_SINK_MAX_BYTES),
+            self.system_audio_record_sink
+                .map(|_| ISOLATED_AUDIO_SINK_MAX_BYTES),
             self.camera_record_sink
                 .map(|_| CAMERA_RECORD_SINK_MAX_BYTES),
         ]
@@ -531,6 +612,16 @@ impl NativeAvGstreamerGraph {
 
     pub fn mixed_audio_sink(&self) -> Option<gst::Element> {
         self.mixed_audio_sink
+            .and_then(|name| self.pipeline.by_name(name))
+    }
+
+    pub fn microphone_record_sink(&self) -> Option<gst::Element> {
+        self.microphone_record_sink
+            .and_then(|name| self.pipeline.by_name(name))
+    }
+
+    pub fn system_audio_record_sink(&self) -> Option<gst::Element> {
+        self.system_audio_record_sink
             .and_then(|name| self.pipeline.by_name(name))
     }
 
@@ -646,6 +737,14 @@ impl NativeAvGstreamerGraph {
         [
             (NativeAvGraphOutputKind::MixedAudio, self.mixed_audio_sink),
             (
+                NativeAvGraphOutputKind::MicrophoneRecord,
+                self.microphone_record_sink,
+            ),
+            (
+                NativeAvGraphOutputKind::SystemAudioRecord,
+                self.system_audio_record_sink,
+            ),
+            (
                 NativeAvGraphOutputKind::CameraRecord,
                 self.camera_record_sink,
             ),
@@ -707,7 +806,9 @@ impl NativeAvGstreamerGraph {
         timestamp.discontinuity = buffer.flags().contains(gst::BufferFlags::DISCONT);
         let sequence_index = match kind {
             NativeAvGraphOutputKind::MixedAudio => 0,
-            NativeAvGraphOutputKind::CameraRecord => 1,
+            NativeAvGraphOutputKind::MicrophoneRecord => 1,
+            NativeAvGraphOutputKind::SystemAudioRecord => 2,
+            NativeAvGraphOutputKind::CameraRecord => 3,
         };
         self.output_sequences[sequence_index] = self.output_sequences[sequence_index]
             .checked_add(1)
@@ -1929,6 +2030,8 @@ mod tests {
         assert!(graph.source(AvSourceClass::SystemAudio).is_some());
         assert!(graph.source(AvSourceClass::Camera).is_some());
         assert!(graph.mixed_audio_sink().is_some());
+        assert!(graph.microphone_record_sink().is_some());
+        assert!(graph.system_audio_record_sink().is_some());
         assert!(graph.camera_record_sink().is_some());
         assert!(graph.camera_preview_sink().is_some());
         assert!(graph.live_contract_is_intact());
@@ -1937,6 +2040,18 @@ mod tests {
             (
                 graph.mixed_audio_sink().expect("mixed audio sink"),
                 MIXED_AUDIO_SINK_MAX_BUFFERS,
+            ),
+            (
+                graph
+                    .microphone_record_sink()
+                    .expect("microphone record sink"),
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
+            ),
+            (
+                graph
+                    .system_audio_record_sink()
+                    .expect("system-audio record sink"),
+                ISOLATED_AUDIO_SINK_MAX_BUFFERS,
             ),
             (
                 graph.camera_record_sink().expect("camera record sink"),
@@ -2342,6 +2457,12 @@ mod tests {
         );
         for sink in [
             graph.mixed_audio_sink().expect("mixed audio sink"),
+            graph
+                .microphone_record_sink()
+                .expect("microphone record sink"),
+            graph
+                .system_audio_record_sink()
+                .expect("system-audio record sink"),
             graph.camera_record_sink().expect("camera record sink"),
         ] {
             let sink = sink.downcast::<gst_app::AppSink>().expect("typed appsink");

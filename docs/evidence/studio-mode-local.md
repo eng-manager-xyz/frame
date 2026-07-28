@@ -31,7 +31,8 @@ The `macos-native` release composition still pumps one selected full display
 plus optional exact 48 kHz stereo system audio into a separate VP8/Opus WebM
 recorder. It is not wired to the new multitrack recorder, Studio journal,
 project, edit plan, or recovery stores, and it does not feed the normalized
-microphone/camera bridge into Studio. Its artifact-backed Editable WebM
+combined system-audio/microphone/camera bridge into Studio. Its
+artifact-backed Editable WebM
 copy/publication
 is not an edit-aware Studio export. A new narrow native adapter does execute
 the shared canonical plan for a clock-aligned screen original plus optional
