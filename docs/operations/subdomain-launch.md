@@ -136,13 +136,28 @@ changing unrelated portfolio or zone resources.
    portfolio baseline, then move it to normal placement.
 8. Release optional status, handoff, CORS, or embed independently. None is a
    base-launch prerequisite.
-9. After the canonical DNS, Render, Worker, cache, privacy, and release-join
-   checks pass, set the repository Actions variable
-   `FRAME_PRODUCTION_SMOKE_ENABLED` to exactly `true`. Manually dispatch
-   `Canonical production smoke` once before relying on its scheduled and
-   post-release runs. Before this latch is enabled, automatic runs are skipped
-   so an intentionally absent pre-launch hostname does not page responders;
-   manual dispatch remains available for cutover testing.
+9. Keep `Canonical production smoke` disabled at the GitHub workflow level
+   while the canonical hostname is intentionally absent. A job-level skip still
+   creates scheduled and post-gate workflow runs, so the variable latch alone
+   is not the pre-launch control. After the canonical DNS, Render, Worker,
+   cache, privacy, and release-join checks pass, prove the hostname resolves,
+   arm the exact repository variable while the workflow is still disabled,
+   enable the workflow, and manually dispatch it once:
+
+   ```sh
+   curl --fail --silent --show-error --head --max-time 15 \
+     https://frame.engmanager.xyz
+   gh variable set FRAME_PRODUCTION_SMOKE_ENABLED --body true \
+     --repo eng-manager-xyz/frame
+   gh workflow enable production-smoke.yml --repo eng-manager-xyz/frame
+   gh workflow run production-smoke.yml --repo eng-manager-xyz/frame \
+     --ref main -f environment=production
+   ```
+
+   Verify that the manual run succeeds before relying on its scheduled and
+   post-release runs. If activation stops before that proof, return the
+   variable to `false` and disable the workflow; never leave an enabled
+   automatic smoke pointed at an intentionally absent hostname.
 10. Hold the signed observation window. Close critical/high defects and make
    explicit post-launch decisions before changing the default Render hostname
    or any legacy path.
@@ -186,11 +201,20 @@ resolution, edge certificate, origin certificate, strict-mode validation, or
 route ownership. Return the exact Frame record to DNS-only only after origin
 certificate verification. If necessary, restore/remove that record alone. Do
 not alter apex, `www`, shop/store, portfolio, wildcard, or zone-wide settings.
-Keep `FRAME_PRODUCTION_SMOKE_ENABLED=true` during an unplanned outage so the
-scheduled check continues to alert. Set it to any value other than exact
-lowercase `true` only as part of an authorized rollback or decommission that
-intentionally removes the canonical hostname; manual dispatch remains
-available while the latch is inactive.
+Keep `FRAME_PRODUCTION_SMOKE_ENABLED=true` and the workflow enabled during an
+unplanned outage so the scheduled check continues to alert. As part of an
+authorized rollback or decommission that intentionally removes the canonical
+hostname, disarm and disable it in that order:
+
+```sh
+gh variable set FRAME_PRODUCTION_SMOKE_ENABLED --body false \
+  --repo eng-manager-xyz/frame
+gh workflow disable production-smoke.yml --repo eng-manager-xyz/frame
+```
+
+Re-enable it only through staged-launch step 9. A disabled workflow cannot be
+manually dispatched, so cutover testing begins only after the canonical
+hostname probe succeeds and the activation sequence reaches `workflow enable`.
 
 On cache/WAF/rate failure, switch the one Frame rule from enforce to observe or
 disable it. A private `HIT`, stale deleted share, or authenticated cookie variant
