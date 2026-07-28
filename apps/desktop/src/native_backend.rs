@@ -9,7 +9,7 @@ use std::{collections::HashSet, fmt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ipc::{CaptureTargetKind, ValidatedPath, valid_opaque_id};
+use crate::ipc::{CaptureTargetKind, RecorderMode, ValidatedPath, valid_opaque_id};
 
 pub const CAPTURE_TARGET_CATALOG_VERSION: u16 = 1;
 pub const CAPTURE_ARTIFACT_SUMMARY_VERSION: u16 = 1;
@@ -235,6 +235,7 @@ impl fmt::Debug for NativeTargetSelectionOutcome {
 pub struct NativeCaptureStartRequest {
     pub catalog_generation: u64,
     pub target: CaptureTargetSummary,
+    pub mode: RecorderMode,
     pub frame_rate: u16,
     pub exclude_frame_windows: bool,
     /// Request system audio when the native backend can start it safely.
@@ -248,6 +249,7 @@ impl fmt::Debug for NativeCaptureStartRequest {
             .debug_struct("NativeCaptureStartRequest")
             .field("catalog_generation", &self.catalog_generation)
             .field("target", &self.target)
+            .field("mode", &self.mode)
             .field("frame_rate", &self.frame_rate)
             .field("exclude_frame_windows", &self.exclude_frame_windows)
             .field("system_audio_enabled", &self.system_audio_enabled)

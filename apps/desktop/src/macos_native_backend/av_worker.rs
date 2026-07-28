@@ -19,14 +19,15 @@ use frame_macos_screen_capture::{
 };
 use frame_media::{
     BgraScreenFrame, CancellationToken, F32StereoAudioChunk, FrameTimestamp, ScreenAudioRecording,
-    ScreenRecordingError,
+    ScreenRecording, ScreenRecordingError,
 };
 
 use super::{
-    NativeDesktopBackendError, WORKER_IDLE_POLL, WorkerCompletion, WorkerControl, WorkerOutcome,
-    all_av_teardown_confirmed, diagnostic_delta, diagnostics_failed, map_capture_error,
-    map_recording_error, map_system_audio_error, recording_finish_teardown_confirmed,
-    system_audio_diagnostic_delta, system_audio_diagnostics_failed,
+    DesktopStudioRecording, NativeDesktopBackendError, WORKER_IDLE_POLL, WorkerCompletion,
+    WorkerControl, WorkerOutcome, all_av_teardown_confirmed, diagnostic_delta, diagnostics_failed,
+    map_capture_error, map_recording_error, map_system_audio_error,
+    recording_finish_teardown_confirmed, system_audio_diagnostic_delta,
+    system_audio_diagnostics_failed,
 };
 
 const STARTUP_CALIBRATION_TIMEOUT: Duration = Duration::from_millis(80);
@@ -52,6 +53,14 @@ impl SharedClockNormalizer {
             } else {
                 audio_source_pts_ns
             },
+            last_video_end_ns: 0,
+            last_audio_end_ns: 0,
+        }
+    }
+
+    const fn screen_only(screen_source_pts_ns: u64) -> Self {
+        Self {
+            source_origin_ns: screen_source_pts_ns,
             last_video_end_ns: 0,
             last_audio_end_ns: 0,
         }
@@ -92,6 +101,207 @@ impl SharedClockNormalizer {
     }
 }
 
+pub(super) fn run_screen_studio_capture_worker(
+    mut source: MacOsScreenCaptureSource,
+    mut recording: ScreenRecording,
+    mut studio: DesktopStudioRecording,
+    control: Receiver<WorkerControl>,
+    diagnostic_baseline: MacOsCaptureDiagnostics,
+) -> WorkerCompletion {
+    let mut timestamps = None;
+    loop {
+        match control.try_recv() {
+            Ok(WorkerControl::Stop) => {
+                let outcome = finish_screen_studio_recording(
+                    &mut source,
+                    recording,
+                    studio,
+                    &mut timestamps,
+                    diagnostic_baseline,
+                );
+                return WorkerCompletion { outcome };
+            }
+            Ok(WorkerControl::Cancel) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let outcome = cancel_screen_studio_recording(
+                    &mut source,
+                    recording,
+                    studio,
+                    diagnostic_baseline,
+                );
+                return WorkerCompletion { outcome };
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        match source.poll_frame() {
+            Ok(Some(frame)) => {
+                if let Err(error) =
+                    push_screen_studio_frame(&mut recording, &mut studio, frame, &mut timestamps)
+                {
+                    let outcome =
+                        fail_screen_studio_recording(&mut source, recording, studio, error);
+                    return WorkerCompletion { outcome };
+                }
+            }
+            Ok(None) => thread::park_timeout(WORKER_IDLE_POLL),
+            Err(error) => {
+                let outcome = fail_screen_studio_recording(
+                    &mut source,
+                    recording,
+                    studio,
+                    map_capture_error(error),
+                );
+                return WorkerCompletion { outcome };
+            }
+        }
+    }
+}
+
+fn push_screen_studio_frame(
+    recording: &mut ScreenRecording,
+    studio: &mut DesktopStudioRecording,
+    frame: frame_macos_screen_capture::MacOsCaptureFrame,
+    timestamps: &mut Option<SharedClockNormalizer>,
+) -> Result<(), NativeDesktopBackendError> {
+    let sequence = frame.sequence();
+    let source_pts_ns = frame
+        .source_pts_ns()
+        .ok_or(NativeDesktopBackendError::Internal)?;
+    let normalizer =
+        timestamps.get_or_insert_with(|| SharedClockNormalizer::screen_only(source_pts_ns));
+    let timestamp = normalizer
+        .normalize_video(source_pts_ns, frame.timestamp())
+        .map_err(map_recording_error)?;
+    let pixels = frame.into_pixels();
+    studio.push_screen(sequence, timestamp, pixels.to_vec())?;
+    let frame = BgraScreenFrame::new(sequence, timestamp, pixels).map_err(map_recording_error)?;
+    recording
+        .push_frame(frame)
+        .map(|_| ())
+        .map_err(map_recording_error)
+}
+
+fn finish_screen_studio_recording(
+    source: &mut MacOsScreenCaptureSource,
+    mut recording: ScreenRecording,
+    mut studio: DesktopStudioRecording,
+    timestamps: &mut Option<SharedClockNormalizer>,
+    diagnostic_baseline: MacOsCaptureDiagnostics,
+) -> WorkerOutcome {
+    let (tail, teardown_confirmed, stop_error) =
+        classify_screen_stop(source.stop_and_drain_frames());
+    if let Some(error) = stop_error {
+        return fail_screen_studio_after_native_stop(recording, studio, error, teardown_confirmed);
+    }
+    for frame in tail {
+        if let Err(error) = push_screen_studio_frame(&mut recording, &mut studio, frame, timestamps)
+        {
+            return fail_screen_studio_after_native_stop(
+                recording,
+                studio,
+                error,
+                teardown_confirmed,
+            );
+        }
+    }
+    if diagnostics_failed(diagnostic_baseline, source.diagnostics()) {
+        return fail_screen_studio_after_native_stop(
+            recording,
+            studio,
+            NativeDesktopBackendError::Internal,
+            teardown_confirmed,
+        );
+    }
+    if let Err(error) = recording.end_of_stream() {
+        return fail_screen_studio_after_native_stop(
+            recording,
+            studio,
+            map_recording_error(error),
+            teardown_confirmed,
+        );
+    }
+    match recording.finish(&CancellationToken::new()) {
+        Ok(artifact) => match studio.finish() {
+            Ok(_) => WorkerOutcome::Finished(artifact.into()),
+            Err(error) => WorkerOutcome::Failed {
+                error,
+                teardown_confirmed: false,
+            },
+        },
+        Err(error) => {
+            let recording_teardown_confirmed = recording_finish_teardown_confirmed(&error);
+            WorkerOutcome::Failed {
+                error: map_recording_error(error),
+                teardown_confirmed: teardown_confirmed
+                    && recording_teardown_confirmed
+                    && studio.abort().is_ok(),
+            }
+        }
+    }
+}
+
+fn cancel_screen_studio_recording(
+    source: &mut MacOsScreenCaptureSource,
+    recording: ScreenRecording,
+    studio: DesktopStudioRecording,
+    diagnostic_baseline: MacOsCaptureDiagnostics,
+) -> WorkerOutcome {
+    let (_, capture_teardown_confirmed, capture_error) =
+        classify_screen_stop(source.stop_and_drain_frames());
+    let recording_teardown_confirmed = recording.abort().is_ok();
+    let studio_teardown_confirmed = studio.abort().is_ok();
+    if let Some(error) = capture_error {
+        return WorkerOutcome::Failed {
+            error,
+            teardown_confirmed: capture_teardown_confirmed
+                && recording_teardown_confirmed
+                && studio_teardown_confirmed,
+        };
+    }
+    if capture_teardown_confirmed
+        && recording_teardown_confirmed
+        && studio_teardown_confirmed
+        && !diagnostics_failed(diagnostic_baseline, source.diagnostics())
+    {
+        WorkerOutcome::Cancelled
+    } else {
+        WorkerOutcome::Failed {
+            error: NativeDesktopBackendError::Internal,
+            teardown_confirmed: capture_teardown_confirmed
+                && recording_teardown_confirmed
+                && studio_teardown_confirmed,
+        }
+    }
+}
+
+fn fail_screen_studio_recording(
+    source: &mut MacOsScreenCaptureSource,
+    recording: ScreenRecording,
+    studio: DesktopStudioRecording,
+    primary_error: NativeDesktopBackendError,
+) -> WorkerOutcome {
+    let (_, capture_teardown_confirmed, _) = classify_screen_stop(source.stop_and_drain_frames());
+    fail_screen_studio_after_native_stop(
+        recording,
+        studio,
+        primary_error,
+        capture_teardown_confirmed,
+    )
+}
+
+fn fail_screen_studio_after_native_stop(
+    recording: ScreenRecording,
+    studio: DesktopStudioRecording,
+    primary_error: NativeDesktopBackendError,
+    native_teardown_confirmed: bool,
+) -> WorkerOutcome {
+    WorkerOutcome::Failed {
+        error: primary_error,
+        teardown_confirmed: native_teardown_confirmed
+            && recording.abort().is_ok()
+            && studio.abort().is_ok(),
+    }
+}
+
 fn normalize_timestamp(
     source_origin_ns: u64,
     last_output_end_ns: &mut u64,
@@ -114,6 +324,7 @@ pub(super) fn run_av_capture_worker(
     mut source: MacOsScreenCaptureSource,
     mut system_audio: MacOsSystemAudioSource,
     mut recording: ScreenAudioRecording,
+    mut studio: Option<DesktopStudioRecording>,
     mut timestamps: SharedClockNormalizer,
     control: Receiver<WorkerControl>,
     telemetry: AvWorkerTelemetry,
@@ -126,6 +337,7 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
+                    studio,
                     &mut timestamps,
                     telemetry.screen_diagnostic_baseline,
                     telemetry.audio_diagnostic_baseline,
@@ -137,6 +349,7 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
+                    studio,
                     telemetry.screen_diagnostic_baseline,
                     telemetry.audio_diagnostic_baseline,
                 );
@@ -153,10 +366,16 @@ pub(super) fn run_av_capture_worker(
                 &mut system_audio,
                 &mut recording,
                 &mut timestamps,
+                studio.as_mut(),
                 &telemetry.system_audio_meter,
             )
         } else {
-            poll_screen(&mut source, &mut recording, &mut timestamps)
+            poll_screen(
+                &mut source,
+                &mut recording,
+                &mut timestamps,
+                studio.as_mut(),
+            )
         };
         let first_did_work = match first {
             Ok(did_work) => did_work,
@@ -165,6 +384,7 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
+                    studio,
                     telemetry.screen_diagnostic_baseline,
                     telemetry.audio_diagnostic_baseline,
                     error,
@@ -173,12 +393,18 @@ pub(super) fn run_av_capture_worker(
             }
         };
         let second = if poll_audio_first {
-            poll_screen(&mut source, &mut recording, &mut timestamps)
+            poll_screen(
+                &mut source,
+                &mut recording,
+                &mut timestamps,
+                studio.as_mut(),
+            )
         } else {
             poll_audio(
                 &mut system_audio,
                 &mut recording,
                 &mut timestamps,
+                studio.as_mut(),
                 &telemetry.system_audio_meter,
             )
         };
@@ -189,6 +415,7 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
+                    studio,
                     telemetry.screen_diagnostic_baseline,
                     telemetry.audio_diagnostic_baseline,
                     error,
@@ -207,6 +434,7 @@ pub(super) fn calibrate_av_startup(
     source: &mut MacOsScreenCaptureSource,
     system_audio: &mut MacOsSystemAudioSource,
     recording: &mut ScreenAudioRecording,
+    mut studio: Option<&mut DesktopStudioRecording>,
 ) -> Result<SharedClockNormalizer, NativeDesktopBackendError> {
     let deadline = Instant::now()
         .checked_add(STARTUP_CALIBRATION_TIMEOUT)
@@ -236,13 +464,11 @@ pub(super) fn calibrate_av_startup(
             let mut timestamps =
                 SharedClockNormalizer::new(screen_source_pts_ns, audio_source_pts_ns);
             if screen_source_pts_ns <= audio_source_pts_ns {
-                push_capture_frame(recording, screen, &mut timestamps)
-                    .map_err(map_recording_error)?;
-                push_audio_chunk(recording, audio, &mut timestamps).map_err(map_recording_error)?;
+                push_capture_frame(recording, screen, &mut timestamps, studio.as_deref_mut())?;
+                push_audio_chunk(recording, audio, &mut timestamps, studio.as_deref_mut())?;
             } else {
-                push_audio_chunk(recording, audio, &mut timestamps).map_err(map_recording_error)?;
-                push_capture_frame(recording, screen, &mut timestamps)
-                    .map_err(map_recording_error)?;
+                push_audio_chunk(recording, audio, &mut timestamps, studio.as_deref_mut())?;
+                push_capture_frame(recording, screen, &mut timestamps, studio.as_deref_mut())?;
             }
             return Ok(timestamps);
         }
@@ -261,10 +487,11 @@ fn poll_screen(
     source: &mut MacOsScreenCaptureSource,
     recording: &mut ScreenAudioRecording,
     timestamps: &mut SharedClockNormalizer,
+    studio: Option<&mut DesktopStudioRecording>,
 ) -> Result<bool, NativeDesktopBackendError> {
     match source.poll_frame() {
         Ok(Some(frame)) => {
-            push_capture_frame(recording, frame, timestamps).map_err(map_recording_error)?;
+            push_capture_frame(recording, frame, timestamps, studio)?;
             Ok(true)
         }
         Ok(None) => Ok(false),
@@ -276,6 +503,7 @@ fn poll_audio(
     system_audio: &mut MacOsSystemAudioSource,
     recording: &mut ScreenAudioRecording,
     timestamps: &mut SharedClockNormalizer,
+    studio: Option<&mut DesktopStudioRecording>,
     system_audio_meter: &AtomicU16,
 ) -> Result<bool, NativeDesktopBackendError> {
     match system_audio.poll_chunk() {
@@ -284,7 +512,7 @@ fn poll_audio(
                 audio_level_basis_points(chunk.samples_f32le()),
                 Ordering::Release,
             );
-            push_audio_chunk(recording, chunk, timestamps).map_err(map_recording_error)?;
+            push_audio_chunk(recording, chunk, timestamps, studio)?;
             Ok(true)
         }
         Ok(None) => Ok(false),
@@ -305,30 +533,50 @@ fn push_capture_frame(
     recording: &mut ScreenAudioRecording,
     frame: frame_macos_screen_capture::MacOsCaptureFrame,
     timestamps: &mut SharedClockNormalizer,
-) -> Result<(), ScreenRecordingError> {
+    studio: Option<&mut DesktopStudioRecording>,
+) -> Result<(), NativeDesktopBackendError> {
     let sequence = frame.sequence();
     let source_pts_ns = frame
         .source_pts_ns()
-        .ok_or(ScreenRecordingError::InvalidFrame)?;
-    let timestamp = timestamps.normalize_video(source_pts_ns, frame.timestamp())?;
+        .ok_or(NativeDesktopBackendError::Internal)?;
+    let timestamp = timestamps
+        .normalize_video(source_pts_ns, frame.timestamp())
+        .map_err(map_recording_error)?;
     let pixels = frame.into_pixels();
-    let frame = BgraScreenFrame::new(sequence, timestamp, pixels)?;
-    recording.push_video_frame(frame).map(|_| ())
+    if let Some(studio) = studio {
+        studio.push_screen(sequence, timestamp, pixels.to_vec())?;
+    }
+    let frame = BgraScreenFrame::new(sequence, timestamp, pixels).map_err(map_recording_error)?;
+    recording
+        .push_video_frame(frame)
+        .map(|_| ())
+        .map_err(map_recording_error)
 }
 
 fn push_audio_chunk(
     recording: &mut ScreenAudioRecording,
     chunk: MacOsSystemAudioChunk,
     timestamps: &mut SharedClockNormalizer,
-) -> Result<(), ScreenRecordingError> {
-    let chunk = timestamps.normalize_audio(chunk)?;
-    recording.push_audio_chunk(chunk).map(|_| ())
+    studio: Option<&mut DesktopStudioRecording>,
+) -> Result<(), NativeDesktopBackendError> {
+    let studio_samples = studio.as_ref().map(|_| chunk.samples_f32le().to_vec());
+    let chunk = timestamps
+        .normalize_audio(chunk)
+        .map_err(map_recording_error)?;
+    if let (Some(studio), Some(samples)) = (studio, studio_samples) {
+        studio.push_system_audio(chunk.sequence(), chunk.timestamp(), samples)?;
+    }
+    recording
+        .push_audio_chunk(chunk)
+        .map(|_| ())
+        .map_err(map_recording_error)
 }
 
 fn finish_av_worker_recording(
     source: &mut MacOsScreenCaptureSource,
     system_audio: &mut MacOsSystemAudioSource,
     mut recording: ScreenAudioRecording,
+    mut studio: Option<DesktopStudioRecording>,
     timestamps: &mut SharedClockNormalizer,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
     audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
@@ -342,18 +590,19 @@ fn finish_av_worker_recording(
     if let Some(primary_error) = screen_error.or(audio_error) {
         return fail_recorder_after_native_stop(
             recording,
+            studio,
             primary_error,
             all_av_teardown_confirmed(screen_teardown_confirmed, audio_teardown_confirmed, true),
         );
     }
     for frame in screen_tail {
-        if let Err(error) = push_capture_frame(&mut recording, frame, timestamps) {
-            return fail_recorder_after_native_stop(recording, map_recording_error(error), true);
+        if let Err(error) = push_capture_frame(&mut recording, frame, timestamps, studio.as_mut()) {
+            return fail_recorder_after_native_stop(recording, studio, error, true);
         }
     }
     for chunk in audio_tail {
-        if let Err(error) = push_audio_chunk(&mut recording, chunk, timestamps) {
-            return fail_recorder_after_native_stop(recording, map_recording_error(error), true);
+        if let Err(error) = push_audio_chunk(&mut recording, chunk, timestamps, studio.as_mut()) {
+            return fail_recorder_after_native_stop(recording, studio, error, true);
         }
     }
     if diagnostics_failed(screen_diagnostic_baseline, source.diagnostics())
@@ -361,15 +610,31 @@ fn finish_av_worker_recording(
     {
         return fail_recorder_after_native_stop(
             recording,
+            studio,
             NativeDesktopBackendError::Internal,
             true,
         );
     }
     if let Err(error) = recording.end_of_stream() {
-        return fail_recorder_after_native_stop(recording, map_recording_error(error), true);
+        return fail_recorder_after_native_stop(
+            recording,
+            studio,
+            map_recording_error(error),
+            true,
+        );
     }
     match recording.finish(&CancellationToken::new()) {
-        Ok(artifact) => WorkerOutcome::Finished(artifact.into()),
+        Ok(artifact) => match studio
+            .take()
+            .map(DesktopStudioRecording::finish)
+            .transpose()
+        {
+            Ok(_) => WorkerOutcome::Finished(artifact.into()),
+            Err(error) => WorkerOutcome::Failed {
+                error,
+                teardown_confirmed: false,
+            },
+        },
         Err(error) => WorkerOutcome::Failed {
             teardown_confirmed: recording_finish_teardown_confirmed(&error),
             error: map_recording_error(error),
@@ -381,6 +646,7 @@ fn cancel_av_worker_recording(
     source: &mut MacOsScreenCaptureSource,
     system_audio: &mut MacOsSystemAudioSource,
     recording: ScreenAudioRecording,
+    studio: Option<DesktopStudioRecording>,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
     audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
 ) -> WorkerOutcome {
@@ -389,19 +655,26 @@ fn cancel_av_worker_recording(
     let (_, audio_teardown_confirmed, audio_error) =
         classify_audio_stop(system_audio.stop_and_drain_chunks());
     let recording_stopped = recording.abort();
+    let studio_stopped = abort_studio(studio);
     if let Some(primary_error) = screen_error.or(audio_error) {
         return WorkerOutcome::Failed {
             error: primary_error,
             teardown_confirmed: all_av_teardown_confirmed(
                 screen_teardown_confirmed,
                 audio_teardown_confirmed,
-                recording_stopped.is_ok(),
+                recording_stopped.is_ok() && studio_stopped,
             ),
         };
     }
     if let Err(error) = recording_stopped {
         return WorkerOutcome::Failed {
             error: map_recording_error(error),
+            teardown_confirmed: false,
+        };
+    }
+    if !studio_stopped {
+        return WorkerOutcome::Failed {
+            error: NativeDesktopBackendError::Internal,
             teardown_confirmed: false,
         };
     }
@@ -421,6 +694,7 @@ fn fail_worker_recording(
     source: &mut MacOsScreenCaptureSource,
     system_audio: &mut MacOsSystemAudioSource,
     recording: ScreenAudioRecording,
+    studio: Option<DesktopStudioRecording>,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
     audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
     primary_error: NativeDesktopBackendError,
@@ -435,25 +709,33 @@ fn fail_worker_recording(
         eprintln!("Frame native A/V diagnostics regressed while preserving the primary failure");
     }
     let recording_teardown_confirmed = recording.abort().is_ok();
+    let studio_teardown_confirmed = abort_studio(studio);
     WorkerOutcome::Failed {
         error: primary_error,
         teardown_confirmed: all_av_teardown_confirmed(
             screen_teardown_confirmed,
             audio_teardown_confirmed,
-            recording_teardown_confirmed,
+            recording_teardown_confirmed && studio_teardown_confirmed,
         ),
     }
 }
 
 fn fail_recorder_after_native_stop(
     recording: ScreenAudioRecording,
+    studio: Option<DesktopStudioRecording>,
     primary_error: NativeDesktopBackendError,
     native_teardown_confirmed: bool,
 ) -> WorkerOutcome {
     WorkerOutcome::Failed {
         error: primary_error,
-        teardown_confirmed: native_teardown_confirmed && recording.abort().is_ok(),
+        teardown_confirmed: native_teardown_confirmed
+            && recording.abort().is_ok()
+            && abort_studio(studio),
     }
+}
+
+fn abort_studio(studio: Option<DesktopStudioRecording>) -> bool {
+    studio.is_none_or(|studio| studio.abort().is_ok())
 }
 
 pub(super) fn classify_screen_stop(

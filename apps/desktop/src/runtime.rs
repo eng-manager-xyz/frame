@@ -1186,6 +1186,7 @@ impl DesktopRuntime {
                     .start_recording(&NativeCaptureStartRequest {
                         catalog_generation: self.capture_targets.generation,
                         target: target.clone(),
+                        mode: self.settings.mode,
                         frame_rate: self.settings.frame_rate,
                         exclude_frame_windows: self.recorder_configuration.exclude_frame_windows,
                         system_audio_enabled: self.settings.system_audio_enabled,
@@ -2483,6 +2484,7 @@ mod tests {
         permission: NativePermissionOutcome,
         select_generation_override: Option<u64>,
         start_error: Option<NativeDesktopBackendError>,
+        last_start_mode: Option<RecorderMode>,
         poll_error: Option<NativeDesktopBackendError>,
         poll_failure: Option<NativeRecordingTerminalFailure>,
         poll_meter: NativeRecordingMeter,
@@ -2504,6 +2506,7 @@ mod tests {
                 permission: NativePermissionOutcome::Granted,
                 select_generation_override: None,
                 start_error: None,
+                last_start_mode: None,
                 poll_error: None,
                 poll_failure: None,
                 poll_meter: NativeRecordingMeter::default(),
@@ -2593,6 +2596,7 @@ mod tests {
             request: &NativeCaptureStartRequest,
         ) -> Result<NativeRecordingStartOutcome, NativeDesktopBackendError> {
             self.calls.push("start");
+            self.last_start_mode = Some(request.mode);
             if let Some(error) = self.start_error {
                 return Err(error);
             }
@@ -4254,6 +4258,62 @@ mod tests {
         assert!(!applied.snapshot.settings.microphone_enabled);
         assert!(applied.snapshot.settings.system_audio_enabled);
         assert!(!applied.snapshot.settings.camera_enabled);
+    }
+
+    #[test]
+    fn native_start_binds_the_backend_to_the_selected_studio_mode() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        let settings = request(
+            &runtime,
+            WindowRole::Settings,
+            1,
+            "native-studio-settings",
+            IpcCommand::SettingsApply {
+                expected_revision: 1,
+                mode: RecorderMode::Studio,
+                frame_rate: 30,
+                microphone_enabled: false,
+                system_audio_enabled: false,
+                camera_enabled: false,
+                reduced_motion: false,
+            },
+        );
+        ok(&runtime
+            .dispatch_native(settings, &mut backend)
+            .expect("Studio settings"));
+
+        for (sequence, id, command) in [
+            (
+                1,
+                "studio-targets",
+                IpcCommand::DeviceEnumerate {
+                    class: DeviceClass::Display,
+                },
+            ),
+            (
+                2,
+                "studio-select",
+                IpcCommand::CaptureTargetSelect {
+                    kind: CaptureTargetKind::Display,
+                    target_token: "display-token-1".into(),
+                },
+            ),
+            (3, "studio-prepare", IpcCommand::RecorderPrepare),
+            (
+                4,
+                "studio-start",
+                IpcCommand::RecorderStart {
+                    intent_id: "studio-start".into(),
+                },
+            ),
+        ] {
+            let envelope = request(&runtime, WindowRole::Recorder, sequence, id, command);
+            ok(&runtime
+                .dispatch_native(envelope, &mut backend)
+                .expect("Studio recorder command"));
+        }
+        assert_eq!(backend.last_start_mode, Some(RecorderMode::Studio));
     }
 
     #[test]

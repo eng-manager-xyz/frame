@@ -4,12 +4,16 @@
 //! contracts: it records one opaque display, window, or region target, embeds
 //! the cursor, excludes the entire current Frame application where the native
 //! target permits it, optionally captures exact 48 kHz stereo
-//! system audio, and exports an Editable WebM. Camera, microphone, pause, and
-//! distribution-master paths stay disabled in the desktop runtime.
+//! system audio, and exports an Editable WebM. Studio mode also feeds the
+//! selected screen and included system-audio samples into bounded isolated
+//! recording branches under the private Studio root. Camera, microphone,
+//! pause, project/journal publication, and distribution-master paths stay
+//! disabled in the desktop runtime.
 
 #![forbid(unsafe_code)]
 
 mod av_worker;
+mod studio_recorder;
 
 use std::{
     collections::BTreeMap,
@@ -49,7 +53,10 @@ use frame_platform_lifecycle::SystemPowerMonitor;
 
 use self::av_worker::{
     AvWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup, classify_audio_stop,
-    classify_screen_stop, run_av_capture_worker,
+    classify_screen_stop, run_av_capture_worker, run_screen_studio_capture_worker,
+};
+use self::studio_recorder::{
+    DesktopStudioRecording, StudioOptionalTracks, StudioRecordingIdentity,
 };
 use crate::native_screen_worker::{
     CompletedRecordingArtifact, NativeScreenSource, ScreenWorkerStart, WorkerCompletion,
@@ -69,7 +76,7 @@ use crate::{
     NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
     NativeRecordingMeter, NativeRecordingStartOutcome, NativeRecordingStopOutcome,
     NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest,
-    NativeTargetSelectionOutcome, NativeTargetSelectionRequest, PathUse,
+    NativeTargetSelectionOutcome, NativeTargetSelectionRequest, PathUse, RecorderMode,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
 };
 
@@ -80,6 +87,7 @@ const WORKER_IDLE_POLL: Duration = Duration::from_millis(2);
 const MAX_TOKEN_ATTEMPTS: usize = 8;
 const FILE_IO_BUFFER_BYTES: usize = 64 * 1_024;
 const RECORDINGS_DIRECTORY: &str = "recordings";
+const STUDIO_DIRECTORY: &str = "studio";
 const EXPORT_STAGING_DIRECTORY: &str = ".frame-staging";
 
 #[derive(Clone)]
@@ -209,14 +217,23 @@ impl NativeScreenSource for MacOsNormalizedScreenCaptureSource {
 }
 
 enum WorkerStart {
-    ScreenOnly(Box<ScreenWorkerStart<MacOsNormalizedScreenCaptureSource>>),
-    ScreenAudio(Box<ScreenAudioWorkerStart>),
+    Normalized(Box<ScreenWorkerStart<MacOsNormalizedScreenCaptureSource>>),
+    Studio(Box<ScreenStudioWorkerStart>),
+    Audio(Box<ScreenAudioWorkerStart>),
+}
+
+struct ScreenStudioWorkerStart {
+    source: MacOsScreenCaptureSource,
+    recording: ScreenRecording,
+    studio: DesktopStudioRecording,
+    screen_diagnostic_baseline: MacOsCaptureDiagnostics,
 }
 
 struct ScreenAudioWorkerStart {
     source: MacOsScreenCaptureSource,
     system_audio: MacOsSystemAudioSource,
     recording: ScreenAudioRecording,
+    studio: Option<DesktopStudioRecording>,
     timestamps: SharedClockNormalizer,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
     audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
@@ -235,6 +252,8 @@ pub struct MacOsNativeDesktopBackend {
     media_directory: RootedDir,
     recordings_root: PathBuf,
     recordings_directory: RootedDir,
+    studio_root: PathBuf,
+    studio_directory: RootedDir,
     export_root: PathBuf,
     export_directory: RootedDir,
     export_staging_root: PathBuf,
@@ -268,6 +287,17 @@ impl MacOsNativeDesktopBackend {
         recordings_directory
             .ensure_private_mode()
             .map_err(map_rooted_io_error)?;
+        let studio_root = media_root.join(STUDIO_DIRECTORY);
+        let studio_directory = match media_directory.create_private_dir(STUDIO_DIRECTORY) {
+            Ok(directory) => directory,
+            Err(RootedIoError::EntryExists) => media_directory
+                .open_dir(STUDIO_DIRECTORY)
+                .map_err(map_rooted_io_error)?,
+            Err(error) => return Err(map_rooted_io_error(error)),
+        };
+        studio_directory
+            .ensure_private_mode()
+            .map_err(map_rooted_io_error)?;
         let export_staging_root = export_root.join(EXPORT_STAGING_DIRECTORY);
         let export_staging_directory =
             match export_directory.create_private_dir(EXPORT_STAGING_DIRECTORY) {
@@ -282,6 +312,7 @@ impl MacOsNativeDesktopBackend {
             .map_err(map_rooted_io_error)?;
         ensure_visible_directory(&media_directory, &media_root)?;
         ensure_visible_directory(&recordings_directory, &recordings_root)?;
+        ensure_visible_directory(&studio_directory, &studio_root)?;
         ensure_visible_directory(&export_directory, &export_root)?;
         ensure_visible_directory(&export_staging_directory, &export_staging_root)?;
         preflight_screen_recording_runtime().map_err(map_recording_error)?;
@@ -305,6 +336,8 @@ impl MacOsNativeDesktopBackend {
             media_directory,
             recordings_root,
             recordings_directory,
+            studio_root,
+            studio_directory,
             export_root,
             export_directory,
             export_staging_root,
@@ -336,7 +369,8 @@ impl MacOsNativeDesktopBackend {
 
     fn ensure_media_directories_visible(&self) -> Result<(), NativeDesktopBackendError> {
         ensure_visible_directory(&self.media_directory, &self.media_root)?;
-        ensure_visible_directory(&self.recordings_directory, &self.recordings_root)
+        ensure_visible_directory(&self.recordings_directory, &self.recordings_root)?;
+        ensure_visible_directory(&self.studio_directory, &self.studio_root)
     }
 
     fn ensure_export_directories_visible(&self) -> Result<(), NativeDesktopBackendError> {
@@ -967,33 +1001,134 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         };
         let worker_start_value = match recording {
             PendingRecordingGraph::ScreenOnly(recording) => {
-                let Some(snapshot) = snapshot else {
-                    let teardown_confirmed = abort_unowned_recording(
-                        recording,
-                        NativeDesktopBackendError::StaleCatalog,
-                        "normalized capture snapshot was unavailable",
-                    );
-                    self.cleanup_recording_output(&output);
-                    let _ = self.retire_session(teardown_confirmed);
-                    return Err(NativeDesktopBackendError::StaleCatalog);
-                };
-                match ScreenWorkerStart::prepare(
-                    source,
-                    snapshot,
-                    target.descriptor,
-                    frame_spec,
-                    recording,
-                    screen_session_id,
-                ) {
-                    Ok(start) => WorkerStart::ScreenOnly(Box::new(start)),
-                    Err(failure) => {
+                if request.mode == RecorderMode::Studio {
+                    let studio = match new_studio_recording(
+                        &self.studio_root,
+                        frame_spec,
+                        request.frame_rate,
+                        StudioOptionalTracks::default(),
+                    ) {
+                        Ok(recording) => recording,
+                        Err(primary_error) => {
+                            let teardown_confirmed = recording.abort().is_ok();
+                            if teardown_confirmed {
+                                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                                    source,
+                                    system_audio,
+                                    observed_topology_generation,
+                                    snapshot,
+                                }));
+                            }
+                            self.cleanup_recording_output(&output);
+                            return Err(primary_error);
+                        }
+                    };
+                    let capture_config = match MacOsCaptureConfig::new(
+                        target.descriptor.binding(),
+                        frame_spec,
+                        CursorCaptureMode::EmbeddedInFrame,
+                    ) {
+                        Ok(config) => config,
+                        Err(error) => {
+                            let primary_error = map_capture_error(error);
+                            let teardown_confirmed =
+                                recording.abort().is_ok() && studio.abort().is_ok();
+                            if teardown_confirmed {
+                                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                                    source,
+                                    system_audio,
+                                    observed_topology_generation,
+                                    snapshot,
+                                }));
+                            }
+                            self.cleanup_recording_output(&output);
+                            return Err(primary_error);
+                        }
+                    };
+                    if let Err(error) = source.start(capture_config) {
+                        let primary_error = map_capture_error(error);
+                        let teardown_confirmed =
+                            recording.abort().is_ok() && studio.abort().is_ok();
+                        if capture_start_resources_reusable(error, teardown_confirmed) {
+                            self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                                source,
+                                system_audio,
+                                observed_topology_generation,
+                                snapshot,
+                            }));
+                        } else {
+                            self.capture = CaptureLifecycle::Poisoned;
+                        }
                         self.cleanup_recording_output(&output);
-                        let _ = self.retire_session(failure.teardown_confirmed);
-                        return Err(failure.error);
+                        return Err(primary_error);
+                    }
+                    WorkerStart::Studio(Box::new(ScreenStudioWorkerStart {
+                        source,
+                        recording,
+                        studio,
+                        screen_diagnostic_baseline,
+                    }))
+                } else {
+                    let Some(snapshot) = snapshot else {
+                        let teardown_confirmed = abort_unowned_recording(
+                            recording,
+                            NativeDesktopBackendError::StaleCatalog,
+                            "normalized capture snapshot was unavailable",
+                        );
+                        self.cleanup_recording_output(&output);
+                        let _ = self.retire_session(teardown_confirmed);
+                        return Err(NativeDesktopBackendError::StaleCatalog);
+                    };
+                    match ScreenWorkerStart::prepare(
+                        source,
+                        snapshot,
+                        target.descriptor,
+                        frame_spec,
+                        recording,
+                        screen_session_id,
+                    ) {
+                        Ok(start) => WorkerStart::Normalized(Box::new(start)),
+                        Err(failure) => {
+                            self.cleanup_recording_output(&output);
+                            let _ = self.retire_session(failure.teardown_confirmed);
+                            return Err(failure.error);
+                        }
                     }
                 }
             }
             PendingRecordingGraph::ScreenAudio(mut recording) => {
+                let mut studio = if request.mode == RecorderMode::Studio {
+                    match new_studio_recording(
+                        &self.studio_root,
+                        frame_spec,
+                        request.frame_rate,
+                        StudioOptionalTracks {
+                            system_audio: true,
+                            ..StudioOptionalTracks::default()
+                        },
+                    ) {
+                        Ok(recording) => Some(recording),
+                        Err(primary_error) => {
+                            let recorder_teardown_confirmed = recording.abort().is_ok();
+                            let audio_teardown_confirmed = stop_unowned_system_audio(
+                                &mut system_audio,
+                                "Studio recorder graph creation failed",
+                            );
+                            if recorder_teardown_confirmed && audio_teardown_confirmed {
+                                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                                    source,
+                                    system_audio,
+                                    observed_topology_generation,
+                                    snapshot,
+                                }));
+                            }
+                            self.cleanup_recording_output(&output);
+                            return Err(primary_error);
+                        }
+                    }
+                } else {
+                    None
+                };
                 let capture_config = match MacOsCaptureConfig::new(
                     target.descriptor.binding(),
                     frame_spec,
@@ -1003,11 +1138,16 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     Err(error) => {
                         let primary_error = map_capture_error(error);
                         let recorder_teardown_confirmed = recording.abort().is_ok();
+                        let studio_teardown_confirmed =
+                            studio.take().is_none_or(|studio| studio.abort().is_ok());
                         let audio_teardown_confirmed = stop_unowned_system_audio(
                             &mut system_audio,
                             "native A/V capture configuration failed",
                         );
-                        if recorder_teardown_confirmed && audio_teardown_confirmed {
+                        if recorder_teardown_confirmed
+                            && studio_teardown_confirmed
+                            && audio_teardown_confirmed
+                        {
                             self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
                                 source,
                                 system_audio,
@@ -1030,12 +1170,16 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             false
                         }
                     };
+                    let studio_teardown_confirmed =
+                        studio.take().is_none_or(|studio| studio.abort().is_ok());
                     let audio_teardown_confirmed = stop_unowned_system_audio(
                         &mut system_audio,
                         "native A/V capture start failed",
                     );
-                    if capture_start_resources_reusable(error, recorder_teardown_confirmed)
-                        && audio_teardown_confirmed
+                    if capture_start_resources_reusable(
+                        error,
+                        recorder_teardown_confirmed && studio_teardown_confirmed,
+                    ) && audio_teardown_confirmed
                     {
                         self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
                             source,
@@ -1049,38 +1193,45 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     self.cleanup_recording_output(&output);
                     return Err(primary_error);
                 }
-                let timestamps =
-                    match calibrate_av_startup(&mut source, &mut system_audio, &mut recording) {
-                        Ok(timestamps) => timestamps,
-                        Err(primary_error) => {
-                            let (_, screen_teardown_confirmed, _) =
-                                classify_screen_stop(source.stop_and_drain_frames());
-                            let (_, audio_teardown_confirmed, _) =
-                                classify_audio_stop(system_audio.stop_and_drain_chunks());
-                            let recorder_teardown_confirmed = recording.abort().is_ok();
-                            let teardown_confirmed = all_av_teardown_confirmed(
-                                screen_teardown_confirmed,
-                                audio_teardown_confirmed,
-                                recorder_teardown_confirmed,
-                            );
-                            if teardown_confirmed {
-                                self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
-                                    source,
-                                    system_audio,
-                                    observed_topology_generation,
-                                    snapshot,
-                                }));
-                            } else {
-                                self.capture = CaptureLifecycle::Poisoned;
-                            }
-                            self.cleanup_recording_output(&output);
-                            return Err(primary_error);
+                let timestamps = match calibrate_av_startup(
+                    &mut source,
+                    &mut system_audio,
+                    &mut recording,
+                    studio.as_mut(),
+                ) {
+                    Ok(timestamps) => timestamps,
+                    Err(primary_error) => {
+                        let (_, screen_teardown_confirmed, _) =
+                            classify_screen_stop(source.stop_and_drain_frames());
+                        let (_, audio_teardown_confirmed, _) =
+                            classify_audio_stop(system_audio.stop_and_drain_chunks());
+                        let recorder_teardown_confirmed = recording.abort().is_ok();
+                        let studio_teardown_confirmed =
+                            studio.take().is_none_or(|studio| studio.abort().is_ok());
+                        let teardown_confirmed = all_av_teardown_confirmed(
+                            screen_teardown_confirmed,
+                            audio_teardown_confirmed,
+                            recorder_teardown_confirmed && studio_teardown_confirmed,
+                        );
+                        if teardown_confirmed {
+                            self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                                source,
+                                system_audio,
+                                observed_topology_generation,
+                                snapshot,
+                            }));
+                        } else {
+                            self.capture = CaptureLifecycle::Poisoned;
                         }
-                    };
-                WorkerStart::ScreenAudio(Box::new(ScreenAudioWorkerStart {
+                        self.cleanup_recording_output(&output);
+                        return Err(primary_error);
+                    }
+                };
+                WorkerStart::Audio(Box::new(ScreenAudioWorkerStart {
                     source,
                     system_audio,
                     recording,
+                    studio,
                     timestamps,
                     screen_diagnostic_baseline,
                     audio_diagnostic_baseline,
@@ -1107,12 +1258,28 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     };
                 };
                 match worker_start {
-                    WorkerStart::ScreenOnly(start) => start.run(receiver),
-                    WorkerStart::ScreenAudio(start) => {
+                    WorkerStart::Normalized(start) => start.run(receiver),
+                    WorkerStart::Studio(start) => {
+                        let ScreenStudioWorkerStart {
+                            source,
+                            recording,
+                            studio,
+                            screen_diagnostic_baseline,
+                        } = *start;
+                        run_screen_studio_capture_worker(
+                            source,
+                            recording,
+                            studio,
+                            receiver,
+                            screen_diagnostic_baseline,
+                        )
+                    }
+                    WorkerStart::Audio(start) => {
                         let ScreenAudioWorkerStart {
                             source,
                             system_audio,
                             recording,
+                            studio,
                             timestamps,
                             screen_diagnostic_baseline,
                             audio_diagnostic_baseline,
@@ -1121,6 +1288,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             source,
                             system_audio,
                             recording,
+                            studio,
                             timestamps,
                             receiver,
                             AvWorkerTelemetry {
@@ -1896,6 +2064,29 @@ fn session_power_monitor() -> Result<SystemPowerMonitor, NativeDesktopBackendErr
     SystemPowerMonitor::install().map_err(|_| NativeDesktopBackendError::Unavailable)
 }
 
+fn new_studio_recording(
+    root: &Path,
+    screen: VideoFrameSpec,
+    frame_rate: u16,
+    optional: StudioOptionalTracks,
+) -> Result<DesktopStudioRecording, NativeDesktopBackendError> {
+    let random = SystemRandom::new();
+    DesktopStudioRecording::start(
+        root,
+        StudioRecordingIdentity {
+            project: random_array(&random)?,
+            clock: random_array(&random)?,
+            screen_asset: random_array(&random)?,
+            microphone_asset: random_array(&random)?,
+            system_audio_asset: random_array(&random)?,
+            camera_asset: random_array(&random)?,
+        },
+        screen,
+        frame_rate,
+        optional,
+    )
+}
+
 fn random_array<const N: usize>(
     random: &SystemRandom,
 ) -> Result<[u8; N], NativeDesktopBackendError> {
@@ -2006,7 +2197,7 @@ fn teardown_worker_start(
     context: &str,
 ) -> bool {
     match worker_start {
-        WorkerStart::ScreenOnly(start) => {
+        WorkerStart::Normalized(start) => {
             let teardown_confirmed = start.teardown();
             if !teardown_confirmed {
                 eprintln!(
@@ -2015,11 +2206,23 @@ fn teardown_worker_start(
             }
             teardown_confirmed
         }
-        WorkerStart::ScreenAudio(start) => {
+        WorkerStart::Studio(start) => {
+            let ScreenStudioWorkerStart {
+                mut source,
+                recording,
+                studio,
+                ..
+            } = *start;
+            let (_, capture_teardown_confirmed, _) =
+                classify_screen_stop(source.stop_and_drain_frames());
+            capture_teardown_confirmed && recording.abort().is_ok() && studio.abort().is_ok()
+        }
+        WorkerStart::Audio(start) => {
             let ScreenAudioWorkerStart {
                 mut source,
                 mut system_audio,
                 recording,
+                studio,
                 ..
             } = *start;
             let (_, screen_teardown_confirmed, _) =
@@ -2027,10 +2230,11 @@ fn teardown_worker_start(
             let (_, audio_teardown_confirmed, _) =
                 classify_audio_stop(system_audio.stop_and_drain_chunks());
             let recording_teardown_confirmed = recording.abort().is_ok();
+            let studio_teardown_confirmed = studio.is_none_or(|studio| studio.abort().is_ok());
             all_av_teardown_confirmed(
                 screen_teardown_confirmed,
                 audio_teardown_confirmed,
-                recording_teardown_confirmed,
+                recording_teardown_confirmed && studio_teardown_confirmed,
             )
         }
     }
@@ -2464,6 +2668,10 @@ mod tests {
             let recordings_directory = media_directory
                 .create_private_dir("recordings")
                 .expect("create recordings root");
+            let studio_root = media_root.join(STUDIO_DIRECTORY);
+            let studio_directory = media_directory
+                .create_private_dir(STUDIO_DIRECTORY)
+                .expect("create Studio root");
             let export_directory = RootedDir::bind(&export_root).expect("bind export root");
             let export_staging_root = export_root.join(EXPORT_STAGING_DIRECTORY);
             let export_staging_directory = export_directory
@@ -2530,6 +2738,8 @@ mod tests {
                 media_directory,
                 recordings_root,
                 recordings_directory,
+                studio_root,
+                studio_directory,
                 export_root,
                 export_directory,
                 export_staging_root,
@@ -2661,6 +2871,8 @@ mod tests {
             media_directory: test_rooted_directory(),
             recordings_root: PathBuf::from("/private/tmp"),
             recordings_directory: test_rooted_directory(),
+            studio_root: PathBuf::from("/private/tmp"),
+            studio_directory: test_rooted_directory(),
             export_root: PathBuf::from("/private/tmp"),
             export_directory: test_rooted_directory(),
             export_staging_root: PathBuf::from("/private/tmp"),
@@ -2727,6 +2939,8 @@ mod tests {
             media_directory: test_rooted_directory(),
             recordings_root: PathBuf::from("/private/tmp"),
             recordings_directory,
+            studio_root: PathBuf::from("/private/tmp"),
+            studio_directory: test_rooted_directory(),
             export_root: PathBuf::from("/private/tmp"),
             export_directory: test_rooted_directory(),
             export_staging_root: PathBuf::from("/private/tmp"),
