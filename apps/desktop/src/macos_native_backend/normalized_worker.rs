@@ -22,7 +22,9 @@ use frame_media::{
     TargetRecoveryPolicy, VideoFrameSpec, negotiate_screen_capture,
 };
 
-use crate::{NativeDesktopBackendError, NativeRecordingInputControlRequest};
+use crate::NativeDesktopBackendError;
+#[cfg(target_os = "macos")]
+use crate::NativeRecordingInputControlRequest;
 
 const SOURCE_CALL_TIMEOUT: Duration = Duration::from_secs(1);
 const STOP_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -52,8 +54,11 @@ pub(crate) trait NativeScreenSource:
 pub(crate) enum WorkerControl {
     Stop,
     Cancel,
+    #[cfg(target_os = "macos")]
     Pause(SyncSender<Result<(), NativeDesktopBackendError>>),
+    #[cfg(target_os = "macos")]
     Resume(SyncSender<Result<(), NativeDesktopBackendError>>),
+    #[cfg(target_os = "macos")]
     Input {
         request: NativeRecordingInputControlRequest,
         reply: SyncSender<Result<(), NativeDesktopBackendError>>,
@@ -400,9 +405,11 @@ impl<S: NativeScreenSource> ScreenWorkerStart<S> {
                         outcome: cancel(&mut source, &mut session, pump, diagnostic_baseline),
                     };
                 }
+                #[cfg(target_os = "macos")]
                 Ok(WorkerControl::Pause(reply) | WorkerControl::Resume(reply)) => {
                     let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
                 }
+                #[cfg(target_os = "macos")]
                 Ok(WorkerControl::Input { reply, .. }) => {
                     let _ = reply.send(Err(NativeDesktopBackendError::Unavailable));
                 }
