@@ -143,11 +143,18 @@ Representation is not implementation. `NativeMacOsDisplay` and
 permission preparation, display/window refresh and selection, bounded region
 definition and selection, target-video start, stop, cancel, and Editable WebM
 export. macOS alone optionally supports exact 48 kHz stereo system audio; the
-Windows composition rejects audio. The remaining represented operations continue to return unavailable
-or stay disabled. In particular, a sealed native recording is not a Studio project
-even when isolated temporary originals were sealed, export progress is
-not a cancellable edit-aware render, and no native recording journal/recovery
-owner is wired.
+Windows composition rejects audio. The macOS Studio path also commits verified
+immutable originals, a durable journal, and a canonical revision-one project.
+A descriptor-rooted bounded catalog maps those artifacts to fresh opaque
+WebView tokens; the editor can open only a completed project after the journal
+and project are re-read and authenticated. Interrupted entries and
+operator-decision boundaries are surfaced as recovery-required or
+attention-required, but the current product cannot yet inspect, reconcile,
+preserve-as-copy, or discard them. The
+remaining represented operations continue to return unavailable or stay
+disabled: a flattened native recording is not a Studio project, export
+progress is not a cancellable edit-aware Studio render, and microphone/camera
+Studio composition is not wired.
 
 The Leptos product uses native buttons, fieldsets, labels, meters, progress elements, headings,
 landmarks, a polite atomic status region, an assertive modal error surface, visible focus, a skip

@@ -19,9 +19,9 @@ mod browser {
         DesktopRuntimeEvent, DesktopRuntimeSnapshot, DesktopWindowContext, DeviceClass,
         DeviceState, EditorMutation, EditorState, ExportProfile, ExportState, IPC_PROTOCOL_VERSION,
         InstantFinalizeCapabilityState, InstantFinalizeCommandV1, InstantFinalizeHandle,
-        InstantFinalizeUiUpdate, IpcCommand, LifecycleAction, PublicErrorCode,
-        RecorderAdapterState, RecorderMode, RecorderState, RequestEnvelope, RequestId,
-        ShellCapabilities, UpdateAction, UpdateState, UploadState, WindowRole,
+        InstantFinalizeUiUpdate, IpcCommand, LifecycleAction, NativeStudioProjectStatus,
+        PublicErrorCode, RecorderAdapterState, RecorderMode, RecorderState, RequestEnvelope,
+        RequestId, ShellCapabilities, UpdateAction, UpdateState, UploadState, WindowRole,
         instant_error_message, instant_progress_announcement,
     };
     use frame_ui::{
@@ -664,6 +664,21 @@ mod browser {
                 .get()
                 .and_then(|bootstrap| bootstrap.fake_journey_paths)
         };
+        let ready_project = move || {
+            snapshot.get().and_then(|state| {
+                state
+                    .studio_projects
+                    .projects
+                    .iter()
+                    .find(|project| project.status == NativeStudioProjectStatus::Ready)
+                    .map(|project| {
+                        (
+                            state.studio_projects.generation,
+                            project.project_token.clone(),
+                        )
+                    })
+            })
+        };
 
         view! {
             <UiStyles/>
@@ -1006,17 +1021,17 @@ mod browser {
                     </div>
                     <p>"Recovery opens a preserved copy. Discard is explicit and never mutates the source project silently."</p>
                     <ButtonGroup class="button-row">
-                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || (!is_fake() && !is_native()) || busy.get() on:click=move |_| submit(
                             client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryScan
                         )>"Scan for recovery"</Button>
-                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
-                            if let Some(paths) = fake_paths() {
-                                submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryOpen { project_path: paths.project });
+                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || ready_project().is_none() || busy.get() on:click=move |_| {
+                            if let Some((catalog_generation, project_token)) = ready_project() {
+                                submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryOpen { catalog_generation, project_token });
                             }
                         }>"Open recovered copy"</Button>
-                        <Button variant=ButtonVariant::Destructive attr:r#type="button" attr:disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
-                            if let Some(paths) = fake_paths() {
-                                submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryDiscard { project_path: paths.project });
+                        <Button variant=ButtonVariant::Destructive attr:r#type="button" attr:disabled=move || !is_fake() || ready_project().is_none() || busy.get() on:click=move |_| {
+                            if let Some((catalog_generation, project_token)) = ready_project() {
+                                submit(client, snapshot, status, error, busy, WindowRole::Recovery, IpcCommand::RecoveryDiscard { catalog_generation, project_token });
                             }
                         }>"Discard recovery copy"</Button>
                     </ButtonGroup>
@@ -1029,11 +1044,11 @@ mod browser {
                             <h2 id="editor-heading">"Editor and timeline"</h2>
                         </div>
                     </div>
-                    <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || fake_paths().is_none() || busy.get() on:click=move |_| {
-                        if let Some(paths) = fake_paths() {
-                            submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::EditorOpen { project_path: paths.project });
+                    <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || ready_project().is_none() || busy.get() on:click=move |_| {
+                        if let Some((catalog_generation, project_token)) = ready_project() {
+                            submit(client, snapshot, status, error, busy, WindowRole::Editor, IpcCommand::EditorOpen { catalog_generation, project_token });
                         }
-                    }>"Open sample project"</Button>
+                    }>{move || if is_native() { "Open Studio project" } else { "Open sample project" }}</Button>
                     <FieldGroup class="timeline-controls">
                         <legend>"Numeric timeline alternative"</legend>
                         <p id="timeline-help">"Arrow keys adjust each native range control. The numeric fields expose the same essential trim operation without drag gestures."</p>

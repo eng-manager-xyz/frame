@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::instant_finalize_service::InstantFinalizeCapabilityState;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 1;
+pub const IPC_PROTOCOL_VERSION: u16 = 2;
 const MAX_PATH_BYTES: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,16 +321,20 @@ pub enum IpcCommand {
     },
     RecoveryScan,
     RecoveryInspect {
-        project_path: String,
+        catalog_generation: u64,
+        project_token: String,
     },
     RecoveryOpen {
-        project_path: String,
+        catalog_generation: u64,
+        project_token: String,
     },
     RecoveryDiscard {
-        project_path: String,
+        catalog_generation: u64,
+        project_token: String,
     },
     EditorOpen {
-        project_path: String,
+        catalog_generation: u64,
+        project_token: String,
     },
     EditorApply {
         base_revision: u64,
@@ -446,11 +450,6 @@ impl IpcCommand {
 
     fn path_request(&self) -> Option<(&str, PathUse)> {
         match self {
-            Self::RecoveryInspect { project_path } | Self::RecoveryOpen { project_path } => {
-                Some((project_path, PathUse::ProjectRead))
-            }
-            Self::RecoveryDiscard { project_path } => Some((project_path, PathUse::ProjectDelete)),
-            Self::EditorOpen { project_path } => Some((project_path, PathUse::ProjectRead)),
             Self::ExportStart { output_path, .. } => Some((output_path, PathUse::ExportWrite)),
             Self::UploadStart { source_path, .. } => Some((source_path, PathUse::MediaRead)),
             _ => None,
@@ -489,10 +488,27 @@ impl IpcCommand {
                 }
                 Ok(())
             }
-            Self::RecoveryInspect { project_path }
-            | Self::RecoveryOpen { project_path }
-            | Self::RecoveryDiscard { project_path }
-            | Self::EditorOpen { project_path } => validate_path_text(project_path),
+            Self::RecoveryInspect {
+                catalog_generation,
+                project_token,
+            }
+            | Self::RecoveryOpen {
+                catalog_generation,
+                project_token,
+            }
+            | Self::RecoveryDiscard {
+                catalog_generation,
+                project_token,
+            }
+            | Self::EditorOpen {
+                catalog_generation,
+                project_token,
+            } => {
+                if *catalog_generation == 0 {
+                    return Err(IpcError::InvalidPayload);
+                }
+                validate_token(project_token)
+            }
             Self::EditorApply {
                 base_revision,
                 mutation,
@@ -1234,7 +1250,8 @@ mod tests {
     fn known_envelopes_round_trip_without_debugging_sensitive_payloads() {
         let original = request(
             IpcCommand::EditorOpen {
-                project_path: absolute_test_path(&["safe", "projects", "private-project.frame"]),
+                catalog_generation: 7,
+                project_token: "private-project-token".into(),
             },
             1,
             "request-private",
@@ -1244,7 +1261,7 @@ mod tests {
 
         assert_eq!(decoded, original);
         let rendered = format!("{decoded:?}");
-        assert!(!rendered.contains("private-project.frame"));
+        assert!(!rendered.contains("private-project-token"));
         assert!(!rendered.contains("request-private"));
         assert!(!rendered.contains("session-1"));
     }
@@ -1259,7 +1276,8 @@ mod tests {
         ));
         let accepted = request(
             IpcCommand::EditorOpen {
-                project_path: absolute_test_path(&["safe", "projects", "demo.frame"]),
+                catalog_generation: 1,
+                project_token: "demo-project-token".into(),
             },
             1,
             "request-2",

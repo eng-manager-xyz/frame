@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod av_worker;
+mod studio_projects;
 mod studio_recorder;
 
 use std::{
@@ -56,6 +57,9 @@ use self::av_worker::{
     AvWorkerTelemetry, SharedClockNormalizer, calibrate_av_startup, classify_audio_stop,
     classify_screen_stop, run_av_capture_worker, run_screen_studio_capture_worker,
 };
+use self::studio_projects::{
+    DiscoveredStudioProject, authenticate_ready, discover as discover_studio_projects,
+};
 use self::studio_recorder::{
     DesktopStudioRecording, StudioOptionalTracks, StudioRecordingIdentity,
 };
@@ -77,7 +81,9 @@ use crate::{
     NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
     NativeRecordingMeter, NativeRecordingStartOutcome, NativeRecordingStopOutcome,
     NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest,
-    NativeTargetSelectionOutcome, NativeTargetSelectionRequest, PathUse, RecorderMode,
+    NativeStudioProjectCatalog, NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest,
+    NativeStudioProjectSummary, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
+    PathUse, RecorderMode, STUDIO_PROJECT_CATALOG_VERSION,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
 };
 
@@ -289,6 +295,8 @@ pub struct MacOsNativeDesktopBackend {
     selected_token: Option<String>,
     artifact_revision: u64,
     artifact: Option<StoredArtifact>,
+    studio_catalog_generation: u64,
+    studio_projects: BTreeMap<String, DiscoveredStudioProject>,
 }
 
 impl MacOsNativeDesktopBackend {
@@ -381,6 +389,8 @@ impl MacOsNativeDesktopBackend {
             selected_token: None,
             artifact_revision: 0,
             artifact: None,
+            studio_catalog_generation: 0,
+            studio_projects: BTreeMap::new(),
         })
     }
 
@@ -452,7 +462,8 @@ impl MacOsNativeDesktopBackend {
                 || self
                     .stable_tokens
                     .values()
-                    .any(|existing| existing == &token);
+                    .any(|existing| existing == &token)
+                || self.studio_projects.contains_key(&token);
             let active_collision = matches!(
                 &self.capture,
                 CaptureLifecycle::Recording(active) if active.token == token
@@ -1616,6 +1627,70 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         let _ = self.retire_session(teardown_confirmed);
         self.artifact = None;
         Ok(outcome)
+    }
+
+    fn scan_studio_projects(
+        &mut self,
+    ) -> Result<NativeStudioProjectCatalog, NativeDesktopBackendError> {
+        self.ensure_projects_directory_visible()?;
+        let discovered = discover_studio_projects(&self.projects_directory)?;
+        let Some(generation) = self.studio_catalog_generation.checked_add(1) else {
+            self.studio_projects.clear();
+            return Err(NativeDesktopBackendError::Internal);
+        };
+        let mut projects = Vec::with_capacity(discovered.len());
+        let mut authorities = BTreeMap::new();
+        for project in discovered {
+            let token = (0..MAX_TOKEN_ATTEMPTS)
+                .find_map(|_| {
+                    self.fresh_token("studio-project")
+                        .ok()
+                        .filter(|candidate| !authorities.contains_key(candidate))
+                })
+                .ok_or(NativeDesktopBackendError::Internal)?;
+            projects.push(NativeStudioProjectSummary {
+                project_token: token.clone(),
+                project_revision: project.revision(),
+                asset_count: project.asset_count()?,
+                status: project.status(),
+            });
+            authorities.insert(token, project);
+        }
+        self.ensure_projects_directory_visible()?;
+        let catalog = NativeStudioProjectCatalog {
+            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+            generation,
+            projects,
+        };
+        catalog
+            .validate_enumeration()
+            .map_err(|_| NativeDesktopBackendError::Internal)?;
+        self.studio_catalog_generation = generation;
+        self.studio_projects = authorities;
+        Ok(catalog)
+    }
+
+    fn open_studio_project(
+        &mut self,
+        request: &NativeStudioProjectOpenRequest,
+    ) -> Result<NativeStudioProjectOpenOutcome, NativeDesktopBackendError> {
+        if request.catalog_generation != self.studio_catalog_generation {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        self.ensure_projects_directory_visible()?;
+        let project = self
+            .studio_projects
+            .get(&request.project_token)
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        let (project_revision, duration_ms) =
+            authenticate_ready(&self.projects_directory, project)?;
+        self.ensure_projects_directory_visible()?;
+        Ok(NativeStudioProjectOpenOutcome {
+            catalog_generation: request.catalog_generation,
+            project_token: request.project_token.clone(),
+            project_revision,
+            duration_ms,
+        })
     }
 
     fn export_editable_webm(
@@ -2901,6 +2976,8 @@ mod tests {
                     export_relative,
                     studio_project: None,
                 }),
+                studio_catalog_generation: 0,
+                studio_projects: BTreeMap::new(),
             };
             Self {
                 root,
@@ -3059,6 +3136,8 @@ mod tests {
             selected_token: Some("display-stale-token".into()),
             artifact_revision: 0,
             artifact: None,
+            studio_catalog_generation: 0,
+            studio_projects: BTreeMap::new(),
         };
 
         assert!(backend.retire_session(true));
@@ -3129,6 +3208,8 @@ mod tests {
             selected_token: None,
             artifact_revision: 0,
             artifact: None,
+            studio_catalog_generation: 0,
+            studio_projects: BTreeMap::new(),
         };
 
         assert!(matches!(

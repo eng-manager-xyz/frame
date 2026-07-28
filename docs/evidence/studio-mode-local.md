@@ -42,8 +42,15 @@ the immutable originals namespace, and creates a canonical revision-one
 Editing project with an empty edit plan before recording-stop is acknowledged.
 The project file is re-opened through the pinned projects root, authenticated
 by size and SHA-256, and retained as Rust-only artifact authority; its path is
-not serialized into the WebView. This is real release composition, but it does
-not yet drive recovery/editor commands from that authority or feed the
+not serialized into the WebView. On a later scan, the native backend enumerates
+the pinned root through its directory descriptor, applies explicit document
+and catalog bounds, pairs canonical journals and projects, and returns only
+fresh opaque tokens plus coarse status. A completed `OpenEditor` boundary can
+be opened only after both documents are re-read through the pinned root and
+authenticated; its real revision and duration drive the editor snapshot.
+Interrupted capture is surfaced as `RecoveryRequired` and cannot be opened as
+a completed project. This does not yet inspect or reconcile an incomplete
+journal, preserve a recovered copy, execute explicit discard, or feed the
 combined microphone/camera bridge into Studio. The
 artifact-backed Editable WebM copy/publication remains the flattened recorder
 output and is not an edit-aware Studio export. A separate narrow native adapter does execute
@@ -200,9 +207,12 @@ can now exercise a real five-second display-video recording and byte-identical
 Editable WebM export. That makes the narrow recorder/export adapter functional;
 Studio mode additionally commits screen and optional system-audio originals
 through a durable journal and creates an authenticated canonical Studio
-project. It still does not surface recovery in the desktop, interpret edits
-through the desktop editor, feed the combined microphone/camera bridge, or
-render a distribution master, so issue 27 remains open.
+project. The desktop now discovers that project without exposing its path and
+opens a descriptor-reauthenticated completed project in the editor. It also
+surfaces interrupted entries as recovery-required, but cannot yet inspect,
+reconcile, preserve, or discard them. The editor does not yet persist or
+interpret edits, feed the combined microphone/camera bridge, or render a
+distribution master, so issue 27 remains open.
 
 Focused command:
 

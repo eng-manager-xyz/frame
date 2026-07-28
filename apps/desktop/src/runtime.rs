@@ -34,8 +34,9 @@ use crate::{
         NativeDesktopBackend, NativeDesktopBackendError, NativeEditableWebmExportRequest,
         NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
         NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
-        NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeTargetSelectionOutcome,
-        NativeTargetSelectionRequest,
+        NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioProjectCatalog,
+        NativeStudioProjectOpenRequest, NativeStudioProjectStatus, NativeTargetSelectionOutcome,
+        NativeTargetSelectionRequest, STUDIO_PROJECT_CATALOG_VERSION,
     },
     workflow::{
         BackendEvent, BackendEventEnvelope, DesktopWorkflow, DeviceCounts, DeviceState,
@@ -44,7 +45,7 @@ use crate::{
     },
 };
 
-pub const DESKTOP_RUNTIME_VERSION: u16 = 3;
+pub const DESKTOP_RUNTIME_VERSION: u16 = 4;
 pub const DESKTOP_INPUT_TELEMETRY_VERSION: u16 = 1;
 pub const DESKTOP_INPUT_TELEMETRY_INTERVAL_MS: u64 = 100;
 const DESKTOP_INPUT_TELEMETRY_INTERVAL: Duration =
@@ -183,6 +184,8 @@ pub struct DesktopRuntimeSnapshot {
     pub selected_sources: SelectedSources,
     #[serde(default = "CaptureTargetCatalog::empty")]
     pub capture_targets: CaptureTargetCatalog,
+    #[serde(default = "NativeStudioProjectCatalog::empty")]
+    pub studio_projects: NativeStudioProjectCatalog,
     #[serde(default)]
     pub capture_artifact: Option<CaptureArtifactSummary>,
     pub settings: DesktopSettingsSnapshot,
@@ -368,6 +371,7 @@ pub struct DesktopRuntime {
     recorder_configuration: RecorderConfiguration,
     selected_sources: SelectedSources,
     capture_targets: CaptureTargetCatalog,
+    studio_projects: NativeStudioProjectCatalog,
     selected_capture_target: Option<CaptureTargetSummary>,
     native_recording: Option<NativeRecordingAuthority>,
     native_artifact: Option<NativeArtifactAuthority>,
@@ -451,6 +455,20 @@ impl DesktopRuntime {
         }
 
         let recovery_projects = u16::from(adapter == DesktopAdapterKind::DeterministicFake);
+        let studio_projects = if adapter == DesktopAdapterKind::DeterministicFake {
+            NativeStudioProjectCatalog {
+                schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+                generation: 1,
+                projects: vec![crate::NativeStudioProjectSummary {
+                    project_token: "fake-project-demo".into(),
+                    project_revision: Some(1),
+                    asset_count: 1,
+                    status: NativeStudioProjectStatus::Ready,
+                }],
+            }
+        } else {
+            NativeStudioProjectCatalog::empty()
+        };
         let fake_journey_paths =
             (adapter == DesktopAdapterKind::DeterministicFake).then(|| FakeJourneyPaths {
                 project: Path::new(&roots.projects)
@@ -503,6 +521,7 @@ impl DesktopRuntime {
                 camera_selected: false,
             },
             capture_targets: CaptureTargetCatalog::empty(),
+            studio_projects,
             selected_capture_target: None,
             native_recording: None,
             native_artifact: None,
@@ -587,6 +606,7 @@ impl DesktopRuntime {
             recorder_configuration: self.recorder_configuration,
             selected_sources: self.selected_sources,
             capture_targets: self.capture_targets.clone(),
+            studio_projects: self.studio_projects.clone(),
             capture_artifact: self
                 .native_artifact
                 .as_ref()
@@ -886,8 +906,14 @@ impl DesktopRuntime {
     /// Deterministic fault used by the fake device-loss/recovery journey.
     pub fn simulate_fake_device_loss(&mut self) -> Result<(), DesktopRuntimeError> {
         self.require_fake()?;
+        let operation_revision = self
+            .operation_revision
+            .checked_add(1)
+            .ok_or(DesktopRuntimeError::RevisionOverflow)?;
+        let (catalog, recovery_projects) = self.next_fake_recovery_catalog()?;
         self.apply_unsolicited(&[BackendEvent::DeviceLost])?;
-        self.recovery_projects = self.recovery_projects.saturating_add(1);
+        self.studio_projects = catalog;
+        self.recovery_projects = recovery_projects;
         self.permission = PermissionState::NotDetermined;
         self.reset_input_telemetry();
         self.meter = AudioMeterSnapshot {
@@ -895,10 +921,7 @@ impl DesktopRuntime {
             system_audio_basis_points: 0,
             camera_active: false,
         };
-        self.operation_revision = self
-            .operation_revision
-            .checked_add(1)
-            .ok_or(DesktopRuntimeError::RevisionOverflow)?;
+        self.operation_revision = operation_revision;
         self.announcement = "Capture device lost. A recoverable recording is available.".into();
         Ok(())
     }
@@ -907,24 +930,54 @@ impl DesktopRuntime {
     /// journal as authority. It never claims that recording continued.
     pub fn simulate_fake_restart(&mut self) -> Result<(), DesktopRuntimeError> {
         self.require_fake()?;
-        if matches!(
+        let operation_revision = self
+            .operation_revision
+            .checked_add(1)
+            .ok_or(DesktopRuntimeError::RevisionOverflow)?;
+        let recording_was_active = matches!(
             self.workflow.recorder(),
             RecorderState::Recording | RecorderState::Paused
-        ) {
+        );
+        let recovery_catalog = recording_was_active
+            .then(|| self.next_fake_recovery_catalog())
+            .transpose()?;
+        if recording_was_active {
             self.apply_unsolicited(&[BackendEvent::DeviceLost])?;
-            self.recovery_projects = self.recovery_projects.saturating_add(1);
+        }
+        if let Some((catalog, recovery_projects)) = recovery_catalog {
+            self.studio_projects = catalog;
+            self.recovery_projects = recovery_projects;
         }
         self.reset_input_telemetry();
         self.lifecycle.main_visible = true;
         self.lifecycle.overlay_visible = false;
         self.lifecycle.target_picker_visible = false;
         self.crash_recovery_reported = true;
-        self.operation_revision = self
-            .operation_revision
-            .checked_add(1)
-            .ok_or(DesktopRuntimeError::RevisionOverflow)?;
+        self.operation_revision = operation_revision;
         self.announcement = "Desktop restarted. Backend journal state was restored.".into();
         Ok(())
+    }
+
+    fn next_fake_recovery_catalog(
+        &self,
+    ) -> Result<(NativeStudioProjectCatalog, u16), DesktopRuntimeError> {
+        let mut catalog = self.studio_projects.clone();
+        catalog.generation = catalog
+            .generation
+            .checked_add(1)
+            .ok_or(DesktopRuntimeError::RevisionOverflow)?;
+        catalog.projects.push(crate::NativeStudioProjectSummary {
+            project_token: format!("fake-recovery-{:016x}", catalog.generation),
+            project_revision: None,
+            asset_count: 0,
+            status: NativeStudioProjectStatus::RecoveryRequired,
+        });
+        catalog
+            .validate_enumeration()
+            .map_err(|_| DesktopRuntimeError::RevisionOverflow)?;
+        let recovery_projects = u16::try_from(catalog.projects.len())
+            .map_err(|_| DesktopRuntimeError::RevisionOverflow)?;
+        Ok((catalog, recovery_projects))
     }
 
     fn execute_native<B: NativeDesktopBackend>(
@@ -1341,6 +1394,114 @@ impl DesktopRuntime {
                     }
                 }
             }
+            IpcCommand::RecoveryScan => {
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::RecoveryScan)?;
+                let catalog = backend
+                    .scan_studio_projects()
+                    .map_err(ExecutionFailure::native_backend)?;
+                catalog
+                    .validate_enumeration()
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                if catalog.generation < self.studio_projects.generation
+                    || (catalog.generation == self.studio_projects.generation
+                        && catalog != self.studio_projects)
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                let projects = u16::try_from(catalog.projects.len())
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let ready = catalog
+                    .projects
+                    .iter()
+                    .filter(|project| project.status == NativeStudioProjectStatus::Ready)
+                    .count();
+                let recovery_required = catalog
+                    .projects
+                    .iter()
+                    .filter(|project| project.status == NativeStudioProjectStatus::RecoveryRequired)
+                    .count();
+                let attention_required = catalog
+                    .projects
+                    .iter()
+                    .filter(|project| {
+                        project.status == NativeStudioProjectStatus::AttentionRequired
+                    })
+                    .count();
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::RecoveryScan,
+                    vec![
+                        BackendEvent::RecoveryScanning {
+                            intent_id: intent_id.clone(),
+                        },
+                        BackendEvent::RecoveryAvailable { projects },
+                    ],
+                )?;
+                self.recovery_projects = projects;
+                self.studio_projects = catalog;
+                self.announcement = if projects == 0 {
+                    "No durable Studio projects were found.".into()
+                } else {
+                    format!(
+                        "Studio project scan found {ready} ready, {recovery_required} requiring recovery, and {attention_required} needing attention."
+                    )
+                };
+                Ok(events)
+            }
+            IpcCommand::EditorOpen {
+                catalog_generation,
+                project_token,
+            } => {
+                let selected = self
+                    .studio_projects
+                    .projects
+                    .iter()
+                    .find(|project| {
+                        self.studio_projects.generation == *catalog_generation
+                            && project.project_token == *project_token
+                            && project.status == NativeStudioProjectStatus::Ready
+                    })
+                    .ok_or_else(|| {
+                        ExecutionFailure::conflict(
+                            "The Studio project catalog changed or the project needs recovery.",
+                        )
+                    })?;
+                let expected_revision = selected
+                    .project_revision
+                    .ok_or_else(ExecutionFailure::invalid_backend_response)?;
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(&intent_id, IntentKind::EditorOpen)?;
+                let outcome = backend
+                    .open_studio_project(&NativeStudioProjectOpenRequest {
+                        catalog_generation: *catalog_generation,
+                        project_token: project_token.clone(),
+                    })
+                    .map_err(ExecutionFailure::native_backend)?;
+                if outcome.catalog_generation != *catalog_generation
+                    || outcome.project_token != *project_token
+                    || outcome.project_revision != expected_revision
+                    || outcome.duration_ms == 0
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::EditorOpen,
+                    vec![
+                        BackendEvent::EditorLoading {
+                            intent_id: intent_id.clone(),
+                        },
+                        BackendEvent::EditorLoaded {
+                            revision: outcome.project_revision,
+                            duration_ms: outcome.duration_ms,
+                        },
+                    ],
+                )?;
+                self.announcement =
+                    "Authenticated Studio project opened by opaque native handle.".into();
+                Ok(events)
+            }
             IpcCommand::ExportStart {
                 project_revision,
                 profile: ExportProfile::EditableWebm,
@@ -1635,11 +1796,27 @@ impl DesktopRuntime {
                     ],
                 )
             }
-            IpcCommand::RecoveryInspect { .. } => {
+            IpcCommand::RecoveryInspect {
+                catalog_generation,
+                project_token,
+            } => {
+                require_current_studio_project(
+                    &self.studio_projects,
+                    *catalog_generation,
+                    project_token,
+                )?;
                 self.announcement = "Recovery project inspected without modifying it.".into();
                 Ok(Vec::new())
             }
-            IpcCommand::RecoveryOpen { .. } => {
+            IpcCommand::RecoveryOpen {
+                catalog_generation,
+                project_token,
+            } => {
+                require_current_studio_project(
+                    &self.studio_projects,
+                    *catalog_generation,
+                    project_token,
+                )?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
                 self.announcement = "Recovered project opened from a preserved copy.".into();
                 self.transition(
@@ -1653,9 +1830,26 @@ impl DesktopRuntime {
                     ],
                 )
             }
-            IpcCommand::RecoveryDiscard { .. } => {
+            IpcCommand::RecoveryDiscard {
+                catalog_generation,
+                project_token,
+            } => {
+                require_current_studio_project(
+                    &self.studio_projects,
+                    *catalog_generation,
+                    project_token,
+                )?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
-                self.recovery_projects = self.recovery_projects.saturating_sub(1);
+                self.studio_projects
+                    .projects
+                    .retain(|project| project.project_token != *project_token);
+                self.studio_projects.generation = self
+                    .studio_projects
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(ExecutionFailure::internal)?;
+                self.recovery_projects = u16::try_from(self.studio_projects.projects.len())
+                    .map_err(|_| ExecutionFailure::internal())?;
                 self.announcement = "Recovery copy discarded after explicit confirmation.".into();
                 self.transition(
                     &intent_id,
@@ -1666,9 +1860,20 @@ impl DesktopRuntime {
                     }],
                 )
             }
-            IpcCommand::EditorOpen { .. } => {
+            IpcCommand::EditorOpen {
+                catalog_generation,
+                project_token,
+            } => {
+                let project = require_current_studio_project(
+                    &self.studio_projects,
+                    *catalog_generation,
+                    project_token,
+                )?;
+                let revision = project
+                    .project_revision
+                    .ok_or_else(ExecutionFailure::invalid_backend_response)?;
                 let intent_id = current_intent_id(owner, self.operation_revision);
-                self.announcement = "Project loaded from backend revision 1.".into();
+                self.announcement = format!("Project loaded from backend revision {revision}.");
                 self.transition(
                     &intent_id,
                     IntentKind::EditorOpen,
@@ -1677,7 +1882,7 @@ impl DesktopRuntime {
                             intent_id: intent_id.clone(),
                         },
                         BackendEvent::EditorLoaded {
-                            revision: 1,
+                            revision,
                             duration_ms: 90_000,
                         },
                     ],
@@ -2245,11 +2450,6 @@ fn paths_for(role: WindowRole, roots: &DesktopRoots) -> Result<PathPolicy, IpcEr
         write: false,
         delete: false,
     };
-    let recovery = RootAccess {
-        read: true,
-        write: false,
-        delete: true,
-    };
     let write = RootAccess {
         read: true,
         write: true,
@@ -2257,9 +2457,8 @@ fn paths_for(role: WindowRole, roots: &DesktopRoots) -> Result<PathPolicy, IpcEr
     };
     match role {
         WindowRole::Recorder => PathPolicy::empty().allow_root(&roots.media, read),
-        WindowRole::Recovery => PathPolicy::empty().allow_root(&roots.projects, recovery),
+        WindowRole::Recovery => Ok(PathPolicy::empty()),
         WindowRole::Editor => PathPolicy::empty()
-            .allow_root(&roots.projects, read)?
             .allow_root(&roots.exports, write)?
             .allow_root(&roots.media, read),
         WindowRole::Export => PathPolicy::empty().allow_root(&roots.exports, write),
@@ -2281,6 +2480,27 @@ fn role_label(role: WindowRole) -> &'static str {
 
 fn current_intent_id(owner: WindowRole, revision: u64) -> String {
     format!("runtime-{}-{revision:016x}", role_label(owner))
+}
+
+fn require_current_studio_project<'a>(
+    catalog: &'a NativeStudioProjectCatalog,
+    generation: u64,
+    project_token: &str,
+) -> Result<&'a crate::NativeStudioProjectSummary, ExecutionFailure> {
+    if catalog.generation != generation {
+        return Err(ExecutionFailure::conflict(
+            "The Studio project catalog changed. Scan projects and select again.",
+        ));
+    }
+    catalog
+        .projects
+        .iter()
+        .find(|project| project.project_token == project_token)
+        .ok_or_else(|| {
+            ExecutionFailure::conflict(
+                "The Studio project catalog changed. Scan projects and select again.",
+            )
+        })
 }
 
 fn validate_selection_outcome(
@@ -2506,7 +2726,9 @@ mod tests {
 
     use super::*;
     use crate::ipc::{EditorMutation, ExportProfile, IPC_PROTOCOL_VERSION, RequestId};
-    use crate::native_backend::{NativeEditableWebmExportOutcome, NativeRecordingMeter};
+    use crate::native_backend::{
+        NativeEditableWebmExportOutcome, NativeRecordingMeter, NativeStudioProjectOpenOutcome,
+    };
 
     #[derive(Debug)]
     struct TestNativeBackend {
@@ -2527,6 +2749,8 @@ mod tests {
         cancel_failure: Option<NativeRecordingTerminalFailure>,
         cancel_token_override: Option<String>,
         export_calls: usize,
+        studio_catalog: NativeStudioProjectCatalog,
+        studio_open_outcome: NativeStudioProjectOpenOutcome,
     }
 
     impl TestNativeBackend {
@@ -2562,6 +2786,22 @@ mod tests {
                 cancel_failure: None,
                 cancel_token_override: None,
                 export_calls: 0,
+                studio_catalog: NativeStudioProjectCatalog {
+                    schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+                    generation: 1,
+                    projects: vec![crate::NativeStudioProjectSummary {
+                        project_token: "studio-project-token-1".into(),
+                        project_revision: Some(3),
+                        asset_count: 2,
+                        status: NativeStudioProjectStatus::Ready,
+                    }],
+                },
+                studio_open_outcome: NativeStudioProjectOpenOutcome {
+                    catalog_generation: 1,
+                    project_token: "studio-project-token-1".into(),
+                    project_revision: 3,
+                    duration_ms: 4_000,
+                },
             }
         }
 
@@ -2694,6 +2934,21 @@ mod tests {
                         .unwrap_or_else(|| request.recording_token.clone()),
                 },
             })
+        }
+
+        fn scan_studio_projects(
+            &mut self,
+        ) -> Result<NativeStudioProjectCatalog, NativeDesktopBackendError> {
+            self.calls.push("scan_studio");
+            Ok(self.studio_catalog.clone())
+        }
+
+        fn open_studio_project(
+            &mut self,
+            _request: &NativeStudioProjectOpenRequest,
+        ) -> Result<NativeStudioProjectOpenOutcome, NativeDesktopBackendError> {
+            self.calls.push("open_studio");
+            Ok(self.studio_open_outcome.clone())
         }
 
         fn export_editable_webm(
@@ -2933,7 +3188,8 @@ mod tests {
                 1,
                 "editor-open",
                 IpcCommand::EditorOpen {
-                    project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
+                    catalog_generation: 1,
+                    project_token: "fake-project-demo".into(),
                 },
             ))
             .expect("open"));
@@ -3033,7 +3289,8 @@ mod tests {
                 1,
                 "cross-window-editor",
                 IpcCommand::EditorOpen {
-                    project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
+                    catalog_generation: 1,
+                    project_token: "fake-project-demo".into(),
                 },
             )),
             Err(DesktopRuntimeError::Ipc(IpcError::CommandOutOfScope))
@@ -3044,8 +3301,10 @@ mod tests {
                 WindowRole::Editor,
                 1,
                 "outside-root",
-                IpcCommand::EditorOpen {
-                    project_path: absolute_test_path(&["private", "secret.frame"]),
+                IpcCommand::ExportStart {
+                    project_revision: 1,
+                    output_path: absolute_test_path(&["private", "secret.mp4"]),
+                    profile: ExportProfile::DistributionMp4,
                 },
             )),
             Err(DesktopRuntimeError::Ipc(IpcError::PathOutOfScope))
@@ -3095,7 +3354,15 @@ mod tests {
                 .expect("recorder step");
         }
         runtime.simulate_fake_device_loss().expect("device loss");
-        assert_eq!(runtime.snapshot().recorder, RecorderState::Recoverable);
+        let lost = runtime.snapshot();
+        assert_eq!(lost.recorder, RecorderState::Recoverable);
+        assert_eq!(lost.studio_projects.generation, 2);
+        assert_eq!(lost.studio_projects.projects.len(), 2);
+        assert_eq!(
+            lost.studio_projects.projects[1].status,
+            NativeStudioProjectStatus::RecoveryRequired
+        );
+        assert_eq!(runtime.recovery_projects, 2);
         runtime.simulate_fake_restart().expect("restart");
         assert!(runtime.snapshot().crash_recovery_reported);
         assert_ne!(runtime.snapshot().recorder, RecorderState::Recording);
@@ -3151,18 +3418,20 @@ mod tests {
     }
 
     #[test]
-    fn additive_capture_snapshot_fields_default_for_existing_runtime_v2_payloads() {
+    fn additive_native_snapshot_fields_default_for_existing_runtime_v3_payloads() {
         let runtime = runtime();
         let mut value = serde_json::to_value(runtime.snapshot()).expect("snapshot json");
         let object = value.as_object_mut().expect("snapshot object");
         object.remove("capture_targets");
         object.remove("capture_artifact");
         object.remove("camera_preview");
+        object.remove("studio_projects");
         let decoded: DesktopRuntimeSnapshot =
-            serde_json::from_value(value).expect("compatible v2 snapshot");
+            serde_json::from_value(value).expect("compatible v3 snapshot");
         assert_eq!(decoded.capture_targets, CaptureTargetCatalog::empty());
         assert!(decoded.capture_artifact.is_none());
         assert_eq!(decoded.camera_preview, CameraPreviewState::Disabled);
+        assert_eq!(decoded.studio_projects, NativeStudioProjectCatalog::empty());
     }
 
     #[test]
@@ -3265,6 +3534,89 @@ mod tests {
         assert_eq!(
             backend.calls,
             ["enumerate", "select", "prepare", "start", "stop", "export"]
+        );
+    }
+
+    #[test]
+    fn native_studio_catalog_uses_opaque_handles_and_opens_only_current_ready_projects() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        let scan = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Recovery,
+                    1,
+                    "studio-scan",
+                    IpcCommand::RecoveryScan,
+                ),
+                &mut backend,
+            )
+            .expect("bounded Studio scan");
+        ok(&scan);
+        assert_eq!(backend.call_count("scan_studio"), 1);
+        assert_eq!(
+            scan.snapshot.recovery,
+            RecoveryState::Available { projects: 1 }
+        );
+        assert_eq!(
+            scan.snapshot.studio_projects, backend.studio_catalog,
+            "the runtime must retain only the validated native catalog"
+        );
+        let encoded = serde_json::to_string(&scan.snapshot).expect("snapshot JSON");
+        assert!(encoded.contains("studio-project-token-1"));
+        assert!(!encoded.contains(".studio-project"));
+        assert!(!encoded.contains(".studio-journal"));
+        assert!(!encoded.contains("/frame/projects"));
+
+        let stale = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    1,
+                    "studio-open-stale",
+                    IpcCommand::EditorOpen {
+                        catalog_generation: 1,
+                        project_token: "studio-project-token-stale".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("bounded stale selection");
+        assert!(matches!(
+            stale.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Conflict,
+                ..
+            }
+        ));
+        assert_eq!(backend.call_count("open_studio"), 0);
+
+        let opened = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    2,
+                    "studio-open",
+                    IpcCommand::EditorOpen {
+                        catalog_generation: 1,
+                        project_token: "studio-project-token-1".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("open authenticated Studio project");
+        ok(&opened);
+        assert_eq!(backend.call_count("open_studio"), 1);
+        assert_eq!(
+            opened.snapshot.editor,
+            EditorState::Ready {
+                revision: 3,
+                duration_ms: 4_000,
+                dirty: false,
+            }
         );
     }
 
@@ -4487,13 +4839,13 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "runtime_version": 3,
+                "runtime_version": 4,
                 "command_protocol_version": 1,
                 "command_sequence": 1,
                 "operation_revision": 2,
                 "events": [
                     {
-                        "protocol_version": 3,
+                        "protocol_version": 4,
                         "event_sequence": 1,
                         "owner": "recorder",
                         "event": {
@@ -4508,7 +4860,7 @@ mod tests {
                         }
                     },
                     {
-                        "protocol_version": 3,
+                        "protocol_version": 4,
                         "event_sequence": 2,
                         "owner": "recorder",
                         "event": {

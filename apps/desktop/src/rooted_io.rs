@@ -13,14 +13,14 @@
 //! example, one returned by [`RootedDir::create_private_dir`]) and prevent
 //! concurrent mutation by other threads between helper calls.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use rustix::fd::OwnedFd;
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, RenameFlags, Stat, fchmod, fstat, fsync, mkdirat, open,
+    AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, Stat, fchmod, fstat, fsync, mkdirat, open,
     openat, renameat_with, statat, unlinkat,
 };
 use rustix::io::{Errno, fcntl_dupfd_cloexec};
@@ -70,6 +70,10 @@ pub enum RootedIoError {
     /// The filesystem returned a value that cannot be represented by this API.
     #[error("filesystem metadata is outside supported bounds")]
     InvalidMetadata,
+
+    /// A bounded directory scan encountered more entries than its caller permits.
+    #[error("rooted directory exceeds its entry bound")]
+    DirectoryLimitExceeded,
 
     /// Exclusive creation found an existing filesystem object.
     #[error("filesystem entry already exists")]
@@ -275,6 +279,30 @@ impl RootedDir {
             directory,
             identity,
         })
+    }
+
+    /// Read entry names from the pinned directory descriptor with an explicit
+    /// upper bound. Names remain untrusted and must still pass the relative-path
+    /// validator before a later operation; this method never follows an entry.
+    pub fn read_names_bounded(&self, maximum_entries: usize) -> RootedIoResult<Vec<OsString>> {
+        if maximum_entries == 0 {
+            return Err(RootedIoError::DirectoryLimitExceeded);
+        }
+        let mut directory = Dir::read_from(&self.directory)
+            .map_err(|source| io_error("open rooted directory stream", source))?;
+        let mut names = Vec::new();
+        for entry in &mut directory {
+            let entry = entry.map_err(|source| io_error("read rooted directory entry", source))?;
+            let bytes = entry.file_name().to_bytes();
+            if bytes == b"." || bytes == b".." {
+                continue;
+            }
+            if names.len() == maximum_entries {
+                return Err(RootedIoError::DirectoryLimitExceeded);
+            }
+            names.push(OsStr::from_bytes(bytes).to_owned());
+        }
+        Ok(names)
     }
 
     /// Set this pinned directory to exact mode `0700`, verify the result, and
@@ -705,7 +733,7 @@ fn io_error(operation: &'static str, source: Errno) -> RootedIoError {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io::{Read, Write};
     use std::os::unix::ffi::OsStrExt;
@@ -759,6 +787,21 @@ mod tests {
 
         assert!(RootedDir::bind(temporary.path().join("intermediate/root")).is_err());
         assert!(RootedDir::bind(temporary.path().join("final")).is_err());
+    }
+
+    #[test]
+    fn descriptor_rooted_directory_scan_is_bounded_and_returns_leaf_names_only() {
+        let temporary = TestDirectory::new("bounded-directory-scan");
+        fs::write(temporary.path().join("one"), b"one").expect("first entry");
+        fs::write(temporary.path().join("two"), b"two").expect("second entry");
+        let directory = RootedDir::bind(temporary.path()).expect("bind directory");
+        let mut names = directory.read_names_bounded(2).expect("two-entry bound");
+        names.sort();
+        assert_eq!(names, [OsString::from("one"), OsString::from("two")]);
+        assert!(matches!(
+            directory.read_names_bounded(1),
+            Err(RootedIoError::DirectoryLimitExceeded)
+        ));
     }
 
     #[test]
