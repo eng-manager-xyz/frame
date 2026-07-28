@@ -17,6 +17,7 @@
 
 mod av_worker;
 mod studio_editor;
+mod studio_export;
 mod studio_projects;
 mod studio_recorder;
 mod studio_recovery;
@@ -49,12 +50,12 @@ use frame_macos_screen_capture::{
 #[cfg(test)]
 use frame_media::ScreenRecordingArtifact;
 use frame_media::{
-    AvSessionId, ColorSpace, CursorCaptureMode, DisplayGeometryTransform, FrameMemory, LogicalRect,
-    PermissionPreflight, PixelFormat, ProtectedContentPolicy, Rotation, ScreenAudioRecording,
-    ScreenAudioRecordingArtifact, ScreenRecording, ScreenRecordingError, ScreenRecordingSpec,
-    ScreenSessionId, ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetDescriptor,
-    ScreenTargetKind, ScreenTargetSnapshot, SystemAudioRecordingSpec, VideoFrameSpec,
-    preflight_screen_recording_runtime,
+    AvSessionId, CancellationToken, ColorSpace, CursorCaptureMode, DisplayGeometryTransform,
+    FrameMemory, LogicalRect, PermissionPreflight, PixelFormat, ProtectedContentPolicy, Rotation,
+    ScreenAudioRecording, ScreenAudioRecordingArtifact, ScreenRecording, ScreenRecordingError,
+    ScreenRecordingSpec, ScreenSessionId, ScreenSourceInstanceId, ScreenTargetBinding,
+    ScreenTargetDescriptor, ScreenTargetKind, ScreenTargetSnapshot, SystemAudioRecordingSpec,
+    VideoFrameSpec, preflight_screen_recording_runtime,
 };
 use frame_platform_lifecycle::SystemPowerMonitor;
 
@@ -64,6 +65,7 @@ use self::av_worker::{
     run_optional_av_capture_worker, run_screen_studio_capture_worker,
 };
 use self::studio_editor::ActiveStudioEditor;
+use self::studio_export::PreparedStudioExport;
 use self::studio_projects::{
     DiscoveredStudioProject, authenticate_ready, authenticate_ready_project, authenticate_recovery,
     discover as discover_studio_projects,
@@ -92,8 +94,9 @@ use crate::{
     NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
     NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioEditApplyOutcome,
     NativeStudioEditApplyRequest, NativeStudioEditSaveOutcome, NativeStudioEditSaveRequest,
-    NativeStudioProjectCatalog, NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest,
-    NativeStudioProjectSummary, NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
+    NativeStudioExportOutcome, NativeStudioExportRequest, NativeStudioProjectCatalog,
+    NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest, NativeStudioProjectSummary,
+    NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
     NativeStudioRecoveryOutcome, NativeStudioRecoveryRequest, NativeTargetSelectionOutcome,
     NativeTargetSelectionRequest, PathUse, RecorderMode, STUDIO_PROJECT_CATALOG_VERSION,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
@@ -2252,6 +2255,147 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             project_revision,
             project_token: reminted_token,
             catalog,
+        })
+    }
+
+    fn export_studio_project(
+        &mut self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<NativeStudioExportOutcome, NativeDesktopBackendError> {
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        self.ensure_export_directories_visible()?;
+        if !request.output_path.requires_no_follow()
+            || request.output_path.usage() != PathUse::ExportWrite
+        {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let editor = self
+            .active_editor
+            .as_ref()
+            .ok_or(NativeDesktopBackendError::Unavailable)?;
+        let manifest = editor.clean_manifest(request.project_revision)?;
+        let discovered = self
+            .studio_projects
+            .values()
+            .find(|project| project.project_id() == manifest.id)
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        let (authenticated, _) = authenticate_ready_project(&self.projects_directory, discovered)?;
+        if authenticated != manifest {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        let prepared = PreparedStudioExport::prepare(
+            &self.studio_root,
+            &self.studio_directory,
+            &authenticated,
+            request.profile,
+        )?;
+        let output_relative = request
+            .output_path
+            .as_path()
+            .strip_prefix(&self.export_root)
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?
+            .to_path_buf();
+        if output_relative.components().count() != 1
+            || output_relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_none_or(|extension| !extension.eq_ignore_ascii_case(prepared.extension()))
+        {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let staging_token = self.fresh_token("studio-export")?;
+        let staging_relative =
+            PathBuf::from(format!(".frame-{staging_token}.{}", prepared.extension()));
+        let staging_path = self.export_staging_root.join(&staging_relative);
+        let mut staging = self
+            .export_staging_directory
+            .create_new_file(&staging_relative)
+            .map_err(map_rooted_io_error)?;
+        let staging_identity = staging.metadata().identity();
+        let output = staging
+            .file()
+            .try_clone()
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+        let artifact =
+            match prepared.render_preopened(&staging_path, output, &CancellationToken::new()) {
+                Ok(artifact) => artifact,
+                Err(error) => {
+                    drop(staging);
+                    let _ = self
+                        .export_staging_directory
+                        .cleanup_file_if_identity(&staging_relative, staging_identity);
+                    return Err(error);
+                }
+            };
+        if artifact.path != staging_path || artifact.bytes == 0 {
+            drop(staging);
+            let _ = self
+                .export_staging_directory
+                .cleanup_file_if_identity(&staging_relative, staging_identity);
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let staging_valid = staging
+            .refresh_metadata()
+            .map_err(map_rooted_io_error)
+            .and_then(|metadata| {
+                if metadata.identity() != staging_identity
+                    || metadata.size_bytes() != artifact.bytes
+                {
+                    return Ok(false);
+                }
+                sha256_rooted_file(&mut staging, metadata.identity(), metadata.size_bytes())
+                    .map(|sha256| sha256 == artifact.sha256)
+            })
+            .unwrap_or(false);
+        if !staging_valid {
+            drop(staging);
+            let _ = self
+                .export_staging_directory
+                .cleanup_file_if_identity(&staging_relative, staging_identity);
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let published = self
+            .export_staging_directory
+            .publish_file_to_root_if_identity(
+                &staging_relative,
+                staging_identity,
+                &self.export_directory,
+                &output_relative,
+            )
+            .map_err(|error| {
+                let _ = self
+                    .export_staging_directory
+                    .cleanup_file_if_identity(&staging_relative, staging_identity);
+                let _ = self
+                    .export_directory
+                    .cleanup_file_if_identity(&output_relative, staging_identity);
+                map_rooted_io_error(error)
+            })?;
+        if published.identity() != staging_identity
+            || published.size_bytes() != artifact.bytes
+            || verify_published_rooted_file(
+                &self.export_directory,
+                &output_relative,
+                staging_identity,
+                artifact.bytes,
+                &artifact.sha256,
+            )
+            .is_err()
+            || self.ensure_projects_directory_visible().is_err()
+            || self.ensure_media_directories_visible().is_err()
+            || self.ensure_export_directories_visible().is_err()
+        {
+            let _ = self
+                .export_directory
+                .cleanup_file_if_identity(&output_relative, staging_identity);
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        Ok(NativeStudioExportOutcome {
+            project_revision: request.project_revision,
+            profile: request.profile,
+            bytes_written: artifact.bytes,
+            sha256: artifact.sha256,
         })
     }
 

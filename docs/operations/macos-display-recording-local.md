@@ -4,12 +4,15 @@ The `macos-native` release composition is a real, narrow production path. It
 can capture one selected display, non-Frame window, or user-defined
 single-display region; preserve unchanged-screen time; write a VP8/WebM
 recording; optionally mux exact 48 kHz stereo system audio as Opus; seal it;
-and export a byte-identical Editable WebM. The screen-only path uses Frame's
+and export a byte-identical Editable WebM. Studio mode additionally commits
+isolated screen and optional system-audio originals, opens and saves canonical
+timeline edits, and can render a verified H.264/AAC distribution MP4 from a
+clean aligned project. The screen-only path uses Frame's
 normalized capture ingress and GStreamer pump. The optional system-audio path
 remains the separately bounded Issue 25 A/V composition. This is not the
 complete Studio product described by issue 27: microphone, camera,
-pause/resume, project journaling/recovery,
-timeline edits, edit-aware rendering, MP4 distribution output, distribution
+pause/resume, camera/cursor/background composition, segmented-source assembly,
+asynchronous export cancellation, render-coordinator recovery, distribution
 signing, and notarization remain separate deliverables.
 
 ## Build the exact local application
@@ -82,6 +85,40 @@ In Frame:
    visible content once, then select **Stop**. The status must say the artifact
    was sealed; a failure or a UI that remains Recording is a failed test.
 5. Select **Export editable WebM**. The export status must reach Completed.
+
+To exercise Studio editing and distribution export:
+
+1. Before opening the app, opt into the repository-approved local H.264/AAC
+   profile for the LaunchServices environment, then reopen Frame:
+
+   ```sh
+   launchctl setenv FRAME_NATIVE_H264_AAC_APPROVED approved-v1
+   scripts/frame desktop-macos-open
+   ```
+
+2. In Settings, select Studio mode and enable system audio. Record and stop as
+   above. A screen-only Studio project remains valid, but the current approved
+   distribution profile requires an audio original and fails closed without
+   one.
+3. Select **Scan for recovery**, then **Open Studio project** for the ready
+   entry. Apply any bounded
+   trim/delete/split/speed/audio-gain changes, and save.
+4. Select **Export distribution MP4**. The synchronous native render must
+   finish at Completed and create `Frame-Studio-*.mp4` under `exports`.
+5. After the local run, remove the temporary LaunchServices setting:
+
+   ```sh
+   launchctl unsetenv FRAME_NATIVE_H264_AAC_APPROVED
+   ```
+
+The Studio export reauthenticates the current clean project revision and every
+immutable original, opens and hashes each source through the pinned Studio
+directory, and retains those descriptors while GStreamer reads them through
+`/dev/fd`. It recompiles the canonical edit plan, renders into a preopened inode
+under `exports/.frame-staging`, then publishes and rehashes that exact
+regular-file identity. Existing destinations, stale/dirty revisions, camera
+projects, replaced originals, unexpected extensions, and paths outside the
+export root fail closed.
 
 The sealed original is stored below the app data directory in
 `media/recordings`. The exported `Frame-*.webm` is stored below the same app

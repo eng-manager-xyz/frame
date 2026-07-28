@@ -75,15 +75,26 @@ so a rename or real-directory replacement fails closed instead of producing a
 false path. Export keeps its staging descriptor through the cross-root rename
 and rehashes the published inode. A bounded health poll reconciles
 terminal worker failures without leaving the UI in Recording. The first slice
-is capped at four hours, 2 GB, and a 512 MB filesystem reserve. It
-rejects microphone, camera, pause/resume, and MP4 paths. Its
-export is artifact-backed screen-plus-optional-system-audio WebM, not the
-canonical Studio edit plan or a multitrack/distribution-master render.
+is capped at four hours, 2 GB, and a 512 MB filesystem reserve. The Instant
+path rejects microphone, camera, pause/resume, and MP4. Its export is
+artifact-backed screen-plus-optional-system-audio WebM, not the canonical
+Studio edit plan. The flattened Instant artifact is not a Studio project.
 When the backend-bound request selects Studio mode, the same worker also feeds
 the corrected screen timeline and any included system audio into independent
 bounded VP8/Opus branches. Those branches seal recoverable temporary originals
-under the pinned private Studio root; they do not yet mint the journal fence,
-commit a project manifest, or replace the current flattened export.
+under the pinned private Studio root, advance the durable journal, commit
+immutable originals, and create a canonical project. The editor opens that
+project only through a reminted descriptor-authenticated handle, compiles
+bounded edits in Rust, and saves through an edit-save journal transaction. A
+clean aligned screen-plus-optional-audio project can now invoke the native
+edit-aware adapter for Editable WebM, archive Matroska, or the explicitly
+approved H.264/AAC distribution MP4 profile. Export reauthenticates every
+original sidecar, opens and hashes each original through the pinned Studio
+directory, and retains those exact descriptors while the seekable decoder reads
+them through `/dev/fd`. It renders to a preopened private staging inode, then
+publishes and rehashes that inode through the pinned export directory. Camera/
+cursor/background composition, segmented-source assembly, asynchronous progress
+and cancellation, and durable render-coordinator recovery remain fail-closed.
 
 The native Windows implementation uses Windows Graphics Capture permission
 availability and bounded privacy-safe display/non-Frame-window enumeration.
@@ -147,14 +158,16 @@ Windows composition rejects audio. The macOS Studio path also commits verified
 immutable originals, a durable journal, and a canonical revision-one project.
 A descriptor-rooted bounded catalog maps those artifacts to fresh opaque
 WebView tokens; the editor can open only a completed project after the journal
-and project are re-read and authenticated. Interrupted entries and
-operator-decision boundaries are surfaced as recovery-required or
-attention-required, but the current product cannot yet inspect, reconcile,
-preserve-as-copy, or discard them. The
-remaining represented operations continue to return unavailable or stay
-disabled: a flattened native recording is not a Studio project, export
-progress is not a cancellable edit-aware Studio render, and microphone/camera
-Studio composition is not wired.
+and project are re-read and authenticated. Interrupted recording/edit-save
+entries can be inspected and reconciled through a new journal fence; only a
+proven-empty attempt can be archived, without deleting graph or media files.
+The native editor persists compiled trim/delete/split/speed/audio-gain drafts.
+A clean aligned project can publish a verified edit-aware distribution MP4
+from the Leptos editor. The operation is currently synchronous and reports its
+bounded internal progress only at terminal completion to the desktop state
+machine; it is not yet a cancellable coordinator-owned render. Combined
+microphone/camera capture and camera/cursor/background composition are not
+wired.
 
 The Leptos product uses native buttons, fieldsets, labels, meters, progress elements, headings,
 landmarks, a polite atomic status region, an assertive modal error surface, visible focus, a skip

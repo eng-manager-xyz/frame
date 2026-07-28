@@ -8,6 +8,10 @@
 //! cursor metadata, nontransparent backgrounds, and camera-only/side-by-side
 //! layouts fail closed until their native compositor is connected.
 
+#[cfg(unix)]
+use std::io::{Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::{
     collections::BTreeSet,
     fmt,
@@ -61,6 +65,38 @@ pub struct NativeStudioAlignedSources {
     pub screen: PathBuf,
     pub microphone: Option<PathBuf>,
     pub system_audio: Option<PathBuf>,
+}
+
+/// Caller-owned aligned originals opened before native export begins.
+///
+/// The renderer retains these descriptors for the entire GStreamer graph and
+/// exposes them to the seekable file source only through `/dev/fd`; it never
+/// resolves a project-controlled source pathname. This is intentionally
+/// Unix-only because that descriptor namespace is the audited native desktop
+/// boundary on those platforms.
+#[cfg(unix)]
+pub struct NativeStudioAlignedFileSources {
+    pub screen: File,
+    pub microphone: Option<File>,
+    pub system_audio: Option<File>,
+}
+
+#[cfg(unix)]
+impl fmt::Debug for NativeStudioAlignedFileSources {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioAlignedFileSources")
+            .field("screen", &"<descriptor>")
+            .field(
+                "microphone",
+                &self.microphone.as_ref().map(|_| "<descriptor>"),
+            )
+            .field(
+                "system_audio",
+                &self.system_audio.as_ref().map(|_| "<descriptor>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -700,7 +736,11 @@ pub fn render_studio_export_with_edits_and_progress(
     let canonical = canonicalize_sources(sources)?;
     let mut reservation = StudioOutputReservation::new(output.to_path_buf(), profile)?;
 
-    let pipeline = build_edit_pipeline(&canonical, reservation.staging_path(), profile)?;
+    let pipeline = build_edit_pipeline(
+        &canonical,
+        StudioEditOutput::Path(reservation.staging_path()),
+        profile,
+    )?;
     let result = execute_windows(
         &pipeline,
         &mut executor,
@@ -729,6 +769,94 @@ pub fn render_studio_export_with_edits_and_progress(
         return Err(NativeExecutionError::Cancelled);
     }
     artifact.path = reservation.commit()?;
+    progress.emit(RenderPhase::Finalizing, 10_000, total_windows)?;
+    Ok(artifact)
+}
+
+/// Render into a caller-owned, already-opened empty regular file.
+///
+/// Unix desktop adapters use this boundary to keep every decoded and encoded
+/// byte attached to caller-owned source and staging inodes. `artifact_path` is
+/// presentation metadata only and is never opened by this function.
+#[cfg(unix)]
+pub fn render_studio_export_with_edits_preopened(
+    mut sources: NativeStudioAlignedFileSources,
+    artifact_path: &Path,
+    mut output: File,
+    plan: &CanonicalEditPlan,
+    profile: NativeStudioExportProfile,
+    cancellation: &CancellationToken,
+) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
+    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
+    require_export_codec_approval(profile)?;
+    let metadata = output
+        .metadata()
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    if !metadata.file_type().is_file() || metadata.len() != 0 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let mut executor =
+        StudioEditExecutor::compile(plan, MAX_STUDIO_EDIT_EXECUTION_WINDOWS, cancellation)
+            .map_err(map_execution_error)?;
+    validate_supported_composition_presence(
+        executor.windows(),
+        sources.microphone.is_some(),
+        sources.system_audio.is_some(),
+    )?;
+    let approved_profile = profile
+        .approved_profile()
+        .map(ExportProfileSpec::approved)
+        .map(ExportProfileSpec::validate)
+        .transpose()
+        .map_err(|_| NativeExecutionError::InvalidGraph)?;
+    if approved_profile.is_some() && sources.microphone.is_none() && sources.system_audio.is_none()
+    {
+        return Err(NativeExecutionError::InvalidGraph);
+    }
+    let total_windows = executor.windows().len();
+    let mut progress = NativeStudioProgressEmitter::new(|_| {}, total_windows);
+    progress.emit(RenderPhase::Preparing, 0, 0)?;
+    let canonical = canonicalize_file_sources(&mut sources)?;
+    let descriptor = output.as_raw_fd();
+    let pipeline = build_edit_pipeline(
+        &canonical,
+        StudioEditOutput::FileDescriptor(descriptor),
+        profile,
+    )?;
+    let result = execute_windows(
+        &pipeline,
+        &mut executor,
+        &canonical,
+        profile,
+        cancellation,
+        &mut progress,
+    );
+    if result.is_err() {
+        let _ = set_null(&pipeline);
+        return result.map(|()| unreachable!());
+    }
+    set_null(&pipeline)?;
+    progress.emit(RenderPhase::Finalizing, 9_800, total_windows)?;
+    output
+        .sync_all()
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    output
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    let descriptor_path = PathBuf::from(format!("/dev/fd/{descriptor}"));
+    let mut artifact = validate_edited_output(
+        &descriptor_path,
+        profile,
+        approved_profile,
+        canonical.audio_track_count(),
+        executor.windows().len(),
+        executor.plan_digest(),
+        cancellation,
+    )?;
+    if cancellation.is_cancelled() {
+        return Err(NativeExecutionError::Cancelled);
+    }
+    artifact.path = artifact_path.to_path_buf();
     progress.emit(RenderPhase::Finalizing, 10_000, total_windows)?;
     Ok(artifact)
 }
@@ -1374,6 +1502,38 @@ fn canonicalize_sources(
     })
 }
 
+#[cfg(unix)]
+fn canonicalize_file_sources(
+    sources: &mut NativeStudioAlignedFileSources,
+) -> Result<CanonicalSources, NativeExecutionError> {
+    Ok(CanonicalSources {
+        screen: canonical_file_descriptor(&mut sources.screen)?,
+        microphone: sources
+            .microphone
+            .as_mut()
+            .map(canonical_file_descriptor)
+            .transpose()?,
+        system_audio: sources
+            .system_audio
+            .as_mut()
+            .map(canonical_file_descriptor)
+            .transpose()?,
+    })
+}
+
+#[cfg(unix)]
+fn canonical_file_descriptor(file: &mut File) -> Result<PathBuf, NativeExecutionError> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    Ok(PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd())))
+}
+
 fn canonical_regular_file(path: &Path) -> Result<PathBuf, NativeExecutionError> {
     let canonical = fs::canonicalize(path).map_err(|_| NativeExecutionError::Filesystem)?;
     let metadata =
@@ -1387,6 +1547,18 @@ fn canonical_regular_file(path: &Path) -> Result<PathBuf, NativeExecutionError> 
 fn validate_supported_composition(
     windows: &[StudioEditExecutionWindow],
     sources: &NativeStudioAlignedSources,
+) -> Result<(), NativeExecutionError> {
+    validate_supported_composition_presence(
+        windows,
+        sources.microphone.is_some(),
+        sources.system_audio.is_some(),
+    )
+}
+
+fn validate_supported_composition_presence(
+    windows: &[StudioEditExecutionWindow],
+    microphone_supplied: bool,
+    system_audio_supplied: bool,
 ) -> Result<(), NativeExecutionError> {
     let default = crate::CompositeStyle::default();
     for window in windows {
@@ -1405,13 +1577,13 @@ fn validate_supported_composition(
         windows
             .iter()
             .any(|window| window.microphone.source_available),
-        sources.microphone.is_some(),
+        microphone_supplied,
     )?;
     validate_audio_source(
         windows
             .iter()
             .any(|window| window.system_audio.source_available),
-        sources.system_audio.is_some(),
+        system_audio_supplied,
     )
 }
 
@@ -1496,16 +1668,27 @@ const fn studio_encoding_config(profile: NativeStudioExportProfile) -> NativeStu
     }
 }
 
+enum StudioEditOutput<'a> {
+    Path(&'a Path),
+    #[cfg(unix)]
+    FileDescriptor(std::os::fd::RawFd),
+}
+
 fn build_edit_pipeline(
     sources: &CanonicalSources,
-    output: &Path,
+    output: StudioEditOutput<'_>,
     profile: NativeStudioExportProfile,
 ) -> Result<gst::Pipeline, NativeExecutionError> {
     prepare_runtime().map_err(|_| NativeExecutionError::MissingFactory)?;
     let config = studio_encoding_config(profile);
+    let output_sink = match output {
+        StudioEditOutput::Path(_) => "filesink name=edit_output sync=false async=false",
+        #[cfg(unix)]
+        StudioEditOutput::FileDescriptor(_) => "fdsink name=edit_output sync=false async=false",
+    };
     let mut description = format!(
         concat!(
-            "{muxer} name=edit_mux ! filesink name=edit_output sync=false async=false ",
+            "{muxer} name=edit_mux ! {output_sink} ",
             "filesrc name=edit_screen_source ! decodebin name=edit_screen_decode ",
             "edit_screen_decode. ! queue name=edit_screen_input_queue max-size-buffers=64 max-size-bytes=134217728 max-size-time=2000000000 ",
             "! videoconvert ! identity name=edit_screen_timeline single-segment=true ",
@@ -1513,6 +1696,7 @@ fn build_edit_pipeline(
             "! queue name=edit_video_output_queue max-size-buffers=64 max-size-bytes=67108864 max-size-time=2000000000 ! edit_mux. "
         ),
         muxer = config.muxer,
+        output_sink = output_sink,
         video_transform = config.video_transform,
         video_encoder = config.video_encoder,
     );
@@ -1573,10 +1757,16 @@ fn build_edit_pipeline(
             .ok_or(NativeExecutionError::InvalidGraph)?
             .set_property("location", path);
     }
-    pipeline
+    let output_element = pipeline
         .by_name("edit_output")
-        .ok_or(NativeExecutionError::InvalidGraph)?
-        .set_property("location", output);
+        .ok_or(NativeExecutionError::InvalidGraph)?;
+    match output {
+        StudioEditOutput::Path(path) => output_element.set_property("location", path),
+        #[cfg(unix)]
+        StudioEditOutput::FileDescriptor(descriptor) => {
+            output_element.set_property("fd", descriptor);
+        }
+    }
     require_trusted(&pipeline)?;
     Ok(pipeline)
 }
