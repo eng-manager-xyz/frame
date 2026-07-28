@@ -23,10 +23,10 @@ use crate::{
         InstantFinalizeHandle, InstantFinalizeRegistrationV1,
     },
     ipc::{
-        CaptureTargetKind, CommandOutcome, DeviceClass, ExportProfile, IpcCommand, IpcError,
-        LifecycleAction, PathPolicy, PathUse, PublicErrorCode, RecorderMode, RequestEnvelope,
-        ResponseEnvelope, RootAccess, ScopeRegistry, SessionId, UpdateAction, ValidatedPath,
-        WindowId, WindowRole, WindowScope, decode_request, valid_opaque_id,
+        CaptureTargetKind, CommandOutcome, DeviceClass, EditorMutation, ExportProfile, IpcCommand,
+        IpcError, LifecycleAction, PathPolicy, PathUse, PublicErrorCode, RecorderMode,
+        RequestEnvelope, ResponseEnvelope, RootAccess, ScopeRegistry, SessionId, UpdateAction,
+        ValidatedPath, WindowId, WindowRole, WindowScope, decode_request, valid_opaque_id,
     },
     native_backend::{
         CAPTURE_ARTIFACT_SUMMARY_VERSION, CaptureArtifactSummary, CaptureTargetCatalog,
@@ -35,7 +35,8 @@ use crate::{
         NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
         NativeRecordingInputControlRequest, NativeRecordingStartOutcome,
         NativeRecordingStopOutcome, NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome,
-        NativeRegionDefinitionRequest, NativeStudioProjectCatalog, NativeStudioProjectOpenRequest,
+        NativeRegionDefinitionRequest, NativeStudioEditApplyRequest, NativeStudioEditMutation,
+        NativeStudioEditSaveRequest, NativeStudioProjectCatalog, NativeStudioProjectOpenRequest,
         NativeStudioProjectStatus, NativeStudioRecoveryAction, NativeStudioRecoveryRequest,
         NativeTargetSelectionOutcome, NativeTargetSelectionRequest, STUDIO_PROJECT_CATALOG_VERSION,
     },
@@ -1761,6 +1762,77 @@ impl DesktopRuntime {
                     "Authenticated Studio project opened by opaque native handle.".into();
                 Ok(events)
             }
+            IpcCommand::EditorApply {
+                base_revision,
+                mutation,
+            } => {
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(
+                    &intent_id,
+                    IntentKind::EditorApply {
+                        base_revision: *base_revision,
+                    },
+                )?;
+                let request = NativeStudioEditApplyRequest {
+                    base_editor_revision: *base_revision,
+                    mutation: native_studio_edit_mutation(mutation),
+                };
+                let outcome = backend
+                    .apply_studio_edit(&request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                outcome
+                    .validate_for(&request)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::EditorApply {
+                        base_revision: *base_revision,
+                    },
+                    vec![BackendEvent::EditorApplied {
+                        intent_id: intent_id.clone(),
+                        revision: outcome.editor_revision,
+                    }],
+                )?;
+                self.announcement = "Studio edit applied to the authenticated native draft.".into();
+                Ok(events)
+            }
+            IpcCommand::EditorSave { expected_revision } => {
+                let intent_id = current_intent_id(owner, self.operation_revision);
+                self.preflight_transition(
+                    &intent_id,
+                    IntentKind::EditorSave {
+                        expected_revision: *expected_revision,
+                    },
+                )?;
+                let request = NativeStudioEditSaveRequest {
+                    expected_editor_revision: *expected_revision,
+                };
+                let prior_generation = self.studio_projects.generation;
+                let outcome = backend
+                    .save_studio_edits(request)
+                    .map_err(ExecutionFailure::native_backend)?;
+                outcome
+                    .validate_for(request, prior_generation)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                let events = self.transition(
+                    &intent_id,
+                    IntentKind::EditorSave {
+                        expected_revision: *expected_revision,
+                    },
+                    vec![BackendEvent::EditorSaved {
+                        intent_id: intent_id.clone(),
+                        revision: outcome.editor_revision,
+                    }],
+                )?;
+                self.recovery_projects = u16::try_from(outcome.catalog.projects.len())
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                self.studio_projects = outcome.catalog;
+                self.announcement = format!(
+                    "Studio edits durably saved as project revision {}.",
+                    outcome.project_revision
+                );
+                Ok(events)
+            }
             IpcCommand::ExportStart {
                 project_revision,
                 profile: ExportProfile::EditableWebm,
@@ -2891,9 +2963,9 @@ fn native_terminal_failure_state(
         NativeDesktopBackendError::Unavailable => (SafeFailureCode::BackendUnavailable, false),
         NativeDesktopBackendError::Filesystem => (SafeFailureCode::DiskFull, true),
         NativeDesktopBackendError::Cancelled => (SafeFailureCode::Cancelled, false),
-        NativeDesktopBackendError::Busy | NativeDesktopBackendError::Internal => {
-            (SafeFailureCode::Internal, false)
-        }
+        NativeDesktopBackendError::Busy
+        | NativeDesktopBackendError::InvalidEdit
+        | NativeDesktopBackendError::Internal => (SafeFailureCode::Internal, false),
     }
 }
 
@@ -2980,13 +3052,16 @@ impl ExecutionFailure {
             },
             NativeDesktopBackendError::StaleCatalog
             | NativeDesktopBackendError::TargetUnavailable => {
-                Self::conflict("The display catalog changed. Refresh displays and select again.")
+                Self::conflict("Native state changed. Refresh the current catalog and retry.")
             }
             NativeDesktopBackendError::Cancelled => Self {
                 code: PublicErrorCode::Cancelled,
                 retryable: false,
                 announcement: "The native operation was cancelled.",
             },
+            NativeDesktopBackendError::InvalidEdit => {
+                Self::invalid("The requested Studio edit is invalid for this project.")
+            }
             NativeDesktopBackendError::Filesystem => Self {
                 code: PublicErrorCode::Internal,
                 retryable: true,
@@ -2994,6 +3069,38 @@ impl ExecutionFailure {
             },
             NativeDesktopBackendError::Internal => Self::internal(),
         }
+    }
+}
+
+fn native_studio_edit_mutation(mutation: &EditorMutation) -> NativeStudioEditMutation {
+    match mutation {
+        EditorMutation::Trim { start_ms, end_ms } => NativeStudioEditMutation::Trim {
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+        },
+        EditorMutation::DeleteRange { start_ms, end_ms } => NativeStudioEditMutation::DeleteRange {
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+        },
+        EditorMutation::Split { at_ms } => NativeStudioEditMutation::Split { at_ms: *at_ms },
+        EditorMutation::Speed {
+            start_ms,
+            end_ms,
+            rate_milli,
+        } => NativeStudioEditMutation::Speed {
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            rate_milli: *rate_milli,
+        },
+        EditorMutation::AudioGain {
+            start_ms,
+            end_ms,
+            gain_millibels,
+        } => NativeStudioEditMutation::AudioGain {
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            gain_millibels: *gain_millibels,
+        },
     }
 }
 
@@ -3291,6 +3398,51 @@ mod tests {
         ) -> Result<NativeStudioProjectOpenOutcome, NativeDesktopBackendError> {
             self.calls.push("open_studio");
             Ok(self.studio_open_outcome.clone())
+        }
+
+        fn apply_studio_edit(
+            &mut self,
+            request: &NativeStudioEditApplyRequest,
+        ) -> Result<crate::NativeStudioEditApplyOutcome, NativeDesktopBackendError> {
+            self.calls.push("apply_studio_edit");
+            Ok(crate::NativeStudioEditApplyOutcome {
+                base_editor_revision: request.base_editor_revision,
+                editor_revision: request.base_editor_revision.saturating_add(1),
+            })
+        }
+
+        fn save_studio_edits(
+            &mut self,
+            request: NativeStudioEditSaveRequest,
+        ) -> Result<crate::NativeStudioEditSaveOutcome, NativeDesktopBackendError> {
+            self.calls.push("save_studio_edits");
+            let project_revision = self
+                .studio_catalog
+                .projects
+                .first()
+                .and_then(|project| project.project_revision)
+                .and_then(|revision| revision.checked_add(1))
+                .ok_or(NativeDesktopBackendError::Internal)?;
+            self.studio_catalog = NativeStudioProjectCatalog {
+                schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+                generation: self
+                    .studio_catalog
+                    .generation
+                    .checked_add(1)
+                    .ok_or(NativeDesktopBackendError::Internal)?,
+                projects: vec![crate::NativeStudioProjectSummary {
+                    project_token: "studio-project-token-reminted".into(),
+                    project_revision: Some(project_revision),
+                    asset_count: 2,
+                    status: NativeStudioProjectStatus::Ready,
+                }],
+            };
+            Ok(crate::NativeStudioEditSaveOutcome {
+                editor_revision: request.expected_editor_revision,
+                project_revision,
+                project_token: "studio-project-token-reminted".into(),
+                catalog: self.studio_catalog.clone(),
+            })
         }
 
         fn inspect_studio_recovery(
@@ -4133,6 +4285,95 @@ mod tests {
                 dirty: false,
             }
         );
+    }
+
+    #[test]
+    fn native_studio_apply_and_save_use_backend_confirmed_revisions() {
+        let mut runtime = native_runtime();
+        let mut backend = TestNativeBackend::new();
+        ok(&runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Recovery,
+                    1,
+                    "studio-edit-scan",
+                    IpcCommand::RecoveryScan,
+                ),
+                &mut backend,
+            )
+            .expect("Studio scan"));
+        ok(&runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    1,
+                    "studio-edit-open",
+                    IpcCommand::EditorOpen {
+                        catalog_generation: 1,
+                        project_token: "studio-project-token-1".into(),
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("Studio open"));
+
+        let applied = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    2,
+                    "studio-edit-apply",
+                    IpcCommand::EditorApply {
+                        base_revision: 3,
+                        mutation: EditorMutation::Split { at_ms: 2_000 },
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("native edit apply");
+        ok(&applied);
+        assert_eq!(
+            applied.snapshot.editor,
+            EditorState::Ready {
+                revision: 4,
+                duration_ms: 4_000,
+                dirty: true,
+            }
+        );
+
+        let saved = runtime
+            .dispatch_native(
+                request(
+                    &runtime,
+                    WindowRole::Editor,
+                    3,
+                    "studio-edit-save",
+                    IpcCommand::EditorSave {
+                        expected_revision: 4,
+                    },
+                ),
+                &mut backend,
+            )
+            .expect("native edit save");
+        ok(&saved);
+        assert_eq!(
+            saved.snapshot.editor,
+            EditorState::Ready {
+                revision: 4,
+                duration_ms: 4_000,
+                dirty: false,
+            }
+        );
+        assert_eq!(saved.snapshot.studio_projects.generation, 2);
+        assert_eq!(
+            saved.snapshot.studio_projects.projects[0].project_token,
+            "studio-project-token-reminted"
+        );
+        assert_eq!(backend.call_count("apply_studio_edit"), 1);
+        assert_eq!(backend.call_count("save_studio_edits"), 1);
     }
 
     #[test]

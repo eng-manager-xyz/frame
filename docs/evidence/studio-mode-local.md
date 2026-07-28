@@ -62,8 +62,25 @@ original asset records byte-for-byte. `Created` and
 `RecordingGraphPrepared` attempts can be archived only after proving that the
 session is empty; the journal is descriptor-moved to a private archive and no
 media, graph, or completed project is deleted. Captured attempts cannot enter
-that archive action. The combined microphone/camera bridge is not yet fed into
-Studio. The
+that archive action.
+
+The production desktop editor now installs one Rust-owned draft only after
+reauthenticating a ready project. Apply requests carry a bounded mutation and
+the current editor revision, not paths or durable identities. Rust converts
+millisecond inputs to rational time, compiles the complete candidate edit
+specification with `StudioTimelineCompiler`, and advances the editor revision
+only after compilation succeeds. Save reauthenticates the exact discovered
+manifest and journal, takes a new ownership fence, persists
+`EditSavePrepared`, compares and swaps the complete next manifest, persists
+`EditSaveCommitted`, proves that every original asset record is unchanged, and
+remints the project catalog before reporting success. A failure after the
+authority is consumed discards the active editor so the caller must rediscover
+or recover rather than optimistically retrying stale state. Tests cover invalid
+draft atomicity, a real filesystem journal/project save, immutable-original
+preservation, opaque-token redaction, and backend-confirmed desktop
+apply/save transitions.
+
+The combined microphone/camera bridge is not yet fed into Studio. The
 artifact-backed Editable WebM copy/publication remains the flattened recorder
 output and is not an edit-aware Studio export. A separate narrow native adapter does execute
 the shared canonical plan for a clock-aligned screen original plus optional
@@ -227,9 +244,11 @@ project. The desktop now discovers that project without exposing its path and
 opens a descriptor-reauthenticated completed project in the editor. It
 inspects interrupted entries through opaque handles, recovers recording and
 edit-save boundaries into a reminted ready-project handle, and archives only a
-proven-empty attempt without deleting media. The editor does not yet initiate
-or persist new edits, feed the combined microphone/camera bridge, or render a
-distribution master, so issue 27 remains open.
+proven-empty attempt without deleting media. The editor now initiates bounded
+trim/delete/split/speed/audio-gain drafts and persists them through the durable
+edit-save journal transaction. It does not yet feed the combined
+microphone/camera bridge into Studio, connect native preview/composition/export
+to the desktop, or render a distribution master, so issue 27 remains open.
 
 Focused command:
 

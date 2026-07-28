@@ -276,6 +276,115 @@ impl fmt::Debug for NativeStudioProjectOpenOutcome {
     }
 }
 
+/// A bounded editor mutation retained inside the native Studio authority.
+///
+/// Millisecond inputs are the already-validated IPC representation. The
+/// backend converts them to exact rational time before compiling the draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeStudioEditMutation {
+    Trim {
+        start_ms: u64,
+        end_ms: u64,
+    },
+    DeleteRange {
+        start_ms: u64,
+        end_ms: u64,
+    },
+    Split {
+        at_ms: u64,
+    },
+    Speed {
+        start_ms: u64,
+        end_ms: u64,
+        rate_milli: u16,
+    },
+    AudioGain {
+        start_ms: u64,
+        end_ms: u64,
+        gain_millibels: i32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeStudioEditApplyRequest {
+    pub base_editor_revision: u64,
+    pub mutation: NativeStudioEditMutation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeStudioEditApplyOutcome {
+    pub base_editor_revision: u64,
+    pub editor_revision: u64,
+}
+
+impl NativeStudioEditApplyOutcome {
+    pub fn validate_for(
+        self,
+        request: &NativeStudioEditApplyRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        if self.base_editor_revision != request.base_editor_revision
+            || self.editor_revision
+                != request
+                    .base_editor_revision
+                    .checked_add(1)
+                    .ok_or(NativeDesktopContractError::InvalidStudioEditor)?
+        {
+            return Err(NativeDesktopContractError::InvalidStudioEditor);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeStudioEditSaveRequest {
+    pub expected_editor_revision: u64,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioEditSaveOutcome {
+    pub editor_revision: u64,
+    pub project_revision: u64,
+    pub project_token: String,
+    pub catalog: NativeStudioProjectCatalog,
+}
+
+impl NativeStudioEditSaveOutcome {
+    pub fn validate_for(
+        &self,
+        request: NativeStudioEditSaveRequest,
+        previous_catalog_generation: u64,
+    ) -> Result<(), NativeDesktopContractError> {
+        self.catalog.validate_enumeration()?;
+        let project = self
+            .catalog
+            .projects
+            .iter()
+            .find(|project| project.project_token == self.project_token)
+            .ok_or(NativeDesktopContractError::InvalidStudioEditor)?;
+        if self.editor_revision != request.expected_editor_revision
+            || self.project_revision == 0
+            || self.catalog.generation <= previous_catalog_generation
+            || project.status != NativeStudioProjectStatus::Ready
+            || project.project_revision != Some(self.project_revision)
+        {
+            return Err(NativeDesktopContractError::InvalidStudioEditor);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeStudioEditSaveOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioEditSaveOutcome")
+            .field("editor_revision", &self.editor_revision)
+            .field("project_revision", &self.project_revision)
+            .field("project_token", &"<redacted>")
+            .field("catalog", &self.catalog)
+            .finish()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct NativeStudioRecoveryRequest {
     pub catalog_generation: u64,
@@ -846,6 +955,20 @@ pub trait NativeDesktopBackend {
         Err(NativeDesktopBackendError::Unavailable)
     }
 
+    fn apply_studio_edit(
+        &mut self,
+        _request: &NativeStudioEditApplyRequest,
+    ) -> Result<NativeStudioEditApplyOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
+    fn save_studio_edits(
+        &mut self,
+        _request: NativeStudioEditSaveRequest,
+    ) -> Result<NativeStudioEditSaveOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
     fn inspect_studio_recovery(
         &mut self,
         _request: &NativeStudioRecoveryRequest,
@@ -887,6 +1010,8 @@ pub enum NativeDesktopBackendError {
     TargetUnavailable,
     #[error("native operation was cancelled")]
     Cancelled,
+    #[error("the requested Studio edit is invalid")]
+    InvalidEdit,
     #[error("native filesystem operation failed")]
     Filesystem,
     #[error("native capture failed")]
@@ -915,6 +1040,8 @@ pub enum NativeDesktopContractError {
     DuplicateStudioProject,
     #[error("Studio recovery response is invalid")]
     InvalidStudioRecovery,
+    #[error("Studio editor response is invalid")]
+    InvalidStudioEditor,
 }
 
 const fn target_kind_tag(kind: CaptureTargetKind) -> u8 {
@@ -1098,6 +1225,53 @@ mod tests {
         assert_eq!(
             stale.validate_for(&request),
             Err(NativeDesktopContractError::InvalidStudioRecovery)
+        );
+    }
+
+    #[test]
+    fn editor_outcomes_are_revision_fenced_and_redact_reminted_tokens() {
+        let apply = NativeStudioEditApplyRequest {
+            base_editor_revision: 7,
+            mutation: NativeStudioEditMutation::Split { at_ms: 1_000 },
+        };
+        NativeStudioEditApplyOutcome {
+            base_editor_revision: 7,
+            editor_revision: 8,
+        }
+        .validate_for(&apply)
+        .expect("valid editor advance");
+        assert_eq!(
+            NativeStudioEditApplyOutcome {
+                base_editor_revision: 7,
+                editor_revision: 9,
+            }
+            .validate_for(&apply),
+            Err(NativeDesktopContractError::InvalidStudioEditor)
+        );
+
+        let save = NativeStudioEditSaveRequest {
+            expected_editor_revision: 8,
+        };
+        let outcome = NativeStudioEditSaveOutcome {
+            editor_revision: 8,
+            project_revision: 4,
+            project_token: "studio-project-token-reminted".into(),
+            catalog: NativeStudioProjectCatalog {
+                schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+                generation: 10,
+                projects: vec![NativeStudioProjectSummary {
+                    project_token: "studio-project-token-reminted".into(),
+                    project_revision: Some(4),
+                    asset_count: 3,
+                    status: NativeStudioProjectStatus::Ready,
+                }],
+            },
+        };
+        outcome.validate_for(save, 9).expect("valid durable save");
+        assert!(!format!("{outcome:?}").contains("studio-project-token-reminted"));
+        assert_eq!(
+            outcome.validate_for(save, 10),
+            Err(NativeDesktopContractError::InvalidStudioEditor)
         );
     }
 }

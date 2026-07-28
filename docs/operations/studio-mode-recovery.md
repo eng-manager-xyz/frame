@@ -52,6 +52,17 @@ remints the catalog after recovery. A stale token, changed visible root,
 changed journal, noncanonical graph, ambiguous project, or media checksum
 mismatch fails closed.
 
+During normal editing, Apply is intentionally non-durable: it mutates only the
+single Rust-owned draft after the complete candidate edit plan compiles. Save
+is the durability boundary. It must reauthenticate the exact catalog-selected
+manifest and journal, take ownership, advance to `EditSavePrepared`, compare
+and swap the complete next manifest, and then advance to
+`EditSaveCommitted`. Do not report Save success until a refreshed catalog
+contains the reminted ready-project token and exact committed project
+revision. If the process fails after ownership or preparation, discard the
+active editor authority and use the recovery action for the newly discovered
+boundary; do not replay a WebView draft against the stale token.
+
 An interrupted recording seal may contain a mixture of
 `recording-partials/<asset>.recording-partial` and
 `temporary/<asset>.media`. Reopen only with the exact persisted enabled-track

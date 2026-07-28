@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod av_worker;
+mod studio_editor;
 mod studio_projects;
 mod studio_recorder;
 mod studio_recovery;
@@ -62,8 +63,9 @@ use self::av_worker::{
     classify_audio_stop, classify_screen_stop, run_av_capture_worker,
     run_optional_av_capture_worker, run_screen_studio_capture_worker,
 };
+use self::studio_editor::ActiveStudioEditor;
 use self::studio_projects::{
-    DiscoveredStudioProject, authenticate_ready, authenticate_recovery,
+    DiscoveredStudioProject, authenticate_ready, authenticate_ready_project, authenticate_recovery,
     discover as discover_studio_projects,
 };
 use self::studio_recorder::{
@@ -88,9 +90,10 @@ use crate::{
     NativeInputDeviceCounts, NativePermissionOutcome, NativeRecordingCancelOutcome,
     NativeRecordingControlRequest, NativeRecordingInputControlRequest, NativeRecordingMeter,
     NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
-    NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioProjectCatalog,
-    NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest, NativeStudioProjectSummary,
-    NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
+    NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioEditApplyOutcome,
+    NativeStudioEditApplyRequest, NativeStudioEditSaveOutcome, NativeStudioEditSaveRequest,
+    NativeStudioProjectCatalog, NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest,
+    NativeStudioProjectSummary, NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
     NativeStudioRecoveryOutcome, NativeStudioRecoveryRequest, NativeTargetSelectionOutcome,
     NativeTargetSelectionRequest, PathUse, RecorderMode, STUDIO_PROJECT_CATALOG_VERSION,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
@@ -317,6 +320,7 @@ pub struct MacOsNativeDesktopBackend {
     artifact: Option<StoredArtifact>,
     studio_catalog_generation: u64,
     studio_projects: BTreeMap<String, DiscoveredStudioProject>,
+    active_editor: Option<ActiveStudioEditor>,
 }
 
 impl MacOsNativeDesktopBackend {
@@ -411,6 +415,7 @@ impl MacOsNativeDesktopBackend {
             artifact: None,
             studio_catalog_generation: 0,
             studio_projects: BTreeMap::new(),
+            active_editor: None,
         })
     }
 
@@ -1206,6 +1211,7 @@ impl fmt::Debug for MacOsNativeDesktopBackend {
                 &self.selected_token.as_ref().map(|_| "<redacted>"),
             )
             .field("artifact", &self.artifact)
+            .field("active_editor", &self.active_editor)
             .finish_non_exhaustive()
     }
 }
@@ -2188,14 +2194,64 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             .studio_projects
             .get(&request.project_token)
             .ok_or(NativeDesktopBackendError::StaleCatalog)?;
-        let (project_revision, duration_ms) =
-            authenticate_ready(&self.projects_directory, project)?;
+        let (manifest, duration_ms) =
+            authenticate_ready_project(&self.projects_directory, project)?;
+        let project_revision = manifest.revision;
+        self.active_editor = Some(ActiveStudioEditor::new(manifest)?);
         self.ensure_projects_directory_visible()?;
         Ok(NativeStudioProjectOpenOutcome {
             catalog_generation: request.catalog_generation,
             project_token: request.project_token.clone(),
             project_revision,
             duration_ms,
+        })
+    }
+
+    fn apply_studio_edit(
+        &mut self,
+        request: &NativeStudioEditApplyRequest,
+    ) -> Result<NativeStudioEditApplyOutcome, NativeDesktopBackendError> {
+        self.active_editor
+            .as_mut()
+            .ok_or(NativeDesktopBackendError::Unavailable)?
+            .apply(request)
+    }
+
+    fn save_studio_edits(
+        &mut self,
+        request: NativeStudioEditSaveRequest,
+    ) -> Result<NativeStudioEditSaveOutcome, NativeDesktopBackendError> {
+        let mut editor = self
+            .active_editor
+            .take()
+            .ok_or(NativeDesktopBackendError::Unavailable)?;
+        let project_token = self
+            .studio_projects
+            .iter()
+            .find_map(|(token, project)| {
+                (project.project_id() == editor.project_id()).then(|| token.clone())
+            })
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        let project = self
+            .studio_projects
+            .get(&project_token)
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        let committed = editor.save(&self.projects_root, project, request)?;
+        let editor_revision = editor.editor_revision();
+        let project_revision = committed.revision;
+        let catalog = self.refresh_studio_projects()?;
+        let reminted_token = self
+            .studio_projects
+            .iter()
+            .find(|(_, project)| project.project_id() == committed.id)
+            .map(|(token, _)| token.clone())
+            .ok_or(NativeDesktopBackendError::Filesystem)?;
+        self.active_editor = Some(editor);
+        Ok(NativeStudioEditSaveOutcome {
+            editor_revision,
+            project_revision,
+            project_token: reminted_token,
+            catalog,
         })
     }
 
@@ -3600,6 +3656,7 @@ mod tests {
                 }),
                 studio_catalog_generation: 0,
                 studio_projects: BTreeMap::new(),
+                active_editor: None,
             };
             Self {
                 root,
@@ -3760,6 +3817,7 @@ mod tests {
             artifact: None,
             studio_catalog_generation: 0,
             studio_projects: BTreeMap::new(),
+            active_editor: None,
         };
 
         assert!(backend.retire_session(true));
@@ -3834,6 +3892,7 @@ mod tests {
             artifact: None,
             studio_catalog_generation: 0,
             studio_projects: BTreeMap::new(),
+            active_editor: None,
         };
 
         assert!(matches!(
