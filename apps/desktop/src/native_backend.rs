@@ -13,7 +13,10 @@ use crate::ipc::{CaptureTargetKind, RecorderMode, ValidatedPath, valid_opaque_id
 
 pub const CAPTURE_TARGET_CATALOG_VERSION: u16 = 1;
 pub const CAPTURE_ARTIFACT_SUMMARY_VERSION: u16 = 1;
+pub const STUDIO_PROJECT_CATALOG_VERSION: u16 = 1;
 const MAX_CAPTURE_TARGETS: usize = 256;
+pub const MAX_STUDIO_PROJECT_CATALOG_ENTRIES: usize = 256;
+const MAX_STUDIO_PROJECT_ASSETS: u16 = 64;
 const MAX_CAPTURE_DIMENSION: u32 = 65_535;
 
 /// A versioned catalog containing no display titles or platform identifiers.
@@ -148,6 +151,127 @@ impl fmt::Debug for CaptureArtifactSummary {
                     .as_ref()
                     .map(|_| "<redacted>"),
             )
+            .finish()
+    }
+}
+
+/// Coarse project readiness that is safe to render in the WebView.
+///
+/// Filesystem names, durable project IDs, journal owners, and recovery
+/// receipts remain native-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeStudioProjectStatus {
+    Ready,
+    RecoveryRequired,
+    AttentionRequired,
+}
+
+/// One session-scoped Studio project handle. The token is reminted whenever
+/// the native project catalog changes, so stale UI selections fail closed.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeStudioProjectSummary {
+    pub project_token: String,
+    pub project_revision: Option<u64>,
+    pub asset_count: u16,
+    pub status: NativeStudioProjectStatus,
+}
+
+impl NativeStudioProjectSummary {
+    pub fn validate(&self) -> Result<(), NativeDesktopContractError> {
+        if !valid_opaque_id(&self.project_token)
+            || self.project_revision == Some(0)
+            || self.asset_count > MAX_STUDIO_PROJECT_ASSETS
+            || (self.status == NativeStudioProjectStatus::Ready && self.project_revision.is_none())
+        {
+            return Err(NativeDesktopContractError::InvalidStudioProject);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeStudioProjectSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioProjectSummary")
+            .field("project_token", &"<redacted>")
+            .field("project_revision", &self.project_revision)
+            .field("asset_count", &self.asset_count)
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
+/// Bounded native Studio project catalog exposed without filesystem paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeStudioProjectCatalog {
+    pub schema_version: u16,
+    pub generation: u64,
+    pub projects: Vec<NativeStudioProjectSummary>,
+}
+
+impl NativeStudioProjectCatalog {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+            generation: 0,
+            projects: Vec::new(),
+        }
+    }
+
+    pub fn validate_enumeration(&self) -> Result<(), NativeDesktopContractError> {
+        if self.schema_version != STUDIO_PROJECT_CATALOG_VERSION || self.generation == 0 {
+            return Err(NativeDesktopContractError::InvalidStudioProjectCatalog);
+        }
+        if self.projects.len() > MAX_STUDIO_PROJECT_CATALOG_ENTRIES {
+            return Err(NativeDesktopContractError::TooManyStudioProjects);
+        }
+        let mut tokens = HashSet::with_capacity(self.projects.len());
+        for project in &self.projects {
+            project.validate()?;
+            if !tokens.insert(project.project_token.as_str()) {
+                return Err(NativeDesktopContractError::DuplicateStudioProject);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioProjectOpenRequest {
+    pub catalog_generation: u64,
+    pub project_token: String,
+}
+
+impl fmt::Debug for NativeStudioProjectOpenRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioProjectOpenRequest")
+            .field("catalog_generation", &self.catalog_generation)
+            .field("project_token", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeStudioProjectOpenOutcome {
+    pub catalog_generation: u64,
+    pub project_token: String,
+    pub project_revision: u64,
+    pub duration_ms: u64,
+}
+
+impl fmt::Debug for NativeStudioProjectOpenOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioProjectOpenOutcome")
+            .field("catalog_generation", &self.catalog_generation)
+            .field("project_token", &"<redacted>")
+            .field("project_revision", &self.project_revision)
+            .field("duration_ms", &self.duration_ms)
             .finish()
     }
 }
@@ -485,6 +609,28 @@ pub trait NativeDesktopBackend {
         request: &NativeRecordingControlRequest,
     ) -> Result<NativeRecordingCancelOutcome, NativeDesktopBackendError>;
 
+    /// Enumerates durable Studio journals and projects through reminted,
+    /// session-scoped handles. Portable backends report a valid empty catalog.
+    fn scan_studio_projects(
+        &mut self,
+    ) -> Result<NativeStudioProjectCatalog, NativeDesktopBackendError> {
+        Ok(NativeStudioProjectCatalog {
+            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+            generation: 1,
+            projects: Vec::new(),
+        })
+    }
+
+    /// Authenticates and opens one ready Studio project selected from the most
+    /// recent catalog. Recovery-required entries are never opened through this
+    /// path.
+    fn open_studio_project(
+        &mut self,
+        _request: &NativeStudioProjectOpenRequest,
+    ) -> Result<NativeStudioProjectOpenOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
     fn export_editable_webm(
         &mut self,
         request: &NativeEditableWebmExportRequest,
@@ -523,6 +669,14 @@ pub enum NativeDesktopContractError {
     InvalidCaptureTarget,
     #[error("capture target catalog contains a duplicate")]
     DuplicateCaptureTarget,
+    #[error("Studio project catalog is invalid")]
+    InvalidStudioProjectCatalog,
+    #[error("Studio project summary is invalid")]
+    InvalidStudioProject,
+    #[error("Studio project catalog exceeds its bound")]
+    TooManyStudioProjects,
+    #[error("Studio project catalog contains a duplicate")]
+    DuplicateStudioProject,
 }
 
 const fn target_kind_tag(kind: CaptureTargetKind) -> u8 {
@@ -613,6 +767,49 @@ mod tests {
         assert_eq!(
             CaptureTargetCatalog::empty().validate_enumeration(),
             Err(NativeDesktopContractError::InvalidCatalogGeneration)
+        );
+    }
+
+    #[test]
+    fn studio_catalog_exposes_only_bounded_opaque_project_facts() {
+        let summary = NativeStudioProjectSummary {
+            project_token: "studio-project-token-1".into(),
+            project_revision: Some(7),
+            asset_count: 4,
+            status: NativeStudioProjectStatus::Ready,
+        };
+        let catalog = NativeStudioProjectCatalog {
+            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+            generation: 3,
+            projects: vec![summary.clone()],
+        };
+        catalog.validate_enumeration().expect("valid catalog");
+        let json = serde_json::to_value(&catalog).expect("catalog JSON");
+        let project = &json["projects"][0];
+        assert_eq!(project.as_object().expect("project object").len(), 4);
+        assert!(project.get("project_token").is_some());
+        assert!(project.get("project_revision").is_some());
+        assert!(project.get("asset_count").is_some());
+        assert!(project.get("status").is_some());
+        for forbidden in [
+            "path",
+            "project_id",
+            "journal",
+            "owner",
+            "receipt",
+            "asset_name",
+        ] {
+            assert!(project.get(forbidden).is_none());
+        }
+        assert!(!format!("{summary:?}").contains("studio-project-token-1"));
+
+        let duplicate = NativeStudioProjectCatalog {
+            projects: vec![summary.clone(), summary],
+            ..catalog
+        };
+        assert_eq!(
+            duplicate.validate_enumeration(),
+            Err(NativeDesktopContractError::DuplicateStudioProject)
         );
     }
 }

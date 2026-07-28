@@ -497,7 +497,10 @@ mod tests {
             DesktopAdapterKind::Unavailable,
             frame_desktop_core::InstantFinalizeCapabilityState::NotConfigured,
         );
-        assert_eq!(capabilities.protocol_version, 1);
+        assert_eq!(
+            capabilities.protocol_version,
+            frame_desktop_core::IPC_PROTOCOL_VERSION
+        );
         assert!(capabilities.is_current_backend_truth());
         assert_eq!(
             capabilities.recorder_adapter,

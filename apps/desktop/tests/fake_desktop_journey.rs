@@ -123,13 +123,15 @@ fn keyboard_equivalent_fake_journey_reaches_every_essential_backend_state() {
     harness.dispatch(
         WindowRole::Recovery,
         IpcCommand::RecoveryOpen {
-            project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
+            catalog_generation: 1,
+            project_token: "fake-project-demo".into(),
         },
     );
     harness.dispatch(
         WindowRole::Editor,
         IpcCommand::EditorOpen {
-            project_path: absolute_test_path(&["frame", "projects", "demo.frame"]),
+            catalog_generation: 1,
+            project_token: "fake-project-demo".into(),
         },
     );
     harness.dispatch(

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -20,6 +21,9 @@ ADAPTERS = (
     "native_macos_display",
     "native_windows_display_window_region",
 )
+IPC_PROTOCOL_VERSION_PATTERN = re.compile(
+    r"pub const IPC_PROTOCOL_VERSION: u16 = (?P<version>[1-9][0-9]*);"
+)
 
 
 def digest(path: Path) -> str:
@@ -28,6 +32,16 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: source.read(64 * 1024), b""):
             value.update(chunk)
     return value.hexdigest()
+
+
+def read_ipc_protocol_version() -> int:
+    source = (ROOT / "apps/desktop/src/ipc.rs").read_text(encoding="utf-8")
+    matched = IPC_PROTOCOL_VERSION_PATTERN.search(source)
+    if matched is None:
+        raise SystemExit(
+            "desktop shell smoke failed: IPC_PROTOCOL_VERSION is missing or invalid"
+        )
+    return int(matched.group("version"))
 
 
 def main() -> int:
@@ -41,8 +55,9 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args()
 
+    protocol_version = read_ipc_protocol_version()
     marker = (
-        "FRAME_DESKTOP_SMOKE_V1 protocol=1 backend_truth=true "
+        f"FRAME_DESKTOP_SMOKE_V1 protocol={protocol_version} backend_truth=true "
         f"recorder_adapter={args.expected_adapter}"
     )
 
@@ -88,6 +103,7 @@ def main() -> int:
         "binary_sha256": digest(binary),
         "elapsed_ms": elapsed_ms,
         "expected_adapter": args.expected_adapter,
+        "ipc_protocol_version": protocol_version,
         "marker": marker,
         "exit_code": process.returncode,
     }

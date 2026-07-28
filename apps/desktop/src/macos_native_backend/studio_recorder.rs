@@ -549,6 +549,8 @@ mod tests {
     use frame_media::{ColorSpace, FrameMemory};
 
     use super::*;
+    use crate::macos_native_backend::studio_projects::{authenticate_ready, discover};
+    use crate::{NativeStudioProjectStatus, RootedDir};
 
     const VIDEO_DURATION_NS: u64 = 33_333_333;
     const AUDIO_DURATION_NS: u64 = 21_333_333;
@@ -658,6 +660,17 @@ mod tests {
             journal.snapshot().boundary,
             JournalBoundary::RecordingStopped
         );
+        let canonical_projects = fs::canonicalize(&projects).expect("canonical projects root");
+        let projects_directory =
+            RootedDir::bind(&canonical_projects).expect("pinned projects root");
+        let discovered = discover(&projects_directory).expect("discover Studio project");
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].status(), NativeStudioProjectStatus::Ready);
+        assert_eq!(discovered[0].revision(), Some(1));
+        let (revision, duration_ms) =
+            authenticate_ready(&projects_directory, &discovered[0]).expect("open ready project");
+        assert_eq!(revision, 1);
+        assert_eq!(duration_ms, 1_003);
     }
 
     #[test]
@@ -721,5 +734,16 @@ mod tests {
         )
         .expect("recoverable journal");
         assert_eq!(journal.snapshot().boundary, JournalBoundary::CaptureStarted);
+        let canonical_projects = fs::canonicalize(&projects).expect("canonical projects root");
+        let projects_directory =
+            RootedDir::bind(&canonical_projects).expect("pinned projects root");
+        let discovered = discover(&projects_directory).expect("discover recoverable project");
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(
+            discovered[0].status(),
+            NativeStudioProjectStatus::RecoveryRequired
+        );
+        assert_eq!(discovered[0].revision(), None);
+        assert!(authenticate_ready(&projects_directory, &discovered[0]).is_err());
     }
 }

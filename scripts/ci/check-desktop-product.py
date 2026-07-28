@@ -56,6 +56,9 @@ def main() -> int:
     macos_studio_recorder = text(
         "apps/desktop/src/macos_native_backend/studio_recorder.rs"
     )
+    macos_studio_projects = text(
+        "apps/desktop/src/macos_native_backend/studio_projects.rs"
+    )
     macos_normalized_worker = text(
         "apps/desktop/src/macos_native_backend/normalized_worker.rs"
     )
@@ -117,9 +120,12 @@ def main() -> int:
             "CommandOutOfScope",
             "SequenceGap",
             '"recorder_poll"',
+            "catalog_generation",
+            "project_token",
         ),
         "typed IPC",
     )
+    reject(ipc, ("project_path",), "pathless Studio IPC")
     require(
         runtime,
         (
@@ -140,6 +146,9 @@ def main() -> int:
             "ExportProfile::EditableWebm",
             "NativeRecordingStopOutcome::Sealed",
             "NativeRecordingCancelOutcome::Cancelled",
+            "NativeStudioProjectCatalog",
+            ".scan_studio_projects()",
+            ".open_studio_project(",
             "legacy_desktop_selectable: true",
         ),
         "native runtime",
@@ -200,6 +209,10 @@ def main() -> int:
             "fn poll_recording_terminal_failure",
             "fn stop_recording",
             "fn cancel_recording",
+            "pub struct NativeStudioProjectCatalog",
+            "pub enum NativeStudioProjectStatus",
+            "fn scan_studio_projects",
+            "fn open_studio_project",
             "fn export_editable_webm",
         ),
         "native desktop contract",
@@ -236,6 +249,9 @@ def main() -> int:
             "system_audio_included",
             "request.mode == RecorderMode::Studio",
             "new_studio_recording(",
+            "fn scan_studio_projects",
+            "fn open_studio_project",
+            "authenticate_ready(&self.projects_directory",
         ),
         "macOS target and system-audio backend",
     )
@@ -312,6 +328,23 @@ def main() -> int:
             "pub(super) fn abort(",
         ),
         "macOS Studio recording bridge",
+    )
+    require(
+        macos_studio_projects,
+        (
+            "Descriptor-rooted discovery for durable Studio projects",
+            "MAX_PROJECT_DIRECTORY_ENTRIES",
+            "read_names_bounded",
+            "open_regular_file",
+            "StudioDocumentCodec::decode_journal",
+            "StudioDocumentCodec::decode_project",
+            "recovery_directive",
+            "NativeStudioProjectStatus::RecoveryRequired",
+            "pub(super) fn authenticate_ready",
+            "before != after",
+            "TrackKind::Screen",
+        ),
+        "macOS Studio project catalog",
     )
     require(
         rooted_io,
@@ -533,6 +566,9 @@ def main() -> int:
             '"native_macos_display",',
             '"native_windows_display_window_region",',
             'parser.add_argument("--expected-adapter", choices=ADAPTERS, required=True)',
+            "IPC_PROTOCOL_VERSION_PATTERN",
+            "protocol_version = read_ipc_protocol_version()",
+            'f"FRAME_DESKTOP_SMOKE_V1 protocol={protocol_version}',
             "f\"recorder_adapter={args.expected_adapter}\"",
         ),
         "production desktop shell smoke",
@@ -548,6 +584,7 @@ def main() -> int:
             "normalized `ScreenCaptureSource`/ingress/pump path",
             "optional exact 48 kHz stereo system-audio path",
             "excludes Frame's own process audio",
+            "descriptor-rooted bounded catalog",
             "not a Studio project",
             "does not wire a usable previous-channel selector",
             "Production-mode build and smoke",
@@ -627,6 +664,8 @@ def main() -> int:
             "It does not classify the complete Studio product path as locally implemented.",
             "optional exact 48 kHz stereo system audio",
             "not an edit-aware Studio export",
+            "fresh opaque tokens plus coarse status",
+            "does not yet inspect or reconcile an incomplete",
             "does not request capture permission",
             "release desktop bridge for screen plus optional system audio",
             "not yet connected to the\ncombined microphone/camera source or the Studio coordinator",
@@ -641,6 +680,8 @@ def main() -> int:
             "Native macOS target source evidence",
             "screen-only recording uses the normalized",
             "Optional macOS system audio is the only native audio source currently supported",
+            "descriptor-rooted,",
+            "incomplete-project reconciliation",
             "Protected evidence still required",
             "publication journey; the native WebM path",
             "--expected-adapter native_macos_display",
@@ -653,7 +694,8 @@ def main() -> int:
             "Build modes and current boundary",
             "direct A/V worker can optionally mux exact 48 kHz stereo system audio",
             "Crash and recovery",
-            "`macos-native` has no durable journal or recovery-store composition.",
+            "implements only its read-only discovery boundary",
+            "cannot yet inspect",
             "workflow and validator are not evidence that a physical run occurred",
             "current `macos-native` target-capture slice cannot execute this rollback procedure",
             "--expected-adapter unavailable",
@@ -709,7 +751,9 @@ def main() -> int:
         "apps/desktop/src/macos_native_backend/av_worker.rs",
         "apps/desktop/src/macos_native_backend/normalized_worker.rs",
         "apps/desktop/src/macos_native_backend/studio_recorder.rs",
+        "apps/desktop/src/macos_native_backend/studio_projects.rs",
         "apps/desktop/src/windows_native_backend.rs",
+        "apps/desktop/src/rooted_io.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
         "crates/macos-screen-capture/src/lib.rs",
         "crates/macos-screen-capture/src/cursor.rs",
@@ -759,6 +803,7 @@ def main() -> int:
             "macos_native_target_source_contract": True,
             "macos_normalized_screen_only_worker": True,
             "macos_studio_isolated_originals_bridge": True,
+            "macos_studio_project_catalog_contract": True,
             "windows_normalized_screen_only_worker": True,
             "windows_native_target_source_contract": True,
             "native_cursor_metadata_contract": True,

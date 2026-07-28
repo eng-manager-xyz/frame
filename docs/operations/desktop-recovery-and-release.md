@@ -34,8 +34,12 @@ Screen-only recording uses the shared normalized capture ingress/pump. The
 direct A/V worker can optionally mux exact 48 kHz stereo system audio as Opus
 on macOS while excluding Frame's own process audio. Windows rejects all
 audio. Both slices support stop, cancel, and artifact-bound Editable WebM
-publication. They do not support microphone, camera, pause/resume, multitrack
-or edit-aware Studio export, MP4, persisted recording recovery, native
+publication. The macOS Studio composition also persists isolated screen and
+optional system-audio originals, a journal, and a canonical project. Its
+descriptor-rooted bounded catalog can open only a reauthenticated completed
+project and reports interrupted entries as recovery-required. It does not yet
+reconcile, preserve, or discard those entries. The native slices do not support
+microphone, camera, pause/resume, edit-aware Studio export, MP4, native
 tray/hotkey/overlay lifecycle, or updater installation.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
@@ -65,12 +69,15 @@ distributable app-relative runtime.
 
 ## Crash and recovery
 
-This section is the required release behavior, not evidence that the current
-`macos-native` target-capture slice implements it.
-`macos-native` has no durable journal or recovery-store composition. A
-stop/cancel/worker failure is handled
-as a terminal backend outcome, and a process crash must not be advertised as
-recoverable until the journal integration and protected crash matrix exist.
+This section is the required release behavior. The current `macos-native`
+Studio path implements only its read-only discovery boundary: it writes a
+durable journal, classifies exact journal/project pairs through the pinned
+projects directory descriptor, opens only a reauthenticated completed project,
+and reports interrupted entries as recovery-required. It cannot yet inspect
+the recovery detail, reconcile an incomplete journal, preserve a recovered
+copy, or execute discard. The flattened target-capture path has no persisted
+recording recovery. A process crash therefore must not be advertised as fully
+recoverable until those mutations and the protected crash matrix exist.
 
 When the UI disappears or the process restarts, native journal state remains authoritative. The UI
 must not claim that recording stopped or continued until a backend event says so.
