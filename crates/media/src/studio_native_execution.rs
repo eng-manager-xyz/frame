@@ -1780,6 +1780,7 @@ pub fn native_studio_hardware_encoder_available(profile: NativeStudioExportProfi
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 const fn hardware_encoder_factory(profile: NativeStudioExportProfile) -> Option<&'static str> {
     match profile {
         NativeStudioExportProfile::DistributionMasterMp4 => Some("vtenc_h264_hw"),
