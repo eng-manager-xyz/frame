@@ -53,6 +53,9 @@ def main() -> int:
     native_contract = text("apps/desktop/src/native_backend.rs")
     macos_backend = text("apps/desktop/src/macos_native_backend.rs")
     macos_av_worker = text("apps/desktop/src/macos_native_backend/av_worker.rs")
+    macos_studio_recorder = text(
+        "apps/desktop/src/macos_native_backend/studio_recorder.rs"
+    )
     macos_normalized_worker = text(
         "apps/desktop/src/macos_native_backend/normalized_worker.rs"
     )
@@ -231,6 +234,8 @@ def main() -> int:
             "MacOsSystemAudioSource",
             "ScreenAudioRecording::start_preopened(",
             "system_audio_included",
+            "request.mode == RecorderMode::Studio",
+            "new_studio_recording(",
         ),
         "macOS target and system-audio backend",
     )
@@ -287,9 +292,26 @@ def main() -> int:
             "all_av_teardown_confirmed(",
             "recording.end_of_stream()",
             "recording.finish(&CancellationToken::new())",
+            "run_screen_studio_capture_worker",
+            "studio.push_screen(",
+            "studio.push_system_audio(",
             "Do not fabricate PCM",
         ),
         "macOS A/V ownership worker",
+    )
+    require(
+        macos_studio_recorder,
+        (
+            "Desktop ownership boundary for durable native Studio originals",
+            "pub(super) struct DesktopStudioRecording",
+            "FilesystemStudioRecordingSession::begin(",
+            "NativeStudioRecording::start(",
+            "pub(super) fn push_screen(",
+            "pub(super) fn push_system_audio(",
+            "pub(super) fn finish(",
+            "pub(super) fn abort(",
+        ),
+        "macOS Studio recording bridge",
     )
     require(
         rooted_io,
@@ -606,7 +628,8 @@ def main() -> int:
             "optional exact 48 kHz stereo system audio",
             "not an edit-aware Studio export",
             "does not request capture permission",
-            "not to the production multitrack\nrecorder or the Studio coordinator",
+            "release desktop bridge for screen plus optional system audio",
+            "not yet connected to the\ncombined microphone/camera source or the Studio coordinator",
             "--expected-adapter native_macos_display",
         ),
         "Studio evidence",
@@ -683,7 +706,9 @@ def main() -> int:
         "apps/desktop/Info.plist",
         "apps/desktop/src/native_backend.rs",
         "apps/desktop/src/macos_native_backend.rs",
+        "apps/desktop/src/macos_native_backend/av_worker.rs",
         "apps/desktop/src/macos_native_backend/normalized_worker.rs",
+        "apps/desktop/src/macos_native_backend/studio_recorder.rs",
         "apps/desktop/src/windows_native_backend.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
         "crates/macos-screen-capture/src/lib.rs",
@@ -733,6 +758,7 @@ def main() -> int:
             "portable_unavailable_shell_source": True,
             "macos_native_target_source_contract": True,
             "macos_normalized_screen_only_worker": True,
+            "macos_studio_isolated_originals_bridge": True,
             "windows_normalized_screen_only_worker": True,
             "windows_native_target_source_contract": True,
             "native_cursor_metadata_contract": True,

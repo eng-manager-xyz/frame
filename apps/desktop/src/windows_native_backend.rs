@@ -48,7 +48,7 @@ use crate::{
     NativePermissionOutcome, NativeRecordingCancelOutcome, NativeRecordingControlRequest,
     NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
     NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeTargetSelectionOutcome,
-    NativeTargetSelectionRequest,
+    NativeTargetSelectionRequest, RecorderMode,
     native_screen_worker::{
         CompletedRecordingArtifact, NativeScreenSource, ScreenWorkerStart, WorkerCompletion,
         WorkerControl, WorkerOutcome,
@@ -465,7 +465,7 @@ impl NativeDesktopBackend for WindowsNativeDesktopBackend {
         if !request.exclude_frame_windows {
             return Err(NativeDesktopBackendError::Unavailable);
         }
-        if request.system_audio_enabled {
+        if request.mode == RecorderMode::Studio || request.system_audio_enabled {
             return Err(NativeDesktopBackendError::Unavailable);
         }
         if request.catalog_generation != self.catalog_generation

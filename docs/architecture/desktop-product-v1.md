@@ -69,7 +69,7 @@ timeline.
 The recorder writes and verifies through a preopened descriptor, publishes the
 sealed inode with a rooted no-replace rename, retains its SHA-256, and copies
 exports through rooted descriptors while checking that digest. Media,
-recordings, export, and private export-staging directories stay pinned for the
+recordings, Studio, export, and private export-staging directories stay pinned for the
 backend lifetime; their visible identities are revalidated around publication
 so a rename or real-directory replacement fails closed instead of producing a
 false path. Export keeps its staging descriptor through the cross-root rename
@@ -79,6 +79,11 @@ is capped at four hours, 2 GB, and a 512 MB filesystem reserve. It
 rejects microphone, camera, pause/resume, and MP4 paths. Its
 export is artifact-backed screen-plus-optional-system-audio WebM, not the
 canonical Studio edit plan or a multitrack/distribution-master render.
+When the backend-bound request selects Studio mode, the same worker also feeds
+the corrected screen timeline and any included system audio into independent
+bounded VP8/Opus branches. Those branches seal recoverable temporary originals
+under the pinned private Studio root; they do not yet mint the journal fence,
+commit a project manifest, or replace the current flattened export.
 
 The native Windows implementation uses Windows Graphics Capture permission
 availability and bounded privacy-safe display/non-Frame-window enumeration.
@@ -139,9 +144,10 @@ permission preparation, display/window refresh and selection, bounded region
 definition and selection, target-video start, stop, cancel, and Editable WebM
 export. macOS alone optionally supports exact 48 kHz stereo system audio; the
 Windows composition rejects audio. The remaining represented operations continue to return unavailable
-or stay disabled. In particular, a sealed native
-recording is not a Studio project, export progress is not a cancellable
-edit-aware render, and no native recording journal/recovery owner is wired.
+or stay disabled. In particular, a sealed native recording is not a Studio project
+even when isolated temporary originals were sealed, export progress is
+not a cancellable edit-aware render, and no native recording journal/recovery
+owner is wired.
 
 The Leptos product uses native buttons, fieldsets, labels, meters, progress elements, headings,
 landmarks, a polite atomic status region, an assertive modal error surface, visible focus, a skip

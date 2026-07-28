@@ -64,6 +64,7 @@ frame-windows-secure-spool = { path = "../../crates/windows-secure-spool", optio
 tauri-build = "=2.6.3"
 
 [dev-dependencies]
+tempfile = "3"
 tokio.workspace = true
 
 [lints]

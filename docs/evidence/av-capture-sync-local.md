@@ -48,8 +48,12 @@ multi-source teardown.
 
 The macOS desktop composition still muxes `MacOsSystemAudioSource` with selected
 display/window/region video through the direct worker and computes a bounded
-coarse system-audio peak. Only screen-only recording uses the normalized screen
-ingress/pump. The recorder health command is a bounded trigger at 100 ms, but
+coarse system-audio peak. In Studio mode that worker also sends the corrected
+screen and included system-audio samples to isolated recording branches under
+the private Studio root. It does not yet use `MacOsDeviceAvBridge`, so
+microphone/camera and mixed-audio outputs remain disconnected. Only Instant
+screen-only recording uses the normalized screen ingress/pump. The recorder
+health command is a bounded trigger at 100 ms, but
 the native runtime is the authority for whether a UI event may be emitted. It
 coalesces repeated observations, emits at most once per 100 ms, and sends only
 0..=10,000 microphone/system levels plus `disabled`/`unavailable`/`active`
@@ -67,9 +71,9 @@ isolated audio branches tee before gain/mute. Stop now authenticates every
 retained session buffer and the
 complete replayable native callback tail, pushes them before graph EOS, and
 replays the identical tail after a lost acknowledgement without a second
-native release. Those mixed/isolated-audio and camera outputs are still not
-connected to the desktop mux or Studio originals store, so this does not claim
-a complete artifact. Shared screen/A/V
+native release. The combined runtime's mixed/isolated-audio and camera outputs
+are still not connected to the desktop mux or Studio originals store; the
+current Studio system-audio branch is fed by the older direct source. Shared screen/A/V
 runtime ownership, lossless desktop mux proof, continuous mixed-source
 controls, and product recovery remain absent.
 GStreamer-version-specific incomplete terminal `GAP` sentinels are consumed
