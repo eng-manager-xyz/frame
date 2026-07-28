@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "rust_manifest_version": 9,
+  "rust_manifest_version": 10,
   "minimum_gstreamer": "1.22.0",
   "plugin_search_policy": {
     "denied_environment_variables": [
@@ -78,6 +78,7 @@
     {"factory": "matroskamux", "capability": "matroska_muxing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "qtmux", "capability": "quicktime_muxing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "x264enc", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "vtenc_h264_hw", "capability": "hardware_h264", "requirement": "optional", "platform": "macos"},
     {"factory": "avenc_aac", "capability": "software_aac", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "h264parse", "capability": "software_h264", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "x265enc", "capability": "software_h265", "requirement": "optional", "platform": "native_desktop"},

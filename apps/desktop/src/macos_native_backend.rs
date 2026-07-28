@@ -419,8 +419,12 @@ impl MacOsNativeDesktopBackend {
             .map_err(|_| NativeDesktopBackendError::Filesystem)?;
         let installation_secret = Zeroizing::new(*installation_secret.as_bytes());
         let source = new_session_source(&installation_secret)?;
-        let studio_render =
-            NativeStudioRenderController::new(&projects_root, &export_root, &export_staging_root)?;
+        let studio_render = NativeStudioRenderController::new(
+            &studio_root,
+            &projects_root,
+            &export_root,
+            &export_staging_root,
+        )?;
         Ok(Self {
             capture: CaptureLifecycle::Ready(Box::new(source)),
             installation_secret,
@@ -3949,6 +3953,7 @@ mod tests {
                     .expect("validated output path"),
             };
             let studio_render = NativeStudioRenderController::new(
+                &studio_root,
                 &projects_root,
                 &export_root,
                 &export_staging_root,
@@ -4157,6 +4162,7 @@ mod tests {
                 Path::new("/private/tmp"),
                 Path::new("/private/tmp"),
                 Path::new("/private/tmp"),
+                Path::new("/private/tmp"),
             )
             .expect("test Studio renderer"),
         };
@@ -4235,6 +4241,7 @@ mod tests {
             studio_projects: BTreeMap::new(),
             active_editor: None,
             studio_render: NativeStudioRenderController::new(
+                Path::new("/private/tmp"),
                 Path::new("/private/tmp"),
                 Path::new("/private/tmp"),
                 Path::new("/private/tmp"),

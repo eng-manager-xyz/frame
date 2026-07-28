@@ -17,20 +17,23 @@ use std::{
 };
 
 use frame_media::{
-    AssetChecksum, CancellationToken, CodecLicense, DurableStudioJournal, EncoderBackend,
-    ExportProfile as MediaExportProfile, FilesystemStudioJournalStore, FrameRate,
+    AssetChecksum, AuthorizedRenderDispatch, CancellationToken, CodecLicense, DurableStudioJournal,
+    EncoderBackend, ExportProfile as MediaExportProfile, FilesystemStudioJournalStore, FrameRate,
     JournalAdvanceRequest, JournalBoundary, MediaContainer, NativeStudioEditedExportArtifact,
-    PendingRender, ReceiptKind, RenderCapabilities, RenderEvent, RenderEventKind, RenderPhase,
-    RenderPostcondition, RenderSessionState, RenderStartOutcome, Resolution, StudioAudioCodec,
-    StudioError, StudioExportId, StudioOperationId, StudioProjectManifest, StudioRenderCoordinator,
-    StudioRenderGraphSpec, StudioRenderTicket, StudioRendererPort, StudioSourceName,
-    StudioSourceSet, StudioTimelineCompiler, StudioVideoCodec, TimelineSource, preflight_render,
+    NativeStudioExportProfile, PendingRender, ReceiptKind, RenderCapabilities, RenderEvent,
+    RenderEventKind, RenderPhase, RenderPostcondition, RenderSessionState, RenderStartOutcome,
+    Resolution, StudioAudioCodec, StudioError, StudioExportId, StudioOperationId,
+    StudioProjectManifest, StudioRenderCoordinator, StudioRenderGraphSpec, StudioRenderTicket,
+    StudioRendererPort, StudioSourceName, StudioSourceSet, StudioTimelineCompiler,
+    StudioVideoCodec, TimelineSource, native_studio_hardware_encoder_available, preflight_render,
     strong_sha256,
 };
 
 use super::{
     PreparedStudioExport, map_rooted_io_error, sha256_rooted_file,
-    studio_recorder::{random_export_id, random_operation_id, random_worker_id},
+    studio_recorder::{
+        random_export_id, random_operation_id, random_storage_token, random_worker_id,
+    },
     verify_published_rooted_file,
 };
 use crate::{
@@ -79,6 +82,7 @@ struct RendererSession {
     staging: Option<RootedFile>,
     staging_identity: FileIdentity,
     published: bool,
+    backend: EncoderBackend,
     cancellation: CancellationToken,
     progress: Arc<Mutex<WorkerProgress>>,
     last_progress: WorkerProgress,
@@ -108,16 +112,27 @@ struct MacOsStudioRenderer {
     staging_directory: RootedDir,
     reservations: BTreeMap<StudioExportId, ReservedRender>,
     sessions: BTreeMap<StudioExportId, RendererSession>,
+    force_hardware_failure: bool,
 }
 
 impl MacOsStudioRenderer {
     fn new(export_root: &Path, staging_root: &Path) -> Result<Self, NativeDesktopBackendError> {
+        Self::with_capabilities(export_root, staging_root, native_capabilities(), false)
+    }
+
+    fn with_capabilities(
+        export_root: &Path,
+        staging_root: &Path,
+        capabilities: RenderCapabilities,
+        force_hardware_failure: bool,
+    ) -> Result<Self, NativeDesktopBackendError> {
         Ok(Self {
-            capabilities: software_capabilities(),
+            capabilities,
             export_directory: RootedDir::bind(export_root).map_err(map_rooted_io_error)?,
             staging_directory: RootedDir::bind(staging_root).map_err(map_rooted_io_error)?,
             reservations: BTreeMap::new(),
             sessions: BTreeMap::new(),
+            force_hardware_failure,
         })
     }
 
@@ -196,7 +211,13 @@ impl StudioRendererPort for MacOsStudioRenderer {
             .reservations
             .remove(&export_id)
             .ok_or(StudioError::RenderReservationRequired)?;
-        if ticket.graph().preflight.selected_backend != EncoderBackend::Software
+        let backend = ticket.graph().preflight.selected_backend;
+        let video_codec = ticket.graph().preflight.profile.video_codec;
+        let backend_supported = match backend {
+            EncoderBackend::Hardware => self.capabilities.hardware_video.contains(&video_codec),
+            EncoderBackend::Software => self.capabilities.software_video.contains(&video_codec),
+        };
+        if !backend_supported
             || ticket.output_name().as_str()
                 != reserved
                     .output_relative
@@ -225,6 +246,7 @@ impl StudioRendererPort for MacOsStudioRenderer {
         let worker_progress = Arc::clone(&progress);
         let (completion_sender, completion) = sync_channel(1);
         let worker_staging_path = staging_path.clone();
+        let force_hardware_failure = self.force_hardware_failure;
         self.sessions.insert(
             export_id,
             RendererSession {
@@ -238,6 +260,7 @@ impl StudioRendererPort for MacOsStudioRenderer {
                 staging: Some(staging),
                 staging_identity,
                 published: false,
+                backend,
                 cancellation,
                 progress,
                 last_progress: WorkerProgress {
@@ -261,19 +284,24 @@ impl StudioRendererPort for MacOsStudioRenderer {
         let worker = thread::Builder::new()
             .name("frame-studio-render".into())
             .spawn(move || {
-                let result = prepared.render_preopened_with_progress(
-                    &worker_staging_path,
-                    output,
-                    &worker_cancellation,
-                    |update| {
-                        if let Ok(mut current) = worker_progress.lock() {
-                            *current = WorkerProgress {
-                                phase: update.phase,
-                                basis_points: update.basis_points,
-                            };
-                        }
-                    },
-                );
+                let result = if force_hardware_failure && backend == EncoderBackend::Hardware {
+                    Err(NativeDesktopBackendError::Unavailable)
+                } else {
+                    prepared.render_preopened_with_backend_and_progress(
+                        &worker_staging_path,
+                        output,
+                        backend,
+                        &worker_cancellation,
+                        |update| {
+                            if let Ok(mut current) = worker_progress.lock() {
+                                *current = WorkerProgress {
+                                    phase: update.phase,
+                                    basis_points: update.basis_points,
+                                };
+                            }
+                        },
+                    )
+                };
                 let _ = completion_sender.send(result);
             });
         if let Ok(worker) = worker {
@@ -376,9 +404,19 @@ impl StudioRendererPort for MacOsStudioRenderer {
                     fence: session.fence,
                     render_spec_digest: session.render_spec_digest,
                 };
+                let hardware_failure = session.backend == EncoderBackend::Hardware
+                    && matches!(
+                        error,
+                        NativeDesktopBackendError::Unavailable
+                            | NativeDesktopBackendError::Internal
+                    );
                 RenderEventKind::Failed {
-                    safe_code: safe_render_failure(error),
-                    hardware_failure: false,
+                    safe_code: if hardware_failure {
+                        "hardware_encoder_failed"
+                    } else {
+                        safe_render_failure(error)
+                    },
+                    hardware_failure,
                 }
             }
         };
@@ -518,16 +556,37 @@ fn finalize_output(
     Ok((checksum, artifact.bytes))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ActiveRender {
     export_id: StudioExportId,
     operation_id: StudioOperationId,
+    project_id: frame_media::StudioProjectId,
     project_revision: u64,
     profile: ExportProfile,
+    backend: EncoderBackend,
+    manifest: StudioProjectManifest,
+    output_relative: PathBuf,
+    extension: &'static str,
+}
+
+impl std::fmt::Debug for ActiveRender {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ActiveRender")
+            .field("export_id", &self.export_id)
+            .field("operation_id", &self.operation_id)
+            .field("project_id", &self.project_id)
+            .field("project_revision", &self.project_revision)
+            .field("profile", &self.profile)
+            .field("backend", &self.backend)
+            .field("paths", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
 pub(super) struct NativeStudioRenderController {
+    studio_root: PathBuf,
     projects_root: PathBuf,
     staging_root: PathBuf,
     coordinator: StudioRenderCoordinator<MacOsStudioRenderer>,
@@ -536,14 +595,39 @@ pub(super) struct NativeStudioRenderController {
 
 impl NativeStudioRenderController {
     pub(super) fn new(
+        studio_root: &Path,
         projects_root: &Path,
         export_root: &Path,
         staging_root: &Path,
     ) -> Result<Self, NativeDesktopBackendError> {
         let renderer = MacOsStudioRenderer::new(export_root, staging_root)?;
+        Self::with_renderer(studio_root, projects_root, staging_root, renderer)
+    }
+
+    #[cfg(test)]
+    fn forcing_hardware_failure(
+        studio_root: &Path,
+        projects_root: &Path,
+        export_root: &Path,
+        staging_root: &Path,
+    ) -> Result<Self, NativeDesktopBackendError> {
+        let mut capabilities = software_capabilities();
+        capabilities.hardware_video.insert(StudioVideoCodec::Vp8);
+        let renderer =
+            MacOsStudioRenderer::with_capabilities(export_root, staging_root, capabilities, true)?;
+        Self::with_renderer(studio_root, projects_root, staging_root, renderer)
+    }
+
+    fn with_renderer(
+        studio_root: &Path,
+        projects_root: &Path,
+        staging_root: &Path,
+        renderer: MacOsStudioRenderer,
+    ) -> Result<Self, NativeDesktopBackendError> {
         let coordinator = StudioRenderCoordinator::new(renderer, MAX_RENDER_EVENTS, Vec::new())
             .map_err(map_studio_error)?;
         Ok(Self {
+            studio_root: studio_root.to_path_buf(),
             projects_root: projects_root.to_path_buf(),
             staging_root: staging_root.to_path_buf(),
             coordinator,
@@ -572,9 +656,14 @@ impl NativeStudioRenderController {
             .map_err(map_studio_error)?;
         let sources =
             StudioSourceSet::from_project(manifest, &timeline).map_err(map_studio_error)?;
-        let capabilities = software_capabilities();
+        let capabilities = self
+            .coordinator
+            .renderer_mut()
+            .capabilities()
+            .map_err(map_studio_error)?;
         let preflight = preflight_render(media_profile(request.profile), &capabilities)
             .map_err(map_studio_error)?;
+        let backend = preflight.selected_backend;
         let graph =
             StudioRenderGraphSpec::compile(sources, plan, preflight).map_err(map_studio_error)?;
         let output_name = StudioSourceName::new(
@@ -586,67 +675,30 @@ impl NativeStudioRenderController {
         .map_err(map_studio_error)?;
         let export_id = random_export_id()?;
         let operation_id = random_operation_id()?;
-
-        let store =
-            FilesystemStudioJournalStore::new(&self.projects_root).map_err(map_studio_error)?;
-        let mut journal =
-            DurableStudioJournal::open(store, manifest.id).map_err(map_studio_error)?;
-        journal
-            .take_ownership(
-                journal.snapshot().revision,
-                journal.snapshot().fence,
-                random_worker_id()?,
-            )
-            .map_err(map_studio_error)?;
-        let ticket = StudioRenderTicket::new(
-            manifest.id,
-            export_id,
-            operation_id,
-            journal.snapshot().fence,
-            output_name.clone(),
-            graph,
-            RENDER_DEADLINE,
-        )
-        .map_err(map_studio_error)?;
-        let pending = PendingRender::new(
-            operation_id,
-            export_id,
-            ticket.expected_fence(),
-            ticket.graph().sources.digest(),
-            ticket.graph().edit_plan_digest(),
-            ticket.graph().preflight.profile.profile,
-            output_name,
-        )
-        .map_err(map_studio_error)?;
-        let command_digest = render_prepared_digest(b"frame-render-prepared-command-v1", &pending);
-        let outcome_digest = render_prepared_digest(b"frame-render-prepared-outcome-v1", &pending);
-        journal
-            .advance(JournalAdvanceRequest {
-                expected_revision: journal.snapshot().revision,
-                expected_fence: journal.snapshot().fence,
-                operation_id,
-                command_digest,
-                boundary: JournalBoundary::RenderPrepared,
-                pending_asset: None,
-                pending_edit: None,
-                pending_render: Some(pending),
-                receipt_kind: ReceiptKind::RenderPrepared,
-                outcome_digest,
-            })
-            .map_err(map_studio_error)?;
-        let dispatch = journal
-            .into_render_authorization()
-            .map_err(map_studio_error)?
-            .bind(ticket)
-            .map_err(map_studio_error)?;
+        let extension = prepared.extension();
         let staging_path = self.staging_root.join(&staging_relative);
         self.coordinator.renderer_mut().reserve(
             export_id,
             prepared,
             staging_relative,
             staging_path,
-            output_relative,
+            output_relative.clone(),
         )?;
+        let dispatch = match authorize_render_dispatch(
+            &self.projects_root,
+            manifest.id,
+            export_id,
+            operation_id,
+            graph,
+            output_name,
+            true,
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                self.coordinator.renderer_mut().abort_reservation(export_id);
+                return Err(error);
+            }
+        };
         let state = match self.coordinator.start(dispatch) {
             Ok(state) => state,
             Err(error) => {
@@ -660,8 +712,13 @@ impl NativeStudioRenderController {
         self.active = Some(ActiveRender {
             export_id,
             operation_id,
+            project_id: manifest.id,
             project_revision: request.project_revision,
             profile: request.profile,
+            backend,
+            manifest: manifest.clone(),
+            output_relative,
+            extension,
         });
         Ok(NativeStudioExportStartOutcome::Running {
             progress_basis_points: 0,
@@ -740,6 +797,31 @@ impl NativeStudioRenderController {
             }
             RenderSessionState::Failed => {
                 let failure = progress.failure_code.unwrap_or("render_failed");
+                if active.backend == EncoderBackend::Hardware
+                    && failure == "hardware_encoder_failed"
+                {
+                    match self.restart_in_software(&active) {
+                        Ok(()) => {
+                            return Ok(NativeStudioExportPollOutcome::Running {
+                                project_revision: active.project_revision,
+                                profile: active.profile,
+                                progress_basis_points: 0,
+                            });
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "Frame Studio hardware export fallback failed safely: {error}"
+                            );
+                            self.release(active.export_id)?;
+                            return Ok(NativeStudioExportPollOutcome::Failed {
+                                project_revision: active.project_revision,
+                                profile: active.profile,
+                                error,
+                                cleanup_confirmed: true,
+                            });
+                        }
+                    }
+                }
                 self.release(active.export_id)?;
                 let error = match failure {
                     "backend_unavailable" => NativeDesktopBackendError::Unavailable,
@@ -755,6 +837,103 @@ impl NativeStudioRenderController {
                 })
             }
         }
+    }
+
+    fn restart_in_software(
+        &mut self,
+        failed: &ActiveRender,
+    ) -> Result<(), NativeDesktopBackendError> {
+        let capabilities = self
+            .coordinator
+            .renderer_mut()
+            .capabilities()
+            .map_err(map_studio_error)?;
+        let mut preflight = preflight_render(media_profile(failed.profile), &capabilities)
+            .map_err(map_studio_error)?;
+        if preflight.selected_backend != EncoderBackend::Hardware
+            || !preflight.software_fallback_available
+        {
+            return Err(NativeDesktopBackendError::Unavailable);
+        }
+        preflight.selected_backend = EncoderBackend::Software;
+        let timeline =
+            TimelineSource::from_assets(&failed.manifest.assets).map_err(map_studio_error)?;
+        let plan = StudioTimelineCompiler::compile(&timeline, &failed.manifest.edits)
+            .map_err(map_studio_error)?;
+        let sources =
+            StudioSourceSet::from_project(&failed.manifest, &timeline).map_err(map_studio_error)?;
+        let graph =
+            StudioRenderGraphSpec::compile(sources, plan, preflight).map_err(map_studio_error)?;
+        let output_name = StudioSourceName::new(
+            failed
+                .output_relative
+                .to_str()
+                .ok_or(NativeDesktopBackendError::Filesystem)?
+                .to_owned(),
+        )
+        .map_err(map_studio_error)?;
+        let studio_directory = RootedDir::bind(&self.studio_root).map_err(map_rooted_io_error)?;
+        let prepared = PreparedStudioExport::prepare(
+            &self.studio_root,
+            &studio_directory,
+            &failed.manifest,
+            failed.profile,
+        )?;
+        let export_id = random_export_id()?;
+        let operation_id = random_operation_id()?;
+        let staging_relative = PathBuf::from(format!(
+            ".frame-fallback-{}.{}",
+            random_storage_token()?,
+            failed.extension
+        ));
+        let staging_path = self.staging_root.join(&staging_relative);
+        self.coordinator.renderer_mut().reserve(
+            export_id,
+            prepared,
+            staging_relative,
+            staging_path,
+            failed.output_relative.clone(),
+        )?;
+        let dispatch = match authorize_render_dispatch(
+            &self.projects_root,
+            failed.project_id,
+            export_id,
+            operation_id,
+            graph,
+            output_name,
+            false,
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                self.coordinator.renderer_mut().abort_reservation(export_id);
+                return Err(error);
+            }
+        };
+        let state = match self.coordinator.retry_hardware_failure_with_software(
+            failed.export_id,
+            CANCEL_DEADLINE,
+            dispatch,
+        ) {
+            Ok(state) => state,
+            Err(error) => {
+                self.coordinator.renderer_mut().abort_reservation(export_id);
+                return Err(map_studio_error(error));
+            }
+        };
+        if state != RenderSessionState::Running {
+            self.coordinator.renderer_mut().abort_reservation(export_id);
+            return Err(NativeDesktopBackendError::Internal);
+        }
+        self.coordinator
+            .renderer_mut()
+            .release_session(failed.export_id);
+        self.active = Some(ActiveRender {
+            export_id,
+            operation_id,
+            backend: EncoderBackend::Software,
+            ..failed.clone()
+        });
+        Ok(())
     }
 
     pub(super) fn cancel(
@@ -780,6 +959,70 @@ impl NativeStudioRenderController {
         self.active = None;
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn authorize_render_dispatch(
+    projects_root: &Path,
+    project_id: frame_media::StudioProjectId,
+    export_id: StudioExportId,
+    operation_id: StudioOperationId,
+    graph: StudioRenderGraphSpec,
+    output_name: StudioSourceName,
+    claim_ownership: bool,
+) -> Result<AuthorizedRenderDispatch, NativeDesktopBackendError> {
+    let store = FilesystemStudioJournalStore::new(projects_root).map_err(map_studio_error)?;
+    let mut journal = DurableStudioJournal::open(store, project_id).map_err(map_studio_error)?;
+    if claim_ownership {
+        journal
+            .take_ownership(
+                journal.snapshot().revision,
+                journal.snapshot().fence,
+                random_worker_id()?,
+            )
+            .map_err(map_studio_error)?;
+    }
+    let ticket = StudioRenderTicket::new(
+        project_id,
+        export_id,
+        operation_id,
+        journal.snapshot().fence,
+        output_name.clone(),
+        graph,
+        RENDER_DEADLINE,
+    )
+    .map_err(map_studio_error)?;
+    let pending = PendingRender::new(
+        operation_id,
+        export_id,
+        ticket.expected_fence(),
+        ticket.graph().sources.digest(),
+        ticket.graph().edit_plan_digest(),
+        ticket.graph().preflight.profile.profile,
+        output_name,
+    )
+    .map_err(map_studio_error)?;
+    let command_digest = render_prepared_digest(b"frame-render-prepared-command-v1", &pending);
+    let outcome_digest = render_prepared_digest(b"frame-render-prepared-outcome-v1", &pending);
+    journal
+        .advance(JournalAdvanceRequest {
+            expected_revision: journal.snapshot().revision,
+            expected_fence: journal.snapshot().fence,
+            operation_id,
+            command_digest,
+            boundary: JournalBoundary::RenderPrepared,
+            pending_asset: None,
+            pending_edit: None,
+            pending_render: Some(pending),
+            receipt_kind: ReceiptKind::RenderPrepared,
+            outcome_digest,
+        })
+        .map_err(map_studio_error)?;
+    journal
+        .into_render_authorization()
+        .map_err(map_studio_error)?
+        .bind(ticket)
+        .map_err(map_studio_error)
 }
 
 fn validate_active(
@@ -809,6 +1052,16 @@ fn media_profile(profile: ExportProfile) -> MediaExportProfile {
         ExportProfile::EditableWebm => MediaExportProfile::NativeHighQualityWebM,
         ExportProfile::Archive => MediaExportProfile::NativeArchiveLossless,
     }
+}
+
+fn native_capabilities() -> RenderCapabilities {
+    let mut capabilities = software_capabilities();
+    if native_studio_hardware_encoder_available(NativeStudioExportProfile::DistributionMasterMp4) {
+        capabilities
+            .hardware_video
+            .insert(StudioVideoCodec::H264Avc);
+    }
+    capabilities
 }
 
 fn software_capabilities() -> RenderCapabilities {
@@ -965,9 +1218,13 @@ mod tests {
         };
         create_recording_stopped_journal(&projects_root, project_id);
         let studio_directory = RootedDir::bind(&studio_root).expect("rooted Studio originals");
-        let mut controller =
-            NativeStudioRenderController::new(&projects_root, &export_root, &staging_root)
-                .expect("native render controller");
+        let mut controller = NativeStudioRenderController::new(
+            &studio_root,
+            &projects_root,
+            &export_root,
+            &staging_root,
+        )
+        .expect("native render controller");
 
         let completed_request = export_request(&export_root, "studio-completed.webm");
         let prepared = PreparedStudioExport::prepare(
@@ -1061,6 +1318,79 @@ mod tests {
             .snapshot()
             .boundary,
             JournalBoundary::RenderCancelled
+        );
+
+        let mut fallback_controller = NativeStudioRenderController::forcing_hardware_failure(
+            &studio_root,
+            &projects_root,
+            &export_root,
+            &staging_root,
+        )
+        .expect("forced hardware-failure controller");
+        let fallback_request = export_request(&export_root, "studio-fallback.webm");
+        let prepared = PreparedStudioExport::prepare(
+            &studio_root,
+            &studio_directory,
+            &manifest,
+            ExportProfile::EditableWebm,
+        )
+        .expect("prepared fallback render");
+        fallback_controller
+            .start(
+                &fallback_request,
+                &manifest,
+                prepared,
+                PathBuf::from("studio-fallback.webm"),
+                PathBuf::from(".frame-hardware-attempt.webm"),
+            )
+            .expect("start hardware attempt");
+        assert_eq!(
+            fallback_controller
+                .active
+                .as_ref()
+                .expect("active hardware attempt")
+                .backend,
+            EncoderBackend::Hardware
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut saw_software_fallback = false;
+        let fallback = loop {
+            assert!(Instant::now() < deadline, "bounded fallback deadline");
+            let outcome = fallback_controller
+                .poll(&fallback_request)
+                .expect("poll fallback render");
+            saw_software_fallback |= fallback_controller
+                .active
+                .as_ref()
+                .is_some_and(|active| active.backend == EncoderBackend::Software);
+            match outcome {
+                NativeStudioExportPollOutcome::Running { .. } => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                NativeStudioExportPollOutcome::Completed(outcome) => break outcome,
+                NativeStudioExportPollOutcome::Failed { error, .. } => {
+                    panic!("fallback render failed: {error}")
+                }
+            }
+        };
+        assert!(saw_software_fallback);
+        assert!(fallback.bytes_written > 0);
+        assert!(export_root.join("studio-fallback.webm").is_file());
+        assert!(
+            fs::read_dir(&staging_root)
+                .expect("read fallback staging root")
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            DurableStudioJournal::open(
+                FilesystemStudioJournalStore::new(&projects_root).expect("journal store"),
+                project_id,
+            )
+            .expect("fallback journal")
+            .snapshot()
+            .boundary,
+            JournalBoundary::RenderCommitted
         );
     }
 
