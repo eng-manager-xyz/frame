@@ -48,6 +48,10 @@ def main() -> int:
             fixture / "scripts/ci/gstreamer-sanitized-exec",
         )
         shutil.copy2(
+            ROOT / "scripts/ci/install-gstreamer-ubuntu.sh",
+            fixture / "scripts/ci/install-gstreamer-ubuntu.sh",
+        )
+        shutil.copy2(
             ROOT / "scripts/ci/release-change-plan.sh",
             fixture / "scripts/ci/release-change-plan.sh",
         )
@@ -85,6 +89,7 @@ def main() -> int:
         package = fixture / "scripts/ci/package-release.sh"
         verify = fixture / "scripts/ci/verify-release-bundle.sh"
         gstreamer_launcher = fixture / "scripts/ci/gstreamer-sanitized-exec"
+        gstreamer_installer = fixture / "scripts/ci/install-gstreamer-ubuntu.sh"
 
         quality_original = quality.read_text(encoding="utf-8")
         alternate_yaml = quality_original.replace(
@@ -119,6 +124,24 @@ def main() -> int:
             return 1
 
         mutations = (
+            (
+                gstreamer_installer,
+                "http://archive.ubuntu.com/ubuntu/",
+                "http://azure.archive.ubuntu.com/ubuntu/",
+                "slow hosted-runner Ubuntu mirror restored",
+            ),
+            (
+                gstreamer_installer,
+                "Acquire::Retries=5",
+                "Acquire::Retries=0",
+                "Ubuntu package download retries removed",
+            ),
+            (
+                quality,
+                "scripts/ci/install-gstreamer-ubuntu.sh --libav --tools --base-apps",
+                "sudo apt-get update",
+                "required media job bypasses the hardened Ubuntu installer",
+            ),
             (
                 gstreamer_launcher,
                 "export RUST_TEST_THREADS=1",

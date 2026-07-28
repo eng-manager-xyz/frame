@@ -128,6 +128,7 @@ def main() -> int:
     for required in sorted(REQUIRED_WORKFLOWS - owned):
         errors.append(f"missing owned workflow: .github/workflows/{required}")
     gstreamer_launcher = ROOT / "scripts" / "ci" / "gstreamer-sanitized-exec"
+    gstreamer_installer = ROOT / "scripts" / "ci" / "install-gstreamer-ubuntu.sh"
     cargo_config = ROOT / ".cargo" / "config.toml"
     require(
         gstreamer_launcher.is_file()
@@ -140,6 +141,33 @@ def main() -> int:
         and "export RUST_TEST_THREADS=1"
         in gstreamer_launcher.read_text(encoding="utf-8"),
         "GStreamer sanitized launcher must serialize native media test binaries",
+        errors,
+    )
+    require(
+        gstreamer_installer.is_file()
+        and bool(gstreamer_installer.stat().st_mode & stat.S_IXUSR),
+        "Ubuntu GStreamer installer must exist and be executable",
+        errors,
+    )
+    installer_text = (
+        gstreamer_installer.read_text(encoding="utf-8")
+        if gstreamer_installer.is_file()
+        else ""
+    )
+    require(
+        all(
+            marker in installer_text
+            for marker in (
+                "http://archive.ubuntu.com/ubuntu/",
+                r"azure\.archive\.ubuntu\.com",
+                "Acquire::Retries=5",
+                "Acquire::http::Timeout=30",
+                "Acquire::https::Timeout=30",
+                "Acquire::ForceIPv4=true",
+                "unknown option:",
+            )
+        ),
+        "Ubuntu GStreamer installer must replace the slow hosted mirror and retain bounded apt retry/timeout policy",
         errors,
     )
     require(
@@ -205,6 +233,27 @@ def main() -> int:
             require(expected is not None, f"{path}: unapproved external action {action}", errors)
             if expected is not None:
                 require(reference == expected, f"{path}: {action} must use immutable SHA {expected}", errors)
+
+    gstreamer_install_invocations = {
+        "ci.yml": ("scripts/ci/install-gstreamer-ubuntu.sh --libav",),
+        "quality-gates.yml": (
+            "scripts/ci/install-gstreamer-ubuntu.sh --libav --ripgrep",
+            "scripts/ci/install-gstreamer-ubuntu.sh --libav --tools --base-apps",
+        ),
+        "production-gate.yml": (
+            "scripts/ci/install-gstreamer-ubuntu.sh --libav --ripgrep",
+        ),
+        "media-conformance.yml": ("scripts/ci/install-gstreamer-ubuntu.sh",),
+    }
+    for name, commands in gstreamer_install_invocations.items():
+        text = texts.get(name, "")
+        require(
+            text.count("scripts/ci/install-gstreamer-ubuntu.sh") == len(commands)
+            and all(text.count(command) == 1 for command in commands)
+            and "sudo apt-get update" not in text,
+            f".github/workflows/{name}: every Ubuntu GStreamer install must use the hardened shared installer exactly once",
+            errors,
+        )
 
     quality = texts.get("quality-gates.yml", "")
     api_parity = texts.get("api-workflow-parity.yml", "")
