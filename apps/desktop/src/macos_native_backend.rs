@@ -6,9 +6,10 @@
 //! target permits it, optionally captures exact 48 kHz stereo
 //! system audio, and exports an Editable WebM. Studio mode also feeds the
 //! selected screen and included system-audio samples into bounded isolated
-//! recording branches under the private Studio root. Camera, microphone,
-//! pause, project/journal publication, and distribution-master paths stay
-//! disabled in the desktop runtime.
+//! recording branches, commits their immutable originals through a durable
+//! journal, and creates an authenticated canonical project. Camera,
+//! microphone, pause, recovery/editor commands, and distribution-master paths
+//! stay disabled in the desktop runtime.
 
 #![forbid(unsafe_code)]
 
@@ -59,8 +60,8 @@ use self::studio_recorder::{
     DesktopStudioRecording, StudioOptionalTracks, StudioRecordingIdentity,
 };
 use crate::native_screen_worker::{
-    CompletedRecordingArtifact, NativeScreenSource, ScreenWorkerStart, WorkerCompletion,
-    WorkerControl, WorkerOutcome,
+    CompletedRecordingArtifact, NativeScreenSource, ScreenWorkerStart, StudioProjectArtifact,
+    WorkerCompletion, WorkerControl, WorkerOutcome,
 };
 use ring::{
     digest::{Context as Sha256Context, SHA256},
@@ -163,6 +164,26 @@ struct StoredArtifact {
     source_sha256: String,
     export: PathBuf,
     export_relative: PathBuf,
+    studio_project: Option<StoredStudioProject>,
+}
+
+#[derive(Clone)]
+struct StoredStudioProject {
+    source: PathBuf,
+}
+
+impl fmt::Debug for StoredStudioProject {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let source = if self.source.as_os_str().is_empty() {
+            "<invalid>"
+        } else {
+            "<redacted>"
+        };
+        formatter
+            .debug_struct("StoredStudioProject")
+            .field("source", &source)
+            .finish()
+    }
 }
 
 impl fmt::Debug for StoredArtifact {
@@ -173,6 +194,7 @@ impl fmt::Debug for StoredArtifact {
             .field("revision", &self.revision)
             .field("source", &"<redacted>")
             .field("export", &"<redacted>")
+            .field("studio_project", &self.studio_project)
             .finish()
     }
 }
@@ -184,6 +206,7 @@ impl From<ScreenAudioRecordingArtifact> for CompletedRecordingArtifact {
             bytes: artifact.bytes,
             sha256: artifact.sha256,
             duration_ns: artifact.video_duration_ns.max(artifact.audio_duration_ns),
+            studio_project: None,
         }
     }
 }
@@ -248,6 +271,8 @@ enum PendingRecordingGraph {
 pub struct MacOsNativeDesktopBackend {
     capture: CaptureLifecycle,
     installation_secret: Zeroizing<[u8; 32]>,
+    projects_root: PathBuf,
+    projects_directory: RootedDir,
     media_root: PathBuf,
     media_directory: RootedDir,
     recordings_root: PathBuf,
@@ -268,12 +293,15 @@ pub struct MacOsNativeDesktopBackend {
 
 impl MacOsNativeDesktopBackend {
     pub fn new(
+        projects_root: impl Into<PathBuf>,
         media_root: impl Into<PathBuf>,
         export_root: impl Into<PathBuf>,
     ) -> Result<Self, NativeDesktopBackendError> {
+        let (projects_root, projects_directory) = bind_or_create_root(projects_root.into(), true)?;
         let (media_root, media_directory) = bind_or_create_root(media_root.into(), true)?;
         let (export_root, export_directory) = bind_or_create_root(export_root.into(), false)?;
-        if media_root == export_root {
+        if projects_root == media_root || projects_root == export_root || media_root == export_root
+        {
             return Err(NativeDesktopBackendError::Filesystem);
         }
         let recordings_root = media_root.join(RECORDINGS_DIRECTORY);
@@ -310,6 +338,7 @@ impl MacOsNativeDesktopBackend {
         export_staging_directory
             .ensure_private_mode()
             .map_err(map_rooted_io_error)?;
+        ensure_visible_directory(&projects_directory, &projects_root)?;
         ensure_visible_directory(&media_directory, &media_root)?;
         ensure_visible_directory(&recordings_directory, &recordings_root)?;
         ensure_visible_directory(&studio_directory, &studio_root)?;
@@ -332,6 +361,8 @@ impl MacOsNativeDesktopBackend {
         Ok(Self {
             capture: CaptureLifecycle::Ready(Box::new(source)),
             installation_secret,
+            projects_root,
+            projects_directory,
             media_root,
             media_directory,
             recordings_root,
@@ -371,6 +402,10 @@ impl MacOsNativeDesktopBackend {
         ensure_visible_directory(&self.media_directory, &self.media_root)?;
         ensure_visible_directory(&self.recordings_directory, &self.recordings_root)?;
         ensure_visible_directory(&self.studio_directory, &self.studio_root)
+    }
+
+    fn ensure_projects_directory_visible(&self) -> Result<(), NativeDesktopBackendError> {
+        ensure_visible_directory(&self.projects_directory, &self.projects_root)
     }
 
     fn ensure_export_directories_visible(&self) -> Result<(), NativeDesktopBackendError> {
@@ -625,6 +660,15 @@ impl MacOsNativeDesktopBackend {
         let export_path = self.export_root.join(&export_relative);
         let source_text = path_text(&artifact.path)?;
         let export_text = path_text(&export_path)?;
+        let studio_project = artifact
+            .studio_project
+            .as_ref()
+            .map(|project| self.authenticate_studio_project(project))
+            .transpose()?;
+        let studio_project_text = studio_project
+            .as_ref()
+            .map(|project| path_text(&project.source))
+            .transpose()?;
         let duration_ms = artifact.duration_ns.div_ceil(1_000_000).max(1);
         let response = NativeCaptureArtifact {
             recording_token,
@@ -634,6 +678,7 @@ impl MacOsNativeDesktopBackend {
             bytes_written: artifact.bytes,
             media_path: source_text,
             editable_webm_output_path: Some(export_text),
+            studio_project_path: studio_project_text,
         };
         self.artifact = Some(StoredArtifact {
             token: artifact_token,
@@ -645,8 +690,45 @@ impl MacOsNativeDesktopBackend {
             source_sha256,
             export: export_path,
             export_relative,
+            studio_project,
         });
         Ok(response)
+    }
+
+    fn authenticate_studio_project(
+        &self,
+        project: &StudioProjectArtifact,
+    ) -> Result<StoredStudioProject, NativeDesktopBackendError> {
+        self.ensure_projects_directory_visible()?;
+        let relative = project
+            .path
+            .strip_prefix(&self.projects_root)
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?
+            .to_path_buf();
+        if relative.components().count() != 1
+            || relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("studio-project")
+        {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let mut source = self
+            .projects_directory
+            .open_regular_file(&relative)
+            .map_err(map_rooted_io_error)?;
+        let metadata = source.metadata();
+        if metadata.size_bytes() != project.bytes {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let sha256 = sha256_rooted_file(&mut source, metadata.identity(), metadata.size_bytes())?;
+        if sha256 != project.sha256 {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        self.ensure_projects_directory_visible()?;
+        Ok(StoredStudioProject {
+            source: project.path.clone(),
+        })
     }
 }
 
@@ -1002,8 +1084,9 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         let worker_start_value = match recording {
             PendingRecordingGraph::ScreenOnly(recording) => {
                 if request.mode == RecorderMode::Studio {
-                    let studio = match new_studio_recording(
+                    let mut studio = match new_studio_recording(
                         &self.studio_root,
+                        &self.projects_root,
                         frame_spec,
                         request.frame_rate,
                         StudioOptionalTracks::default(),
@@ -1062,6 +1145,27 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                         self.cleanup_recording_output(&output);
                         return Err(primary_error);
                     }
+                    if let Err(primary_error) = studio.capture_started() {
+                        let (_, screen_teardown_confirmed, _) =
+                            classify_screen_stop(source.stop_and_drain_frames());
+                        let recorder_teardown_confirmed = recording.abort().is_ok();
+                        let studio_teardown_confirmed = studio.abort().is_ok();
+                        let teardown_confirmed = screen_teardown_confirmed
+                            && recorder_teardown_confirmed
+                            && studio_teardown_confirmed;
+                        if teardown_confirmed {
+                            self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                                source,
+                                system_audio,
+                                observed_topology_generation,
+                                snapshot,
+                            }));
+                        } else {
+                            self.capture = CaptureLifecycle::Poisoned;
+                        }
+                        self.cleanup_recording_output(&output);
+                        return Err(primary_error);
+                    }
                     WorkerStart::Studio(Box::new(ScreenStudioWorkerStart {
                         source,
                         recording,
@@ -1100,6 +1204,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                 let mut studio = if request.mode == RecorderMode::Studio {
                     match new_studio_recording(
                         &self.studio_root,
+                        &self.projects_root,
                         frame_spec,
                         request.frame_rate,
                         StudioOptionalTracks {
@@ -1181,6 +1286,34 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                         recorder_teardown_confirmed && studio_teardown_confirmed,
                     ) && audio_teardown_confirmed
                     {
+                        self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
+                            source,
+                            system_audio,
+                            observed_topology_generation,
+                            snapshot,
+                        }));
+                    } else {
+                        self.capture = CaptureLifecycle::Poisoned;
+                    }
+                    self.cleanup_recording_output(&output);
+                    return Err(primary_error);
+                }
+                if let Some(studio_recording) = studio.as_mut()
+                    && let Err(primary_error) = studio_recording.capture_started()
+                {
+                    let (_, screen_teardown_confirmed, _) =
+                        classify_screen_stop(source.stop_and_drain_frames());
+                    let (_, audio_teardown_confirmed, _) =
+                        classify_audio_stop(system_audio.stop_and_drain_chunks());
+                    let recorder_teardown_confirmed = recording.abort().is_ok();
+                    let studio_teardown_confirmed =
+                        studio.take().is_none_or(|studio| studio.abort().is_ok());
+                    let teardown_confirmed = all_av_teardown_confirmed(
+                        screen_teardown_confirmed,
+                        audio_teardown_confirmed,
+                        recorder_teardown_confirmed && studio_teardown_confirmed,
+                    );
+                    if teardown_confirmed {
                         self.capture = CaptureLifecycle::Ready(Box::new(SessionSource {
                             source,
                             system_audio,
@@ -2065,14 +2198,16 @@ fn session_power_monitor() -> Result<SystemPowerMonitor, NativeDesktopBackendErr
 }
 
 fn new_studio_recording(
-    root: &Path,
+    originals_root: &Path,
+    projects_root: &Path,
     screen: VideoFrameSpec,
     frame_rate: u16,
     optional: StudioOptionalTracks,
 ) -> Result<DesktopStudioRecording, NativeDesktopBackendError> {
     let random = SystemRandom::new();
     DesktopStudioRecording::start(
-        root,
+        originals_root,
+        projects_root,
         StudioRecordingIdentity {
             project: random_array(&random)?,
             clock: random_array(&random)?,
@@ -2658,11 +2793,14 @@ mod tests {
                 "frame-native-export-{label}-{}",
                 encode_hex(&nonce)
             ));
+            let projects_root = root.join("projects");
             let media_root = root.join("media");
             let export_root = root.join("exports");
             fs::create_dir(&root).expect("fixture root");
+            fs::create_dir(&projects_root).expect("fixture projects root");
             fs::create_dir(&media_root).expect("fixture media root");
             fs::create_dir(&export_root).expect("fixture export root");
+            let projects_directory = RootedDir::bind(&projects_root).expect("bind projects root");
             let media_directory = RootedDir::bind(&media_root).expect("bind media root");
             let recordings_root = media_root.join(RECORDINGS_DIRECTORY);
             let recordings_directory = media_directory
@@ -2734,6 +2872,8 @@ mod tests {
                     new_session_source(&TEST_INSTALLATION_SECRET).expect("test source"),
                 )),
                 installation_secret: Zeroizing::new(TEST_INSTALLATION_SECRET),
+                projects_root,
+                projects_directory,
                 media_root,
                 media_directory,
                 recordings_root,
@@ -2759,6 +2899,7 @@ mod tests {
                     source_sha256: sha256_bytes(EXPORT_FIXTURE_BYTES),
                     export: output.clone(),
                     export_relative,
+                    studio_project: None,
                 }),
             };
             Self {
@@ -2781,6 +2922,39 @@ mod tests {
     fn backend_and_worker_are_sendable() {
         assert_send::<MacOsNativeDesktopBackend>();
         assert_send::<ScreenRecording>();
+    }
+
+    #[test]
+    fn studio_project_handle_is_bound_to_the_pinned_root_and_exact_digest() {
+        let fixture = ExportFixture::new("studio-project-handle");
+        let relative = PathBuf::from("recording.studio-project");
+        let bytes = b"authenticated canonical Studio project";
+        let mut file = fixture
+            .backend
+            .projects_directory
+            .create_new_file(&relative)
+            .expect("create Studio project");
+        file.file_mut()
+            .write_all(bytes)
+            .expect("write Studio project");
+        file.sync().expect("sync Studio project");
+        drop(file);
+        let project = StudioProjectArtifact {
+            path: fixture.backend.projects_root.join(&relative),
+            bytes: bytes.len() as u64,
+            sha256: sha256_bytes(bytes),
+        };
+        let stored = fixture
+            .backend
+            .authenticate_studio_project(&project)
+            .expect("authenticated project handle");
+        assert_eq!(stored.source, project.path);
+
+        fs::write(&project.path, vec![b'X'; bytes.len()]).expect("replace project bytes");
+        assert!(matches!(
+            fixture.backend.authenticate_studio_project(&project),
+            Err(NativeDesktopBackendError::Filesystem)
+        ));
     }
 
     #[test]
@@ -2867,6 +3041,8 @@ mod tests {
         let mut backend = MacOsNativeDesktopBackend {
             capture: CaptureLifecycle::Ready(Box::new(session)),
             installation_secret: Zeroizing::new(TEST_INSTALLATION_SECRET),
+            projects_root: PathBuf::from("/private/tmp"),
+            projects_directory: test_rooted_directory(),
             media_root: PathBuf::from("/private/tmp"),
             media_directory: test_rooted_directory(),
             recordings_root: PathBuf::from("/private/tmp"),
@@ -2935,6 +3111,8 @@ mod tests {
                 system_audio_meter: Arc::new(AtomicU16::new(0)),
             }),
             installation_secret: Zeroizing::new(TEST_INSTALLATION_SECRET),
+            projects_root: PathBuf::from("/private/tmp"),
+            projects_directory: test_rooted_directory(),
             media_root: PathBuf::from("/private/tmp"),
             media_directory: test_rooted_directory(),
             recordings_root: PathBuf::from("/private/tmp"),

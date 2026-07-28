@@ -301,6 +301,10 @@ pub struct NativeCaptureArtifact {
     pub bytes_written: u64,
     pub media_path: String,
     pub editable_webm_output_path: Option<String>,
+    /// Native-only canonical Studio document. The runtime validates and
+    /// retains it as Rust authority; it is never serialized into the WebView
+    /// artifact summary.
+    pub studio_project_path: Option<String>,
 }
 
 impl fmt::Debug for NativeCaptureArtifact {
@@ -319,6 +323,10 @@ impl fmt::Debug for NativeCaptureArtifact {
                     .editable_webm_output_path
                     .as_ref()
                     .map(|_| "<redacted>"),
+            )
+            .field(
+                "studio_project_path",
+                &self.studio_project_path.as_ref().map(|_| "<redacted>"),
             )
             .finish()
     }

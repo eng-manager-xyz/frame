@@ -283,6 +283,7 @@ struct NativeRecordingAuthority {
     recording_token: String,
     catalog_generation: u64,
     target_token: String,
+    mode: RecorderMode,
 }
 
 impl fmt::Debug for NativeRecordingAuthority {
@@ -292,6 +293,7 @@ impl fmt::Debug for NativeRecordingAuthority {
             .field("recording_token", &"<redacted>")
             .field("catalog_generation", &self.catalog_generation)
             .field("target_token", &"<redacted>")
+            .field("mode", &self.mode)
             .finish()
     }
 }
@@ -301,6 +303,7 @@ struct NativeArtifactAuthority {
     summary: CaptureArtifactSummary,
     media_path: ValidatedPath,
     export_path: Option<ValidatedPath>,
+    studio_project_path: Option<ValidatedPath>,
 }
 
 impl fmt::Debug for NativeArtifactAuthority {
@@ -310,6 +313,7 @@ impl fmt::Debug for NativeArtifactAuthority {
             .field("summary", &self.summary)
             .field("media_path", &self.media_path)
             .field("export_path", &self.export_path)
+            .field("studio_project_path", &self.studio_project_path)
             .finish()
     }
 }
@@ -367,6 +371,7 @@ pub struct DesktopRuntime {
     selected_capture_target: Option<CaptureTargetSummary>,
     native_recording: Option<NativeRecordingAuthority>,
     native_artifact: Option<NativeArtifactAuthority>,
+    native_project_paths: PathPolicy,
     native_media_paths: PathPolicy,
     native_export_paths: PathPolicy,
     settings: DesktopSettingsSnapshot,
@@ -395,6 +400,14 @@ impl DesktopRuntime {
         session_nonce: &str,
     ) -> Result<Self, DesktopRuntimeError> {
         let backend_session = SessionId::new(format!("backend-{session_nonce}"))?;
+        let native_project_paths = PathPolicy::empty().allow_root(
+            &roots.projects,
+            RootAccess {
+                read: true,
+                write: false,
+                delete: false,
+            },
+        )?;
         let native_media_paths = PathPolicy::empty().allow_root(
             &roots.media,
             RootAccess {
@@ -493,6 +506,7 @@ impl DesktopRuntime {
             selected_capture_target: None,
             native_recording: None,
             native_artifact: None,
+            native_project_paths,
             native_media_paths,
             native_export_paths,
             settings: DesktopSettingsSnapshot {
@@ -1212,6 +1226,7 @@ impl DesktopRuntime {
                     recording_token: outcome.recording_token,
                     catalog_generation: outcome.catalog_generation,
                     target_token: outcome.target_token,
+                    mode: self.settings.mode,
                 });
                 self.native_artifact = None;
                 self.lifecycle.overlay_visible = true;
@@ -2006,6 +2021,21 @@ impl DesktopRuntime {
         {
             return Err(ExecutionFailure::invalid_backend_response());
         }
+        let studio_project_path = artifact
+            .studio_project_path
+            .as_deref()
+            .map(|path| {
+                self.native_project_paths
+                    .validate(path, PathUse::ProjectRead)
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())
+            })
+            .transpose()?;
+        match (recording.mode, studio_project_path.is_some()) {
+            (RecorderMode::Studio, true) | (RecorderMode::Instant, false) => {}
+            (RecorderMode::Studio, false) | (RecorderMode::Instant, true) => {
+                return Err(ExecutionFailure::invalid_backend_response());
+            }
+        }
         let summary = CaptureArtifactSummary {
             schema_version: CAPTURE_ARTIFACT_SUMMARY_VERSION,
             artifact_token: artifact.artifact_token,
@@ -2020,6 +2050,7 @@ impl DesktopRuntime {
             summary,
             media_path,
             export_path,
+            studio_project_path,
         })
     }
 
@@ -2525,6 +2556,7 @@ mod tests {
                         "exports",
                         "capture-editable.webm",
                     ])),
+                    studio_project_path: None,
                 },
                 cancel_error: None,
                 cancel_failure: None,
@@ -3233,6 +3265,54 @@ mod tests {
         assert_eq!(
             backend.calls,
             ["enumerate", "select", "prepare", "start", "stop", "export"]
+        );
+    }
+
+    #[test]
+    fn native_studio_project_path_stays_inside_rust_authority() {
+        let runtime = native_runtime();
+        let backend = TestNativeBackend::new();
+        let studio_project_path =
+            absolute_test_path(&["frame", "projects", "recording.studio-project"]);
+        let recording = NativeRecordingAuthority {
+            recording_token: "recording-token-1".into(),
+            catalog_generation: 1,
+            target_token: "display-token-1".into(),
+            mode: RecorderMode::Studio,
+        };
+        let mut artifact = backend.stop_artifact.clone();
+        artifact.studio_project_path = Some(studio_project_path.clone());
+        let authority = runtime
+            .validate_native_artifact(&recording, artifact.clone())
+            .expect("validated native Studio authority");
+        assert_eq!(
+            authority
+                .studio_project_path
+                .as_ref()
+                .expect("Studio project")
+                .as_path()
+                .to_string_lossy(),
+            studio_project_path
+        );
+        let public_json = serde_json::to_string(&authority.summary).expect("public summary");
+        assert!(!public_json.contains("studio-project"));
+        assert!(!format!("{authority:?}").contains("recording.studio-project"));
+
+        let mut missing_project = artifact.clone();
+        missing_project.studio_project_path = None;
+        assert!(
+            runtime
+                .validate_native_artifact(&recording, missing_project)
+                .is_err()
+        );
+        let instant_recording = NativeRecordingAuthority {
+            mode: RecorderMode::Instant,
+            ..recording
+        };
+        assert!(
+            runtime
+                .validate_native_artifact(&instant_recording, artifact)
+                .is_err()
         );
     }
 

@@ -58,6 +58,24 @@ pub(crate) struct WorkerCompletion {
     pub(crate) outcome: WorkerOutcome,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct StudioProjectArtifact {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
+}
+
+impl std::fmt::Debug for StudioProjectArtifact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StudioProjectArtifact")
+            .field("path", &"<redacted>")
+            .field("bytes", &self.bytes)
+            .field("sha256", &"<redacted>")
+            .finish()
+    }
+}
+
 pub(crate) enum WorkerOutcome {
     Finished(CompletedRecordingArtifact),
     Cancelled,
@@ -78,12 +96,26 @@ impl WorkerOutcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CompletedRecordingArtifact {
     pub(crate) path: std::path::PathBuf,
     pub(crate) bytes: u64,
     pub(crate) sha256: String,
     pub(crate) duration_ns: u64,
+    pub(crate) studio_project: Option<StudioProjectArtifact>,
+}
+
+impl std::fmt::Debug for CompletedRecordingArtifact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompletedRecordingArtifact")
+            .field("path", &"<redacted>")
+            .field("bytes", &self.bytes)
+            .field("sha256", &"<redacted>")
+            .field("duration_ns", &self.duration_ns)
+            .field("studio_project", &self.studio_project)
+            .finish()
+    }
 }
 
 impl From<ScreenRecordingArtifact> for CompletedRecordingArtifact {
@@ -93,6 +125,7 @@ impl From<ScreenRecordingArtifact> for CompletedRecordingArtifact {
             bytes: artifact.bytes,
             sha256: artifact.sha256,
             duration_ns: artifact.end_pts_ns.saturating_sub(artifact.first_pts_ns),
+            studio_project: None,
         }
     }
 }

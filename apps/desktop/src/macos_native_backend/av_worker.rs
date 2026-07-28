@@ -23,10 +23,10 @@ use frame_media::{
 };
 
 use super::{
-    DesktopStudioRecording, NativeDesktopBackendError, WORKER_IDLE_POLL, WorkerCompletion,
-    WorkerControl, WorkerOutcome, all_av_teardown_confirmed, diagnostic_delta, diagnostics_failed,
-    map_capture_error, map_recording_error, map_system_audio_error,
-    recording_finish_teardown_confirmed, system_audio_diagnostic_delta,
+    CompletedRecordingArtifact, DesktopStudioRecording, NativeDesktopBackendError,
+    WORKER_IDLE_POLL, WorkerCompletion, WorkerControl, WorkerOutcome, all_av_teardown_confirmed,
+    diagnostic_delta, diagnostics_failed, map_capture_error, map_recording_error,
+    map_system_audio_error, recording_finish_teardown_confirmed, system_audio_diagnostic_delta,
     system_audio_diagnostics_failed,
 };
 
@@ -221,10 +221,14 @@ fn finish_screen_studio_recording(
     }
     match recording.finish(&CancellationToken::new()) {
         Ok(artifact) => match studio.finish() {
-            Ok(_) => WorkerOutcome::Finished(artifact.into()),
-            Err(error) => WorkerOutcome::Failed {
-                error,
-                teardown_confirmed: false,
+            Ok(studio) => {
+                let mut completed = CompletedRecordingArtifact::from(artifact);
+                completed.studio_project = Some(studio.project);
+                WorkerOutcome::Finished(completed)
+            }
+            Err(failure) => WorkerOutcome::Failed {
+                error: failure.error,
+                teardown_confirmed: failure.teardown_confirmed,
             },
         },
         Err(error) => {
@@ -629,10 +633,14 @@ fn finish_av_worker_recording(
             .map(DesktopStudioRecording::finish)
             .transpose()
         {
-            Ok(_) => WorkerOutcome::Finished(artifact.into()),
-            Err(error) => WorkerOutcome::Failed {
-                error,
-                teardown_confirmed: false,
+            Ok(studio) => {
+                let mut completed = CompletedRecordingArtifact::from(artifact);
+                completed.studio_project = studio.map(|artifact| artifact.project);
+                WorkerOutcome::Finished(completed)
+            }
+            Err(failure) => WorkerOutcome::Failed {
+                error: failure.error,
+                teardown_confirmed: failure.teardown_confirmed,
             },
         },
         Err(error) => WorkerOutcome::Failed {

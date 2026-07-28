@@ -35,9 +35,16 @@ system-audio samples feed independent bounded `NativeStudioRecording` branches
 whose encoded chunks seal recoverable temporary originals under the pinned
 private Studio root. Stop waits for both graphs; cancellation and failure drive
 both graphs to `Null`, and an unconfirmed Studio teardown poisons the native
-backend instead of claiming success. This is real release composition, but it
-does not yet commit the temporary assets, mint a Studio journal/project/edit
-plan, or feed the combined microphone/camera bridge into Studio. The
+backend instead of claiming success. The release path now creates a fenced
+filesystem journal before native capture, records graph/capture and per-asset
+power-loss boundaries, atomically commits each verified temporary track into
+the immutable originals namespace, and creates a canonical revision-one
+Editing project with an empty edit plan before recording-stop is acknowledged.
+The project file is re-opened through the pinned projects root, authenticated
+by size and SHA-256, and retained as Rust-only artifact authority; its path is
+not serialized into the WebView. This is real release composition, but it does
+not yet drive recovery/editor commands from that authority or feed the
+combined microphone/camera bridge into Studio. The
 artifact-backed Editable WebM copy/publication remains the flattened recorder
 output and is not an edit-aware Studio export. A separate narrow native adapter does execute
 the shared canonical plan for a clock-aligned screen original plus optional
@@ -191,10 +198,11 @@ Studio project, execute an edit plan, or inspect an exported artifact.
 The [local macOS display-recording runbook](../operations/macos-display-recording-local.md)
 can now exercise a real five-second display-video recording and byte-identical
 Editable WebM export. That makes the narrow recorder/export adapter functional;
-Studio mode additionally seals screen and optional system-audio temporary
-originals, but it still does not create a Studio project/journal, surface
-recovery in the desktop, interpret edits, or render a distribution master, so
-issue 27 remains open.
+Studio mode additionally commits screen and optional system-audio originals
+through a durable journal and creates an authenticated canonical Studio
+project. It still does not surface recovery in the desktop, interpret edits
+through the desktop editor, feed the combined microphone/camera bridge, or
+render a distribution master, so issue 27 remains open.
 
 Focused command:
 

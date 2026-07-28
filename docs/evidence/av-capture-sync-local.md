@@ -50,7 +50,9 @@ The macOS desktop composition still muxes `MacOsSystemAudioSource` with selected
 display/window/region video through the direct worker and computes a bounded
 coarse system-audio peak. In Studio mode that worker also sends the corrected
 screen and included system-audio samples to isolated recording branches under
-the private Studio root. It does not yet use `MacOsDeviceAvBridge`, so
+the private Studio root, commits those verified originals through the durable
+Studio journal, and publishes an authenticated canonical project to Rust-only
+desktop authority. It does not yet use `MacOsDeviceAvBridge`, so
 microphone/camera and mixed-audio outputs remain disconnected. Only Instant
 screen-only recording uses the normalized screen ingress/pump. The recorder
 health command is a bounded trigger at 100 ms, but
