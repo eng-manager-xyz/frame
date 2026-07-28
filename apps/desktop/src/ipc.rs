@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::instant_finalize_service::InstantFinalizeCapabilityState;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 3;
+pub const IPC_PROTOCOL_VERSION: u16 = 4;
 const MAX_PATH_BYTES: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +157,7 @@ pub enum CommandKind {
     EditorSave,
     EditorPreview,
     ExportStart,
+    ExportPoll,
     ExportCancel,
     UploadStart,
     UploadPause,
@@ -361,6 +362,7 @@ pub enum IpcCommand {
         output_path: String,
         profile: ExportProfile,
     },
+    ExportPoll,
     ExportCancel {
         intent_id: String,
     },
@@ -448,6 +450,7 @@ impl IpcCommand {
             Self::EditorSave { .. } => CommandKind::EditorSave,
             Self::EditorPreview { .. } => CommandKind::EditorPreview,
             Self::ExportStart { .. } => CommandKind::ExportStart,
+            Self::ExportPoll => CommandKind::ExportPoll,
             Self::ExportCancel { .. } => CommandKind::ExportCancel,
             Self::UploadStart { .. } => CommandKind::UploadStart,
             Self::UploadPause { .. } => CommandKind::UploadPause,
@@ -655,6 +658,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "recorder_start",
     "recorder_pause",
     "recorder_resume",
+    "recorder_input_set",
     "recorder_stop",
     "recorder_cancel",
     "recorder_poll",
@@ -667,7 +671,9 @@ const KNOWN_COMMANDS: &[&str] = &[
     "editor_open",
     "editor_apply",
     "editor_save",
+    "editor_preview",
     "export_start",
+    "export_poll",
     "export_cancel",
     "upload_start",
     "upload_pause",
@@ -1129,6 +1135,7 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
                 | CommandKind::EditorSave
                 | CommandKind::EditorPreview
                 | CommandKind::ExportStart
+                | CommandKind::ExportPoll
                 | CommandKind::ExportCancel
                 | CommandKind::UploadStart
                 | CommandKind::UploadPause
@@ -1138,7 +1145,7 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
         WindowRole::Export => {
             matches!(
                 command,
-                CommandKind::ExportStart | CommandKind::ExportCancel
+                CommandKind::ExportStart | CommandKind::ExportPoll | CommandKind::ExportCancel
             )
         }
         WindowRole::Settings => {
@@ -1361,6 +1368,41 @@ mod tests {
             WindowRole::Overlay,
         ] {
             assert!(!command_allowed(role, CommandKind::RecorderPoll));
+        }
+    }
+
+    #[test]
+    fn export_poll_is_bounded_and_export_scoped() {
+        assert_eq!(
+            serde_json::to_value(IpcCommand::ExportPoll).expect("serialize poll"),
+            serde_json::json!({ "command": "export_poll" }),
+            "the poll command has no WebView-controlled token or unbounded payload"
+        );
+        assert!(
+            serde_json::from_value::<IpcCommand>(serde_json::json!({
+                "command": "export_poll",
+                "payload": { "repeat": 100 }
+            }))
+            .is_err()
+        );
+        let envelope = request(IpcCommand::ExportPoll, 1, "request-export-poll");
+        let json = serde_json::to_string(&envelope).expect("serialize poll envelope");
+        assert_eq!(
+            decode_request(&json).expect("decode poll envelope"),
+            envelope,
+            "the production decoder must recognize the allowlisted poll command"
+        );
+        for role in [WindowRole::Editor, WindowRole::Export] {
+            assert!(command_allowed(role, CommandKind::ExportPoll));
+        }
+        for role in [
+            WindowRole::Main,
+            WindowRole::Recorder,
+            WindowRole::Recovery,
+            WindowRole::Settings,
+            WindowRole::Overlay,
+        ] {
+            assert!(!command_allowed(role, CommandKind::ExportPoll));
         }
     }
 

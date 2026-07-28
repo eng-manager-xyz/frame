@@ -21,6 +21,7 @@ mod studio_export;
 mod studio_projects;
 mod studio_recorder;
 mod studio_recovery;
+mod studio_render;
 
 use std::{
     collections::BTreeMap,
@@ -76,6 +77,7 @@ use self::studio_recorder::{
     DesktopStudioRecording, StudioOptionalTracks, StudioRecordingIdentity,
 };
 use self::studio_recovery::{archive_unstarted_project, recover_project};
+use self::studio_render::NativeStudioRenderController;
 use crate::native_screen_worker::{
     CompletedRecordingArtifact, NativeScreenSource, ScreenWorkerStart, StudioProjectArtifact,
     WorkerCompletion, WorkerControl, WorkerOutcome,
@@ -96,12 +98,13 @@ use crate::{
     NativeRecordingStartOutcome, NativeRecordingStopOutcome, NativeRecordingTerminalFailure,
     NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest, NativeStudioEditApplyOutcome,
     NativeStudioEditApplyRequest, NativeStudioEditSaveOutcome, NativeStudioEditSaveRequest,
-    NativeStudioExportOutcome, NativeStudioExportRequest, NativeStudioPreviewAudioState,
-    NativeStudioPreviewOutcome, NativeStudioPreviewRequest, NativeStudioProjectCatalog,
-    NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest, NativeStudioProjectSummary,
-    NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
-    NativeStudioRecoveryOutcome, NativeStudioRecoveryRequest, NativeTargetSelectionOutcome,
-    NativeTargetSelectionRequest, PathUse, RecorderMode, STUDIO_PROJECT_CATALOG_VERSION,
+    NativeStudioExportOutcome, NativeStudioExportPollOutcome, NativeStudioExportRequest,
+    NativeStudioExportStartOutcome, NativeStudioPreviewAudioState, NativeStudioPreviewOutcome,
+    NativeStudioPreviewRequest, NativeStudioProjectCatalog, NativeStudioProjectOpenOutcome,
+    NativeStudioProjectOpenRequest, NativeStudioProjectSummary, NativeStudioRecoveryArchiveOutcome,
+    NativeStudioRecoveryInspection, NativeStudioRecoveryOutcome, NativeStudioRecoveryRequest,
+    NativeTargetSelectionOutcome, NativeTargetSelectionRequest, PathUse, RecorderMode,
+    STUDIO_PROJECT_CATALOG_VERSION,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
 };
 
@@ -346,6 +349,7 @@ pub struct MacOsNativeDesktopBackend {
     studio_catalog_generation: u64,
     studio_projects: BTreeMap<String, DiscoveredStudioProject>,
     active_editor: Option<ActiveStudioEditor>,
+    studio_render: NativeStudioRenderController,
 }
 
 impl MacOsNativeDesktopBackend {
@@ -415,6 +419,8 @@ impl MacOsNativeDesktopBackend {
             .map_err(|_| NativeDesktopBackendError::Filesystem)?;
         let installation_secret = Zeroizing::new(*installation_secret.as_bytes());
         let source = new_session_source(&installation_secret)?;
+        let studio_render =
+            NativeStudioRenderController::new(&projects_root, &export_root, &export_staging_root)?;
         Ok(Self {
             capture: CaptureLifecycle::Ready(Box::new(source)),
             installation_secret,
@@ -441,6 +447,7 @@ impl MacOsNativeDesktopBackend {
             studio_catalog_generation: 0,
             studio_projects: BTreeMap::new(),
             active_editor: None,
+            studio_render,
         })
     }
 
@@ -2350,6 +2357,91 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         })
     }
 
+    fn start_studio_export(
+        &mut self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<NativeStudioExportStartOutcome, NativeDesktopBackendError> {
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        self.ensure_export_directories_visible()?;
+        if !request.output_path.requires_no_follow()
+            || request.output_path.usage() != PathUse::ExportWrite
+        {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let editor = self
+            .active_editor
+            .as_ref()
+            .ok_or(NativeDesktopBackendError::Unavailable)?;
+        let manifest = editor.clean_manifest(request.project_revision)?;
+        let discovered = self
+            .studio_projects
+            .values()
+            .find(|project| project.project_id() == manifest.id)
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        let (authenticated, _) = authenticate_ready_project(&self.projects_directory, discovered)?;
+        if authenticated != manifest {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        let prepared = PreparedStudioExport::prepare(
+            &self.studio_root,
+            &self.studio_directory,
+            &authenticated,
+            request.profile,
+        )?;
+        let output_relative = request
+            .output_path
+            .as_path()
+            .strip_prefix(&self.export_root)
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?
+            .to_path_buf();
+        if output_relative.components().count() != 1
+            || output_relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_none_or(|extension| !extension.eq_ignore_ascii_case(prepared.extension()))
+        {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+        let staging_token = self.fresh_token("studio-export")?;
+        let staging_relative =
+            PathBuf::from(format!(".frame-{staging_token}.{}", prepared.extension()));
+        let outcome = self.studio_render.start(
+            request,
+            &authenticated,
+            prepared,
+            output_relative,
+            staging_relative,
+        );
+        if outcome.is_err() && !self.studio_render.is_active() {
+            self.refresh_studio_projects()?;
+        }
+        outcome
+    }
+
+    fn poll_studio_export(
+        &mut self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<NativeStudioExportPollOutcome, NativeDesktopBackendError> {
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        self.ensure_export_directories_visible()?;
+        let outcome = self.studio_render.poll(request);
+        if !self.studio_render.is_active() {
+            self.refresh_studio_projects()?;
+        }
+        outcome
+    }
+
+    fn cancel_studio_export(
+        &mut self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
+        self.studio_render.cancel(request)?;
+        self.refresh_studio_projects()?;
+        Ok(())
+    }
+
     fn export_studio_project(
         &mut self,
         request: &NativeStudioExportRequest,
@@ -3856,6 +3948,12 @@ mod tests {
                     )
                     .expect("validated output path"),
             };
+            let studio_render = NativeStudioRenderController::new(
+                &projects_root,
+                &export_root,
+                &export_staging_root,
+            )
+            .expect("test Studio renderer");
             let backend = MacOsNativeDesktopBackend {
                 capture: CaptureLifecycle::Ready(Box::new(
                     new_session_source(&TEST_INSTALLATION_SECRET).expect("test source"),
@@ -3893,6 +3991,7 @@ mod tests {
                 studio_catalog_generation: 0,
                 studio_projects: BTreeMap::new(),
                 active_editor: None,
+                studio_render,
             };
             Self {
                 root,
@@ -4054,6 +4153,12 @@ mod tests {
             studio_catalog_generation: 0,
             studio_projects: BTreeMap::new(),
             active_editor: None,
+            studio_render: NativeStudioRenderController::new(
+                Path::new("/private/tmp"),
+                Path::new("/private/tmp"),
+                Path::new("/private/tmp"),
+            )
+            .expect("test Studio renderer"),
         };
 
         assert!(backend.retire_session(true));
@@ -4129,6 +4234,12 @@ mod tests {
             studio_catalog_generation: 0,
             studio_projects: BTreeMap::new(),
             active_editor: None,
+            studio_render: NativeStudioRenderController::new(
+                Path::new("/private/tmp"),
+                Path::new("/private/tmp"),
+                Path::new("/private/tmp"),
+            )
+            .expect("test Studio renderer"),
         };
 
         assert!(matches!(

@@ -418,6 +418,10 @@ pub(super) fn random_operation_id() -> Result<StudioOperationId, NativeDesktopBa
     StudioOperationId::from_csprng(random_identity()?).map_err(map_studio_error)
 }
 
+pub(super) fn random_export_id() -> Result<frame_media::StudioExportId, NativeDesktopBackendError> {
+    frame_media::StudioExportId::from_csprng(random_identity()?).map_err(map_studio_error)
+}
+
 pub(super) fn random_worker_id() -> Result<StudioWorkerId, NativeDesktopBackendError> {
     StudioWorkerId::from_csprng(random_identity()?).map_err(map_studio_error)
 }

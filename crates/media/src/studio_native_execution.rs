@@ -9,14 +9,12 @@
 //! layouts fail closed until their native compositor is connected.
 
 #[cfg(unix)]
-use std::io::{Seek, SeekFrom};
-#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::{
     collections::BTreeSet,
     fmt,
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -780,12 +778,36 @@ pub fn render_studio_export_with_edits_and_progress(
 /// presentation metadata only and is never opened by this function.
 #[cfg(unix)]
 pub fn render_studio_export_with_edits_preopened(
+    sources: NativeStudioAlignedFileSources,
+    artifact_path: &Path,
+    output: File,
+    plan: &CanonicalEditPlan,
+    profile: NativeStudioExportProfile,
+    cancellation: &CancellationToken,
+) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
+    render_studio_export_with_edits_preopened_and_progress(
+        sources,
+        artifact_path,
+        output,
+        plan,
+        profile,
+        cancellation,
+        |_| {},
+    )
+}
+
+/// Render into a caller-owned regular file while publishing bounded,
+/// monotonic progress. The callback follows the same event bound as the
+/// path-based adapter and never receives media bytes.
+#[cfg(unix)]
+pub fn render_studio_export_with_edits_preopened_and_progress(
     mut sources: NativeStudioAlignedFileSources,
     artifact_path: &Path,
     mut output: File,
     plan: &CanonicalEditPlan,
     profile: NativeStudioExportProfile,
     cancellation: &CancellationToken,
+    progress: impl FnMut(NativeStudioRenderProgress),
 ) -> Result<NativeStudioEditedExportArtifact, NativeExecutionError> {
     let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
     require_export_codec_approval(profile)?;
@@ -814,7 +836,7 @@ pub fn render_studio_export_with_edits_preopened(
         return Err(NativeExecutionError::InvalidGraph);
     }
     let total_windows = executor.windows().len();
-    let mut progress = NativeStudioProgressEmitter::new(|_| {}, total_windows);
+    let mut progress = NativeStudioProgressEmitter::new(progress, total_windows);
     progress.emit(RenderPhase::Preparing, 0, 0)?;
     let canonical = canonicalize_file_sources(&mut sources)?;
     let descriptor = output.as_raw_fd();
@@ -2168,7 +2190,10 @@ fn validate_edited_output(
         .map_err(|_| NativeExecutionError::ResourceLimit)?;
     let mut prefix = vec![0_u8; probe_len];
     File::open(output)
-        .and_then(|mut file| file.read_exact(&mut prefix))
+        .and_then(|mut file| {
+            file.seek(SeekFrom::Start(0))?;
+            file.read_exact(&mut prefix)
+        })
         .map_err(|_| NativeExecutionError::Filesystem)?;
     let config = studio_encoding_config(profile);
     let container_marker = config.container_marker;
@@ -2184,10 +2209,12 @@ fn validate_edited_output(
     if !playable_container_marker || !video_marker || (audio_tracks > 0 && !audio_marker) {
         return Err(NativeExecutionError::InvalidOutput);
     }
+    rewind_readable_output(output)?;
     let (video, audio) = probe_edited_output(output, audio_tracks, cancellation)?;
     if let Some(expected) = approved_profile {
         validate_approved_output_caps(&video, audio, expected, audio_tracks)?;
     }
+    rewind_readable_output(output)?;
     Ok(NativeStudioEditedExportArtifact {
         profile,
         approved_profile,
@@ -2201,6 +2228,13 @@ fn validate_edited_output(
         execution_windows,
         plan_digest,
     })
+}
+
+fn rewind_readable_output(output: &Path) -> Result<(), NativeExecutionError> {
+    File::open(output)
+        .and_then(|mut file| file.seek(SeekFrom::Start(0)))
+        .map(|_| ())
+        .map_err(|_| NativeExecutionError::Filesystem)
 }
 
 fn probe_edited_output(

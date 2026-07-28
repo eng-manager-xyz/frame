@@ -358,6 +358,12 @@ impl AssetChecksum {
             .map_err(|_| StudioError::InvalidChecksum)
     }
 
+    pub fn from_hex(value: &str) -> Result<Self, StudioError> {
+        Sha256Digest::from_hex(value)
+            .map(Self)
+            .map_err(|_| StudioError::InvalidChecksum)
+    }
+
     pub fn from_content(bytes: &[u8]) -> Self {
         Self(strong_sha256(bytes))
     }
@@ -9040,7 +9046,7 @@ impl RenderRecoveryReservation {
     }
 }
 
-trait RenderJournalLease {
+trait RenderJournalLease: Send {
     fn advance(
         &mut self,
         boundary: JournalBoundary,
@@ -9048,7 +9054,7 @@ trait RenderJournalLease {
     ) -> Result<(), StudioError>;
 }
 
-impl<P: StudioJournalPort> RenderJournalLease for DurableStudioJournal<P> {
+impl<P: StudioJournalPort + Send> RenderJournalLease for DurableStudioJournal<P> {
     fn advance(
         &mut self,
         boundary: JournalBoundary,
@@ -9134,7 +9140,7 @@ impl std::ops::Deref for AuthorizedRenderDispatch {
     }
 }
 
-impl<P: StudioJournalPort + 'static> DurableStudioJournal<P> {
+impl<P: StudioJournalPort + Send + 'static> DurableStudioJournal<P> {
     /// Consumes a validated durable journal and mints the only authorization
     /// accepted by `StudioRenderCoordinator::start` or restart recovery.
     pub fn into_render_authorization(self) -> Result<RenderJournalAuthorization, StudioError> {
@@ -9205,6 +9211,13 @@ impl<R: StudioRendererPort> StudioRenderCoordinator<R> {
 
     pub fn into_renderer(self) -> R {
         self.renderer
+    }
+
+    /// Grants the owning platform coordinator narrow access to adapter-local
+    /// reservation and terminal-session bookkeeping. Durable render state
+    /// remains owned and validated by this coordinator.
+    pub fn renderer_mut(&mut self) -> &mut R {
+        &mut self.renderer
     }
 
     pub fn start(

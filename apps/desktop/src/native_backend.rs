@@ -877,6 +877,118 @@ impl NativeStudioExportOutcome {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub enum NativeStudioExportStartOutcome {
+    Running { progress_basis_points: u16 },
+    Completed(NativeStudioExportOutcome),
+}
+
+impl NativeStudioExportStartOutcome {
+    pub fn validate_for(
+        &self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        match self {
+            Self::Running {
+                progress_basis_points,
+            } if *progress_basis_points <= 10_000 => Ok(()),
+            Self::Completed(outcome) => outcome.validate_for(request),
+            Self::Running { .. } => Err(NativeDesktopContractError::InvalidStudioExport),
+        }
+    }
+}
+
+impl fmt::Debug for NativeStudioExportStartOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Running {
+                progress_basis_points,
+            } => formatter
+                .debug_struct("Running")
+                .field("progress_basis_points", progress_basis_points)
+                .finish(),
+            Self::Completed(outcome) => formatter.debug_tuple("Completed").field(outcome).finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum NativeStudioExportPollOutcome {
+    Running {
+        project_revision: u64,
+        profile: ExportProfile,
+        progress_basis_points: u16,
+    },
+    Completed(NativeStudioExportOutcome),
+    Failed {
+        project_revision: u64,
+        profile: ExportProfile,
+        error: NativeDesktopBackendError,
+        cleanup_confirmed: bool,
+    },
+}
+
+impl NativeStudioExportPollOutcome {
+    pub fn validate_for(
+        &self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<(), NativeDesktopContractError> {
+        match self {
+            Self::Running {
+                project_revision,
+                profile,
+                progress_basis_points,
+            } if *project_revision == request.project_revision
+                && *profile == request.profile
+                && *progress_basis_points <= 10_000 =>
+            {
+                Ok(())
+            }
+            Self::Completed(outcome) => outcome.validate_for(request),
+            Self::Failed {
+                project_revision,
+                profile,
+                ..
+            } if *project_revision == request.project_revision && *profile == request.profile => {
+                Ok(())
+            }
+            Self::Running { .. } | Self::Failed { .. } => {
+                Err(NativeDesktopContractError::InvalidStudioExport)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for NativeStudioExportPollOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Running {
+                project_revision,
+                profile,
+                progress_basis_points,
+            } => formatter
+                .debug_struct("Running")
+                .field("project_revision", project_revision)
+                .field("profile", profile)
+                .field("progress_basis_points", progress_basis_points)
+                .finish(),
+            Self::Completed(outcome) => formatter.debug_tuple("Completed").field(outcome).finish(),
+            Self::Failed {
+                project_revision,
+                profile,
+                error,
+                cleanup_confirmed,
+            } => formatter
+                .debug_struct("Failed")
+                .field("project_revision", project_revision)
+                .field("profile", profile)
+                .field("error", error)
+                .field("cleanup_confirmed", cleanup_confirmed)
+                .finish(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeStudioPreviewAudioState {
     pub source_available: bool,
@@ -1134,6 +1246,28 @@ pub trait NativeDesktopBackend {
         &mut self,
         _request: &NativeStudioExportRequest,
     ) -> Result<NativeStudioExportOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
+    fn start_studio_export(
+        &mut self,
+        request: &NativeStudioExportRequest,
+    ) -> Result<NativeStudioExportStartOutcome, NativeDesktopBackendError> {
+        self.export_studio_project(request)
+            .map(NativeStudioExportStartOutcome::Completed)
+    }
+
+    fn poll_studio_export(
+        &mut self,
+        _request: &NativeStudioExportRequest,
+    ) -> Result<NativeStudioExportPollOutcome, NativeDesktopBackendError> {
+        Err(NativeDesktopBackendError::Unavailable)
+    }
+
+    fn cancel_studio_export(
+        &mut self,
+        _request: &NativeStudioExportRequest,
+    ) -> Result<(), NativeDesktopBackendError> {
         Err(NativeDesktopBackendError::Unavailable)
     }
 

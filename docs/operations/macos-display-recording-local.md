@@ -103,9 +103,13 @@ To exercise Studio editing and distribution export:
 3. Select **Scan for recovery**, then **Open Studio project** for the ready
    entry. Apply any bounded
    trim/delete/split/speed/audio-gain changes, and save.
-4. Select **Export distribution MP4**. The synchronous native render must
-   finish at Completed and create `Frame-Studio-*.mp4` under `exports`.
-5. After the local run, remove the temporary LaunchServices setting:
+4. Select **Export distribution MP4**. The native render reports bounded
+   progress while the UI polls and must finish at Completed, creating
+   `frame-studio-*.mp4` under `exports`.
+5. Start another export and select **Cancel export** before completion. The UI
+   must return to Idle and neither the destination nor a matching private
+   staging partial may remain.
+6. After the local run, remove the temporary LaunchServices setting:
 
    ```sh
    launchctl unsetenv FRAME_NATIVE_H264_AAC_APPROVED
@@ -114,11 +118,14 @@ To exercise Studio editing and distribution export:
 The Studio export reauthenticates the current clean project revision and every
 immutable original, opens and hashes each source through the pinned Studio
 directory, and retains those descriptors while GStreamer reads them through
-`/dev/fd`. It recompiles the canonical edit plan, renders into a preopened inode
-under `exports/.frame-staging`, then publishes and rehashes that exact
-regular-file identity. Existing destinations, stale/dirty revisions, camera
-projects, replaced originals, unexpected extensions, and paths outside the
-export root fail closed.
+`/dev/fd`. It recompiles the canonical edit plan, durably reserves that exact
+render, renders into a preopened inode under `exports/.frame-staging`, then
+publishes and rehashes that exact regular-file identity. Progress and terminal
+output flow through the journal-fenced render coordinator. Cancellation is not
+acknowledged until the worker stops and exact partial absence is proven.
+Existing destinations, stale/dirty revisions, camera projects, replaced
+originals, unexpected extensions, and paths outside the export root fail
+closed.
 
 The sealed original is stored below the app data directory in
 `media/recordings`. The exported `Frame-*.webm` is stored below the same app
