@@ -5,8 +5,10 @@
 //! lossless stop tail, and GStreamer/WebM graph without bypassing the
 //! provider-neutral contracts.
 
+#[cfg(target_os = "macos")]
+use std::sync::mpsc::SyncSender;
 use std::{
-    sync::mpsc::{Receiver, SyncSender, TryRecvError},
+    sync::mpsc::{Receiver, TryRecvError},
     thread,
     time::{Duration, Instant},
 };
