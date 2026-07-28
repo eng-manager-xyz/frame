@@ -1,9 +1,10 @@
 # Studio Mode v1 contracts
 
 Status: provider-neutral contracts, durable filesystem adapters, the bounded
-native isolated-track encoder, the source-set-bound native preview engine, and
-exact aligned-source native export profiles are implemented. Desktop source
-composition, renderer-coordinator wiring, and protected parity evidence remain
+native isolated-track encoder, the source-set-bound native preview engine,
+journal-fenced desktop edit persistence, and exact aligned-source native export
+profiles are implemented. Desktop source composition,
+renderer-coordinator/export wiring, and protected parity evidence remain
 separate gates.
 
 ## Durable documents
@@ -208,6 +209,28 @@ persisted revision and handles both precommit and lost-acknowledgement states.
 The only archive operation is limited to a proven-empty `Created` or
 `RecordingGraphPrepared` session and descriptor-moves its journal without
 deleting a graph, media file, or project.
+
+The normal desktop edit path uses the same durable rules as recovery. Opening a
+ready project installs one Rust-owned `ActiveStudioEditor` from the
+descriptor-reauthenticated manifest. The WebView may submit only a bounded
+mutation plus the current editor revision. The adapter converts those inputs to
+exact rational operations, builds timeline coverage directly from immutable
+asset descriptors, and runs the sole `StudioTimelineCompiler` before
+committing a new in-memory draft revision. Invalid, overlapping, empty, or
+out-of-range edits leave the draft revision unchanged.
+
+Saving a dirty draft first reauthenticates the exact manifest and journal from
+the most recent opaque catalog. It takes a new journal-owner fence, writes an
+`EditSavePrepared` receipt whose digest binds the project identity, prior
+project revision, complete canonical edit document, and boundary, and then
+uses `EditSaveTicket` to compare and swap the complete next project manifest.
+Only after the project postcondition is exact does it write
+`EditSaveCommitted`, prove that the immutable asset records are unchanged, and
+remint the Studio catalog/token. Editor revisions fence multiple unsaved UI
+mutations independently from durable project revisions; save retains the
+editor revision while advancing the durable project revision exactly once.
+Any uncertain persistence outcome consumes the active editor authority and
+requires discovery or recovery before another mutation.
 
 ## One deterministic timeline
 

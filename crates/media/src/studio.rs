@@ -6304,6 +6304,48 @@ pub struct TimelineSource {
 }
 
 impl TimelineSource {
+    /// Builds the authoritative timeline topology from immutable originals.
+    ///
+    /// The conversion is exact: an asset end that cannot be represented by
+    /// the persisted `RationalTime` domain is rejected instead of rounded.
+    /// VFR points are intentionally empty because asset descriptors do not
+    /// claim to retain decoded presentation timestamps.
+    pub fn from_assets(assets: &[StudioAsset]) -> Result<Self, StudioError> {
+        if assets.is_empty() || assets.len() > MAX_STUDIO_ASSETS {
+            return Err(StudioError::NoTimeline);
+        }
+        let mut coverage = Vec::with_capacity(assets.len());
+        let mut duration = None;
+        for asset in assets {
+            asset.validate()?;
+            let end = asset.end()?;
+            let end_time = rational_time_from_exact(end)?;
+            coverage.push(SourceCoverage {
+                track: asset.track,
+                start: asset.start,
+                end: end_time,
+            });
+            if duration
+                .is_none_or(|current| compare_duration(end, current) == std::cmp::Ordering::Greater)
+            {
+                duration = Some(end);
+            }
+        }
+        coverage.sort_by(|left, right| {
+            left.track
+                .cmp(&right.track)
+                .then_with(|| compare_times(left.start, right.start))
+                .then_with(|| compare_times(left.end, right.end))
+        });
+        let source = Self {
+            duration: rational_time_from_exact(duration.ok_or(StudioError::NoTimeline)?)?,
+            coverage,
+            vfr_video_pts: BTreeMap::new(),
+        };
+        source.validate()?;
+        Ok(source)
+    }
+
     pub fn validate(&self) -> Result<(), StudioError> {
         if self.duration.ticks == 0 {
             return Err(StudioError::NoTimeline);
@@ -6362,6 +6404,13 @@ impl TimelineSource {
         }
         Ok(())
     }
+}
+
+fn rational_time_from_exact(duration: ExactDuration) -> Result<RationalTime, StudioError> {
+    let ticks = u64::try_from(duration.numerator).map_err(|_| StudioError::TimelineOverflow)?;
+    let time_base =
+        u32::try_from(duration.denominator).map_err(|_| StudioError::TimelineOverflow)?;
+    Ok(RationalTime::new(ticks, TimeBase::new(time_base)?))
 }
 
 fn digest_timeline_source(source: &TimelineSource) -> Result<Sha256Digest, StudioError> {

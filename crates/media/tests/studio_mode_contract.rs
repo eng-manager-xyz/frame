@@ -2443,6 +2443,25 @@ fn edit_save_lost_ack_reconciles_without_changing_original_assets() {
 }
 
 #[test]
+fn timeline_source_is_derived_exactly_from_immutable_asset_descriptors() {
+    let project = manifest();
+    let derived = TimelineSource::from_assets(&project.assets).expect("asset timeline");
+    assert_eq!(derived.duration, seconds(10));
+    assert_eq!(derived.coverage.len(), project.assets.len());
+    assert!(derived.vfr_video_pts.is_empty());
+    for (coverage, asset) in derived.coverage.iter().zip(project.assets.iter()) {
+        assert_eq!(coverage.track, asset.track);
+        assert_eq!(coverage.start, asset.start);
+        assert_eq!(
+            coverage.end.compare(asset.start).expect("ordered range"),
+            std::cmp::Ordering::Greater
+        );
+    }
+    StudioTimelineCompiler::compile(&derived, &project.edits)
+        .expect("derived timeline compiles saved edits");
+}
+
+#[test]
 fn timeline_is_exact_and_preview_export_share_the_same_plan() {
     let plan = StudioTimelineCompiler::compile(&source(), &edit_spec()).expect("compile");
     assert_eq!(

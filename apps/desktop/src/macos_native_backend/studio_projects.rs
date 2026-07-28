@@ -70,6 +70,10 @@ impl DiscoveredStudioProject {
         &self.journal
     }
 
+    pub(super) fn manifest(&self) -> Option<&StudioProjectManifest> {
+        self.manifest.as_ref()
+    }
+
     pub(super) fn status(&self) -> NativeStudioProjectStatus {
         match self.directive {
             StudioRecoveryDirective::OpenEditor
@@ -268,6 +272,14 @@ pub(super) fn authenticate_ready(
     projects: &RootedDir,
     discovered: &DiscoveredStudioProject,
 ) -> Result<(u64, u64), NativeDesktopBackendError> {
+    let (manifest, duration_ms) = authenticate_ready_project(projects, discovered)?;
+    Ok((manifest.revision, duration_ms))
+}
+
+pub(super) fn authenticate_ready_project(
+    projects: &RootedDir,
+    discovered: &DiscoveredStudioProject,
+) -> Result<(StudioProjectManifest, u64), NativeDesktopBackendError> {
     if discovered.status() != NativeStudioProjectStatus::Ready {
         return Err(NativeDesktopBackendError::Unavailable);
     }
@@ -292,7 +304,8 @@ pub(super) fn authenticate_ready(
     {
         return Err(NativeDesktopBackendError::StaleCatalog);
     }
-    Ok((manifest.revision, project_duration_ms(&manifest)?))
+    let duration_ms = project_duration_ms(&manifest)?;
+    Ok((manifest, duration_ms))
 }
 
 fn manifest_matches_open_boundary(
