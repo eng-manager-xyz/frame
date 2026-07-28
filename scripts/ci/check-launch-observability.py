@@ -372,6 +372,21 @@ def validate_files() -> None:
         path = ROOT / relative
         if not path.is_file() or path.stat().st_size < 600:
             raise CheckError(f"launch dependency runbook/evidence is missing or empty: {relative}")
+    launch_runbook = (ROOT / "docs/operations/subdomain-launch.md").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "gh variable set FRAME_PRODUCTION_SMOKE_ENABLED --body true",
+        "gh workflow enable production-smoke.yml --repo eng-manager-xyz/frame",
+        "gh workflow run production-smoke.yml --repo eng-manager-xyz/frame",
+        "gh variable set FRAME_PRODUCTION_SMOKE_ENABLED --body false",
+        "gh workflow disable production-smoke.yml --repo eng-manager-xyz/frame",
+    ):
+        if marker not in launch_runbook:
+            raise CheckError(
+                "subdomain launch runbook omits production-smoke lifecycle control: "
+                f"{marker}"
+            )
     for relative in (
         "scripts/ci/launch-game-day.py",
         "scripts/ci/launch-go-no-go.py",
