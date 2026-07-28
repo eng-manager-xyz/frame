@@ -37,10 +37,13 @@ audio. Both slices support stop, cancel, and artifact-bound Editable WebM
 publication. The macOS Studio composition also persists isolated screen and
 optional system-audio originals, a journal, and a canonical project. Its
 descriptor-rooted bounded catalog can open only a reauthenticated completed
-project and reports interrupted entries as recovery-required. It does not yet
-reconcile, preserve, or discard those entries. The native slices do not support
-microphone, camera, pause/resume, edit-aware Studio export, MP4, native
-tray/hotkey/overlay lifecycle, or updater installation.
+project and reports interrupted entries as recovery-required. On macOS,
+recording and edit-save boundaries reconcile through a new journal fence and
+reminted opaque handle. Only a proven-empty attempt can be archived; its
+journal is moved without deleting media, a graph, or a completed project. The
+native slices do not support microphone, camera, pause/resume, edit-aware
+Studio export, MP4, native tray/hotkey/overlay lifecycle, or updater
+installation.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
 coherent adapter truth. A successful smoke is not capture, playback, recovery,
@@ -70,14 +73,17 @@ distributable app-relative runtime.
 ## Crash and recovery
 
 This section is the required release behavior. The current `macos-native`
-Studio path implements only its read-only discovery boundary: it writes a
-durable journal, classifies exact journal/project pairs through the pinned
-projects directory descriptor, opens only a reauthenticated completed project,
-and reports interrupted entries as recovery-required. It cannot yet inspect
-the recovery detail, reconcile an incomplete journal, preserve a recovered
-copy, or execute discard. The flattened target-capture path has no persisted
-recording recovery. A process crash therefore must not be advertised as fully
-recoverable until those mutations and the protected crash matrix exist.
+Studio path writes a durable journal, classifies exact journal/project pairs
+through the pinned projects directory descriptor, and opens only a
+reauthenticated completed project. It inspects interrupted entries through
+generation-fenced opaque handles. A recovery worker takes a new ownership
+fence, reconciles the exact persisted graph and immutable originals, seals
+remaining recording tracks, creates the idempotent project, and reconciles
+edit-save precommit or lost-acknowledgement states. An archive action is
+available only for a proven-empty `Created` or `RecordingGraphPrepared`
+attempt, and it moves only the journal. The flattened target-capture path still
+has no persisted recording recovery. A process crash must not be advertised as
+fully validated until the protected crash/hardware matrix exists.
 
 When the UI disappears or the process restarts, native journal state remains authoritative. The UI
 must not claim that recording stopped or continued until a backend event says so.
@@ -85,8 +91,11 @@ must not claim that recording stopped or continued until a backend event says so
 1. Reconstruct the main window and request a fresh backend snapshot.
 2. If the journal reports active capture without a live adapter, move to `recoverable`, hide the
    overlay, zero visual meters, and announce recovery availability.
-3. Scan recovery roots read-only. Inspect integrity and format before offering open or discard.
-4. Open a preserved copy. Discard only after an explicit user command in the Recovery scope.
+3. Scan recovery roots read-only. Inspect integrity and the coarse recovery
+   action before offering mutation.
+4. Recover through the exact journal/graph/original identities and remint the
+   project handle. Offer archive only for a backend-proven empty attempt; never
+   describe archive as deleting captured media.
 5. Never log session IDs, opaque device/target tokens, project paths, tenant data, or backend error
    strings.
 
@@ -144,7 +153,8 @@ exist.
 The current `macos-native` target-capture slice cannot execute this rollback procedure.
 
 1. Stop rollout for the affected OS/mode without changing the other matrix cells.
-2. Select the previous signed desktop channel and keep all new project/recovery copies intact.
+2. Select the previous signed desktop channel and keep all new projects,
+   immutable originals, and archived recovery journals intact.
 3. Disable update promotion; do not downgrade project files in place.
 4. Reconcile active native journals and uploads before terminating adapters.
 5. Attach failure evidence, binary digest, and the matrix cell to the incident. Re-enter rollout only

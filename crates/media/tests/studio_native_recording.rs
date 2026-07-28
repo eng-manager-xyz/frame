@@ -301,6 +301,13 @@ fn interrupted_streamable_webm_is_recovered_without_flattening() {
     assert_eq!(assets.len(), 1);
     let path = temporary_media_path(directory.path(), 20, 21);
     assert_webm(&path);
+    let duration =
+        probe_studio_media_duration(&path, &CancellationToken::new()).expect("probed duration");
+    assert!(
+        duration.ticks() >= 100_000_000 && duration.ticks() <= 4_000_000_000,
+        "recovered duration {duration:?} must remain inside the submitted capture window"
+    );
+    assert_eq!(duration.time_base().ticks_per_second(), 1_000_000_000);
     decode_studio_preview_frame(&path, Duration::ZERO, &CancellationToken::new())
         .expect("decoded recovered streamable WebM");
 }

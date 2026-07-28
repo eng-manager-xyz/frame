@@ -25,7 +25,8 @@ use thiserror::Error;
 use crate::{
     AudioSampleFormat, AvFormat, AvPipelineGraphSpec, AvQueueSpec, AvSourceClass,
     CancellationToken, ExactCapsSpec, ExportProfile, FrameTimestamp, InstantPipelineRequest,
-    InstantVideoCaps, PixelFormat, pipeline_has_trusted_factory_provenance, prepare_runtime,
+    InstantVideoCaps, PixelFormat, RationalTime, pipeline_has_trusted_factory_provenance,
+    prepare_runtime,
 };
 
 const BUS_POLL: Duration = Duration::from_millis(25);
@@ -1411,6 +1412,81 @@ pub struct NativeStudioPreviewFrame {
     pub height: u32,
     pub pts_ns: u64,
     pub rgb: Vec<u8>,
+}
+
+/// Probe one authenticated Studio original through the trusted GStreamer
+/// runtime and return its exact nanosecond duration.
+pub fn probe_studio_media_duration(
+    source: &Path,
+    cancellation: &CancellationToken,
+) -> Result<RationalTime, NativeExecutionError> {
+    prepare_runtime().map_err(|_| NativeExecutionError::MissingFactory)?;
+    if cancellation.is_cancelled() {
+        return Err(NativeExecutionError::Cancelled);
+    }
+    let _studio_slot = acquire_studio_native_execution_slot(cancellation)?;
+    let source_metadata =
+        fs::symlink_metadata(source).map_err(|_| NativeExecutionError::Filesystem)?;
+    if source_metadata.file_type().is_symlink()
+        || !source_metadata.is_file()
+        || source_metadata.len() == 0
+    {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let canonical = fs::canonicalize(source).map_err(|_| NativeExecutionError::Filesystem)?;
+    let metadata =
+        fs::symlink_metadata(&canonical).map_err(|_| NativeExecutionError::Filesystem)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
+        return Err(NativeExecutionError::InvalidOutput);
+    }
+    let player = gst::ElementFactory::make("playbin3")
+        .name("studio_duration_player")
+        .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    let video_sink = gst::ElementFactory::make("fakesink")
+        .property("sync", false)
+        .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    let audio_sink = gst::ElementFactory::make("fakesink")
+        .property("sync", false)
+        .build()
+        .map_err(|_| NativeExecutionError::MissingFactory)?;
+    player.set_property("video-sink", &video_sink);
+    player.set_property("audio-sink", &audio_sink);
+    let uri = gst::glib::filename_to_uri(&canonical, None)
+        .map_err(|_| NativeExecutionError::Filesystem)?;
+    player.set_property("uri", uri.as_str());
+    let pipeline = gst::Pipeline::with_name("studio_duration_pipeline");
+    pipeline
+        .add(&player)
+        .map_err(|_| NativeExecutionError::Pipeline)?;
+    require_trusted(&pipeline)?;
+    let result = (|| {
+        pipeline
+            .set_state(gst::State::Paused)
+            .map_err(|_| NativeExecutionError::Pipeline)?;
+        let (transition, current, _) = pipeline.state(STUDIO_PREVIEW_STATE_TIMEOUT);
+        if transition.is_err() || current != gst::State::Paused {
+            return Err(NativeExecutionError::Pipeline);
+        }
+        if cancellation.is_cancelled() {
+            return Err(NativeExecutionError::Cancelled);
+        }
+        if !pipeline_has_trusted_factory_provenance(&pipeline) {
+            return Err(NativeExecutionError::UntrustedFactory);
+        }
+        let duration = pipeline
+            .query_duration::<gst::ClockTime>()
+            .filter(|duration| !duration.is_zero())
+            .ok_or(NativeExecutionError::InvalidOutput)?;
+        Ok(RationalTime::from_nanos(duration.nseconds()))
+    })();
+    let teardown = set_null(&pipeline);
+    match (result, teardown) {
+        (Ok(duration), Ok(())) => Ok(duration),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
 }
 
 /// Decode one bounded RGB preview frame with playbin3 at the requested project

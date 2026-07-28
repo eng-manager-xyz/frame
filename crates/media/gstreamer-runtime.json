@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "rust_manifest_version": 8,
+  "rust_manifest_version": 9,
   "minimum_gstreamer": "1.22.0",
   "plugin_search_policy": {
     "denied_environment_variables": [
@@ -72,6 +72,7 @@
     {"factory": "compositor", "capability": "camera_composition", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "splitmuxsink", "capability": "instant_segmentation", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "playbin3", "capability": "studio_preview", "requirement": "optional", "platform": "native_desktop"},
+    {"factory": "playbin", "capability": "decode_analysis", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "decodebin3", "capability": "decode_analysis", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "mp4mux", "capability": "mp4_muxing", "requirement": "optional", "platform": "native_desktop"},
     {"factory": "matroskamux", "capability": "matroska_muxing", "requirement": "optional", "platform": "native_desktop"},

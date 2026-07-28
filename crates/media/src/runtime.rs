@@ -10,7 +10,7 @@ use gstreamer as gst;
 
 use crate::MediaError;
 
-pub const RUNTIME_MANIFEST_VERSION: u16 = 8;
+pub const RUNTIME_MANIFEST_VERSION: u16 = 9;
 pub const MEDIA_APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MINIMUM_GSTREAMER_VERSION: (u32, u32, u32) = (1, 22, 0);
 pub const MINIMUM_GSTREAMER_VERSION_TEXT: &str = "1.22.0";
@@ -320,6 +320,12 @@ const FACTORIES: &[FactorySpec] = &[
     FactorySpec {
         factory: "playbin3",
         capability: RuntimeCapability::StudioPreview,
+        requirement: FactoryRequirement::Optional,
+        platform: PlatformScope::NativeDesktop,
+    },
+    FactorySpec {
+        factory: "playbin",
+        capability: RuntimeCapability::DecodeAnalysis,
         requirement: FactoryRequirement::Optional,
         platform: PlatformScope::NativeDesktop,
     },

@@ -7,8 +7,10 @@
 //! system audio, and exports an Editable WebM. Studio mode also feeds the
 //! selected screen and included system-audio samples into bounded isolated
 //! recording branches, commits their immutable originals through a durable
-//! journal, and creates an authenticated canonical project. Camera,
-//! microphone, pause, recovery/editor commands, and distribution-master paths
+//! journal, and creates an authenticated canonical project. Interrupted
+//! recording and edit-save boundaries can be reconciled through descriptor-
+//! rooted recovery without exposing filesystem identity to the WebView.
+//! Camera, microphone, pause, editor mutation, and distribution-master paths
 //! stay disabled in the desktop runtime.
 
 #![forbid(unsafe_code)]
@@ -16,6 +18,7 @@
 mod av_worker;
 mod studio_projects;
 mod studio_recorder;
+mod studio_recovery;
 
 use std::{
     collections::BTreeMap,
@@ -58,11 +61,13 @@ use self::av_worker::{
     classify_screen_stop, run_av_capture_worker, run_screen_studio_capture_worker,
 };
 use self::studio_projects::{
-    DiscoveredStudioProject, authenticate_ready, discover as discover_studio_projects,
+    DiscoveredStudioProject, authenticate_ready, authenticate_recovery,
+    discover as discover_studio_projects,
 };
 use self::studio_recorder::{
     DesktopStudioRecording, StudioOptionalTracks, StudioRecordingIdentity,
 };
+use self::studio_recovery::{archive_unstarted_project, recover_project};
 use crate::native_screen_worker::{
     CompletedRecordingArtifact, NativeScreenSource, ScreenWorkerStart, StudioProjectArtifact,
     WorkerCompletion, WorkerControl, WorkerOutcome,
@@ -82,8 +87,9 @@ use crate::{
     NativeRecordingMeter, NativeRecordingStartOutcome, NativeRecordingStopOutcome,
     NativeRecordingTerminalFailure, NativeRegionDefinitionOutcome, NativeRegionDefinitionRequest,
     NativeStudioProjectCatalog, NativeStudioProjectOpenOutcome, NativeStudioProjectOpenRequest,
-    NativeStudioProjectSummary, NativeTargetSelectionOutcome, NativeTargetSelectionRequest,
-    PathUse, RecorderMode, STUDIO_PROJECT_CATALOG_VERSION,
+    NativeStudioProjectSummary, NativeStudioRecoveryArchiveOutcome, NativeStudioRecoveryInspection,
+    NativeStudioRecoveryOutcome, NativeStudioRecoveryRequest, NativeTargetSelectionOutcome,
+    NativeTargetSelectionRequest, PathUse, RecorderMode, STUDIO_PROJECT_CATALOG_VERSION,
     rooted_io::{FileIdentity, RootedDir, RootedFile, RootedIoError},
 };
 
@@ -416,6 +422,55 @@ impl MacOsNativeDesktopBackend {
 
     fn ensure_projects_directory_visible(&self) -> Result<(), NativeDesktopBackendError> {
         ensure_visible_directory(&self.projects_directory, &self.projects_root)
+    }
+
+    fn ensure_recovery_idle(&self) -> Result<(), NativeDesktopBackendError> {
+        match &self.capture {
+            CaptureLifecycle::Ready(_) => Ok(()),
+            CaptureLifecycle::Recording(_) => Err(NativeDesktopBackendError::Busy),
+            CaptureLifecycle::Poisoned => Err(NativeDesktopBackendError::Unavailable),
+        }
+    }
+
+    fn refresh_studio_projects(
+        &mut self,
+    ) -> Result<NativeStudioProjectCatalog, NativeDesktopBackendError> {
+        self.ensure_projects_directory_visible()?;
+        let discovered = discover_studio_projects(&self.projects_directory)?;
+        let Some(generation) = self.studio_catalog_generation.checked_add(1) else {
+            self.studio_projects.clear();
+            return Err(NativeDesktopBackendError::Internal);
+        };
+        let mut projects = Vec::with_capacity(discovered.len());
+        let mut authorities = BTreeMap::new();
+        for project in discovered {
+            let token = (0..MAX_TOKEN_ATTEMPTS)
+                .find_map(|_| {
+                    self.fresh_token("studio-project")
+                        .ok()
+                        .filter(|candidate| !authorities.contains_key(candidate))
+                })
+                .ok_or(NativeDesktopBackendError::Internal)?;
+            projects.push(NativeStudioProjectSummary {
+                project_token: token.clone(),
+                project_revision: project.revision(),
+                asset_count: project.asset_count()?,
+                status: project.status(),
+            });
+            authorities.insert(token, project);
+        }
+        self.ensure_projects_directory_visible()?;
+        let catalog = NativeStudioProjectCatalog {
+            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+            generation,
+            projects,
+        };
+        catalog
+            .validate_enumeration()
+            .map_err(|_| NativeDesktopBackendError::Internal)?;
+        self.studio_catalog_generation = generation;
+        self.studio_projects = authorities;
+        Ok(catalog)
     }
 
     fn ensure_export_directories_visible(&self) -> Result<(), NativeDesktopBackendError> {
@@ -1632,42 +1687,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
     fn scan_studio_projects(
         &mut self,
     ) -> Result<NativeStudioProjectCatalog, NativeDesktopBackendError> {
-        self.ensure_projects_directory_visible()?;
-        let discovered = discover_studio_projects(&self.projects_directory)?;
-        let Some(generation) = self.studio_catalog_generation.checked_add(1) else {
-            self.studio_projects.clear();
-            return Err(NativeDesktopBackendError::Internal);
-        };
-        let mut projects = Vec::with_capacity(discovered.len());
-        let mut authorities = BTreeMap::new();
-        for project in discovered {
-            let token = (0..MAX_TOKEN_ATTEMPTS)
-                .find_map(|_| {
-                    self.fresh_token("studio-project")
-                        .ok()
-                        .filter(|candidate| !authorities.contains_key(candidate))
-                })
-                .ok_or(NativeDesktopBackendError::Internal)?;
-            projects.push(NativeStudioProjectSummary {
-                project_token: token.clone(),
-                project_revision: project.revision(),
-                asset_count: project.asset_count()?,
-                status: project.status(),
-            });
-            authorities.insert(token, project);
-        }
-        self.ensure_projects_directory_visible()?;
-        let catalog = NativeStudioProjectCatalog {
-            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
-            generation,
-            projects,
-        };
-        catalog
-            .validate_enumeration()
-            .map_err(|_| NativeDesktopBackendError::Internal)?;
-        self.studio_catalog_generation = generation;
-        self.studio_projects = authorities;
-        Ok(catalog)
+        self.refresh_studio_projects()
     }
 
     fn open_studio_project(
@@ -1690,6 +1710,100 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
             project_token: request.project_token.clone(),
             project_revision,
             duration_ms,
+        })
+    }
+
+    fn inspect_studio_recovery(
+        &mut self,
+        request: &NativeStudioRecoveryRequest,
+    ) -> Result<NativeStudioRecoveryInspection, NativeDesktopBackendError> {
+        if request.catalog_generation != self.studio_catalog_generation {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        self.ensure_projects_directory_visible()?;
+        let project = self
+            .studio_projects
+            .get(&request.project_token)
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        let action = authenticate_recovery(&self.projects_directory, project)?;
+        self.ensure_projects_directory_visible()?;
+        Ok(NativeStudioRecoveryInspection {
+            catalog_generation: request.catalog_generation,
+            project_token: request.project_token.clone(),
+            status: project.status(),
+            action,
+        })
+    }
+
+    fn recover_studio_project(
+        &mut self,
+        request: &NativeStudioRecoveryRequest,
+    ) -> Result<NativeStudioRecoveryOutcome, NativeDesktopBackendError> {
+        if request.catalog_generation != self.studio_catalog_generation {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        self.ensure_recovery_idle()?;
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        let project = self
+            .studio_projects
+            .get(&request.project_token)
+            .cloned()
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        authenticate_recovery(&self.projects_directory, &project)?;
+        let project_id = project.project_id();
+        let recovered = recover_project(&self.projects_root, &self.studio_root, &project)?;
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        let catalog = self.refresh_studio_projects()?;
+        let (recovered_project_token, project_revision, duration_ms) = self
+            .studio_projects
+            .iter()
+            .find_map(|(token, project)| {
+                (project.project_id() == project_id).then_some((token, project))
+            })
+            .ok_or(NativeDesktopBackendError::Internal)
+            .and_then(|(token, project)| {
+                authenticate_ready(&self.projects_directory, project)
+                    .map(|(revision, duration)| (token.clone(), revision, duration))
+            })?;
+        if project_revision != recovered.revision {
+            return Err(NativeDesktopBackendError::Internal);
+        }
+        Ok(NativeStudioRecoveryOutcome {
+            catalog,
+            recovered_project_token,
+            project_revision,
+            duration_ms,
+        })
+    }
+
+    fn archive_studio_recovery(
+        &mut self,
+        request: &NativeStudioRecoveryRequest,
+    ) -> Result<NativeStudioRecoveryArchiveOutcome, NativeDesktopBackendError> {
+        if request.catalog_generation != self.studio_catalog_generation {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+        self.ensure_recovery_idle()?;
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        let project = self
+            .studio_projects
+            .get(&request.project_token)
+            .cloned()
+            .ok_or(NativeDesktopBackendError::StaleCatalog)?;
+        authenticate_recovery(&self.projects_directory, &project)?;
+        archive_unstarted_project(
+            &self.projects_root,
+            &self.studio_root,
+            &self.projects_directory,
+            &project,
+        )?;
+        self.ensure_projects_directory_visible()?;
+        self.ensure_media_directories_visible()?;
+        Ok(NativeStudioRecoveryArchiveOutcome {
+            catalog: self.refresh_studio_projects()?,
         })
     }
 

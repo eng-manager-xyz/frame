@@ -336,7 +336,7 @@ fn authenticate_project_file(
     })
 }
 
-fn advance_journal(
+pub(super) fn advance_journal(
     journal: &mut DurableStudioJournal<FilesystemStudioJournalStore>,
     project_identity: [u8; 16],
     boundary: JournalBoundary,
@@ -396,11 +396,11 @@ fn lifecycle_digest(
     Ok(strong_sha256(&canonical))
 }
 
-fn random_operation_id() -> Result<StudioOperationId, NativeDesktopBackendError> {
+pub(super) fn random_operation_id() -> Result<StudioOperationId, NativeDesktopBackendError> {
     StudioOperationId::from_csprng(random_identity()?).map_err(map_studio_error)
 }
 
-fn random_worker_id() -> Result<StudioWorkerId, NativeDesktopBackendError> {
+pub(super) fn random_worker_id() -> Result<StudioWorkerId, NativeDesktopBackendError> {
     StudioWorkerId::from_csprng(random_identity()?).map_err(map_studio_error)
 }
 
@@ -415,7 +415,7 @@ fn random_identity() -> Result<[u8; 16], NativeDesktopBackendError> {
     Ok(bytes)
 }
 
-fn recording_graph(
+pub(super) fn recording_graph(
     identity: StudioRecordingIdentity,
     screen: VideoFrameSpec,
     frame_rate: u16,
@@ -523,7 +523,7 @@ fn branch(
     })
 }
 
-fn map_studio_error(error: frame_media::StudioError) -> NativeDesktopBackendError {
+pub(super) fn map_studio_error(error: frame_media::StudioError) -> NativeDesktopBackendError {
     match error {
         frame_media::StudioError::StorageIo | frame_media::StudioError::UnsafeStoragePath => {
             NativeDesktopBackendError::Filesystem

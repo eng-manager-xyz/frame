@@ -1456,6 +1456,62 @@ impl StudioDocumentCodec {
         journal.validate()?;
         Ok(journal)
     }
+
+    pub fn encode_recording_graph(
+        document: &PersistedStudioRecordingGraph,
+    ) -> Result<Vec<u8>, StudioError> {
+        document.validate()?;
+        let payload =
+            encode_recording_graph_payload(&document.graph, document.maximum_track_bytes)?;
+        wrap_document(
+            DocumentKind::RecordingGraph,
+            STUDIO_RECORDING_GRAPH_VERSION,
+            payload,
+        )
+    }
+
+    pub fn decode_recording_graph(
+        bytes: &[u8],
+    ) -> Result<PersistedStudioRecordingGraph, StudioError> {
+        let (version, payload) = unwrap_document(bytes, DocumentKind::RecordingGraph)?;
+        if version != STUDIO_RECORDING_GRAPH_VERSION {
+            return Err(StudioError::UnsupportedRecordingGraphVersion(version));
+        }
+        let mut reader = CanonicalReader::new(payload);
+        let project_id = StudioProjectId::from_csprng(reader.array_16()?)?;
+        let clock_id = StudioOperationId::from_csprng(reader.array_16()?)?;
+        let maximum_track_bytes = reader.u64()?;
+        let branch_count = usize::from(reader.u8()?);
+        if branch_count == 0 || branch_count > 4 {
+            return Err(StudioError::InvalidRecordingGraph);
+        }
+        let mut branches = Vec::with_capacity(branch_count);
+        for _ in 0..branch_count {
+            branches.push(IsolatedTrackBranch {
+                track: TrackKind::from_tag(reader.u8()?)?,
+                asset_id: StudioAssetId::from_csprng(reader.array_16()?)?,
+                temporary_name: StudioSourceName::new(
+                    reader.string(MAX_STUDIO_SOURCE_NAME_BYTES)?,
+                )?,
+                source: CaptureElementFamily::from_tag(reader.u8()?)?,
+                encoder: CaptureElementFamily::from_tag(reader.u8()?)?,
+                muxer: CaptureElementFamily::from_tag(reader.u8()?)?,
+                encoding: decode_asset_encoding(&mut reader)?,
+                queue: BoundedMediaQueue {
+                    max_buffers: reader.u32()?,
+                    max_bytes: reader.u64()?,
+                    max_time_ns: reader.u64()?,
+                },
+            });
+        }
+        reader.finish()?;
+        let document = PersistedStudioRecordingGraph {
+            graph: StudioRecordingGraphSpec::new(project_id, clock_id, branches)?,
+            maximum_track_bytes,
+        };
+        document.validate()?;
+        Ok(document)
+    }
 }
 
 fn wrap_document(
@@ -3928,6 +3984,19 @@ impl CaptureElementFamily {
             Self::OpusEncoder => 7,
         }
     }
+
+    fn from_tag(tag: u8) -> Result<Self, StudioError> {
+        match tag {
+            1 => Ok(Self::NativeScreenBridge),
+            2 => Ok(Self::NativeCameraBridge),
+            3 => Ok(Self::NativeMicrophoneBridge),
+            4 => Ok(Self::NativeSystemAudioBridge),
+            5 => Ok(Self::WebMMux),
+            6 => Ok(Self::Vp8Encoder),
+            7 => Ok(Self::OpusEncoder),
+            _ => Err(StudioError::MalformedDocument),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4054,6 +4123,24 @@ impl StudioRecordingGraphSpec {
             }
         }
         if !tracks.contains(&TrackKind::Screen) {
+            return Err(StudioError::InvalidRecordingGraph);
+        }
+        Ok(())
+    }
+}
+
+/// Exact recording graph identity and byte ceiling recovered from the
+/// checksummed on-disk graph document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedStudioRecordingGraph {
+    pub graph: StudioRecordingGraphSpec,
+    pub maximum_track_bytes: u64,
+}
+
+impl PersistedStudioRecordingGraph {
+    pub fn validate(&self) -> Result<(), StudioError> {
+        self.graph.validate()?;
+        if self.maximum_track_bytes == 0 {
             return Err(StudioError::InvalidRecordingGraph);
         }
         Ok(())
@@ -5046,6 +5133,8 @@ pub struct FilesystemStudioOriginalStore {
     root: PathBuf,
 }
 
+const MAX_STUDIO_PROJECT_STORAGE_ENTRIES: usize = 256;
+
 impl fmt::Debug for FilesystemStudioOriginalStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -5189,6 +5278,59 @@ impl FilesystemStudioOriginalStore {
         fs::canonicalize(media).map_err(|_| StudioError::StorageIo)
     }
 
+    /// Locate and decode the one persisted recording graph for this project.
+    ///
+    /// Recovery never guesses graph identity from temporary filenames. The
+    /// project directory scan is bounded, symlinks are rejected, and the
+    /// document's project/clock identities must match its canonical location.
+    pub fn find_persisted_recording_graph(
+        &self,
+        project_id: StudioProjectId,
+    ) -> Result<Option<PersistedStudioRecordingGraph>, StudioError> {
+        let project = self.project_directory(project_id);
+        let entries = match fs::read_dir(&project) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(StudioError::StorageIo),
+        };
+        let mut graph = None;
+        for (index, entry) in entries.enumerate() {
+            if index == MAX_STUDIO_PROJECT_STORAGE_ENTRIES {
+                return Err(StudioError::DocumentTooLarge);
+            }
+            let entry = entry.map_err(|_| StudioError::StorageIo)?;
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| StudioError::UnsafeStoragePath)?;
+            let Some(clock_stem) = file_name.strip_suffix(".studio-recording-graph") else {
+                continue;
+            };
+            if clock_stem.len() != 32
+                || !clock_stem
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || !entry
+                    .file_type()
+                    .map_err(|_| StudioError::StorageIo)?
+                    .is_file()
+                || graph.is_some()
+            {
+                return Err(StudioError::JournalCorrupt);
+            }
+            let bytes = read_bounded_file(&entry.path(), MAX_STUDIO_DOCUMENT_BYTES)?
+                .ok_or(StudioError::JournalCorrupt)?;
+            let decoded = StudioDocumentCodec::decode_recording_graph(&bytes)?;
+            if decoded.graph.project_id != project_id
+                || clock_stem != opaque_id_hex(decoded.graph.clock_id.0)
+            {
+                return Err(StudioError::JournalCorrupt);
+            }
+            graph = Some(decoded);
+        }
+        Ok(graph)
+    }
+
     fn project_directory(&self, project_id: StudioProjectId) -> PathBuf {
         self.root.join(opaque_id_hex(project_id.0))
     }
@@ -5316,6 +5458,7 @@ struct FilesystemRecordingTrack {
     temporary_path: PathBuf,
     bytes: u64,
     hasher: Sha256,
+    durable_asset: Option<StudioAsset>,
 }
 
 impl fmt::Debug for FilesystemStudioRecordingSession {
@@ -5340,10 +5483,9 @@ impl FilesystemStudioRecordingSession {
     pub fn can_start_native_encoding(&self, graph: &StudioRecordingGraphSpec) -> bool {
         !self.finished
             && &self.graph == graph
-            && self
-                .tracks
-                .values()
-                .all(|track| track.file.is_some() && track.bytes == 0)
+            && self.tracks.values().all(|track| {
+                track.durable_asset.is_none() && track.file.is_some() && track.bytes == 0
+            })
     }
 
     pub fn begin(
@@ -5384,6 +5526,7 @@ impl FilesystemStudioRecordingSession {
                         temporary_path,
                         bytes: 0,
                         hasher: Sha256::new(),
+                        durable_asset: None,
                     },
                 );
             }
@@ -5423,6 +5566,43 @@ impl FilesystemStudioRecordingSession {
         graph: StudioRecordingGraphSpec,
         maximum_track_bytes: u64,
     ) -> Result<Self, StudioError> {
+        Self::recover_with_durable_assets(store, graph, maximum_track_bytes, &BTreeMap::new())
+    }
+
+    /// Reopen a recording after a crash while recognizing exact originals
+    /// already committed before the last durable journal transition.
+    pub fn recover_reconciling_originals(
+        store: &mut FilesystemStudioOriginalStore,
+        graph: StudioRecordingGraphSpec,
+        maximum_track_bytes: u64,
+    ) -> Result<Self, StudioError> {
+        graph.validate()?;
+        if maximum_track_bytes == 0 {
+            return Err(StudioError::InvalidRecordingGraph);
+        }
+        let mut durable_assets = BTreeMap::new();
+        for branch in &graph.branches {
+            let Some(asset) = store.probe_original(graph.project_id, branch.asset_id)? else {
+                continue;
+            };
+            if asset.track != branch.track
+                || asset.source_name != branch.temporary_name
+                || asset.encoding != branch.encoding
+                || asset.commit_state != AssetCommitState::DurableOriginal
+            {
+                return Err(StudioError::AssetConflict);
+            }
+            durable_assets.insert(branch.track, asset);
+        }
+        Self::recover_with_durable_assets(store, graph, maximum_track_bytes, &durable_assets)
+    }
+
+    fn recover_with_durable_assets(
+        store: &FilesystemStudioOriginalStore,
+        graph: StudioRecordingGraphSpec,
+        maximum_track_bytes: u64,
+        durable_assets: &BTreeMap<TrackKind, StudioAsset>,
+    ) -> Result<Self, StudioError> {
         graph.validate()?;
         if maximum_track_bytes == 0 {
             return Err(StudioError::InvalidRecordingGraph);
@@ -5441,6 +5621,23 @@ impl FilesystemStudioRecordingSession {
             let temporary_path = temporary.join(format!("{stem}.media"));
             let partial_exists = partial_path.exists();
             let temporary_exists = temporary_path.exists();
+            if let Some(durable_asset) = durable_assets.get(&branch.track) {
+                if partial_exists || temporary_exists {
+                    return Err(StudioError::AssetConflict);
+                }
+                tracks.insert(
+                    branch.track,
+                    FilesystemRecordingTrack {
+                        file: None,
+                        partial_path,
+                        temporary_path,
+                        bytes: durable_asset.byte_len,
+                        hasher: Sha256::new(),
+                        durable_asset: Some(durable_asset.clone()),
+                    },
+                );
+                continue;
+            }
             if partial_exists && temporary_exists {
                 return Err(StudioError::AssetConflict);
             }
@@ -5470,6 +5667,7 @@ impl FilesystemStudioRecordingSession {
                     temporary_path,
                     bytes,
                     hasher,
+                    durable_asset: None,
                 },
             );
         }
@@ -5514,6 +5712,58 @@ impl FilesystemStudioRecordingSession {
         Ok(())
     }
 
+    /// Seal every retained partial using a duration measured from the exact
+    /// authenticated media path. Already-committed originals retain their
+    /// immutable descriptors and participate only as timing authority.
+    pub fn finish_recovered<F>(
+        self,
+        start_hint: Option<RationalTime>,
+        mut probe_duration: F,
+    ) -> Result<Vec<StudioAsset>, StudioError>
+    where
+        F: FnMut(TrackKind, &Path) -> Result<RationalTime, StudioError>,
+    {
+        let mut start = start_hint;
+        let mut duration = None;
+        for branch in &self.graph.branches {
+            let track = self
+                .tracks
+                .get(&branch.track)
+                .ok_or(StudioError::InvalidRecordingGraph)?;
+            let candidate = if let Some(asset) = &track.durable_asset {
+                if start.is_some_and(|value| value != asset.start) {
+                    return Err(StudioError::InvalidAsset);
+                }
+                start.get_or_insert(asset.start);
+                asset.duration
+            } else {
+                if track.bytes == 0 {
+                    return Err(StudioError::InvalidAsset);
+                }
+                let path = if track.file.is_some() {
+                    &track.partial_path
+                } else {
+                    &track.temporary_path
+                };
+                probe_duration(branch.track, path)?
+            };
+            if candidate.ticks == 0 {
+                return Err(StudioError::InvalidAsset);
+            }
+            let replace_duration = match duration {
+                None => true,
+                Some(current) => candidate.compare(current)? == std::cmp::Ordering::Greater,
+            };
+            if replace_duration {
+                duration = Some(candidate);
+            }
+        }
+        self.finish(
+            start.unwrap_or_else(|| RationalTime::from_nanos(0)),
+            duration.ok_or(StudioError::InvalidAsset)?,
+        )
+    }
+
     pub fn finish(
         mut self,
         start: RationalTime,
@@ -5528,6 +5778,10 @@ impl FilesystemStudioRecordingSession {
                 .tracks
                 .get_mut(&branch.track)
                 .ok_or(StudioError::InvalidRecordingGraph)?;
+            if let Some(asset) = &track.durable_asset {
+                assets.push(asset.clone());
+                continue;
+            }
             if let Some(file) = track.file.take() {
                 file.sync_all().map_err(|_| StudioError::StorageIo)?;
                 drop(file);
@@ -5619,7 +5873,7 @@ fn recording_graph_path(project: &Path, clock_id: StudioOperationId) -> PathBuf 
     ))
 }
 
-fn encode_recording_graph(
+fn encode_recording_graph_payload(
     graph: &StudioRecordingGraphSpec,
     maximum_track_bytes: u64,
 ) -> Result<Vec<u8>, StudioError> {
@@ -5646,11 +5900,7 @@ fn encode_recording_graph(
         writer.u64(branch.queue.max_bytes);
         writer.u64(branch.queue.max_time_ns);
     }
-    wrap_document(
-        DocumentKind::RecordingGraph,
-        STUDIO_RECORDING_GRAPH_VERSION,
-        writer.finish()?,
-    )
+    writer.finish()
 }
 
 fn persist_recording_graph(
@@ -5659,12 +5909,12 @@ fn persist_recording_graph(
     maximum_track_bytes: u64,
 ) -> Result<(), StudioError> {
     let path = recording_graph_path(project, graph.clock_id);
-    let expected = encode_recording_graph(graph, maximum_track_bytes)?;
+    let expected = StudioDocumentCodec::encode_recording_graph(&PersistedStudioRecordingGraph {
+        graph: graph.clone(),
+        maximum_track_bytes,
+    })?;
     if let Some(existing) = read_bounded_file(&path, MAX_STUDIO_DOCUMENT_BYTES)? {
-        let (version, _) = unwrap_document(&existing, DocumentKind::RecordingGraph)?;
-        if version != STUDIO_RECORDING_GRAPH_VERSION {
-            return Err(StudioError::UnsupportedRecordingGraphVersion(version));
-        }
+        StudioDocumentCodec::decode_recording_graph(&existing)?;
         return if existing == expected {
             Ok(())
         } else {
@@ -5683,12 +5933,8 @@ fn verify_recording_graph(
     let path = recording_graph_path(project, graph.clock_id);
     let existing =
         read_bounded_file(&path, MAX_STUDIO_DOCUMENT_BYTES)?.ok_or(StudioError::JournalCorrupt)?;
-    let (version, _) = unwrap_document(&existing, DocumentKind::RecordingGraph)?;
-    if version != STUDIO_RECORDING_GRAPH_VERSION {
-        return Err(StudioError::UnsupportedRecordingGraphVersion(version));
-    }
-    let expected = encode_recording_graph(graph, maximum_track_bytes)?;
-    if existing != expected {
+    let document = StudioDocumentCodec::decode_recording_graph(&existing)?;
+    if document.graph != *graph || document.maximum_track_bytes != maximum_track_bytes {
         return Err(StudioError::JournalCorrupt);
     }
     Ok(())

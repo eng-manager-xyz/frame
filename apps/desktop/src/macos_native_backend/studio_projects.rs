@@ -20,17 +20,19 @@ use frame_media::{
 };
 
 use crate::{
-    NativeDesktopBackendError, NativeStudioProjectStatus,
-    rooted_io::{RootedDir, RootedFile},
+    NativeDesktopBackendError, NativeStudioProjectStatus, NativeStudioRecoveryAction,
+    rooted_io::{RootedDir, RootedFile, RootedIoError},
 };
 
 const MAX_PROJECT_DIRECTORY_ENTRIES: usize = 2_048;
 const MAX_DISCOVERED_PROJECTS: usize = crate::MAX_STUDIO_PROJECT_CATALOG_ENTRIES;
 const JOURNAL_SUFFIX: &str = ".studio-journal";
 const PROJECT_SUFFIX: &str = ".studio-project";
+const RECOVERY_ARCHIVE_DIRECTORY: &str = "recovery-archive";
 
 #[derive(Clone)]
 pub(super) struct DiscoveredStudioProject {
+    project_identity: [u8; 16],
     journal: StudioJournalSnapshot,
     manifest: Option<StudioProjectManifest>,
     journal_relative: PathBuf,
@@ -56,6 +58,18 @@ impl std::fmt::Debug for DiscoveredStudioProject {
 }
 
 impl DiscoveredStudioProject {
+    pub(super) const fn project_id(&self) -> StudioProjectId {
+        self.journal.project_id
+    }
+
+    pub(super) const fn project_identity(&self) -> [u8; 16] {
+        self.project_identity
+    }
+
+    pub(super) const fn journal(&self) -> &StudioJournalSnapshot {
+        &self.journal
+    }
+
     pub(super) fn status(&self) -> NativeStudioProjectStatus {
         match self.directive {
             StudioRecoveryDirective::OpenEditor
@@ -81,6 +95,32 @@ impl DiscoveredStudioProject {
         self.manifest.as_ref().map_or(Ok(0), |project| {
             u16::try_from(project.assets.len()).map_err(|_| NativeDesktopBackendError::Filesystem)
         })
+    }
+
+    pub(super) fn recovery_action(&self) -> NativeStudioRecoveryAction {
+        if self.status() == NativeStudioProjectStatus::AttentionRequired {
+            return NativeStudioRecoveryAction::RequiresOperatorDecision;
+        }
+        match self.directive {
+            StudioRecoveryDirective::DiscardUnstartedTemporaryFiles => {
+                NativeStudioRecoveryAction::ArchiveUnstartedAttempt
+            }
+            StudioRecoveryDirective::ResumeOrSealIsolatedTracks
+            | StudioRecoveryDirective::DeleteUncommittedTemporaryAsset
+            | StudioRecoveryDirective::ProbeAndCommitExactTemporaryAsset
+            | StudioRecoveryDirective::ContinueRecording => {
+                NativeStudioRecoveryAction::RecoverRecording
+            }
+            StudioRecoveryDirective::OpenEditor => NativeStudioRecoveryAction::OpenEditor,
+            StudioRecoveryDirective::ReconcileEditSaveByDigest => {
+                NativeStudioRecoveryAction::ReconcileEditSave
+            }
+            StudioRecoveryDirective::DeletePartialRenderThenOpenEditor
+            | StudioRecoveryDirective::VerifyCommittedRenderThenOpenEditor
+            | StudioRecoveryDirective::RequireOperatorDecision => {
+                NativeStudioRecoveryAction::RequiresOperatorDecision
+            }
+        }
     }
 }
 
@@ -108,7 +148,10 @@ pub(super) fn discover(
                     .map_err(|_| NativeDesktopBackendError::Filesystem)?;
                 if journal.project_id != candidate.project_id
                     || journals
-                        .insert(candidate.project_id, (journal, candidate.relative.clone()))
+                        .insert(
+                            candidate.project_id,
+                            (candidate.identity, journal, candidate.relative.clone()),
+                        )
                         .is_some()
                 {
                     return Err(NativeDesktopBackendError::Filesystem);
@@ -144,18 +187,81 @@ pub(super) fn discover(
 
     journals
         .into_iter()
-        .map(|(project_id, (journal, journal_relative))| {
-            let manifest = manifests.remove(&project_id);
-            let directive = recovery_directive(journal.boundary);
-            Ok(DiscoveredStudioProject {
-                journal,
-                manifest: manifest.as_ref().map(|(project, _)| project.clone()),
-                journal_relative,
-                project_relative: manifest.map(|(_, path)| path),
-                directive,
-            })
-        })
+        .map(
+            |(project_id, (project_identity, journal, journal_relative))| {
+                let manifest = manifests.remove(&project_id);
+                let directive = recovery_directive(journal.boundary);
+                Ok(DiscoveredStudioProject {
+                    project_identity,
+                    journal,
+                    manifest: manifest.as_ref().map(|(project, _)| project.clone()),
+                    journal_relative,
+                    project_relative: manifest.map(|(_, path)| path),
+                    directive,
+                })
+            },
+        )
         .collect()
+}
+
+pub(super) fn authenticate_recovery(
+    projects: &RootedDir,
+    discovered: &DiscoveredStudioProject,
+) -> Result<NativeStudioRecoveryAction, NativeDesktopBackendError> {
+    let mut journal_file = projects
+        .open_regular_file(&discovered.journal_relative)
+        .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+    let journal = StudioDocumentCodec::decode_journal(&read_document(&mut journal_file)?)
+        .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+    if journal != discovered.journal {
+        return Err(NativeDesktopBackendError::StaleCatalog);
+    }
+    if let (Some(expected), Some(relative)) = (&discovered.manifest, &discovered.project_relative) {
+        let mut project_file = projects
+            .open_regular_file(relative)
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+        let manifest = StudioDocumentCodec::decode_project(&read_document(&mut project_file)?)
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+        if &manifest != expected {
+            return Err(NativeDesktopBackendError::StaleCatalog);
+        }
+    }
+    Ok(discovered.recovery_action())
+}
+
+pub(super) fn archive_current_journal(
+    projects: &RootedDir,
+    discovered: &DiscoveredStudioProject,
+    expected: &StudioJournalSnapshot,
+) -> Result<(), NativeDesktopBackendError> {
+    let mut journal_file = projects
+        .open_regular_file(&discovered.journal_relative)
+        .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+    let journal = StudioDocumentCodec::decode_journal(&read_document(&mut journal_file)?)
+        .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+    if &journal != expected || journal.project_id != discovered.project_id() {
+        return Err(NativeDesktopBackendError::StaleCatalog);
+    }
+    let identity = journal_file.metadata().identity();
+    let archive = match projects.create_private_dir(RECOVERY_ARCHIVE_DIRECTORY) {
+        Ok(directory) => directory,
+        Err(RootedIoError::EntryExists) => projects
+            .open_dir(RECOVERY_ARCHIVE_DIRECTORY)
+            .map_err(|_| NativeDesktopBackendError::Filesystem)?,
+        Err(_) => return Err(NativeDesktopBackendError::Filesystem),
+    };
+    archive
+        .ensure_private_mode()
+        .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+    projects
+        .publish_file_to_root_if_identity(
+            &discovered.journal_relative,
+            identity,
+            &archive,
+            &discovered.journal_relative,
+        )
+        .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+    Ok(())
 }
 
 pub(super) fn authenticate_ready(
@@ -268,6 +374,7 @@ enum CandidateKind {
 
 struct CandidateName {
     kind: CandidateKind,
+    identity: [u8; 16],
     project_id: StudioProjectId,
     relative: PathBuf,
 }
@@ -289,6 +396,7 @@ impl CandidateName {
             .map_err(|_| NativeDesktopBackendError::Filesystem)?;
         Ok(Some(Self {
             kind,
+            identity,
             project_id,
             relative: Path::new(name).to_path_buf(),
         }))

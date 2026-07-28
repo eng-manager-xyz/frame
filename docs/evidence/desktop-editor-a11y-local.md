@@ -20,9 +20,11 @@ definition, target-video record/stop/cancel, and artifact-backed Editable WebM
 export. Its Studio composition additionally exposes a descriptor-rooted,
 bounded catalog of canonical project/journal pairs. Completed projects can
 enter the editor through a fresh opaque token after native reauthentication,
-and interrupted entries are reported as recovery-required. It does not make
-recovery reconciliation/discard, edit persistence/export, lifecycle, updater,
-combined microphone/camera Studio, or accessibility journeys production
+and interrupted entries are reported as recovery-required. Recording and
+edit-save boundaries can be inspected and reconciled through a new ownership
+fence; only a proven-empty attempt can be archived, and that archive deletes no
+media. It does not make editor mutation/export, lifecycle, updater, combined
+microphone/camera Studio, or complete accessibility journeys production
 behavior.
 
 The media crate now has a production bounded isolated-track Studio encoder and
@@ -31,10 +33,13 @@ native selected screen and optional direct system-audio source with that
 recorder, commits immutable originals, and retains an authenticated canonical
 project as Rust-only authority. The native recovery scan publishes only opaque
 tokens and coarse status; completed projects open with their real revision and
-duration after descriptor-rooted reauthentication. It does not yet compose the
-normalized combined microphone/camera source, inspect/reconcile/discard
-incomplete projects, persist editor mutations, or perform edit-aware export,
-so this component does not close an issue-33 product journey.
+duration after descriptor-rooted reauthentication. Incomplete recording and
+edit-save journals recover through exact graph/original/project identities,
+while the “archive” control is restricted to a proven-empty attempt and
+preserves every graph/media file. It does not yet compose the normalized
+combined microphone/camera source, persist editor mutations, or perform
+edit-aware export, so this component does not close an issue-33 product
+journey.
 
 The checked-in hardware workflow invokes `frame-hardware-driver`, but this
 repository does not provide that driver. Its validator and workflow shape are
@@ -134,15 +139,16 @@ security classifications without closing broader product-integration
 checkboxes. In addition, the macOS composition now has a real but narrow
 target-video and optional-system-audio WebM path plus a read-only native Studio
 catalog. It can open a completed Studio project and truthfully report
-interrupted entries, but continues to refuse incomplete-project reconciliation
-or discard, editor mutation, microphone, camera, pause, MP4, upload, updater,
-Instant publication, and edit-aware Studio export.
+interrupted entries. It reconciles recording and edit-save boundaries and can
+archive a proven-empty attempt without deleting media, but continues to refuse
+editor mutation, microphone, camera, pause, MP4, upload, updater, Instant
+publication, and edit-aware Studio export.
 Optional macOS system audio is the only native audio source currently supported;
 microphone capture remains unavailable. The registered Instant command
 therefore proves a fail-closed boundary and state model, not a working
-publication journey; the native WebM path alone proves no editor or recovery
-journey. The native Studio path proves only discovery and completed-project
-entry, not a complete editor or recovery journey.
+publication journey. The native Studio recovery path proves journal-fenced
+recording/edit-save reconciliation, not a complete editor, accessibility, or
+full-device recovery journey.
 
 ## Protected evidence still required
 
