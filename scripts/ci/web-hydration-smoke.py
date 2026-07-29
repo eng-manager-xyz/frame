@@ -109,6 +109,71 @@ def wait_for_devtools_port(
         pause(DEVTOOLS_STARTUP_POLL_SECONDS)
 
 
+def open_devtools_target(
+    process: subprocess.Popen[bytes],
+    endpoint: str,
+    *,
+    timeout_seconds: float = DEVTOOLS_STARTUP_TIMEOUT_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+    opener: Callable[..., object] = urllib.request.urlopen,
+) -> dict[str, object]:
+    """Wait for DevTools HTTP readiness and create one bounded blank target.
+
+    Chrome can publish ``DevToolsActivePort`` before the loopback HTTP server
+    is responsive, especially after a cold release build on hosted runners.
+    The port file proves only socket selection, so both the version probe and
+    target creation remain inside an independent fixed readiness deadline.
+    """
+    require(timeout_seconds > 0, "Chrome startup timeout must be positive")
+    parsed = urllib.parse.urlsplit(endpoint)
+    require(
+        parsed.scheme == "http"
+        and parsed.hostname == "127.0.0.1"
+        and parsed.port is not None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment,
+        "invalid DevTools HTTP endpoint",
+    )
+    deadline = monotonic() + timeout_seconds
+    target_url = f"{endpoint}/json/new?{urllib.parse.quote('about:blank', safe='')}"
+    while True:
+        require(process.poll() is None, "Chrome exited before DevTools was ready")
+        try:
+            with opener(f"{endpoint}/json/version", timeout=2) as response:
+                version = json.load(response)
+            if not isinstance(version, dict):
+                raise ValueError("invalid DevTools version response")
+            request = urllib.request.Request(target_url, method="PUT")
+            with opener(request, timeout=2) as response:
+                target = json.load(response)
+            websocket_url = (
+                target.get("webSocketDebuggerUrl")
+                if isinstance(target, dict)
+                else None
+            )
+            if (
+                isinstance(websocket_url, str)
+                and urllib.parse.urlsplit(websocket_url).scheme == "ws"
+            ):
+                return target
+        except (
+            json.JSONDecodeError,
+            OSError,
+            TimeoutError,
+            UnicodeError,
+            ValueError,
+        ):
+            pass
+        if monotonic() >= deadline:
+            raise SystemExit(
+                "web hydration smoke: Chrome DevTools HTTP endpoint did not "
+                f"become ready within {timeout_seconds:g} seconds"
+            )
+        pause(DEVTOOLS_STARTUP_POLL_SECONDS)
+
+
 class DevTools:
     """Minimal RFC 6455 client for the Chrome DevTools Protocol."""
 
@@ -355,14 +420,7 @@ def chrome_interaction_smoke(browser: str, origin: str) -> dict[str, bool]:
         try:
             port = wait_for_devtools_port(process, devtools_port_file)
             endpoint = f"http://127.0.0.1:{port}"
-            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=5):
-                pass
-            request = urllib.request.Request(
-                f"{endpoint}/json/new?{urllib.parse.quote('about:blank', safe='')}",
-                method="PUT",
-            )
-            with urllib.request.urlopen(request, timeout=5) as response:
-                target = json.load(response)
+            target = open_devtools_target(process, endpoint)
             devtools = DevTools(target["webSocketDebuggerUrl"])
             devtools.command("Page.enable")
             devtools.command("Runtime.enable")
