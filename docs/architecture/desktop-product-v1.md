@@ -203,7 +203,7 @@ selects `Unavailable`; the `macos-native` and `windows-native` release
 compositions select their narrow target adapters when backend construction
 succeeds; and only a debug build with
 `FRAME_DESKTOP_FAKE_PIPELINE=1` can select the deterministic fake. Native global
-hotkey registration, tray actions, overlay placement, target-picker placement, real updater install,
+hotkey registration, tray actions, overlay placement, target-picker placement, physical updater install/relaunch,
 and cross-platform window-exclusion integration remain blocked until the
 platform adapters and the protected hardware matrix pass.
 
@@ -225,11 +225,15 @@ never rendered or logged.
 Legacy settings and project headers are inspected into explicit compatible, migratable,
 needs-review, unsupported, or invalid reports. Inspection never mutates input, every proposed project
 plan preserves the original, and unknown settings/effects require review rather than silent loss.
-The state model retains a legacy-selector flag and rollback contract, but the
-current native slice does not wire a usable previous-channel selector or
-updater. A future signed release must retain the previous desktop until parity
-gate 29 is approved; once wired, rollback changes the release selector and does
-not rewrite projects produced by either desktop.
+The state model retains a legacy-selector flag and rollback contract. The
+native shell wires an explicit previous-channel check and install through a
+dedicated control-plane route backed by the retained R2 `previous.json`
+pointer. The control plane returns only a version strictly older than the running
+desktop, and Tauri verifies the retained artifact signature before installing
+it. Browser code never receives an updater URL, signature, or filesystem path.
+Rollback changes the signed desktop release selector and does not rewrite
+projects produced by either desktop. The previous desktop remains selectable
+until parity gate 29 is approved.
 
 ## Production-mode build and smoke
 

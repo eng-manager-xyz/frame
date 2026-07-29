@@ -192,7 +192,9 @@ close. It cannot currently convert checkboxes 3–6 or 8–10 to
   boundaries, and real project recovery;
 - target picker, Frame-window exclusion, tray, global hotkeys, overlay and multi-monitor placement
   across scale/rotation/topology matrices;
-- signed updater check/install/relaunch and previous-channel rollback;
+- physical signed updater check/install/relaunch on distributed macOS and
+  Windows builds (the previous-channel selector, strict downgrade comparator,
+  R2 retention, and deterministic state transitions are repository-local);
 - real filesystem no-follow/reparse-point handle verification under platform roots;
 - complete keyboard walkthrough plus named VoiceOver and Narrator reports; and
 - product, accessibility, privacy, security, desktop, media, and release-owner approvals, followed by

@@ -57,6 +57,7 @@ jobs:
       - name: Prove updater packaging and routing contracts
         run: |
           python3 -I scripts/ci/package-desktop-update.py --self-test
+          python3 -I scripts/ci/promote-desktop-update.py --self-test
           cargo test --locked -p frame-control-plane desktop_update
 
   macos:
@@ -260,12 +261,35 @@ jobs:
           while IFS= read -r pointer; do
             key="${pointer#target/update-payload/}"
             current="$(mktemp)"
+            latest="$(mktemp)"
+            previous="${pointer%latest.json}previous.json"
+            promotion=(
+              python3 -I scripts/ci/promote-desktop-update.py
+              --candidate "$pointer"
+              --latest-output "$latest"
+              --previous-output "$previous"
+            )
+            current_error="$(mktemp)"
             if aws s3api get-object --endpoint-url "$endpoint" \
-              --bucket frame-recordings --key "$key" "$current"; then
-              python3 -c 'import json,os,sys; old=tuple(map(int,json.load(open(sys.argv[1]))["version"].split("."))); new=tuple(map(int,os.environ["VERSION"].split("."))); sys.exit(0 if new >= old else 1)' "$current"
+              --bucket frame-recordings --key "$key" "$current" \
+              2>"$current_error"; then
+              promotion+=(--current "$current")
+            elif ! grep -Eq \
+              'An error occurred \((NoSuchKey|404|NotFound)\)' \
+              "$current_error"; then
+              echo "failed to read the current desktop update pointer" >&2
+              exit 1
+            fi
+            "${promotion[@]}"
+            if test -s "$previous"; then
+              previous_key="${key%latest.json}previous.json"
+              aws s3api put-object --endpoint-url "$endpoint" \
+                --bucket frame-recordings --key "$previous_key" --body "$previous" \
+                --content-type application/json \
+                --cache-control "no-store"
             fi
             aws s3api put-object --endpoint-url "$endpoint" \
-              --bucket frame-recordings --key "$key" --body "$pointer" \
+              --bucket frame-recordings --key "$key" --body "$latest" \
               --content-type application/json \
               --cache-control "public,max-age=60,no-transform"
           done < <(find target/update-payload -type f -name latest.json -print | sort)
@@ -273,6 +297,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: desktop-update-published-${{ needs.authorize.outputs.release_sha }}
-          path: target/update-payload/**/latest.json
+          path: |
+            target/update-payload/**/latest.json
+            target/update-payload/**/previous.json
           if-no-files-found: error
           retention-days: 90

@@ -164,6 +164,7 @@ pub enum UpdateState {
     Unavailable { revision: u64 },
     Current { revision: u64 },
     Available { revision: u64 },
+    PreviousAvailable { revision: u64 },
     ReadyToRelaunch { revision: u64 },
 }
 
@@ -975,7 +976,12 @@ impl DesktopRuntime {
                 match (action, self.update) {
                     (_, UpdateState::Unavailable { .. }) => Err(ExecutionFailure::unavailable()),
                     (UpdateAction::Check, UpdateState::Current { .. })
+                    | (
+                        UpdateAction::CheckPrevious,
+                        UpdateState::Current { .. } | UpdateState::Available { .. },
+                    )
                     | (UpdateAction::Install, UpdateState::Available { .. })
+                    | (UpdateAction::InstallPrevious, UpdateState::PreviousAvailable { .. })
                     | (UpdateAction::Relaunch, UpdateState::ReadyToRelaunch { .. }) => Ok(()),
                     _ => Err(ExecutionFailure::conflict(
                         "Update action is not valid in the current state.",
@@ -1025,7 +1031,29 @@ impl DesktopRuntime {
             }
             (
                 DesktopShellCommand::Update {
-                    action: UpdateAction::Install,
+                    action: UpdateAction::CheckPrevious,
+                    expected_revision,
+                },
+                DesktopShellOutcome::UpdateChecked { available },
+            ) => {
+                self.update = if available {
+                    UpdateState::PreviousAvailable {
+                        revision: expected_revision,
+                    }
+                } else {
+                    UpdateState::Current {
+                        revision: expected_revision,
+                    }
+                };
+                self.announcement = if available {
+                    "The previous signed desktop is available.".into()
+                } else {
+                    "No previous signed desktop is available for this build.".into()
+                };
+            }
+            (
+                DesktopShellCommand::Update {
+                    action: UpdateAction::Install | UpdateAction::InstallPrevious,
                     expected_revision,
                 },
                 DesktopShellOutcome::UpdateInstalled,
@@ -3078,9 +3106,17 @@ impl DesktopRuntime {
                     (UpdateAction::Check, UpdateState::Current { revision }) => {
                         UpdateState::Available { revision }
                     }
+                    (
+                        UpdateAction::CheckPrevious,
+                        UpdateState::Current { revision } | UpdateState::Available { revision },
+                    ) => UpdateState::PreviousAvailable { revision },
                     (UpdateAction::Install, UpdateState::Available { revision }) => {
                         UpdateState::ReadyToRelaunch { revision }
                     }
+                    (
+                        UpdateAction::InstallPrevious,
+                        UpdateState::PreviousAvailable { revision },
+                    ) => UpdateState::ReadyToRelaunch { revision },
                     (UpdateAction::Relaunch, UpdateState::ReadyToRelaunch { revision }) => {
                         UpdateState::Current {
                             revision: revision.saturating_add(1),
@@ -3429,6 +3465,7 @@ const fn update_revision(update: UpdateState) -> u64 {
         UpdateState::Unavailable { revision }
         | UpdateState::Current { revision }
         | UpdateState::Available { revision }
+        | UpdateState::PreviousAvailable { revision }
         | UpdateState::ReadyToRelaunch { revision } => revision,
     }
 }
@@ -4919,6 +4956,60 @@ mod tests {
             runtime.snapshot().update,
             UpdateState::Current { revision: 2 }
         );
+    }
+
+    #[test]
+    fn previous_signed_update_uses_the_same_revision_fenced_relaunch_path() {
+        let mut runtime = native_runtime();
+        runtime
+            .initialize_shell_capabilities(true, true)
+            .expect("initialize shell");
+        let cases = [
+            (
+                UpdateAction::CheckPrevious,
+                DesktopShellOutcome::UpdateChecked { available: true },
+                UpdateState::PreviousAvailable { revision: 1 },
+                false,
+            ),
+            (
+                UpdateAction::InstallPrevious,
+                DesktopShellOutcome::UpdateInstalled,
+                UpdateState::ReadyToRelaunch { revision: 1 },
+                false,
+            ),
+            (
+                UpdateAction::Relaunch,
+                DesktopShellOutcome::RelaunchRequested,
+                UpdateState::Current { revision: 2 },
+                true,
+            ),
+        ];
+        for (index, (action, outcome, expected_state, expected_restart)) in
+            cases.into_iter().enumerate()
+        {
+            let sequence = u64::try_from(index + 1).expect("small sequence");
+            let start = runtime
+                .begin_shell(request(
+                    &runtime,
+                    WindowRole::Main,
+                    sequence,
+                    &format!("previous-signed-update-{sequence}"),
+                    IpcCommand::Update {
+                        action,
+                        expected_revision: 1,
+                    },
+                ))
+                .expect("begin previous update");
+            let DesktopShellStart::Pending(pending) = start else {
+                panic!("configured previous update must reach the platform adapter");
+            };
+            let completion = runtime
+                .finish_shell(pending, Ok(outcome))
+                .expect("finish previous update");
+            ok(&completion.dispatch);
+            assert_eq!(completion.restart_requested, expected_restart);
+            assert_eq!(completion.dispatch.snapshot.update, expected_state);
+        }
     }
 
     #[test]

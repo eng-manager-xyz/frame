@@ -2938,6 +2938,21 @@ async fn dispatch(
             )
             .await?
         }
+        Route::DesktopPreviousUpdateManifest {
+            target,
+            arch,
+            current_version,
+        } => {
+            desktop_update_runtime::previous_manifest_response(
+                &request,
+                env,
+                &canonical_origin,
+                &target,
+                &arch,
+                &current_version,
+            )
+            .await?
+        }
         Route::DesktopUpdateArtifact {
             target,
             arch,

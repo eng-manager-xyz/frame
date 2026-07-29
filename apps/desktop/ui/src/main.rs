@@ -1786,24 +1786,40 @@ mod browser {
                                 Some(UpdateState::Unavailable { .. }) => "Signed updates are unavailable in this build.",
                                 Some(UpdateState::Current { .. }) => "Frame is current.",
                                 Some(UpdateState::Available { .. }) => "An update is available.",
+                                Some(UpdateState::PreviousAvailable { .. }) => "The previous signed desktop is available.",
                                 Some(UpdateState::ReadyToRelaunch { .. }) => "Update installed; relaunch is ready.",
                                 None => "Update status unavailable.",
                             }}</p>
-                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || snapshot.get().is_none_or(|state| matches!(state.update, UpdateState::Unavailable { .. })) || busy.get() on:click=move |_| {
-                                if let Some(state) = snapshot.get_untracked() {
-                                    let (action, expected_revision) = match state.update {
-                                        UpdateState::Unavailable { .. } => return,
-                                        UpdateState::Current { revision } => (UpdateAction::Check, revision),
-                                        UpdateState::Available { revision } => (UpdateAction::Install, revision),
-                                        UpdateState::ReadyToRelaunch { revision } => (UpdateAction::Relaunch, revision),
-                                    };
-                                    submit(client, snapshot, status, error, busy, WindowRole::Main, IpcCommand::Update { action, expected_revision });
-                                }
-                            }>{move || match snapshot.get().map(|state| state.update) {
-                                Some(UpdateState::Available { .. }) => "Install update",
-                                Some(UpdateState::ReadyToRelaunch { .. }) => "Relaunch Frame",
-                                _ => "Check for updates",
-                            }}</Button>
+                            <ButtonGroup>
+                                <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || snapshot.get().is_none_or(|state| matches!(state.update, UpdateState::Unavailable { .. } | UpdateState::PreviousAvailable { .. })) || busy.get() on:click=move |_| {
+                                    if let Some(state) = snapshot.get_untracked() {
+                                        let (action, expected_revision) = match state.update {
+                                            UpdateState::Unavailable { .. } | UpdateState::PreviousAvailable { .. } => return,
+                                            UpdateState::Current { revision } => (UpdateAction::Check, revision),
+                                            UpdateState::Available { revision } => (UpdateAction::Install, revision),
+                                            UpdateState::ReadyToRelaunch { revision } => (UpdateAction::Relaunch, revision),
+                                        };
+                                        submit(client, snapshot, status, error, busy, WindowRole::Main, IpcCommand::Update { action, expected_revision });
+                                    }
+                                }>{move || match snapshot.get().map(|state| state.update) {
+                                    Some(UpdateState::Available { .. }) => "Install update",
+                                    Some(UpdateState::ReadyToRelaunch { .. }) => "Relaunch Frame",
+                                    _ => "Check for updates",
+                                }}</Button>
+                                <Button variant=ButtonVariant::Ghost attr:r#type="button" attr:disabled=move || snapshot.get().is_none_or(|state| !state.legacy_desktop_selectable || matches!(state.update, UpdateState::Unavailable { .. } | UpdateState::ReadyToRelaunch { .. })) || busy.get() on:click=move |_| {
+                                    if let Some(state) = snapshot.get_untracked() {
+                                        let (action, expected_revision) = match state.update {
+                                            UpdateState::Current { revision } | UpdateState::Available { revision } => (UpdateAction::CheckPrevious, revision),
+                                            UpdateState::PreviousAvailable { revision } => (UpdateAction::InstallPrevious, revision),
+                                            UpdateState::Unavailable { .. } | UpdateState::ReadyToRelaunch { .. } => return,
+                                        };
+                                        submit(client, snapshot, status, error, busy, WindowRole::Main, IpcCommand::Update { action, expected_revision });
+                                    }
+                                }>{move || match snapshot.get().map(|state| state.update) {
+                                    Some(UpdateState::PreviousAvailable { .. }) => "Install previous signed desktop",
+                                    _ => "Check previous signed desktop",
+                                }}</Button>
+                            </ButtonGroup>
                         </Card>
                     </div>
                 </Card>
