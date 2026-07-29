@@ -32,11 +32,16 @@ done
 
 # GitHub's Ubuntu images can retain the Azure archive endpoint even when that
 # mirror is delivering package bodies too slowly for the bounded media jobs.
-# Use the canonical Ubuntu archive while retaining apt's normal signed metadata.
-for source_file in \
-  /etc/apt/sources.list \
-  /etc/apt/sources.list.d/ubuntu.sources
-do
+# Current images may reference it indirectly through apt-mirrors.txt, so inspect
+# every supported apt source shape rather than assuming one runner layout. Use
+# the canonical Ubuntu archive while retaining apt's normal signed metadata.
+source_files=(
+  /etc/apt/sources.list
+  /etc/apt/apt-mirrors.txt
+  /etc/apt/sources.list.d/*.list
+  /etc/apt/sources.list.d/*.sources
+)
+for source_file in "${source_files[@]}"; do
   if [[ -f "${source_file}" ]] \
     && grep -Eq 'https?://azure\.archive\.ubuntu\.com/ubuntu/?' "${source_file}"
   then
