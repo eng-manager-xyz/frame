@@ -37,6 +37,9 @@ const OVERLAY_WINDOW_LABEL: &str = "overlay";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const TARGET_PICKER_WINDOW_LABEL: &str = "target-picker";
 
+#[cfg(all(target_os = "macos", feature = "macos-native"))]
+mod hardware_driver;
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct NativeDesktopState {
     runtime: Mutex<DesktopRuntime>,
@@ -812,6 +815,15 @@ fn configured_adapter() -> DesktopAdapterKind {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn main() {
+    #[cfg(all(target_os = "macos", feature = "macos-native"))]
+    if let Some(result) = hardware_driver::run_if_requested() {
+        if let Err(error) = result {
+            eprintln!("Frame protected hardware driver failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     #[cfg(any(
         all(target_os = "macos", feature = "macos-native"),
         all(target_os = "windows", feature = "windows-native")

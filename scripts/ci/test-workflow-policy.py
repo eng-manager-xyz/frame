@@ -486,6 +486,12 @@ def main() -> int:
             ),
             (
                 desktop_hardware,
+                "run-desktop-real-hardware.py",
+                "frame-hardware-driver",
+                "signed Frame binary no longer owns protected hardware execution",
+            ),
+            (
+                desktop_hardware,
                 "group: desktop-macos-hardware",
                 "group: desktop-macos-hardware-${{ inputs.release_sha }}",
                 "macOS signing/TCC hardware jobs no longer serialized",
@@ -501,6 +507,12 @@ def main() -> int:
                 "test-desktop-real-hardware.py",
                 "disabled-desktop-real-hardware.py",
                 "signed desktop hardware validator regressions no longer tested",
+            ),
+            (
+                quality,
+                "desktop-browser-journey.py",
+                "disabled-desktop-browser-journey.py",
+                "executable desktop keyboard journey no longer required",
             ),
             (
                 quality,

@@ -46,8 +46,11 @@ Studio export, MP4, native tray/hotkey/overlay lifecycle, or updater
 installation.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
-coherent adapter truth. A successful smoke is not capture, playback, recovery,
-accessibility, signing, notarization, clean-machine, or distribution evidence.
+coherent adapter truth. The separate
+`scripts/ci/desktop-browser-journey.py` lane executes keyboard-only release UI
+actions through the real Rust dispatch boundary and checks rendered semantics.
+Neither lane is capture, playback, named screen-reader, signing, notarization,
+clean-machine, or distribution evidence.
 The current `.app` can use the build-time GStreamer installation only while it
 remains beneath the checkout's canonical `target` tree; Issue 22 still blocks a
 distributable app-relative runtime.
@@ -115,12 +118,16 @@ permissions return to not-determined, and the UI offers device refresh/recovery 
 
 ## Real-hardware gate
 
-The checked-in protected workflow and `scripts/ci/desktop-real-hardware.py`
-accept externally produced evidence only for the exact partial
+The checked-in protected workflow, `scripts/ci/run-desktop-real-hardware.py`,
+and `scripts/ci/desktop-real-hardware.py` produce and validate evidence only
+for the exact partial
 `macos_display_webm_v1` capability: a preauthorized ScreenCapture TCC state,
-display catalog/selection, display capture, Frame-window exclusion, playable
-stopped/exported WebM, and cancel cleanup. The repository does not provide the
-external `frame-hardware-driver`.
+display catalog/selection, display capture with Frame's application-exclusion
+filter configured, playable stopped/exported WebM, and cancel cleanup. The
+repository does not provide the
+driver as an external executable. Instead, a token-gated driver is compiled
+into the certificate-signed Frame binary and is unreachable unless both the
+protected argument and environment marker are exact.
 The workflow and validator are not evidence that a physical run occurred.
 Submitted evidence must state
 `full_product_gate: not_claimed`; the validator deliberately has no full-product
@@ -131,10 +138,11 @@ unlocked Apple Development or Developer ID private key and an existing
 ScreenCapture grant for that certificate-backed `xyz.engmanager.frame`
 designated requirement. The workflow serializes all candidates, accepts only a
 full commit already contained in `origin/main`, builds and verifies the `.app`,
-and passes that bundle—not its inner Mach-O—to the external driver. The driver
-must launch through LaunchServices, fail without prompting when preflight is
-not already granted, and bind its evidence to the source SHA, workflow run,
-Apple team, designated requirement, and signed executable digest. Denial →
+then independently verifies the bundle before resolving the executable named
+by its `Info.plist`. The runner launches that exact signed executable directly;
+the driver fails without prompting when preflight is not already granted and
+binds its evidence to the source SHA, workflow run, Apple team, designated
+requirement, and signed executable digest. Denial →
 approval → relaunch remains attended manual evidence because an unattended job
 cannot approve a macOS privacy prompt.
 

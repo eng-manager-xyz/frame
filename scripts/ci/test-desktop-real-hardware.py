@@ -22,6 +22,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR_PATH = ROOT / "scripts" / "ci" / "desktop-real-hardware.py"
+RUNNER_PATH = ROOT / "scripts" / "ci" / "run-desktop-real-hardware.py"
 SPEC = importlib.util.spec_from_file_location(
     "desktop_real_hardware", VALIDATOR_PATH
 )
@@ -30,6 +31,14 @@ if SPEC is None or SPEC.loader is None:
 VALIDATOR = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = VALIDATOR
 SPEC.loader.exec_module(VALIDATOR)
+RUNNER_SPEC = importlib.util.spec_from_file_location(
+    "desktop_real_hardware_runner", RUNNER_PATH
+)
+if RUNNER_SPEC is None or RUNNER_SPEC.loader is None:
+    raise RuntimeError("cannot load desktop real-hardware runner")
+RUNNER = importlib.util.module_from_spec(RUNNER_SPEC)
+sys.modules[RUNNER_SPEC.name] = RUNNER
+RUNNER_SPEC.loader.exec_module(RUNNER)
 
 SOURCE_SHA = "a" * 40
 RUN_ID = "123456:7"
@@ -349,6 +358,112 @@ class SignedBundleTests(unittest.TestCase):
                         VALIDATOR.verify_signed_bundle, self.app, team
                     )
                 self.assertIn(expected, message)
+
+
+class SignedDriverRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="frame-runner-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.app = self.directory / "Frame.app"
+        self.macos = self.app / "Contents" / "MacOS"
+        self.macos.mkdir(parents=True)
+        self.executable = self.macos / "frame-desktop"
+        self.executable.write_bytes(EXECUTABLE_BYTES)
+        self.executable.chmod(0o755)
+        with (self.app / "Contents" / "Info.plist").open("wb") as target:
+            plistlib.dump({"CFBundleExecutable": "frame-desktop"}, target)
+
+    def test_runner_resolves_only_the_plist_declared_regular_executable(self) -> None:
+        self.assertEqual(RUNNER.bundle_executable(self.app), self.executable)
+        alias = self.macos / "alias"
+        alias.symlink_to(self.executable)
+        with (self.app / "Contents" / "Info.plist").open("wb") as target:
+            plistlib.dump({"CFBundleExecutable": "alias"}, target)
+        message = system_exit_message(RUNNER.bundle_executable, self.app)
+        self.assertIn("non-symlink regular file", message)
+
+    def test_runner_rejects_symlink_bundle_and_existing_evidence_paths(self) -> None:
+        alias = self.directory / "Frame-alias.app"
+        alias.symlink_to(self.app, target_is_directory=True)
+        message = system_exit_message(RUNNER.canonical_bundle_path, alias)
+        self.assertIn("bundle path must not be a symlink", message)
+
+        output = self.directory / "evidence.json"
+        output.write_text("{}\n", encoding="utf-8")
+        message = system_exit_message(RUNNER.prepare_output_path, output)
+        self.assertIn("must be a new non-symlink path", message)
+        output.unlink()
+        output.symlink_to(self.executable)
+        message = system_exit_message(RUNNER.prepare_output_path, output)
+        self.assertIn("must be a new non-symlink path", message)
+
+    def test_driver_command_invokes_the_signed_frame_binary_with_exact_metadata(
+        self,
+    ) -> None:
+        data_root = self.directory / "data"
+        command = RUNNER.driver_command(
+            self.executable,
+            data_root,
+            SOURCE_SHA,
+            RUN_ID,
+            TEAM_ID,
+            EXECUTABLE_SHA256,
+            REQUIREMENT_SHA256,
+        )
+
+        self.assertEqual(command[0], str(self.executable))
+        self.assertEqual(command[1], "--frame-hardware-driver")
+        self.assertEqual(
+            command,
+            [
+                str(self.executable),
+                "--frame-hardware-driver",
+                "--data-root",
+                str(data_root),
+                "--source-sha",
+                SOURCE_SHA,
+                "--run-id",
+                RUN_ID,
+                "--signing-team",
+                TEAM_ID,
+                "--binary-sha256",
+                EXECUTABLE_SHA256,
+                "--designated-requirement-sha256",
+                REQUIREMENT_SHA256,
+                "--bundle-identifier",
+                VALIDATOR.MACOS_BUNDLE_IDENTIFIER,
+            ],
+        )
+
+    def test_runner_requires_the_protected_marker_before_signature_access(self) -> None:
+        output = self.directory / "evidence.json"
+        arguments = [
+            str(RUNNER_PATH),
+            "--app-bundle",
+            str(self.app),
+            "--expected-source-sha",
+            SOURCE_SHA,
+            "--expected-run-id",
+            RUN_ID,
+            "--expected-signing-team",
+            TEAM_ID,
+            "--output",
+            str(output),
+        ]
+        environment = os.environ.copy()
+        environment.pop("FRAME_REAL_HARDWARE", None)
+        with (
+            mock.patch.object(RUNNER.sys, "argv", arguments),
+            mock.patch.dict(RUNNER.os.environ, environment, clear=True),
+            mock.patch.object(
+                RUNNER.VALIDATOR, "verify_signed_bundle"
+            ) as verify,
+        ):
+            message = system_exit_message(RUNNER.main)
+
+        self.assertIn("FRAME_REAL_HARDWARE=1 is required", message)
+        verify.assert_not_called()
 
 
 class CommandOutputTests(unittest.TestCase):

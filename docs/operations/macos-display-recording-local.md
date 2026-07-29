@@ -52,6 +52,13 @@ consistent and is useful for non-capture shell testing, but macOS 15 and newer
 can still reject it for ScreenCaptureKit. It is not proof that physical capture
 works.
 
+Frame uses the same durable permission principle as the earlier Screen
+application: TCC authorization belongs to a stable bundle identifier and code
+requirement, not to a changing raw development binary. For reliable protected
+automation, use the certificate-signed `xyz.engmanager.frame` bundle, grant it
+once while attended, quit, and relaunch the exact signed build. The protected
+driver checks preauthorization and never opens a permission prompt itself.
+
 Do not move this local development application out of the checkout's
 canonical `target` directory. It deliberately borrows only the audited
 build-machine GStreamer runtime and is not a distributable release.

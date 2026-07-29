@@ -23,7 +23,7 @@ MACOS_DISPLAY_CASES = (
     "screen_capture_preauthorized",
     "display_catalog_and_selection",
     "display_capture",
-    "frame_window_exclusion",
+    "frame_application_exclusion_filter",
     "stop_and_playable_webm",
     "export_and_playable_webm",
     "cancel_partial_cleanup",

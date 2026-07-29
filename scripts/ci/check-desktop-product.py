@@ -118,7 +118,11 @@ def main() -> int:
     evidence_doc = text("docs/evidence/desktop-editor-a11y-local.md")
     operations = text("docs/operations/desktop-recovery-and-release.md")
     hardware_workflow = text(".github/workflows/desktop-real-hardware.yml")
+    hardware_driver = text("apps/desktop/src/hardware_driver.rs")
+    hardware_runner = text("scripts/ci/run-desktop-real-hardware.py")
     hardware_validator = text("scripts/ci/desktop-real-hardware.py")
+    browser_journey = text("scripts/ci/desktop-browser-journey.py")
+    browser_host = text("apps/desktop/src/bin/frame-desktop-e2e-host.rs")
     desktop_shell_smoke = text("scripts/ci/desktop-shell-smoke.py")
 
     require(
@@ -210,6 +214,56 @@ def main() -> int:
             "TARGET_PICKER_WINDOW_LABEL",
         ),
         "production desktop shell",
+    )
+    require(
+        browser_host,
+        (
+            'FRAME_DESKTOP_E2E").as_deref() != Ok("1")',
+            "MAX_REQUEST_BYTES",
+            "read_request",
+            "DesktopAdapterKind::DeterministicFake",
+            "runtime.dispatch_json",
+            "runtime.advance_fake",
+        ),
+        "bounded Rust browser-journey host",
+    )
+    require(
+        browser_journey,
+        (
+            "frame.desktop-browser-journey.v1",
+            "derive_inline_script_hash",
+            "activate_by_keyboard",
+            "Input.dispatchKeyEvent",
+            "protected_assistive_technology_claimed",
+            "protected_hardware_claimed",
+        ),
+        "executable desktop browser journey",
+    )
+    require(
+        hardware_driver,
+        (
+            "--frame-hardware-driver",
+            "FRAME_REAL_HARDWARE",
+            "FRAME_HARDWARE_DRIVER_TOKEN",
+            "preflight_screen_capture_access",
+            "MacOsNativeDesktopBackend::new",
+            "gst-discoverer-1.0",
+            "cancel_partial_cleanup",
+            'full_product_gate: "not_claimed"',
+        ),
+        "signed Frame hardware driver",
+    )
+    require(
+        hardware_runner + hardware_validator + hardware_workflow,
+        (
+            "run-desktop-real-hardware.py",
+            "verify_signed_bundle",
+            "FRAME_DESKTOP_FAKE_PIPELINE",
+            "designated_requirement_sha256",
+            "macos_display_capture_partial",
+            "desktop-macos-display-hardware.json",
+        ),
+        "protected signed hardware execution",
     )
     require(
         desktop_shell,
@@ -927,6 +981,8 @@ def main() -> int:
         "apps/desktop/src/ipc.rs",
         "apps/desktop/src/runtime.rs",
         "apps/desktop/src/main.rs",
+        "apps/desktop/src/hardware_driver.rs",
+        "apps/desktop/src/bin/frame-desktop-e2e-host.rs",
         "apps/desktop/Cargo.toml",
         "apps/desktop/Info.plist",
         "apps/desktop/src/native_backend.rs",
@@ -951,10 +1007,12 @@ def main() -> int:
         "crates/media/src/screen_recording.rs",
         ".github/workflows/desktop-real-hardware.yml",
         "scripts/ci/desktop-real-hardware.py",
+        "scripts/ci/run-desktop-real-hardware.py",
         "scripts/ci/test-desktop-real-hardware.py",
         "scripts/ci/sign-macos-local-app.sh",
         "scripts/ci/check-desktop-bundle.py",
         "scripts/ci/desktop-shell-smoke.py",
+        "scripts/ci/desktop-browser-journey.py",
         "apps/desktop/ui/src/main.rs",
         "apps/desktop/ui/src/browser/region_picker.rs",
         "crates/ui/src/button.rs",
@@ -996,7 +1054,9 @@ def main() -> int:
             "bounded_native_stop_tail": True,
             "explicit_tauri_capabilities": True,
             "fake_pipeline_journey_present": True,
+            "executable_browser_keyboard_journey_present": True,
             "partial_macos_hardware_validator_present": True,
+            "signed_app_hardware_driver_present": True,
             "semantic_accessibility_surface": True,
             "real_hardware_evidence": False,
             "native_target_physical_evidence": False,

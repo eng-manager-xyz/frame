@@ -140,6 +140,13 @@ jobs:
         run: scripts/ci/gstreamer-sanitized-exec cargo test --locked --workspace
       - name: Enforce dependency and target boundaries
         run: scripts/ci/check-workspace-boundaries.sh
+      - name: Exercise the production desktop keyboard and accessibility journey
+        run: |
+          python3 -I scripts/ci/build-desktop-ui.py
+          cargo build --locked --release \
+            -p frame-desktop-core --bin frame-desktop-e2e-host
+          python3 -I scripts/ci/desktop-browser-journey.py \
+            --evidence target/evidence/desktop-browser-journey-linux.json
       - name: Build and smoke the production web binary
         run: |
           python3 -I scripts/ci/build-web-hydration.py \
@@ -182,6 +189,7 @@ jobs:
           path: |
             target/release/frame-web
             apps/web/dist
+            target/evidence/desktop-browser-journey-linux.json
             target/evidence/web-hydration-*.json
             target/evidence/render-web-runtime-linux.json
           if-no-files-found: error
