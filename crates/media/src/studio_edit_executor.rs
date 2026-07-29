@@ -138,6 +138,7 @@ impl StudioEditExecutor {
                 (TrackKind::Microphone, GapDisposition::InsertSilence) => GapTrack::Microphone,
                 (TrackKind::SystemAudio, GapDisposition::InsertSilence) => GapTrack::SystemAudio,
                 (TrackKind::Screen, _)
+                | (TrackKind::Cursor, _)
                 | (TrackKind::Camera, GapDisposition::InsertSilence)
                 | (TrackKind::Microphone | TrackKind::SystemAudio, GapDisposition::HideCamera) => {
                     return Err(StudioError::InvalidCompiledPlan.into());

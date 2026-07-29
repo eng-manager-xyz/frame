@@ -6,7 +6,7 @@
 //! checksum-recoverable per-track partials instead of a flattened artifact.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -24,7 +24,8 @@ use crate::{
     IsolatedTrackBranch, MAX_SCREEN_RECORDING_DURATION_NS, MAX_STUDIO_PAYLOAD_CHUNK_BYTES,
     NativeExecutionError, PixelFormat, RationalTime, StudioAsset, StudioAssetEncoding,
     StudioAssetRawCaps, StudioError, StudioRecordingGraphSpec, TrackKind,
-    pipeline_has_trusted_factory_provenance, prepare_runtime,
+    decode_studio_cursor_record, pipeline_has_trusted_factory_provenance, prepare_runtime,
+    studio_cursor_timeline_header,
 };
 
 const BUS_POLL: Duration = Duration::from_millis(25);
@@ -153,6 +154,10 @@ enum SourceFormat {
         bytes_per_frame: u64,
         sample_rate: u32,
     },
+    Cursor {
+        frame_width: u32,
+        frame_height: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -222,6 +227,8 @@ struct StudioSource {
     maximum_time_ns: u64,
     encoded_bytes: Arc<AtomicU64>,
     progress: SourceProgress,
+    cursor_revisions: BTreeSet<u64>,
+    cursor_last_revision: Option<u64>,
 }
 
 /// One owner for the complete isolated-track recording graph.
@@ -262,11 +269,18 @@ impl NativeStudioRecording {
                 TrackKind::Microphone | TrackKind::SystemAudio => {
                     "! audioconvert ! audioresample ! opusenc "
                 }
+                TrackKind::Cursor => "",
             };
-            description.push_str(&format!(
-                "appsrc name={source_name} {encoder}! webmmux streamable=true \
-                 ! appsink name={sink_name} "
-            ));
+            if branch.track == TrackKind::Cursor {
+                description.push_str(&format!(
+                    "appsrc name={source_name} ! appsink name={sink_name} "
+                ));
+            } else {
+                description.push_str(&format!(
+                    "appsrc name={source_name} {encoder}! webmmux streamable=true \
+                     ! appsink name={sink_name} "
+                ));
+            }
         }
         let pipeline = gst::parse::launch(&description)
             .map_err(|_| NativeExecutionError::MissingFactory)?
@@ -309,6 +323,8 @@ impl NativeStudioRecording {
                     maximum_time_ns: branch.queue.max_time_ns,
                     encoded_bytes,
                     progress: SourceProgress::new(),
+                    cursor_revisions: BTreeSet::new(),
+                    cursor_last_revision: None,
                 },
             );
         }
@@ -319,6 +335,21 @@ impl NativeStudioRecording {
         if transition.is_err() || current != gst::State::Playing {
             let _ = pipeline.set_state(gst::State::Null);
             return Err(NativeExecutionError::Pipeline.into());
+        }
+        for source in sources.values_mut() {
+            let SourceFormat::Cursor {
+                frame_width,
+                frame_height,
+            } = source.format
+            else {
+                continue;
+            };
+            let header = studio_cursor_timeline_header(frame_width, frame_height)
+                .map_err(|_| NativeStudioRecordingError::InvalidInput)?;
+            source
+                .appsrc
+                .push_buffer(gst::Buffer::from_mut_slice(header))
+                .map_err(|_| NativeExecutionError::Pipeline)?;
         }
         Ok(Self {
             pipeline,
@@ -374,7 +405,7 @@ impl NativeStudioRecording {
             .sources
             .get_mut(&input.track)
             .ok_or(NativeStudioRecordingError::InvalidInput)?;
-        validate_payload(source.format, input.timestamp, &input.bytes)?;
+        validate_payload(source, input.sequence, input.timestamp, &input.bytes)?;
         source.progress.validate(input.sequence, input.timestamp)?;
         let (queued_buffers, queued_bytes, queued_time_ns) = source_levels(&source.appsrc);
         let retained_bytes = u64::try_from(input.bytes.len())
@@ -550,6 +581,7 @@ fn element_names(track: TrackKind) -> (&'static str, &'static str) {
         TrackKind::Camera => ("studio_camera_src", "studio_camera_sink"),
         TrackKind::Microphone => ("studio_microphone_src", "studio_microphone_sink"),
         TrackKind::SystemAudio => ("studio_system_audio_src", "studio_system_audio_sink"),
+        TrackKind::Cursor => ("studio_cursor_src", "studio_cursor_sink"),
     }
 }
 
@@ -614,6 +646,33 @@ fn configure_source(
             SourceFormat::Audio {
                 bytes_per_frame: u64::from(caps.channels) * 4,
                 sample_rate: caps.sample_rate,
+            }
+        }
+        StudioAssetEncoding::CursorTimelineV1 {
+            frame_width,
+            frame_height,
+        } => {
+            if branch.track != TrackKind::Cursor {
+                return Err(NativeStudioRecordingError::InvalidInput);
+            }
+            appsrc.set_caps(Some(
+                &gst::Caps::builder("application/x-frame-cursor")
+                    .field("version", 1_i32)
+                    .field(
+                        "frame-width",
+                        i32::try_from(frame_width)
+                            .map_err(|_| NativeStudioRecordingError::InvalidInput)?,
+                    )
+                    .field(
+                        "frame-height",
+                        i32::try_from(frame_height)
+                            .map_err(|_| NativeStudioRecordingError::InvalidInput)?,
+                    )
+                    .build(),
+            ));
+            SourceFormat::Cursor {
+                frame_width,
+                frame_height,
             }
         }
         StudioAssetEncoding::UnspecifiedLegacyV1 => {
@@ -688,11 +747,12 @@ fn install_sink_callback(
 }
 
 fn validate_payload(
-    format: SourceFormat,
+    source: &mut StudioSource,
+    sequence: u64,
     timestamp: FrameTimestamp,
     bytes: &[u8],
 ) -> Result<(), NativeStudioRecordingError> {
-    match format {
+    match source.format {
         SourceFormat::Video { frame_bytes } => {
             if u64::try_from(bytes.len()).ok() != Some(frame_bytes) {
                 return Err(NativeStudioRecordingError::InvalidInput);
@@ -720,6 +780,38 @@ fn validate_payload(
                     .0
                     .iter()
                     .any(|sample| !f32::from_le_bytes(*sample).is_finite())
+            {
+                return Err(NativeStudioRecordingError::InvalidInput);
+            }
+        }
+        SourceFormat::Cursor {
+            frame_width,
+            frame_height,
+        } => {
+            let observation = decode_studio_cursor_record(bytes)
+                .map_err(|_| NativeStudioRecordingError::InvalidInput)?;
+            if observation.sequence() != sequence || observation.timestamp() != timestamp {
+                return Err(NativeStudioRecordingError::InvalidInput);
+            }
+            if observation
+                .frame_position()
+                .is_some_and(|(x, y)| x >= frame_width || y >= frame_height)
+            {
+                return Err(NativeStudioRecordingError::InvalidInput);
+            }
+            if let Some(image) = observation.image_update() {
+                if source
+                    .cursor_last_revision
+                    .is_some_and(|revision| image.revision() <= revision)
+                    || !source.cursor_revisions.insert(image.revision())
+                {
+                    return Err(NativeStudioRecordingError::InvalidInput);
+                }
+                source.cursor_last_revision = Some(image.revision());
+            }
+            if observation
+                .image_revision()
+                .is_some_and(|revision| !source.cursor_revisions.contains(&revision))
             {
                 return Err(NativeStudioRecordingError::InvalidInput);
             }

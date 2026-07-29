@@ -8,7 +8,7 @@ It does not classify the complete Studio product path as locally implemented.
 
 ## Closure ledger boundary
 
-Issue 27 checkboxes 10 and 11 are repository-local gaps. Checkboxes 1–6,
+Issue 27 checkbox 10 is the remaining repository-local gap. Checkboxes 1–6,
 8, and 9 are locally satisfied by the versioned project format, production
 isolated-track recorder, source-set-bound native preview engine, exact
 aligned-source export profiles, production filesystem legacy importer, and
@@ -18,17 +18,19 @@ preview/export golden that executes trim, delete, rational speed, and
 audio-gain windows through the same canonical plan.
 Checkbox 7 alone remains `protected_pending`, because the
 non-mutating importer/reporting path exists but still needs a reviewed
-representative legacy-project corpus.
+representative legacy-project corpus. Checkbox 11 is locally satisfied and its
+representative physical-hardware execution remains protected evidence.
 
 The remaining tests exercise contracts, synthetic GStreamer sources,
 filesystem components, and a reference renderer, not a complete Studio
 service. The media crate now owns a production `NativeStudioRecording` graph:
 one common GStreamer clock, one bounded non-leaky appsrc per enabled
-screen/camera/microphone/system-audio source, independent VP8/Opus streamable
-WebM branches, encoded appsink chunks written directly into the durable
-recording session, aggregate EOS, and confirmed `Null`. The native test
-executes all four branches, decodes the isolated video assets, commits all four
-temporary originals, and proves that a no-EOS streamable partial can be
+screen/camera/microphone/system-audio/cursor source, independent VP8/Opus
+streamable WebM branches plus a length-framed cursor sidecar, appsink chunks
+written directly into the durable recording session, aggregate EOS, and
+confirmed `Null`. The native test executes all five branches, decodes the
+isolated video assets and cursor timeline, commits all five temporary
+originals, and proves that a no-EOS streamable partial can be
 rehashed, sealed, and decoded after recovery.
 
 The `macos-native` release composition pumps one selected
@@ -84,13 +86,21 @@ preservation, opaque-token redaction, and backend-confirmed desktop
 apply/save transitions.
 
 The combined optional-input bridge feeds selected microphone, camera, and
-system-audio samples into isolated Studio tracks. The artifact-backed Editable
-WebM copy/publication remains the flattened recorder output and is not an
-edit-aware Studio export. The narrow native edit adapter
-executes the shared canonical plan for one clock-aligned screen original plus
-optional microphone/system-audio originals: preview maps an edited output
-point before real decode, and export applies trim/delete/rational speed plus
-audio gaps/gain/mute. The adapter executes and postcondition-probes all four
+system-audio samples into isolated Studio tracks. The platform-neutral
+recording graph also accepts normalized cursor observations and revisioned
+RGBA/BGRA cursor images in a bounded, versioned sidecar; connecting the macOS
+normalized cursor event stream to that fifth branch remains the next desktop
+slice. The artifact-backed Editable WebM copy/publication remains the flattened
+recorder output and is not an
+edit-aware Studio export. The narrow native edit adapter executes the shared
+canonical plan for clock-aligned screen and
+optional camera, cursor, microphone, and system-audio originals. Preview maps
+an edited output point before real decode and produces the composited frame.
+Export applies trim/delete/rational speed, camera bubble/full/side-by-side
+transforms, rounded-camera alpha, scaled/hidden cursor overlays, and audio
+gaps/gain/mute. Every decoded camera branch participates in the same seek
+sequence and segment barrier as screen and audio. The adapter executes and
+postcondition-probes all four
 approved software profiles, including the H.264/AAC hosted-media distribution
 master, while preserving input originals. It emits bounded monotonic progress
 and cleans its private staging artifact when cancellation occurs before
@@ -115,9 +125,11 @@ native backend reauthenticates the durable base manifest before constructing
 the exact draft manifest that the next save would commit. Multiple optimistic
 editor mutations advance only the editor revision; the draft preview and save
 share one next durable project revision. `NativeStudioPreviewEngine` decodes
-the requested screen frame and exact audio decisions, and only the bounded
-one-shot preview event crosses into the WebView; raw RGB bytes never persist in
-the runtime snapshot. The Leptos editor paints that frame into a canvas and
+the requested screen and active-camera frames, verifies and indexes any cursor
+sidecar, composes the exact window style, and emits exact audio decisions.
+Only the bounded one-shot preview event crosses into the WebView; that event
+contains the composited frame, and raw RGB bytes never persist in the runtime
+snapshot. The Leptos editor paints that frame into a canvas and
 announces the mapped source position plus microphone/system-audio decisions.
 
 The macOS export call now dispatches its graph through
@@ -135,23 +147,26 @@ artifact with an empty staging directory. Runtime tests also cover monotonic
 completion, backend-confirmed cancellation, and quarantine when cleanup is
 unconfirmed.
 
-The adapter still does not assemble arbitrary asset-offset ranges and fails
-closed for camera, cursor, background, camera-only, and side-by-side
-composition. Native staging-identity reconstruction after process restart is
-also not connected. Therefore the remaining paths cannot yet satisfy complete
-desktop Studio composition, complete decoded preview/export/reference goldens,
-or long-project effects. Representative physical-hardware fallback remains
+The adapter still does not assemble arbitrary nonzero asset-offset ranges, and
+macOS recording does not yet persist its normalized cursor events into the new
+sidecar branch. Native staging-identity reconstruction after process restart is
+also not connected. Therefore checkbox 10 remains open until the desktop
+capture hookup, authenticated project/export path, and final local closure
+golden land together. Representative physical-hardware fallback remains
 protected evidence rather than a repository-local claim.
 
 Separately, `NativeStudioPreviewEngine` opens the complete immutable
 `StudioPreviewGraphSpec`, verifies every original against its durable sidecar
 and content hash, resolves exact asset-local positions across segmented
-originals, and decodes real bounded screen and active-camera RGB frames. Its
-paused/playing/ended transport provides exact seek and deterministic CFR/VFR
+originals, and decodes real bounded screen and active-camera RGB frames. It
+also verifies the cursor original, performs logarithmic point lookup in the
+bounded sidecar, and returns the provider-neutral reference composition used
+by the desktop. Its paused/playing/ended transport provides exact seek and
+deterministic CFR/VFR
 frame stepping, while generation and sequence fences identify stale samples.
 Each sample also binds the source-set and edit-plan digests and carries exact
 microphone/system-audio source, gap, gain, and mute decisions. The local test
-uses two sequential screen assets, camera, and system audio, proves selection
+uses two sequential screen assets, camera, cursor, and system audio, proves selection
 of the second screen asset at an edited seek, advances playback, rejects a
 cancelled seek without state mutation, and rejects an original path replaced
 after the engine opened.
@@ -168,15 +183,16 @@ The external contract suite exercises:
   default fields, unsupported-effect and newer-version reporting, normalized
   paths, symlink/traversal/missing-file rejection, and an asset-bound copy plan;
 - one required screen graph branch plus independently optional camera,
-  microphone, and system-audio branches, with rejection of missing-screen,
+  microphone, system-audio, and cursor branches, with rejection of missing-screen,
   flattened, or duplicate tracks; the filesystem recording-session adapter
   seals only enabled VP8/Opus WebM originals and reopens a crash state containing
   both partial and already-sealed tracks;
 - the production native isolated-track recorder validates exact graph/session
   identity, raw payload shape, finite audio, monotonic shared-clock timestamps,
   and per-source buffer/byte/time ceilings; streams encoded chunks into the
-  durable session; executes all four isolated WebM branches; decodes both video
-  tracks; commits every temporary asset; and recovers and decodes a streamable
+  durable session; executes four isolated WebM branches plus the cursor
+  sidecar; decodes both video tracks and the cursor timeline; commits every
+  temporary asset; and recovers and decodes a streamable
   video partial stopped before EOS;
 - a native-execution test helper that uses GStreamer to record four
   independently playable synthetic VP8/Opus WebM
@@ -203,6 +219,13 @@ The external contract suite exercises:
   decoded export frame to the shared-plan preview within an explicit mean/peak
   RGB tolerance, emits a bounded monotonic progress trace, and removes
   pre-cancelled, mid-render cancelled, or failed outputs;
+- a camera/cursor composition golden that combines real synthetic screen,
+  camera, and system-audio originals with a durable cursor sidecar; executes
+  trim/delete, irregular VFR points, 2× speed, side-by-side, camera-full,
+  rounded camera-bubble, scaled/hidden cursor, background, click, and audio-gain
+  windows; compares decoded export frames at three representative windows to
+  the CPU reference using explicit mean/outlier tolerances; and proves
+  logarithmic lookup across 86,400 day-scale cursor observations;
 - real approved-profile exports that decode and verify the exact H.264/AAC MP4
   hosted-media master, VP8/Opus WebM native master, HEVC/AAC MP4 native master,
   and FFV1/FLAC Matroska archive geometry, frame rate, colorimetry, 48 kHz stereo
@@ -262,11 +285,12 @@ The external contract suite exercises:
 
 The native execution tests also retain the basic single-source WebM path and
 the older video-only MP4 compatibility helper. The edit-aware path proves
-canonical temporal/audio execution for aligned synthetic originals, bounded
+canonical temporal/audio/visual execution for aligned synthetic originals, bounded
 progress and cancellation, a playable output duration, and exact decoded
-postconditions for every approved profile. It does not prove
-camera/cursor/background composition, arbitrary persisted asset assembly,
-perceptual parity, or coordinator/desktop integration.
+postconditions for every approved profile. It does not yet prove the macOS
+cursor-event recording hookup, arbitrary nonzero-offset asset assembly,
+physical-device perceptual parity, or restart reconstruction of a native
+staging inode.
 
 The production-mode desktop composition can be built and its adapter-truth
 bootstrap smoked on macOS with:

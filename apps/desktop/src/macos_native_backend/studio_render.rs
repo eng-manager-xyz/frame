@@ -1482,7 +1482,9 @@ mod tests {
                 }),
                 time_base: TimeBase::new(48_000).expect("audio time base"),
             },
-            TrackKind::Camera | TrackKind::Microphone => unreachable!("fixture track"),
+            TrackKind::Camera | TrackKind::Microphone | TrackKind::Cursor => {
+                unreachable!("fixture track")
+            }
         };
         let temporary = StudioAsset {
             version: STUDIO_ASSET_VERSION,

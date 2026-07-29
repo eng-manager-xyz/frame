@@ -48,6 +48,10 @@ fn encoding(track: TrackKind) -> StudioAssetEncoding {
             })
             .expect("audio encoding")
         }
+        TrackKind::Cursor => StudioAssetEncoding::CursorTimelineV1 {
+            frame_width: VIDEO_WIDTH,
+            frame_height: VIDEO_HEIGHT,
+        },
     }
 }
 
@@ -55,18 +59,29 @@ fn branch(marker: u8, track: TrackKind) -> IsolatedTrackBranch {
     IsolatedTrackBranch {
         track,
         asset_id: asset_id(marker),
-        temporary_name: StudioSourceName::new(format!("track-{marker}.webm")).expect("source name"),
+        temporary_name: StudioSourceName::new(if track == TrackKind::Cursor {
+            format!("track-{marker}.frame-cursor")
+        } else {
+            format!("track-{marker}.webm")
+        })
+        .expect("source name"),
         source: match track {
             TrackKind::Screen => CaptureElementFamily::NativeScreenBridge,
             TrackKind::Camera => CaptureElementFamily::NativeCameraBridge,
             TrackKind::Microphone => CaptureElementFamily::NativeMicrophoneBridge,
             TrackKind::SystemAudio => CaptureElementFamily::NativeSystemAudioBridge,
+            TrackKind::Cursor => CaptureElementFamily::NativeCursorMetadataBridge,
         },
         encoder: match track {
             TrackKind::Screen | TrackKind::Camera => CaptureElementFamily::Vp8Encoder,
             TrackKind::Microphone | TrackKind::SystemAudio => CaptureElementFamily::OpusEncoder,
+            TrackKind::Cursor => CaptureElementFamily::CursorTimelineEncoder,
         },
-        muxer: CaptureElementFamily::WebMMux,
+        muxer: if track == TrackKind::Cursor {
+            CaptureElementFamily::CursorTimelineMux
+        } else {
+            CaptureElementFamily::WebMMux
+        },
         encoding: encoding(track),
         queue: BoundedMediaQueue {
             max_buffers: 128,
@@ -126,6 +141,37 @@ fn audio_input(track: TrackKind, sequence: u64, frequency_marker: f32) -> Native
     .expect("audio input")
 }
 
+fn cursor_input(sequence: u64) -> NativeStudioInputBuffer {
+    let timestamp = FrameTimestamp::new(
+        (sequence - 1) * VIDEO_FRAME_DURATION_NS,
+        VIDEO_FRAME_DURATION_NS,
+    )
+    .expect("cursor timestamp");
+    let image = (sequence == 1).then(|| {
+        StudioCursorImage::new(9, 4, 4, 0, 0, PixelFormat::Rgba8, vec![255; 4 * 4 * 4])
+            .expect("cursor image")
+    });
+    let observation = StudioCursorObservation::new(
+        sequence,
+        timestamp,
+        true,
+        u32::try_from(sequence).expect("cursor x"),
+        20,
+        Some(9),
+        sequence == 30,
+        false,
+        image,
+    )
+    .expect("cursor observation");
+    NativeStudioInputBuffer::new(
+        TrackKind::Cursor,
+        sequence,
+        timestamp,
+        encode_studio_cursor_record(&observation).expect("cursor record"),
+    )
+    .expect("cursor input")
+}
+
 fn temporary_media_path(root: &Path, project_marker: u8, asset_marker: u8) -> PathBuf {
     root.join(format!("{project_marker:02x}").repeat(16))
         .join("temporary")
@@ -171,7 +217,7 @@ fn invalid_input_terminalizes_the_exact_recording_graph() {
 }
 
 #[test]
-fn production_multitrack_graph_seals_four_independent_originals() {
+fn production_multitrack_graph_seals_five_independent_originals() {
     let directory = tempfile::tempdir().expect("recording directory");
     let mut store = FilesystemStudioOriginalStore::new(directory.path()).expect("original store");
     let tracks = [
@@ -179,6 +225,7 @@ fn production_multitrack_graph_seals_four_independent_originals() {
         (12, TrackKind::Camera),
         (13, TrackKind::Microphone),
         (14, TrackKind::SystemAudio),
+        (16, TrackKind::Cursor),
     ];
     let graph = graph(10, 15, &tracks);
     let session =
@@ -194,6 +241,9 @@ fn production_multitrack_graph_seals_four_independent_originals() {
         recording
             .push(video_input(TrackKind::Camera, sequence))
             .expect("camera buffer");
+        recording
+            .push(cursor_input(sequence))
+            .expect("cursor buffer");
     }
     for sequence in 1..=94 {
         recording
@@ -207,8 +257,8 @@ fn production_multitrack_graph_seals_four_independent_originals() {
     let artifact = recording
         .finish(&CancellationToken::new())
         .expect("finished isolated originals");
-    assert_eq!(artifact.assets.len(), 4);
-    assert_eq!(artifact.tracks.len(), 4);
+    assert_eq!(artifact.assets.len(), 5);
+    assert_eq!(artifact.tracks.len(), 5);
     assert!(
         artifact
             .tracks
@@ -217,12 +267,29 @@ fn production_multitrack_graph_seals_four_independent_originals() {
     );
     for (asset_marker, track) in tracks {
         let path = temporary_media_path(directory.path(), 10, asset_marker);
-        assert_webm(&path);
+        if track != TrackKind::Cursor {
+            assert_webm(&path);
+        }
         if matches!(track, TrackKind::Screen | TrackKind::Camera) {
             let preview =
                 decode_studio_preview_frame(&path, Duration::ZERO, &CancellationToken::new())
                     .expect("decoded isolated video");
             assert_eq!((preview.width, preview.height), (320, 180));
+        }
+        if track == TrackKind::Cursor {
+            let timeline =
+                StudioCursorTimeline::decode(&fs::read(&path).expect("read cursor timeline"))
+                    .expect("decode cursor timeline");
+            assert_eq!(timeline.frame_dimensions(), (VIDEO_WIDTH, VIDEO_HEIGHT));
+            assert_eq!(timeline.observations().len(), 60);
+            assert_eq!(
+                timeline.observation_at_ns(29 * VIDEO_FRAME_DURATION_NS),
+                timeline.observations().get(29)
+            );
+            assert_eq!(
+                timeline.image(9).map(StudioCursorImage::dimensions),
+                Some((4, 4))
+            );
         }
         let asset = artifact
             .assets

@@ -22,11 +22,11 @@ use thiserror::Error;
 use crate::{AudioSampleFormat, PixelFormat, Sha256Digest, strong_sha256};
 
 pub const STUDIO_PROJECT_VERSION: u16 = 1;
-pub const STUDIO_ASSET_VERSION: u16 = 2;
+pub const STUDIO_ASSET_VERSION: u16 = 3;
 pub const STUDIO_EDIT_VERSION: u16 = 1;
 pub const STUDIO_JOURNAL_VERSION: u16 = 2;
 pub const STUDIO_RENDER_PROTOCOL_VERSION: u16 = 1;
-pub const STUDIO_RECORDING_GRAPH_VERSION: u16 = 2;
+pub const STUDIO_RECORDING_GRAPH_VERSION: u16 = 3;
 pub const MAX_STUDIO_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_STUDIO_ASSETS: usize = 64;
 pub const MAX_STUDIO_EDITS: usize = 1_024;
@@ -325,6 +325,7 @@ pub enum TrackKind {
     Camera,
     Microphone,
     SystemAudio,
+    Cursor,
 }
 
 impl TrackKind {
@@ -334,6 +335,7 @@ impl TrackKind {
             Self::Camera => 2,
             Self::Microphone => 3,
             Self::SystemAudio => 4,
+            Self::Cursor => 5,
         }
     }
 
@@ -343,6 +345,7 @@ impl TrackKind {
             2 => Ok(Self::Camera),
             3 => Ok(Self::Microphone),
             4 => Ok(Self::SystemAudio),
+            5 => Ok(Self::Cursor),
             _ => Err(StudioError::MalformedDocument),
         }
     }
@@ -503,6 +506,10 @@ pub enum StudioAssetEncoding {
         raw_caps: StudioAssetRawCaps,
         time_base: TimeBase,
     },
+    CursorTimelineV1 {
+        frame_width: u32,
+        frame_height: u32,
+    },
 }
 
 impl StudioAssetEncoding {
@@ -538,6 +545,24 @@ impl StudioAssetEncoding {
     }
 
     fn validate_for_track(self, track: TrackKind) -> Result<(), StudioError> {
+        if let Self::CursorTimelineV1 {
+            frame_width,
+            frame_height,
+        } = self
+        {
+            let pixels = u64::from(frame_width)
+                .checked_mul(u64::from(frame_height))
+                .ok_or(StudioError::InvalidAssetEncoding)?;
+            return if track == TrackKind::Cursor
+                && frame_width > 0
+                && frame_height > 0
+                && pixels <= 132_710_400
+            {
+                Ok(())
+            } else {
+                Err(StudioError::InvalidAssetEncoding)
+            };
+        }
         let Self::Encoded {
             container,
             codec,
@@ -545,7 +570,11 @@ impl StudioAssetEncoding {
             time_base: _,
         } = self
         else {
-            return Ok(());
+            return if track == TrackKind::Cursor {
+                Err(StudioError::InvalidAssetEncoding)
+            } else {
+                Ok(())
+            };
         };
         match raw_caps {
             StudioAssetRawCaps::Video(caps) => {
@@ -1391,7 +1420,7 @@ impl StudioDocumentCodec {
 
     pub fn decode_asset(bytes: &[u8]) -> Result<StudioAsset, StudioError> {
         let (version, payload) = unwrap_document(bytes, DocumentKind::Asset)?;
-        if !matches!(version, 1 | STUDIO_ASSET_VERSION) {
+        if !matches!(version, 1 | 2 | STUDIO_ASSET_VERSION) {
             return Err(StudioError::UnsupportedAssetVersion(version));
         }
         let mut reader = CanonicalReader::new(payload);
@@ -1487,7 +1516,7 @@ impl StudioDocumentCodec {
         bytes: &[u8],
     ) -> Result<PersistedStudioRecordingGraph, StudioError> {
         let (version, payload) = unwrap_document(bytes, DocumentKind::RecordingGraph)?;
-        if version != STUDIO_RECORDING_GRAPH_VERSION {
+        if !matches!(version, 2 | STUDIO_RECORDING_GRAPH_VERSION) {
             return Err(StudioError::UnsupportedRecordingGraphVersion(version));
         }
         let mut reader = CanonicalReader::new(payload);
@@ -1495,7 +1524,8 @@ impl StudioDocumentCodec {
         let clock_id = StudioOperationId::from_csprng(reader.array_16()?)?;
         let maximum_track_bytes = reader.u64()?;
         let branch_count = usize::from(reader.u8()?);
-        if branch_count == 0 || branch_count > 4 {
+        let maximum_branches = if version == 2 { 4 } else { 5 };
+        if branch_count == 0 || branch_count > maximum_branches {
             return Err(StudioError::InvalidRecordingGraph);
         }
         let mut branches = Vec::with_capacity(branch_count);
@@ -1518,6 +1548,17 @@ impl StudioDocumentCodec {
             });
         }
         reader.finish()?;
+        if version == 2
+            && branches.iter().any(|branch| {
+                branch.track == TrackKind::Cursor
+                    || matches!(
+                        branch.encoding,
+                        StudioAssetEncoding::CursorTimelineV1 { .. }
+                    )
+            })
+        {
+            return Err(StudioError::MalformedDocument);
+        }
         let document = PersistedStudioRecordingGraph {
             graph: StudioRecordingGraphSpec::new(project_id, clock_id, branches)?,
             maximum_track_bytes,
@@ -1905,6 +1946,14 @@ fn encode_asset_encoding(writer: &mut CanonicalWriter, encoding: StudioAssetEnco
             }
             writer.u32(time_base.0);
         }
+        StudioAssetEncoding::CursorTimelineV1 {
+            frame_width,
+            frame_height,
+        } => {
+            writer.u8(3);
+            writer.u32(frame_width);
+            writer.u32(frame_height);
+        }
     }
 }
 
@@ -1944,6 +1993,10 @@ fn decode_asset_encoding(
                 time_base: TimeBase::new(reader.u32()?)?,
             }
         }
+        3 => StudioAssetEncoding::CursorTimelineV1 {
+            frame_width: reader.u32()?,
+            frame_height: reader.u32()?,
+        },
         _ => return Err(StudioError::MalformedDocument),
     };
     Ok(encoding)
@@ -1970,7 +2023,7 @@ fn decode_asset_versioned(
     reader: &mut CanonicalReader<'_>,
 ) -> Result<(u16, StudioAsset), StudioError> {
     let source_version = reader.u16()?;
-    if !matches!(source_version, 1 | STUDIO_ASSET_VERSION) {
+    if !matches!(source_version, 1 | 2 | STUDIO_ASSET_VERSION) {
         return Err(StudioError::UnsupportedAssetVersion(source_version));
     }
     let id = StudioAssetId::from_csprng(reader.array_16()?)?;
@@ -1990,6 +2043,12 @@ fn decode_asset_versioned(
     } else {
         decode_asset_encoding(reader)?
     };
+    if source_version < 3
+        && (track == TrackKind::Cursor
+            || matches!(encoding, StudioAssetEncoding::CursorTimelineV1 { .. }))
+    {
+        return Err(StudioError::MalformedDocument);
+    }
     let asset = StudioAsset {
         version: STUDIO_ASSET_VERSION,
         id,
@@ -3826,6 +3885,7 @@ pub fn import_legacy_cap<P: LegacyCapProjectPort>(
             TrackKind::Camera => "camera",
             TrackKind::Microphone => "microphone",
             TrackKind::SystemAudio => "system-audio",
+            TrackKind::Cursor => "cursor",
         };
         let destination =
             StudioSourceName::new(format!("segment-{}-{role}.media", decoded.segment_index))?;
@@ -3980,9 +4040,12 @@ pub enum CaptureElementFamily {
     NativeCameraBridge,
     NativeMicrophoneBridge,
     NativeSystemAudioBridge,
+    NativeCursorMetadataBridge,
     WebMMux,
     Vp8Encoder,
     OpusEncoder,
+    CursorTimelineEncoder,
+    CursorTimelineMux,
 }
 
 impl CaptureElementFamily {
@@ -3995,6 +4058,9 @@ impl CaptureElementFamily {
             Self::WebMMux => 5,
             Self::Vp8Encoder => 6,
             Self::OpusEncoder => 7,
+            Self::NativeCursorMetadataBridge => 8,
+            Self::CursorTimelineEncoder => 9,
+            Self::CursorTimelineMux => 10,
         }
     }
 
@@ -4007,6 +4073,9 @@ impl CaptureElementFamily {
             5 => Ok(Self::WebMMux),
             6 => Ok(Self::Vp8Encoder),
             7 => Ok(Self::OpusEncoder),
+            8 => Ok(Self::NativeCursorMetadataBridge),
+            9 => Ok(Self::CursorTimelineEncoder),
+            10 => Ok(Self::CursorTimelineMux),
             _ => Err(StudioError::MalformedDocument),
         }
     }
@@ -4054,6 +4123,7 @@ impl IsolatedTrackBranch {
             TrackKind::Camera => CaptureElementFamily::NativeCameraBridge,
             TrackKind::Microphone => CaptureElementFamily::NativeMicrophoneBridge,
             TrackKind::SystemAudio => CaptureElementFamily::NativeSystemAudioBridge,
+            TrackKind::Cursor => CaptureElementFamily::NativeCursorMetadataBridge,
         };
         let encoding_valid = match (self.track, self.encoding) {
             (
@@ -4083,12 +4153,27 @@ impl IsolatedTrackBranch {
                     && caps.sample_format == AudioSampleFormat::Float32
                     && time_base.0 == 48_000
             }
+            (TrackKind::Cursor, StudioAssetEncoding::CursorTimelineV1 { .. }) => {
+                self.encoder == CaptureElementFamily::CursorTimelineEncoder
+                    && self.muxer == CaptureElementFamily::CursorTimelineMux
+            }
             _ => false,
         };
         if self.source != expected_source
             || !encoding_valid
-            || self.muxer != CaptureElementFamily::WebMMux
-            || !self.temporary_name.as_str().ends_with(".webm")
+            || match self.track {
+                TrackKind::Cursor => {
+                    self.muxer != CaptureElementFamily::CursorTimelineMux
+                        || !self.temporary_name.as_str().ends_with(".frame-cursor")
+                }
+                TrackKind::Screen
+                | TrackKind::Camera
+                | TrackKind::Microphone
+                | TrackKind::SystemAudio => {
+                    self.muxer != CaptureElementFamily::WebMMux
+                        || !self.temporary_name.as_str().ends_with(".webm")
+                }
+            }
         {
             return Err(StudioError::InvalidRecordingGraph);
         }
@@ -4120,7 +4205,7 @@ impl StudioRecordingGraphSpec {
     }
 
     pub fn validate(&self) -> Result<(), StudioError> {
-        if self.branches.is_empty() || self.branches.len() > 4 {
+        if self.branches.is_empty() || self.branches.len() > 5 {
             return Err(StudioError::InvalidRecordingGraph);
         }
         let mut tracks = BTreeSet::new();
@@ -7163,7 +7248,7 @@ fn style_for(
                 match track {
                     TrackKind::Microphone => style.microphone = audio,
                     TrackKind::SystemAudio => style.system_audio = audio,
-                    TrackKind::Screen | TrackKind::Camera => {}
+                    TrackKind::Screen | TrackKind::Camera | TrackKind::Cursor => {}
                 }
             }
             EditOperation::Layout { preset, .. } => style.layout = *preset,
