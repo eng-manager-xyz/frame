@@ -2,7 +2,7 @@
 //!
 //! This module is deliberately narrower than the provider-neutral capture
 //! contracts: it records one opaque display, window, or region target, embeds
-//! the cursor, excludes the entire current Frame application where the native
+//! the cursor for flattened recordings, excludes the entire current Frame application where the native
 //! target permits it, optionally captures exact 48 kHz stereo
 //! system audio, and exports an Editable WebM. Studio mode also feeds the
 //! selected screen and included system-audio samples into bounded isolated
@@ -45,20 +45,20 @@ use frame_macos_av_capture::{
 #[cfg(test)]
 use frame_macos_screen_capture::MacOsCaptureStopError;
 use frame_macos_screen_capture::{
-    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError,
+    MacOsCaptureConfig, MacOsCaptureDiagnostics, MacOsCaptureError, MacOsCursorMetadataSession,
     MacOsNormalizedScreenCaptureSource, MacOsRegionSelection, MacOsScreenCaptureSource,
 };
 #[cfg(test)]
 use frame_media::ScreenRecordingArtifact;
 use frame_media::{
-    AvSessionId, CancellationToken, ColorSpace, CursorCaptureMode, DisplayGeometryTransform,
-    ExactDuration, FilesystemStudioOriginalStore, FrameMemory, FrameRate, LogicalRect,
-    NativeStudioPreviewEngine, PermissionPreflight, PixelFormat, ProtectedContentPolicy, Rotation,
-    ScreenAudioRecording, ScreenAudioRecordingArtifact, ScreenRecording, ScreenRecordingError,
-    ScreenRecordingSpec, ScreenSessionId, ScreenSourceInstanceId, ScreenTargetBinding,
-    ScreenTargetDescriptor, ScreenTargetKind, ScreenTargetSnapshot, StudioPreviewGraphSpec,
-    StudioSourceSet, StudioTimelineCompiler, SystemAudioRecordingSpec, TimelineSource,
-    VideoFrameSpec, preflight_screen_recording_runtime,
+    AvSessionId, CancellationToken, ColorSpace, CursorCaptureMode, CursorPolicy,
+    DisplayGeometryTransform, ExactDuration, FilesystemStudioOriginalStore, FrameMemory, FrameRate,
+    LogicalRect, NativeStudioPreviewEngine, PermissionPreflight, PixelFormat,
+    ProtectedContentPolicy, Rotation, ScreenAudioRecording, ScreenAudioRecordingArtifact,
+    ScreenRecording, ScreenRecordingError, ScreenRecordingSpec, ScreenSessionId,
+    ScreenSourceInstanceId, ScreenTargetBinding, ScreenTargetDescriptor, ScreenTargetKind,
+    ScreenTargetSnapshot, StudioPreviewGraphSpec, StudioSourceSet, StudioTimelineCompiler,
+    SystemAudioRecordingSpec, TimelineSource, VideoFrameSpec, preflight_screen_recording_runtime,
 };
 use frame_platform_lifecycle::SystemPowerMonitor;
 
@@ -298,6 +298,7 @@ struct ScreenStudioWorkerStart {
     source: MacOsScreenCaptureSource,
     recording: ScreenRecording,
     studio: DesktopStudioRecording,
+    cursor: MacOsCursorMetadataSession,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
 }
 
@@ -306,6 +307,7 @@ struct ScreenAudioWorkerStart {
     system_audio: MacOsSystemAudioSource,
     recording: ScreenAudioRecording,
     studio: Option<DesktopStudioRecording>,
+    cursor: Option<MacOsCursorMetadataSession>,
     timestamps: SharedClockNormalizer,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
     audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
@@ -316,6 +318,7 @@ struct ScreenOptionalWorkerStart {
     optional: MacOsOptionalInputRecording,
     recording: PendingRecordingGraph,
     studio: Option<DesktopStudioRecording>,
+    cursor: Option<MacOsCursorMetadataSession>,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
 }
 
@@ -465,6 +468,7 @@ impl MacOsNativeDesktopBackend {
         recording_token: String,
         final_relative: PathBuf,
         staging_relative: PathBuf,
+        studio_cursor: Option<MacOsCursorMetadataSession>,
         mut source: MacOsScreenCaptureSource,
         system_audio: MacOsSystemAudioSource,
         observed_topology_generation: Option<u64>,
@@ -598,6 +602,7 @@ impl MacOsNativeDesktopBackend {
                     microphone: selection.microphone,
                     system_audio: selection.system_audio,
                     camera: selection.camera,
+                    cursor: true,
                 },
             ) {
                 Ok(recording) => Some(recording),
@@ -625,7 +630,11 @@ impl MacOsNativeDesktopBackend {
         let capture_config = match MacOsCaptureConfig::new(
             target.descriptor.binding(),
             frame_spec,
-            CursorCaptureMode::EmbeddedInFrame,
+            if studio_cursor.is_some() {
+                CursorCaptureMode::Metadata
+            } else {
+                CursorCaptureMode::EmbeddedInFrame
+            },
         ) {
             Ok(config) => config,
             Err(error) => {
@@ -714,6 +723,7 @@ impl MacOsNativeDesktopBackend {
             optional,
             recording,
             studio,
+            cursor: studio_cursor,
             screen_diagnostic_baseline,
         }));
         let (control, receiver) = sync_channel(WORKER_CONTROL_CAPACITY);
@@ -740,13 +750,14 @@ impl MacOsNativeDesktopBackend {
                     optional,
                     recording,
                     studio,
+                    cursor,
                     screen_diagnostic_baseline,
                 } = *start;
                 run_optional_av_capture_worker(
                     source,
                     optional,
                     recording,
-                    studio,
+                    (studio, cursor),
                     receiver,
                     OptionalWorkerTelemetry {
                         screen_diagnostic_baseline,
@@ -1443,6 +1454,11 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
         let recording_spec = ScreenRecordingSpec::new(frame_spec).map_err(map_recording_error)?;
         let screen_session_id = ScreenSessionId::from_csprng(random_array(&SystemRandom::new())?)
             .map_err(|_| NativeDesktopBackendError::Internal)?;
+        let mut studio_cursor = if request.mode == RecorderMode::Studio {
+            Some(new_studio_cursor_session(&target.descriptor, frame_spec)?)
+        } else {
+            None
+        };
         let recording_token = self.fresh_token("recording")?;
         let final_relative = PathBuf::from(format!("{recording_token}.webm"));
         let staging_relative = PathBuf::from(format!(".{recording_token}.partial"));
@@ -1470,6 +1486,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                 recording_token,
                 final_relative,
                 staging_relative,
+                studio_cursor.take(),
                 source,
                 system_audio,
                 observed_topology_generation,
@@ -1642,7 +1659,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     let capture_config = match MacOsCaptureConfig::new(
                         target.descriptor.binding(),
                         frame_spec,
-                        CursorCaptureMode::EmbeddedInFrame,
+                        CursorCaptureMode::Metadata,
                     ) {
                         Ok(config) => config,
                         Err(error) => {
@@ -1703,6 +1720,9 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                         source,
                         recording,
                         studio,
+                        cursor: studio_cursor
+                            .take()
+                            .ok_or(NativeDesktopBackendError::Internal)?,
                         screen_diagnostic_baseline,
                     }))
                 } else {
@@ -1770,7 +1790,11 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                 let capture_config = match MacOsCaptureConfig::new(
                     target.descriptor.binding(),
                     frame_spec,
-                    CursorCaptureMode::EmbeddedInFrame,
+                    if studio_cursor.is_some() {
+                        CursorCaptureMode::Metadata
+                    } else {
+                        CursorCaptureMode::EmbeddedInFrame
+                    },
                 ) {
                     Ok(config) => config,
                     Err(error) => {
@@ -1864,6 +1888,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     &mut system_audio,
                     &mut recording,
                     studio.as_mut(),
+                    studio_cursor.as_mut(),
                 ) {
                     Ok(timestamps) => timestamps,
                     Err(primary_error) => {
@@ -1898,6 +1923,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                     system_audio,
                     recording,
                     studio,
+                    cursor: studio_cursor.take(),
                     timestamps,
                     screen_diagnostic_baseline,
                     audio_diagnostic_baseline,
@@ -1934,12 +1960,14 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             source,
                             recording,
                             studio,
+                            cursor,
                             screen_diagnostic_baseline,
                         } = *start;
                         run_screen_studio_capture_worker(
                             source,
                             recording,
                             studio,
+                            cursor,
                             receiver,
                             screen_diagnostic_baseline,
                         )
@@ -1950,6 +1978,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             system_audio,
                             recording,
                             studio,
+                            cursor,
                             timestamps,
                             screen_diagnostic_baseline,
                             audio_diagnostic_baseline,
@@ -1958,7 +1987,7 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             source,
                             system_audio,
                             recording,
-                            studio,
+                            (studio, cursor),
                             timestamps,
                             receiver,
                             AvWorkerTelemetry {
@@ -1974,13 +2003,14 @@ impl NativeDesktopBackend for MacOsNativeDesktopBackend {
                             optional,
                             recording,
                             studio,
+                            cursor,
                             screen_diagnostic_baseline,
                         } = *start;
                         run_optional_av_capture_worker(
                             source,
                             optional,
                             recording,
-                            studio,
+                            (studio, cursor),
                             receiver,
                             OptionalWorkerTelemetry {
                                 screen_diagnostic_baseline,
@@ -3278,11 +3308,24 @@ fn new_studio_recording(
             microphone_asset: random_array(&random)?,
             system_audio_asset: random_array(&random)?,
             camera_asset: random_array(&random)?,
+            cursor_asset: random_array(&random)?,
         },
         screen,
         frame_rate,
-        optional,
+        StudioOptionalTracks {
+            cursor: true,
+            ..optional
+        },
     )
+}
+
+fn new_studio_cursor_session(
+    target: &ScreenTargetDescriptor,
+    output: VideoFrameSpec,
+) -> Result<MacOsCursorMetadataSession, NativeDesktopBackendError> {
+    let policy = CursorPolicy::new(CursorCaptureMode::Metadata, true, true)
+        .map_err(|_| NativeDesktopBackendError::Internal)?;
+    MacOsCursorMetadataSession::new(target.clone(), output, policy).map_err(map_capture_error)
 }
 
 fn random_array<const N: usize>(

@@ -17,12 +17,12 @@ Ordinals are one-based in checkbox order within each issue. Every issue pins a
 digest of its checkbox text, so editing or reordering a requirement forces a
 fresh classification. Evidence paths must be real, non-symlink repository
 files. All ordinals not explicitly protected or open are locally satisfied.
-The current exact partition is 366 locally satisfied, 180 protected pending,
-and 8 repository-local gaps. The focused native-product audit pins those gaps
-to issue 27 checkbox 10 and issue 33 checkboxes 3/4/5/6/8/9/10. Issue 25 has no
-repository-local gap; its physical A/V matrix remains protected pending. Issue
-27's representative physical hardware-fallback matrix is also protected
-pending after the repository-local production path was completed.
+The current exact partition is 367 locally satisfied, 180 protected pending,
+and 7 repository-local gaps. The focused native-product audit pins those gaps
+to issue 33 checkboxes 3/4/5/6/8/9/10. Issues 24, 25, and 27 have no
+repository-local gap; their representative physical matrices remain protected
+pending. Issue 27's reviewed legacy-project corpus is protected pending as
+well.
 
 Run:
 

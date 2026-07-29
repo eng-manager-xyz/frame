@@ -458,6 +458,7 @@ mod tests {
             microphone_asset: [marker + 3; 16],
             system_audio_asset: [marker + 4; 16],
             camera_asset: [marker + 5; 16],
+            cursor_asset: [marker + 6; 16],
         }
     }
 

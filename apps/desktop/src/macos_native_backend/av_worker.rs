@@ -15,14 +15,16 @@ use frame_macos_av_capture::{
     MacOsSystemAudioSource, MacOsSystemAudioStopError,
 };
 use frame_macos_screen_capture::{
-    MacOsCaptureDiagnostics, MacOsCaptureFrame, MacOsCaptureStopError, MacOsScreenCaptureSource,
+    MacOsCaptureDiagnostics, MacOsCaptureFrame, MacOsCaptureStopError, MacOsCursorMetadataSession,
+    MacOsScreenCaptureSource,
 };
 use frame_media::{
     AudioSourceMixSettings, AvDiagnostic, AvSourceClass, AvSyncPolicy, BgraScreenFrame,
     CalibrationSample, CancellationToken, F32StereoAudioChunk, FrameTimestamp, LatencyConfidence,
     MonotonicTimeNs, NativeAvGraphOutputKind, NativeAvGraphOutputSample, NativeAvGraphTeardown,
     NativeAvRuntimeOutcome, NativeAvSourceTeardown, ScreenAudioRecording, ScreenRecording,
-    ScreenRecordingError, SourceLatency, SourceTimebase, StartupCalibration,
+    ScreenRecordingError, SourceLatency, SourceTimebase, StartupCalibration, StudioCursorImage,
+    StudioCursorObservation,
 };
 
 use super::{
@@ -37,6 +39,11 @@ use crate::DeviceClass;
 const STARTUP_CALIBRATION_TIMEOUT: Duration = Duration::from_millis(80);
 const SCREEN_STARTUP_CALIBRATION_SAMPLES: usize = 5;
 const OPTIONAL_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub(super) type StudioWorkerState = (
+    Option<DesktopStudioRecording>,
+    Option<MacOsCursorMetadataSession>,
+);
 
 pub(super) struct AvWorkerTelemetry {
     pub(super) screen_diagnostic_baseline: MacOsCaptureDiagnostics,
@@ -215,10 +222,11 @@ pub(super) fn run_optional_av_capture_worker(
     mut source: MacOsScreenCaptureSource,
     mut optional: MacOsOptionalInputRecording,
     mut recording: PendingRecordingGraph,
-    mut studio: Option<DesktopStudioRecording>,
+    studio_state: StudioWorkerState,
     control: Receiver<WorkerControl>,
     telemetry: OptionalWorkerTelemetry,
 ) -> WorkerCompletion {
+    let (mut studio, mut cursor) = studio_state;
     let mut screen_clock = SharedScreenClock::default();
     let mut paused = false;
     let mut camera_enabled = optional.selection().camera;
@@ -229,7 +237,7 @@ pub(super) fn run_optional_av_capture_worker(
                     &mut source,
                     &mut optional,
                     recording,
-                    studio,
+                    (studio, cursor),
                     &mut screen_clock,
                     &telemetry,
                     camera_enabled,
@@ -335,6 +343,22 @@ pub(super) fn run_optional_av_capture_worker(
                 if !paused {
                     match screen_clock.normalize(frame) {
                         Ok(Some((sequence, timestamp, pixels))) => {
+                            if let Err(error) = push_studio_cursor(
+                                studio.as_mut(),
+                                cursor.as_mut(),
+                                sequence,
+                                timestamp,
+                            ) {
+                                let outcome = fail_optional_worker(
+                                    &mut source,
+                                    &mut optional,
+                                    recording,
+                                    studio,
+                                    &telemetry,
+                                    error,
+                                );
+                                return WorkerCompletion { outcome };
+                            }
                             if let Err(error) = push_normalized_screen(
                                 &mut recording,
                                 studio.as_mut(),
@@ -553,11 +577,12 @@ fn finish_optional_worker(
     source: &mut MacOsScreenCaptureSource,
     optional: &mut MacOsOptionalInputRecording,
     mut recording: PendingRecordingGraph,
-    mut studio: Option<DesktopStudioRecording>,
+    studio_state: StudioWorkerState,
     screen_clock: &mut SharedScreenClock,
     telemetry: &OptionalWorkerTelemetry,
     camera_enabled: bool,
 ) -> WorkerOutcome {
+    let (mut studio, mut cursor) = studio_state;
     let (screen_tail, screen_teardown_confirmed, screen_error) =
         classify_screen_stop(source.stop_and_drain_frames());
     if let Some(error) = screen_error {
@@ -571,6 +596,16 @@ fn finish_optional_worker(
     for frame in screen_tail {
         match screen_clock.normalize(frame) {
             Ok(Some((sequence, timestamp, pixels))) => {
+                if let Err(error) =
+                    push_studio_cursor(studio.as_mut(), cursor.as_mut(), sequence, timestamp)
+                {
+                    return fail_optional_recorders(
+                        optional.cancel().is_ok(),
+                        recording,
+                        studio,
+                        error,
+                    );
+                }
                 if let Err(error) = push_normalized_screen(
                     &mut recording,
                     studio.as_mut(),
@@ -819,6 +854,7 @@ pub(super) fn run_screen_studio_capture_worker(
     mut source: MacOsScreenCaptureSource,
     mut recording: ScreenRecording,
     mut studio: DesktopStudioRecording,
+    mut cursor: MacOsCursorMetadataSession,
     control: Receiver<WorkerControl>,
     diagnostic_baseline: MacOsCaptureDiagnostics,
 ) -> WorkerCompletion {
@@ -830,6 +866,7 @@ pub(super) fn run_screen_studio_capture_worker(
                     &mut source,
                     recording,
                     studio,
+                    &mut cursor,
                     &mut timestamps,
                     diagnostic_baseline,
                 );
@@ -854,9 +891,13 @@ pub(super) fn run_screen_studio_capture_worker(
         }
         match source.poll_frame() {
             Ok(Some(frame)) => {
-                if let Err(error) =
-                    push_screen_studio_frame(&mut recording, &mut studio, frame, &mut timestamps)
-                {
+                if let Err(error) = push_screen_studio_frame(
+                    &mut recording,
+                    &mut studio,
+                    &mut cursor,
+                    frame,
+                    &mut timestamps,
+                ) {
                     let outcome =
                         fail_screen_studio_recording(&mut source, recording, studio, error);
                     return WorkerCompletion { outcome };
@@ -879,6 +920,7 @@ pub(super) fn run_screen_studio_capture_worker(
 fn push_screen_studio_frame(
     recording: &mut ScreenRecording,
     studio: &mut DesktopStudioRecording,
+    cursor: &mut MacOsCursorMetadataSession,
     frame: frame_macos_screen_capture::MacOsCaptureFrame,
     timestamps: &mut Option<SharedClockNormalizer>,
 ) -> Result<(), NativeDesktopBackendError> {
@@ -891,6 +933,7 @@ fn push_screen_studio_frame(
     let timestamp = normalizer
         .normalize_video(source_pts_ns, frame.timestamp())
         .map_err(map_recording_error)?;
+    push_studio_cursor(Some(studio), Some(cursor), sequence, timestamp)?;
     let pixels = frame.into_pixels();
     studio.push_screen(sequence, timestamp, pixels.to_vec())?;
     let frame = BgraScreenFrame::new(sequence, timestamp, pixels).map_err(map_recording_error)?;
@@ -904,6 +947,7 @@ fn finish_screen_studio_recording(
     source: &mut MacOsScreenCaptureSource,
     mut recording: ScreenRecording,
     mut studio: DesktopStudioRecording,
+    cursor: &mut MacOsCursorMetadataSession,
     timestamps: &mut Option<SharedClockNormalizer>,
     diagnostic_baseline: MacOsCaptureDiagnostics,
 ) -> WorkerOutcome {
@@ -913,7 +957,8 @@ fn finish_screen_studio_recording(
         return fail_screen_studio_after_native_stop(recording, studio, error, teardown_confirmed);
     }
     for frame in tail {
-        if let Err(error) = push_screen_studio_frame(&mut recording, &mut studio, frame, timestamps)
+        if let Err(error) =
+            push_screen_studio_frame(&mut recording, &mut studio, cursor, frame, timestamps)
         {
             return fail_screen_studio_after_native_stop(
                 recording,
@@ -1048,11 +1093,12 @@ pub(super) fn run_av_capture_worker(
     mut source: MacOsScreenCaptureSource,
     mut system_audio: MacOsSystemAudioSource,
     mut recording: ScreenAudioRecording,
-    mut studio: Option<DesktopStudioRecording>,
+    studio_state: StudioWorkerState,
     mut timestamps: SharedClockNormalizer,
     control: Receiver<WorkerControl>,
     telemetry: AvWorkerTelemetry,
 ) -> WorkerCompletion {
+    let (mut studio, mut cursor) = studio_state;
     let mut poll_audio_first = false;
     loop {
         match control.try_recv() {
@@ -1061,7 +1107,7 @@ pub(super) fn run_av_capture_worker(
                     &mut source,
                     &mut system_audio,
                     recording,
-                    studio,
+                    (studio, cursor),
                     &mut timestamps,
                     telemetry.screen_diagnostic_baseline,
                     telemetry.audio_diagnostic_baseline,
@@ -1105,6 +1151,7 @@ pub(super) fn run_av_capture_worker(
                 &mut recording,
                 &mut timestamps,
                 studio.as_mut(),
+                cursor.as_mut(),
             )
         };
         let first_did_work = match first {
@@ -1128,6 +1175,7 @@ pub(super) fn run_av_capture_worker(
                 &mut recording,
                 &mut timestamps,
                 studio.as_mut(),
+                cursor.as_mut(),
             )
         } else {
             poll_audio(
@@ -1165,6 +1213,7 @@ pub(super) fn calibrate_av_startup(
     system_audio: &mut MacOsSystemAudioSource,
     recording: &mut ScreenAudioRecording,
     mut studio: Option<&mut DesktopStudioRecording>,
+    mut cursor: Option<&mut MacOsCursorMetadataSession>,
 ) -> Result<SharedClockNormalizer, NativeDesktopBackendError> {
     let deadline = Instant::now()
         .checked_add(STARTUP_CALIBRATION_TIMEOUT)
@@ -1194,11 +1243,23 @@ pub(super) fn calibrate_av_startup(
             let mut timestamps =
                 SharedClockNormalizer::new(screen_source_pts_ns, audio_source_pts_ns);
             if screen_source_pts_ns <= audio_source_pts_ns {
-                push_capture_frame(recording, screen, &mut timestamps, studio.as_deref_mut())?;
+                push_capture_frame(
+                    recording,
+                    screen,
+                    &mut timestamps,
+                    studio.as_deref_mut(),
+                    cursor.as_deref_mut(),
+                )?;
                 push_audio_chunk(recording, audio, &mut timestamps, studio.as_deref_mut())?;
             } else {
                 push_audio_chunk(recording, audio, &mut timestamps, studio.as_deref_mut())?;
-                push_capture_frame(recording, screen, &mut timestamps, studio.as_deref_mut())?;
+                push_capture_frame(
+                    recording,
+                    screen,
+                    &mut timestamps,
+                    studio.as_deref_mut(),
+                    cursor.as_deref_mut(),
+                )?;
             }
             return Ok(timestamps);
         }
@@ -1218,10 +1279,11 @@ fn poll_screen(
     recording: &mut ScreenAudioRecording,
     timestamps: &mut SharedClockNormalizer,
     studio: Option<&mut DesktopStudioRecording>,
+    cursor: Option<&mut MacOsCursorMetadataSession>,
 ) -> Result<bool, NativeDesktopBackendError> {
     match source.poll_frame() {
         Ok(Some(frame)) => {
-            push_capture_frame(recording, frame, timestamps, studio)?;
+            push_capture_frame(recording, frame, timestamps, studio, cursor)?;
             Ok(true)
         }
         Ok(None) => Ok(false),
@@ -1264,6 +1326,7 @@ fn push_capture_frame(
     frame: frame_macos_screen_capture::MacOsCaptureFrame,
     timestamps: &mut SharedClockNormalizer,
     studio: Option<&mut DesktopStudioRecording>,
+    cursor: Option<&mut MacOsCursorMetadataSession>,
 ) -> Result<(), NativeDesktopBackendError> {
     let sequence = frame.sequence();
     let source_pts_ns = frame
@@ -1272,6 +1335,8 @@ fn push_capture_frame(
     let timestamp = timestamps
         .normalize_video(source_pts_ns, frame.timestamp())
         .map_err(map_recording_error)?;
+    let mut studio = studio;
+    push_studio_cursor(studio.as_deref_mut(), cursor, sequence, timestamp)?;
     let pixels = frame.into_pixels();
     if let Some(studio) = studio {
         studio.push_screen(sequence, timestamp, pixels.to_vec())?;
@@ -1281,6 +1346,57 @@ fn push_capture_frame(
         .push_video_frame(frame)
         .map(|_| ())
         .map_err(map_recording_error)
+}
+
+fn push_studio_cursor(
+    studio: Option<&mut DesktopStudioRecording>,
+    cursor: Option<&mut MacOsCursorMetadataSession>,
+    sequence: u64,
+    timestamp: FrameTimestamp,
+) -> Result<(), NativeDesktopBackendError> {
+    let Some(studio) = studio else {
+        if cursor.is_some() {
+            return Err(NativeDesktopBackendError::Internal);
+        }
+        return Ok(());
+    };
+    let cursor = cursor.ok_or(NativeDesktopBackendError::Internal)?;
+    let observation = cursor.sample().map_err(map_capture_error)?;
+    let metadata = observation
+        .cursor()
+        .ok_or(NativeDesktopBackendError::Internal)?;
+    let image_update = observation
+        .into_image_update()
+        .map(|image| {
+            let descriptor = image.descriptor();
+            let (width, height) = descriptor.dimensions();
+            let (hotspot_x, hotspot_y) = descriptor.hotspot();
+            StudioCursorImage::new(
+                descriptor.revision(),
+                width,
+                height,
+                hotspot_x,
+                hotspot_y,
+                descriptor.pixel_format(),
+                image.into_pixels().into_vec(),
+            )
+        })
+        .transpose()
+        .map_err(|_| NativeDesktopBackendError::Internal)?;
+    let (frame_x, frame_y) = metadata.frame_position().unwrap_or((0, 0));
+    let observation = StudioCursorObservation::new(
+        sequence,
+        timestamp,
+        metadata.visible(),
+        frame_x,
+        frame_y,
+        metadata.image_revision(),
+        metadata.primary_click(),
+        metadata.secondary_click(),
+        image_update,
+    )
+    .map_err(|_| NativeDesktopBackendError::Internal)?;
+    studio.push_cursor(observation)
 }
 
 fn push_audio_chunk(
@@ -1306,11 +1422,12 @@ fn finish_av_worker_recording(
     source: &mut MacOsScreenCaptureSource,
     system_audio: &mut MacOsSystemAudioSource,
     mut recording: ScreenAudioRecording,
-    mut studio: Option<DesktopStudioRecording>,
+    studio_state: StudioWorkerState,
     timestamps: &mut SharedClockNormalizer,
     screen_diagnostic_baseline: MacOsCaptureDiagnostics,
     audio_diagnostic_baseline: MacOsSystemAudioDiagnostics,
 ) -> WorkerOutcome {
+    let (mut studio, mut cursor) = studio_state;
     // Stop both native producers before admitting either bounded tail. EOS is
     // serialized only after every accepted tail item reaches its appsrc.
     let (screen_tail, screen_teardown_confirmed, screen_error) =
@@ -1326,7 +1443,13 @@ fn finish_av_worker_recording(
         );
     }
     for frame in screen_tail {
-        if let Err(error) = push_capture_frame(&mut recording, frame, timestamps, studio.as_mut()) {
+        if let Err(error) = push_capture_frame(
+            &mut recording,
+            frame,
+            timestamps,
+            studio.as_mut(),
+            cursor.as_mut(),
+        ) {
             return fail_recorder_after_native_stop(recording, studio, error, true);
         }
     }

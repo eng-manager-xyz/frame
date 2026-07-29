@@ -77,12 +77,34 @@ pub struct NativeStudioAlignedSources {
 /// Unix-only because that descriptor namespace is the audited native desktop
 /// boundary on those platforms.
 #[cfg(unix)]
+pub struct NativeStudioFileSource {
+    pub file: File,
+    pub timeline_start: ExactDuration,
+    pub timeline_duration: ExactDuration,
+}
+
+#[cfg(unix)]
+impl fmt::Debug for NativeStudioFileSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeStudioFileSource")
+            .field("file", &"<descriptor>")
+            .field("timeline_start", &self.timeline_start)
+            .field("timeline_duration", &self.timeline_duration)
+            .finish()
+    }
+}
+
+/// One descriptor-retained original per supported Studio track. Each source
+/// carries its canonical project-clock range so local decoder timestamps never
+/// have to impersonate project time.
+#[cfg(unix)]
 pub struct NativeStudioAlignedFileSources {
-    pub screen: File,
-    pub camera: Option<File>,
-    pub cursor: Option<File>,
-    pub microphone: Option<File>,
-    pub system_audio: Option<File>,
+    pub screen: NativeStudioFileSource,
+    pub camera: Option<NativeStudioFileSource>,
+    pub cursor: Option<NativeStudioFileSource>,
+    pub microphone: Option<NativeStudioFileSource>,
+    pub system_audio: Option<NativeStudioFileSource>,
 }
 
 #[cfg(unix)]
@@ -1234,6 +1256,22 @@ struct CanonicalSources {
     cursor: Option<StudioCursorTimeline>,
     microphone: Option<PathBuf>,
     system_audio: Option<PathBuf>,
+    ranges: CanonicalSourceRanges,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CanonicalSourceRanges {
+    screen: Option<CanonicalTimelineRange>,
+    camera: Option<CanonicalTimelineRange>,
+    cursor: Option<CanonicalTimelineRange>,
+    microphone: Option<CanonicalTimelineRange>,
+    system_audio: Option<CanonicalTimelineRange>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CanonicalTimelineRange {
+    start: ExactDuration,
+    duration: ExactDuration,
 }
 
 #[derive(Debug)]
@@ -1924,6 +1962,83 @@ impl CanonicalSources {
         .flatten()
     }
 
+    fn decoder_seek_range(
+        &self,
+        name: &str,
+        window: StudioEditExecutionWindow,
+    ) -> Result<(gst::ClockTime, gst::ClockTime), NativeExecutionError> {
+        let (range, required) = match name {
+            "edit_screen_decode" => (self.ranges.screen, true),
+            "edit_camera_decode" => (self.ranges.camera, window.camera_source_available),
+            "edit_microphone_decode" => {
+                (self.ranges.microphone, window.microphone.source_available)
+            }
+            "edit_system_audio_decode" => (
+                self.ranges.system_audio,
+                window.system_audio.source_available,
+            ),
+            _ => return Err(NativeExecutionError::InvalidGraph),
+        };
+        let Some(range) = range else {
+            return Ok((
+                rational_to_clock_time(window.source_start, false)?,
+                rational_to_clock_time(window.source_end, true)?,
+            ));
+        };
+        let source_start = rational_to_exact_duration(window.source_start)?;
+        let source_end = rational_to_exact_duration(window.source_end)?;
+        let range_end = range
+            .start
+            .checked_add(range.duration)
+            .map_err(|_| NativeExecutionError::ResourceLimit)?;
+        let (local_start, local_end) = if required {
+            if source_start
+                .compare(range.start)
+                .map_err(|_| NativeExecutionError::ResourceLimit)?
+                == std::cmp::Ordering::Less
+                || source_end
+                    .compare(range_end)
+                    .map_err(|_| NativeExecutionError::ResourceLimit)?
+                    == std::cmp::Ordering::Greater
+            {
+                return Err(NativeExecutionError::InvalidGraph);
+            }
+            (
+                source_start
+                    .checked_sub(range.start)
+                    .map_err(|_| NativeExecutionError::ResourceLimit)?,
+                source_end
+                    .checked_sub(range.start)
+                    .map_err(|_| NativeExecutionError::ResourceLimit)?,
+            )
+        } else {
+            let requested = source_end
+                .checked_sub(source_start)
+                .map_err(|_| NativeExecutionError::ResourceLimit)?;
+            let fallback = if requested
+                .compare(range.duration)
+                .map_err(|_| NativeExecutionError::ResourceLimit)?
+                == std::cmp::Ordering::Greater
+            {
+                range.duration
+            } else {
+                requested
+            };
+            (ExactDuration::zero(), fallback)
+        };
+        if local_start
+            .compare(local_end)
+            .map_err(|_| NativeExecutionError::ResourceLimit)?
+            != std::cmp::Ordering::Less
+        {
+            return Err(NativeExecutionError::InvalidGraph);
+        }
+        Ok((
+            exact_duration_to_clock_time(local_start, false)?,
+            exact_duration_to_clock_time(local_end, true)?,
+        ))
+    }
+
     fn timeline_element_names(&self) -> impl Iterator<Item = &'static str> {
         [
             Some("edit_screen_timeline"),
@@ -1980,6 +2095,7 @@ fn canonicalize_sources(
             .as_ref()
             .map(|path| canonical_regular_file(path))
             .transpose()?,
+        ranges: CanonicalSourceRanges::default(),
     })
 }
 
@@ -1987,28 +2103,69 @@ fn canonicalize_sources(
 fn canonicalize_file_sources(
     sources: &mut NativeStudioAlignedFileSources,
 ) -> Result<CanonicalSources, NativeExecutionError> {
+    let (screen, screen_range) = canonicalize_timed_file_source(&mut sources.screen)?;
+    let (camera, camera_range) = sources
+        .camera
+        .as_mut()
+        .map(canonicalize_timed_file_source)
+        .transpose()?
+        .unzip();
+    let cursor_range = sources
+        .cursor
+        .as_ref()
+        .map(canonical_timeline_range)
+        .transpose()?;
+    let cursor = sources
+        .cursor
+        .as_mut()
+        .map(|source| read_cursor_timeline_file(&mut source.file))
+        .transpose()?;
+    let (microphone, microphone_range) = sources
+        .microphone
+        .as_mut()
+        .map(canonicalize_timed_file_source)
+        .transpose()?
+        .unzip();
+    let (system_audio, system_audio_range) = sources
+        .system_audio
+        .as_mut()
+        .map(canonicalize_timed_file_source)
+        .transpose()?
+        .unzip();
     Ok(CanonicalSources {
-        screen: canonical_file_descriptor(&mut sources.screen)?,
-        camera: sources
-            .camera
-            .as_mut()
-            .map(canonical_file_descriptor)
-            .transpose()?,
-        cursor: sources
-            .cursor
-            .as_mut()
-            .map(read_cursor_timeline_file)
-            .transpose()?,
-        microphone: sources
-            .microphone
-            .as_mut()
-            .map(canonical_file_descriptor)
-            .transpose()?,
-        system_audio: sources
-            .system_audio
-            .as_mut()
-            .map(canonical_file_descriptor)
-            .transpose()?,
+        screen,
+        camera,
+        cursor,
+        microphone,
+        system_audio,
+        ranges: CanonicalSourceRanges {
+            screen: Some(screen_range),
+            camera: camera_range,
+            cursor: cursor_range,
+            microphone: microphone_range,
+            system_audio: system_audio_range,
+        },
+    })
+}
+
+#[cfg(unix)]
+fn canonicalize_timed_file_source(
+    source: &mut NativeStudioFileSource,
+) -> Result<(PathBuf, CanonicalTimelineRange), NativeExecutionError> {
+    let range = canonical_timeline_range(source)?;
+    Ok((canonical_file_descriptor(&mut source.file)?, range))
+}
+
+#[cfg(unix)]
+fn canonical_timeline_range(
+    source: &NativeStudioFileSource,
+) -> Result<CanonicalTimelineRange, NativeExecutionError> {
+    if source.timeline_duration == ExactDuration::zero() {
+        return Err(NativeExecutionError::InvalidGraph);
+    }
+    Ok(CanonicalTimelineRange {
+        start: source.timeline_start,
+        duration: source.timeline_duration,
     })
 }
 
@@ -2504,6 +2661,36 @@ impl StudioCompositionSchedule {
     }
 }
 
+fn cursor_asset_time_ns(
+    source_time_ns: u64,
+    range: Option<CanonicalTimelineRange>,
+) -> Result<Option<u64>, NativeExecutionError> {
+    let Some(range) = range else {
+        return Ok(Some(source_time_ns));
+    };
+    let source_time = ExactDuration::new(u128::from(source_time_ns), 1_000_000_000)
+        .map_err(|_| NativeExecutionError::ResourceLimit)?;
+    let end = range
+        .start
+        .checked_add(range.duration)
+        .map_err(|_| NativeExecutionError::ResourceLimit)?;
+    if source_time
+        .compare(range.start)
+        .map_err(|_| NativeExecutionError::ResourceLimit)?
+        == std::cmp::Ordering::Less
+        || source_time
+            .compare(end)
+            .map_err(|_| NativeExecutionError::ResourceLimit)?
+            != std::cmp::Ordering::Less
+    {
+        return Ok(None);
+    }
+    let local = source_time
+        .checked_sub(range.start)
+        .map_err(|_| NativeExecutionError::ResourceLimit)?;
+    Ok(Some(exact_duration_to_clock_time(local, false)?.nseconds()))
+}
+
 fn first_window_buffer_pts(
     output_time: gst::ClockTime,
     window: ScheduledCompositionWindow,
@@ -2547,6 +2734,7 @@ fn install_visual_probes(
         .ok_or(NativeExecutionError::InvalidGraph)?;
     let screen_schedule = schedule.clone();
     let timeline = sources.cursor.clone();
+    let cursor_range = sources.ranges.cursor;
     let scratch = Arc::new(Mutex::new(Vec::new()));
     let scratch_by_probe = Arc::clone(&scratch);
     let active_window = Arc::new(Mutex::new(None::<u64>));
@@ -2572,6 +2760,7 @@ fn install_visual_probes(
                 .map_err(|_| NativeExecutionError::Pipeline)?;
             if !style.hidden
                 && let Some(timeline) = timeline.as_ref()
+                && let Some(source_time_ns) = cursor_asset_time_ns(source_time_ns, cursor_range)?
             {
                 overlay_cursor_bgra(
                     mapped.as_mut_slice(),
@@ -3221,8 +3410,6 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
             }
             let flags = gst::SeekFlags::ACCURATE | gst::SeekFlags::SEGMENT | gst::SeekFlags::FLUSH;
             let rate = f64::from(window.speed_numerator) / f64::from(window.speed_denominator);
-            let start = rational_to_clock_time(window.source_start, false)?;
-            let stop = rational_to_clock_time(window.source_end, true)?;
             // Keep every aligned decoder paused and block its first decoded
             // buffer while dispatching copies of one logical seek. Even when
             // a whole short segment fits in downstream preroll, no fast branch
@@ -3256,6 +3443,7 @@ fn execute_windows<F: FnMut(NativeStudioRenderProgress)>(
                 let decoder = pipeline
                     .by_name(name)
                     .ok_or(NativeExecutionError::InvalidGraph)?;
+                let (start, stop) = sources.decoder_seek_range(name, window)?;
                 let seek = gst::event::Seek::builder(
                     rate,
                     flags,
@@ -3551,6 +3739,38 @@ fn rational_to_clock_time(
         .checked_mul(1_000_000_000)
         .ok_or(NativeExecutionError::ResourceLimit)?;
     let denominator = u128::from(value.time_base().ticks_per_second());
+    let nanos = if ceil {
+        numerator
+            .checked_add(denominator - 1)
+            .ok_or(NativeExecutionError::ResourceLimit)?
+            / denominator
+    } else {
+        numerator / denominator
+    };
+    Ok(gst::ClockTime::from_nseconds(
+        u64::try_from(nanos).map_err(|_| NativeExecutionError::ResourceLimit)?,
+    ))
+}
+
+fn rational_to_exact_duration(
+    value: crate::RationalTime,
+) -> Result<ExactDuration, NativeExecutionError> {
+    ExactDuration::new(
+        u128::from(value.ticks()),
+        u128::from(value.time_base().ticks_per_second()),
+    )
+    .map_err(|_| NativeExecutionError::ResourceLimit)
+}
+
+fn exact_duration_to_clock_time(
+    value: ExactDuration,
+    ceil: bool,
+) -> Result<gst::ClockTime, NativeExecutionError> {
+    let numerator = value
+        .numerator()
+        .checked_mul(1_000_000_000)
+        .ok_or(NativeExecutionError::ResourceLimit)?;
+    let denominator = value.denominator();
     let nanos = if ceil {
         numerator
             .checked_add(denominator - 1)
@@ -3906,6 +4126,30 @@ mod tests {
             assert_eq!(hardware_encoder_factory(profile), None);
             assert!(studio_encoding_config(profile, EncoderBackend::Software).is_ok());
         }
+    }
+
+    #[test]
+    fn cursor_project_time_maps_to_the_authenticated_asset_local_clock() {
+        let range = CanonicalTimelineRange {
+            start: ExactDuration::new(1, 1).expect("range start"),
+            duration: ExactDuration::new(1, 1).expect("range duration"),
+        };
+        assert_eq!(
+            cursor_asset_time_ns(500_000_000, Some(range)).expect("before cursor range"),
+            None
+        );
+        assert_eq!(
+            cursor_asset_time_ns(1_000_000_000, Some(range)).expect("cursor range start"),
+            Some(0)
+        );
+        assert_eq!(
+            cursor_asset_time_ns(1_500_000_000, Some(range)).expect("inside cursor range"),
+            Some(500_000_000)
+        );
+        assert_eq!(
+            cursor_asset_time_ns(2_000_000_000, Some(range)).expect("cursor range end"),
+            None
+        );
     }
 
     fn media_duration(path: &Path) -> gst::ClockTime {

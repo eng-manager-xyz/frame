@@ -13,9 +13,9 @@ use objc2_core_graphics::{
 use ring::digest::{Context, SHA256};
 
 use frame_media::{
-    CursorCaptureMode, CursorImageDescriptor, CursorPolicy, PixelFormat, RawCursorObservation,
-    RawCursorPosition, ScreenCursorImage, ScreenFrame, ScreenFrameEnvelope, ScreenSourceEvent,
-    ScreenStreamStamp, ScreenTargetDescriptor, ScreenTargetKind, VideoFrameSpec,
+    CursorCaptureMode, CursorFrameMetadata, CursorImageDescriptor, CursorPolicy, PixelFormat,
+    RawCursorObservation, RawCursorPosition, ScreenCursorImage, ScreenFrame, ScreenFrameEnvelope,
+    ScreenSourceEvent, ScreenStreamStamp, ScreenTargetDescriptor, ScreenTargetKind, VideoFrameSpec,
     normalize_screen_cursor,
 };
 
@@ -30,13 +30,75 @@ pub(super) struct CursorSampler {
     revision: u64,
 }
 
-pub(super) struct CursorMetadataSession {
+pub struct CursorMetadataSession {
     target: ScreenTargetDescriptor,
     output: VideoFrameSpec,
     policy: CursorPolicy,
     sampler: CursorSampler,
     pending_image: Option<CursorImage>,
     published_revision: Option<u64>,
+}
+
+/// One normalized cursor sample associated with an accepted screen frame.
+///
+/// The optional image update is emitted exactly once before the first visible
+/// observation that references its revision. Callers can therefore persist
+/// the sample directly into Frame's Studio cursor sidecar without retaining an
+/// unbounded image cache.
+pub struct MacOsCursorMetadataObservation {
+    cursor: Option<CursorFrameMetadata>,
+    image_update: Option<MacOsCursorImageUpdate>,
+}
+
+impl MacOsCursorMetadataObservation {
+    #[must_use]
+    pub const fn cursor(&self) -> Option<CursorFrameMetadata> {
+        self.cursor
+    }
+
+    #[must_use]
+    pub fn into_image_update(self) -> Option<MacOsCursorImageUpdate> {
+        self.image_update
+    }
+}
+
+impl std::fmt::Debug for MacOsCursorMetadataObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MacOsCursorMetadataObservation")
+            .field("cursor", &self.cursor)
+            .field("image_update", &self.image_update)
+            .finish()
+    }
+}
+
+/// A tightly packed cursor bitmap whose descriptor has already passed the
+/// provider-neutral cursor resource bounds.
+pub struct MacOsCursorImageUpdate {
+    descriptor: CursorImageDescriptor,
+    rgba: Box<[u8]>,
+}
+
+impl MacOsCursorImageUpdate {
+    #[must_use]
+    pub const fn descriptor(&self) -> CursorImageDescriptor {
+        self.descriptor
+    }
+
+    #[must_use]
+    pub fn into_pixels(self) -> Box<[u8]> {
+        self.rgba
+    }
+}
+
+impl std::fmt::Debug for MacOsCursorImageUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MacOsCursorImageUpdate")
+            .field("descriptor", &self.descriptor)
+            .field("pixels", &"<redacted>")
+            .finish()
+    }
 }
 
 pub(super) struct CursorSample {
@@ -151,7 +213,7 @@ impl CursorSampler {
 }
 
 impl CursorMetadataSession {
-    pub(super) fn new(
+    pub fn new(
         target: ScreenTargetDescriptor,
         output: VideoFrameSpec,
         policy: CursorPolicy,
@@ -169,11 +231,8 @@ impl CursorMetadataSession {
         })
     }
 
-    pub(super) fn active_events(
-        &mut self,
-        stream: ScreenStreamStamp,
-        frame: MacOsCaptureFrame,
-    ) -> Result<CursorEvents, MacOsCaptureError> {
+    /// Sample and normalize the current cursor for one accepted screen frame.
+    pub fn sample(&mut self) -> Result<MacOsCursorMetadataObservation, MacOsCaptureError> {
         let sample = self.sampler.sample(self.policy.include_image_revision())?;
         if let Some(image) = sample.changed_image {
             self.pending_image = Some(image);
@@ -200,8 +259,7 @@ impl CursorMetadataSession {
         let visible_revision = cursor
             .filter(|metadata| metadata.visible())
             .and_then(|metadata| metadata.image_revision());
-        let mut events = Vec::with_capacity(2);
-        if let Some(revision) =
+        let image_update = if let Some(revision) =
             visible_revision.filter(|revision| self.published_revision != Some(*revision))
         {
             let image = self
@@ -209,10 +267,30 @@ impl CursorMetadataSession {
                 .take()
                 .filter(|image| image.revision == revision)
                 .ok_or(MacOsCaptureError::CursorMetadataUnavailable)?;
+            let image = cursor_image_update(image)?;
+            self.published_revision = Some(revision);
+            Some(image)
+        } else {
+            None
+        };
+        Ok(MacOsCursorMetadataObservation {
+            cursor,
+            image_update,
+        })
+    }
+
+    pub(super) fn active_events(
+        &mut self,
+        stream: ScreenStreamStamp,
+        frame: MacOsCaptureFrame,
+    ) -> Result<CursorEvents, MacOsCaptureError> {
+        let observation = self.sample()?;
+        let cursor = observation.cursor;
+        let mut events = Vec::with_capacity(2);
+        if let Some(image) = observation.image_update {
             events.push(ScreenSourceEvent::CursorImage(screen_cursor_image(
                 stream, image,
             )?));
-            self.published_revision = Some(revision);
         }
         events.push(ScreenSourceEvent::Frame(normalized_frame(
             stream, frame, cursor,
@@ -281,8 +359,13 @@ fn cursor_position(
 
 fn screen_cursor_image(
     stream: ScreenStreamStamp,
-    image: CursorImage,
+    image: MacOsCursorImageUpdate,
 ) -> Result<ScreenCursorImage<Box<[u8]>>, MacOsCaptureError> {
+    ScreenCursorImage::new(stream, image.descriptor, image.rgba)
+        .map_err(|_| MacOsCaptureError::CursorMetadataUnavailable)
+}
+
+fn cursor_image_update(image: CursorImage) -> Result<MacOsCursorImageUpdate, MacOsCaptureError> {
     let retained_bytes =
         u64::try_from(image.rgba.len()).map_err(|_| MacOsCaptureError::CursorImageExceedsLimit)?;
     let descriptor = CursorImageDescriptor::new(
@@ -295,8 +378,10 @@ fn screen_cursor_image(
         retained_bytes,
     )
     .map_err(|_| MacOsCaptureError::CursorMetadataUnavailable)?;
-    ScreenCursorImage::new(stream, descriptor, image.rgba)
-        .map_err(|_| MacOsCaptureError::CursorMetadataUnavailable)
+    Ok(MacOsCursorImageUpdate {
+        descriptor,
+        rgba: image.rgba,
+    })
 }
 
 fn normalized_frame(

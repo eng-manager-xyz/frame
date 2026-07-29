@@ -4,12 +4,12 @@ Issue: `_issues/27-p4-studio-mode.md`
 
 This record separates executable provider-neutral evidence from protected
 native, historical, hardware, UX, and release evidence.
-It does not classify the complete Studio product path as locally implemented.
+It does not classify the complete Studio product path as release-validated.
 
 ## Closure ledger boundary
 
-Issue 27 checkbox 10 is the remaining repository-local gap. Checkboxes 1–6,
-8, and 9 are locally satisfied by the versioned project format, production
+Issue 27 has no remaining repository-local gap. Checkboxes 1–6 and 8–10 are
+locally satisfied by the versioned project format, production
 isolated-track recorder, source-set-bound native preview engine, exact
 aligned-source export profiles, production filesystem legacy importer, and
 journal-fenced native recording/edit-save recovery. Checkbox 9 is backed by
@@ -86,14 +86,14 @@ preservation, opaque-token redaction, and backend-confirmed desktop
 apply/save transitions.
 
 The combined optional-input bridge feeds selected microphone, camera, and
-system-audio samples into isolated Studio tracks. The platform-neutral
-recording graph also accepts normalized cursor observations and revisioned
-RGBA/BGRA cursor images in a bounded, versioned sidecar; connecting the macOS
-normalized cursor event stream to that fifth branch remains the next desktop
-slice. The artifact-backed Editable WebM copy/publication remains the flattened
-recorder output and is not an
-edit-aware Studio export. The narrow native edit adapter executes the shared
-canonical plan for clock-aligned screen and
+system-audio samples into isolated Studio tracks. Studio capture selects the
+macOS metadata cursor mode, samples one normalized cursor observation for each
+accepted screen frame, emits each image revision before its first visible
+reference, and writes the bounded, versioned fifth-track sidecar. Instant and
+other flattened recordings retain the embedded-cursor mode. The
+artifact-backed Editable WebM copy/publication remains the flattened recorder
+output and is not an edit-aware Studio export. The narrow native edit adapter
+executes the shared canonical plan for clock-aligned screen and
 optional camera, cursor, microphone, and system-audio originals. Preview maps
 an edited output point before real decode and produces the composited frame.
 Export applies trim/delete/rational speed, camera bubble/full/side-by-side
@@ -117,8 +117,13 @@ file to the scoped destination. The Leptos editor exposes the distribution MP4
 action only for a clean project; the runtime accepts terminal success only when
 revision, profile, nonzero byte count, and lowercase SHA-256 match the request.
 A native integration test generates real isolated screen/system-audio sources,
-commits them, replaces the visible Studio root after preparation, and still
-produces the artifact from the retained original descriptors.
+commits them with system audio beginning at a nonzero project-clock offset,
+replaces the visible Studio root after preparation, and still produces the
+artifact from the retained original descriptors. Decoder seeks are translated
+from project time to each authenticated original's local clock; unavailable
+optional-track windows use their canonical silence/hide disposition rather
+than seeking outside the original. The same translation bounds cursor lookup
+to its authenticated asset range.
 
 The release editor now submits a bounded revision/position request, and the
 native backend reauthenticates the durable base manifest before constructing
@@ -147,13 +152,14 @@ artifact with an empty staging directory. Runtime tests also cover monotonic
 completion, backend-confirmed cancellation, and quarantine when cleanup is
 unconfirmed.
 
-The adapter still does not assemble arbitrary nonzero asset-offset ranges, and
-macOS recording does not yet persist its normalized cursor events into the new
-sidecar branch. Native staging-identity reconstruction after process restart is
-also not connected. Therefore checkbox 10 remains open until the desktop
-capture hookup, authenticated project/export path, and final local closure
-golden land together. Representative physical-hardware fallback remains
-protected evidence rather than a repository-local claim.
+The production native export intentionally accepts one authenticated original
+per track; segmented screen projects remain supported by preview but fail
+closed at this narrow export adapter instead of being flattened implicitly.
+Native staging-inode adoption after an actual process restart and
+representative physical-hardware fallback remain protected execution evidence,
+not repository-local claims. The cursor hookup, authenticated nonzero
+project-clock export path, and the shared camera/cursor/VFR/speed/audio
+composition golden close checkbox 10's local implementation requirement.
 
 Separately, `NativeStudioPreviewEngine` opens the complete immutable
 `StudioPreviewGraphSpec`, verifies every original against its durable sidecar
@@ -285,11 +291,12 @@ The external contract suite exercises:
 
 The native execution tests also retain the basic single-source WebM path and
 the older video-only MP4 compatibility helper. The edit-aware path proves
-canonical temporal/audio/visual execution for aligned synthetic originals, bounded
-progress and cancellation, a playable output duration, and exact decoded
-postconditions for every approved profile. It does not yet prove the macOS
-cursor-event recording hookup, arbitrary nonzero-offset asset assembly,
-physical-device perceptual parity, or restart reconstruction of a native
+canonical temporal/audio/visual execution for aligned synthetic originals,
+bounded progress and cancellation, a playable output duration, exact decoded
+postconditions for every approved profile, authenticated nonzero optional-track
+offsets, and cursor project-time to asset-local-time mapping. It does not claim
+a physical macOS cursor capture, perceptual parity on representative devices,
+multi-original native export assembly, or process-restart adoption of a native
 staging inode.
 
 The production-mode desktop composition can be built and its adapter-truth
@@ -319,10 +326,11 @@ trim/delete/split/speed/audio-gain drafts and persists them through the durable
 edit-save journal transaction. A clean aligned screen/audio project can now
 asynchronously render and identity-publish a verified distribution master
 through the durable coordinator, including hardware-first H.264 with an
-identical-plan software fallback. It does not yet composite the recorded
-camera/cursor/background tracks into native preview/export or prove the
-remaining long-project goldens and representative physical-hardware matrix, so
-issue 27 remains open.
+identical-plan software fallback. Native preview/export now composes
+camera/cursor/background tracks through the same plan and the day-scale golden
+keeps cursor lookup bounded. Issue 27 therefore has no local implementation
+gap; its reviewed legacy corpus and representative physical-hardware records
+remain protected pending.
 
 Focused command:
 
@@ -399,9 +407,9 @@ checksum-bound bundle, while the separate native execution helpers supply
 synthetic tracks, edited preview mapping, aligned A/V execution for all four
 approved profiles, single-source WebM, and gated licensed-codec evidence. The
 production isolated-track recorder has both synthetic all-track coverage and a
-release desktop bridge for screen plus optional microphone, camera, and system
-audio. Physical capture remains protected evidence, and the desktop bridge is
-not yet connected to the Studio coordinator.
+release desktop bridge for screen, normalized cursor, and optional microphone,
+camera, and system audio. Its authenticated project/export path is connected
+to the Studio coordinator. Physical capture remains protected evidence.
 Most timeline goldens remain mathematical; the decoded edited artifact now
 adds a bounded RGB preview/export frame diff, but not a perceptual reference or
 reference-audio diff.
@@ -411,10 +419,10 @@ The JSON keys and non-fragmented `.mp4`/`.ogg` paths were checked against
 
 ## Protected and subsequently required evidence
 
-Only the first item below currently supports a `protected_pending`
-classification (checkbox 7). The remaining items are subsequent hardware,
-quality, UX, and approval gates; they remain invalid for closure until the
-corresponding repository-local production paths exist:
+The first item below supports checkbox 7's `protected_pending`
+classification, and the representative hardware-fallback row supports
+checkbox 11. The remaining items are subsequent hardware, quality, UX, and
+approval gates:
 
 - a privacy-reviewed, provenance-pinned real legacy Cap project corpus at the
   referenced Cap revision, including supported and unsupported effects;
@@ -434,6 +442,5 @@ corresponding repository-local production paths exist:
 - migration owner, rollback-window owner, product/security/release signoff, and
   release-candidate evidence links.
 
-Absence of a required protected record blocks promotion, but attaching one
-cannot close checkboxes 8–11 while their local integrations remain absent. No
-provider, hardware, user, or release claim is made by this local evidence file.
+Absence of a required protected record blocks promotion. No provider, hardware,
+user, or release claim is made by this local evidence file.
