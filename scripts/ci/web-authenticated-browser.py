@@ -15,7 +15,6 @@ import sys
 import tempfile
 import time
 import urllib.parse
-import urllib.request
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -137,29 +136,9 @@ def main() -> int:
         )
         devtools = None
         try:
-            # Hosted runners can spend several seconds starting crashpad and
-            # the first browser process after a release build. Keep the probe
-            # bounded, but do not turn normal runner variance into a false
-            # product failure.
-            deadline = time.monotonic() + 30
-            while True:
-                if devtools_port_file.is_file():
-                    lines = devtools_port_file.read_text(encoding="utf-8").splitlines()
-                    if lines and lines[0].isdigit():
-                        port = int(lines[0])
-                        break
-                require(process.poll() is None, "Chrome exited before DevTools was ready")
-                require(time.monotonic() < deadline, "Chrome DevTools did not start")
-                time.sleep(0.05)
+            port = HELPER.wait_for_devtools_port(process, devtools_port_file)
             endpoint = f"http://127.0.0.1:{port}"
-            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=5):
-                pass
-            target_request = urllib.request.Request(
-                f"{endpoint}/json/new?{urllib.parse.quote('about:blank', safe='')}",
-                method="PUT",
-            )
-            with urllib.request.urlopen(target_request, timeout=5) as response:
-                target = json.load(response)
+            target = HELPER.open_devtools_target(process, endpoint)
             devtools = DevTools(target["webSocketDebuggerUrl"])
             for domain in ("Page", "Runtime", "Network", "Log"):
                 devtools.command(f"{domain}.enable")
