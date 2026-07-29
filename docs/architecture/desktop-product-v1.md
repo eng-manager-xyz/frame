@@ -188,6 +188,13 @@ numeric controls, so drag gestures are not required. The portable accessibility 
 checks deterministic tab order, keyboard shortcuts, accessible names, value text, modal focus trap,
 focus restoration, and Escape dismissal.
 
+CI additionally builds the release Leptos assets and drives the rendered
+product with Chrome DevTools keyboard events only. A loopback bridge forwards
+each action to a bounded, fake-backed `DesktopRuntime` host, so the journey
+executes the real versioned Rust dispatch boundary while checking the rendered
+accessibility tree and DOM semantics. This is executable browser evidence, not
+a VoiceOver, Narrator, or physical-device result.
+
 ## Hotkey, tray, overlay, and update lifecycle
 
 Lifecycle transitions are typed and backend-owned. The fake adapter proves ownership and state
@@ -253,6 +260,19 @@ The smoke proves the production-CSP WebView reaches the allowlisted Rust
 bootstrap and reports coherent adapter truth. It does not grant screen-recording
 permission, enumerate a physical display, record a frame, inspect the output,
 exercise recovery, or provide accessibility or distribution evidence.
+
+The separate deterministic browser journey exercises the production Leptos
+assets and Rust state machine without native hardware:
+
+```sh
+cargo build --locked --release -p frame-desktop-core \
+  --bin frame-desktop-e2e-host
+python3 -I scripts/ci/desktop-browser-journey.py \
+  --evidence target/evidence/desktop-browser-journey-local.json
+```
+
+It proves keyboard activation and rendered semantic invariants across the
+portable fake journey. It makes no assistive-technology or hardware claim.
 
 The separate [local macOS recording runbook](../operations/macos-display-recording-local.md)
 builds the `.app` and exercises the narrow real display-video path. A successful

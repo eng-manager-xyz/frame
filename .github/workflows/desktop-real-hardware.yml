@@ -76,15 +76,11 @@ jobs:
           FRAME_RELEASE_SHA: ${{ inputs.release_sha }}
           FRAME_EXPECTED_SIGNING_TEAM: ${{ vars.FRAME_EXPECTED_APPLE_TEAM_ID }}
         run: >-
-          frame-hardware-driver
-          --schema desktop-macos-display-hardware-v1
-          --platform macos
-          --capability macos_display_webm_v1
+          python3 -I scripts/ci/run-desktop-real-hardware.py
           --app-bundle target/release/bundle/macos/Frame.app
-          --bundle-identifier xyz.engmanager.frame
           --expected-signing-team "$FRAME_EXPECTED_SIGNING_TEAM"
-          --source-sha "$FRAME_RELEASE_SHA"
-          --run-id "$FRAME_HARDWARE_RUN_ID"
+          --expected-source-sha "$FRAME_RELEASE_SHA"
+          --expected-run-id "$FRAME_HARDWARE_RUN_ID"
           --output target/evidence/desktop-macos-display-hardware.json
       - name: Validate exact non-fake macOS display evidence
         shell: bash

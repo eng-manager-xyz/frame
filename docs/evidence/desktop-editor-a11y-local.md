@@ -26,7 +26,7 @@ fence; only a proven-empty attempt can be archived, and that archive deletes no
 media. The editor now applies and durably saves bounded canonical mutations,
 and a clean aligned project can invoke the verified native distribution export
 adapter. Lifecycle, updater, combined microphone/camera Studio, asynchronous
-export cancellation, and complete accessibility journeys remain
+export cancellation, and named assistive-technology journeys remain
 non-production behavior.
 
 The media crate now has a production bounded isolated-track Studio encoder and
@@ -44,9 +44,12 @@ preview/export. The implemented editor mutation/save and synchronous
 screen/audio distribution-export subset therefore does not close an issue-33
 product journey.
 
-The checked-in hardware workflow invokes `frame-hardware-driver`, but this
-repository does not provide that driver. Its validator and workflow shape are
-not real-hardware-suite evidence.
+The checked-in hardware workflow now invokes the exact certificate-signed
+`Frame.app` executable with a protected, token-gated in-process driver. The
+driver refuses to request ScreenCapture permission, records and discovers a
+short display-only WebM, exports it through the native adapter, and proves
+cancel cleanup. Its source, validator, and workflow shape are not a physical
+real-hardware result; only a successful protected run can supply that evidence.
 
 ## Local deterministic evidence
 
@@ -54,6 +57,19 @@ This evidence covers the locally reproducible portable contract and fake
 portion of issue 33. It does not claim a physical native capture, real provider
 upload, signed updater, observed platform permission flow, or
 assistive-technology parity.
+
+The executable release-UI journey builds the Leptos production assets and a
+bounded Rust host, opens them in headless Chrome with the production CSP, and
+uses only DevTools keyboard events to activate controls. It traverses Studio,
+device and target configuration, permission preparation, recording,
+pause/resume/stop, recovery, edit/save, export/upload, reduced motion, hotkeys,
+and update/relaunch. Every accepted action crosses the newline-delimited JSON
+bridge into the real `DesktopRuntime`; the browser cannot synthesize success
+locally. The journey also checks duplicate IDs, accessible names, label
+references, landmarks, live regions, progress, numeric timeline controls,
+backend status, and modal semantics. This closes a deterministic browser
+keyboard/semantic gap, but it deliberately sets both protected hardware and
+assistive-technology claims to false.
 
 Validated contract, state-model, and fake implementation:
 
@@ -101,9 +117,11 @@ Static source checks and focused Rust tests establish a bounded native path:
 - stop/cancel and artifact-bound Editable WebM publication require confirmed
   backend outcomes before the runtime announces success.
 
-This is source and deterministic boundary evidence. It is not a physical
-screen-capture, output-playback, recovery, accessibility, performance, signing,
-notarization, clean-install, or distribution result.
+This is source and deterministic boundary evidence. The browser journey is a
+real production-asset keyboard and semantic traversal, but it is not a
+physical screen-capture, named screen-reader, output-playback, hardware
+recovery, performance, signing, notarization, clean-install, or distribution
+result.
 
 Commands run from the repository root:
 
@@ -123,6 +141,12 @@ GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
 python3 scripts/ci/build-desktop-ui.py
 python3 scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-local.json
 python3 scripts/ci/check-desktop-product.py --evidence target/evidence/desktop-product-local.json
+
+# Execute the production Leptos UI against the real Rust dispatch boundary.
+cargo build --locked --release -p frame-desktop-core \
+  --bin frame-desktop-e2e-host
+python3 -I scripts/ci/desktop-browser-journey.py \
+  --evidence target/evidence/desktop-browser-journey-local.json
 
 # Production-mode macOS adapter-truth smoke; it does not start capture.
 cargo build --locked --release -p frame-desktop-core \
@@ -174,6 +198,9 @@ close. It cannot currently convert checkboxes 3–6 or 8–10 to
 - product, accessibility, privacy, security, desktop, media, and release-owner approvals, followed by
   parity gate 29 before removing the legacy selector.
 
-The manual workflow and evidence validator are checked in, but the workflow's external driver and
-the release services it would need are absent. No hardware result is fabricated or marked passed,
-and a validator-only artifact is not valid completion evidence.
+The protected workflow, in-process signed-app driver, runner, and evidence
+validator are checked in. The runner executes only the verified executable
+named by the signed bundle's `Info.plist`, and evidence is bound to its
+certificate-backed designated requirement and executable digest. No hardware
+result is fabricated or marked passed, and source inspection or a
+validator-only artifact is not valid completion evidence.

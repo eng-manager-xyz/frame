@@ -37,6 +37,10 @@ name = "frame-desktop"
 path = "src/main.rs"
 required-features = ["tauri-app"]
 
+[[bin]]
+name = "frame-desktop-e2e-host"
+path = "src/bin/frame-desktop-e2e-host.rs"
+
 [dependencies]
 frame-client = { path = "../../crates/frame-client" }
 serde.workspace = true

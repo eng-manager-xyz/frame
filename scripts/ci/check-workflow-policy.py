@@ -507,6 +507,13 @@ def main() -> int:
             "quality-gates.yml: cross-repository ownership/policy mutations must be required", errors)
     require("test-desktop-real-hardware.py" in quality,
             "quality-gates.yml: signed desktop hardware evidence regressions must be tested", errors)
+    require(
+        "python3 -I scripts/ci/desktop-browser-journey.py" in quality
+        and "frame-desktop-e2e-host" in quality
+        and "desktop-browser-journey-linux.json" in quality,
+        "quality-gates.yml: the executable desktop keyboard and accessibility journey must be retained",
+        errors,
+    )
     authenticated_web = texts.get("leptos-authenticated-web.yml", "")
     for dependency in (
         "apps/control-plane/src/auth_repository.rs",
@@ -650,13 +657,18 @@ def main() -> int:
         and "secrets.FRAME_CODESIGN_IDENTITY" in hardware
         and "scripts/frame desktop-macos-bundle" in hardware
         and "sign-macos-local-app.sh verify-trusted" in hardware
-        and "--app-bundle target/release/bundle/macos/Frame.app" in hardware
+        and hardware.count(
+            "--app-bundle target/release/bundle/macos/Frame.app"
+        )
+        == 2
         and "vars.FRAME_EXPECTED_APPLE_TEAM_ID" in hardware
-        and "--expected-source-sha" in hardware
-        and "--expected-run-id" in hardware
-        and "--capability macos_display_webm_v1" in hardware
+        and hardware.count("--expected-source-sha") == 2
+        and hardware.count("--expected-run-id") == 2
+        and hardware.count("--expected-signing-team") == 2
+        and "run-desktop-real-hardware.py" in hardware
+        and "FRAME_REAL_HARDWARE" in hardware
         and "--expected-capability macos_display_webm_v1" in hardware
-        and "desktop-macos-display-hardware-v1" in hardware,
+        and "desktop-macos-display-hardware.json" in hardware,
         "desktop-real-hardware.yml: the protected signed-app macOS display gate is required",
         errors,
     )
