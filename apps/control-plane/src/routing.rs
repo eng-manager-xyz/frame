@@ -239,6 +239,11 @@ pub enum Route {
         arch: String,
         current_version: String,
     },
+    DesktopPreviousUpdateManifest {
+        target: String,
+        arch: String,
+        current_version: String,
+    },
     DesktopUpdateArtifact {
         target: String,
         arch: String,
@@ -661,6 +666,26 @@ fn dynamic_route(path: &str) -> Route {
             .all(|segment| !segment.is_empty() && segment.len() <= 64) =>
         {
             Route::DesktopUpdateManifest {
+                target: (*target).to_owned(),
+                arch: (*arch).to_owned(),
+                current_version: (*current_version).to_owned(),
+            }
+        }
+        [
+            "",
+            "api",
+            "v1",
+            "desktop",
+            "updates",
+            "previous",
+            target,
+            arch,
+            current_version,
+        ] if [target, arch, current_version]
+            .iter()
+            .all(|segment| !segment.is_empty() && segment.len() <= 64) =>
+        {
+            Route::DesktopPreviousUpdateManifest {
                 target: (*target).to_owned(),
                 arch: (*arch).to_owned(),
                 current_version: (*current_version).to_owned(),
@@ -2130,8 +2155,18 @@ mod tests {
                 version: "1.2.3".into(),
             }
         );
+        assert_eq!(
+            classify_raw_path("/api/v1/desktop/updates/previous/darwin/aarch64/1.2.3"),
+            Route::DesktopPreviousUpdateManifest {
+                target: "darwin".into(),
+                arch: "aarch64".into(),
+                current_version: "1.2.3".into(),
+            }
+        );
         for path in [
             "/api/v1/desktop/updates/stable/darwin/aarch64/1.2.3/",
+            "/api/v1/desktop/updates/previous/darwin/aarch64/1.2.3/",
+            "/api/v1/desktop/updates/previous/darwin/aarch64",
             "/api/v1/desktop/updates/stable//aarch64/1.2.3",
             "/api/v1/desktop/updates/stable/darwin/%61arch64/1.2.3",
             "/api/v1/desktop/updates/artifacts/windows/x86_64/nsis/1.2.3/",

@@ -206,7 +206,9 @@ pub enum LifecycleAction {
 #[serde(rename_all = "snake_case")]
 pub enum UpdateAction {
     Check,
+    CheckPrevious,
     Install,
+    InstallPrevious,
     Relaunch,
 }
 

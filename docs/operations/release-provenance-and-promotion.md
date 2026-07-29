@@ -54,11 +54,13 @@ access, corruption, duplicate billing, or acknowledged-write loss.
 Worker rollback deploys the previous compatible bundle and leaves expand-only
 D1 migrations in place. Render selects the named previous deploy. Media fences
 attempts, disables only the affected profile revision, reconciles staging/final
-keys, then selects the prior compatible native profile. Desktop channels stop
-promotion and republish only a previously signed compatible updater manifest;
-clients already updated use a forward fix unless the approved updater contract
-supports downgrade. A rollback never rewinds a destructive migration, deletes
-source media, overwrites an immutable output, or purges unrelated resources.
+keys, then selects the prior compatible native profile. Desktop publication
+retains the prior signed manifest at `previous.json` before advancing
+`latest.json`. The Rust-owned previous-channel action accepts only a strictly
+older retained version and delegates signature verification and installation
+to Tauri; browser code has no authority over updater URLs or signatures. A
+rollback never rewinds a destructive migration, deletes source media,
+overwrites an immutable output, or purges unrelated resources.
 
 Trusted signing, notarization/AuthentiCode, actual promotion, and timed provider
 rollback remain protected records in `protected-evidence.json`.

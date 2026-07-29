@@ -31,6 +31,8 @@ const MAX_INSTANT_FINALIZE_COMMAND_BYTES: usize = 512;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATE_ENDPOINT: &str = "https://frame.engmanager.xyz/api/v1/desktop/updates/stable/{{target}}/{{arch}}/{{current_version}}?bundle={{bundle_type}}";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+const PREVIOUS_UPDATE_ENDPOINT: &str = "https://frame.engmanager.xyz/api/v1/desktop/updates/previous/{{target}}/{{arch}}/{{current_version}}?bundle={{bundle_type}}";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const MAIN_WINDOW_LABEL: &str = "main";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const OVERLAY_WINDOW_LABEL: &str = "overlay";
@@ -387,19 +389,34 @@ async fn execute_shell(
             Ok(DesktopShellOutcome::LifecycleApplied { snapshot })
         }
         DesktopShellCommand::Update {
-            action: UpdateAction::Check,
+            action: UpdateAction::Check | UpdateAction::CheckPrevious,
             ..
         } => {
             let public_key = updater_public_key().ok_or_else(DesktopShellFailure::unavailable)?;
-            let endpoint = UPDATE_ENDPOINT
-                .parse()
-                .map_err(|_| DesktopShellFailure::internal())?;
-            let updater = app
+            let previous = matches!(
+                command,
+                DesktopShellCommand::Update {
+                    action: UpdateAction::CheckPrevious,
+                    ..
+                }
+            );
+            let endpoint = if previous {
+                PREVIOUS_UPDATE_ENDPOINT
+            } else {
+                UPDATE_ENDPOINT
+            }
+            .parse()
+            .map_err(|_| DesktopShellFailure::internal())?;
+            let mut builder = app
                 .updater_builder()
                 .pubkey(public_key)
                 .endpoints(vec![endpoint])
                 .map_err(|_| DesktopShellFailure::internal())?
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(30));
+            if previous {
+                builder = builder.version_comparator(|current, release| release.version < current);
+            }
+            let updater = builder
                 .build()
                 .map_err(|_| DesktopShellFailure::internal())?;
             let update = updater
@@ -414,7 +431,7 @@ async fn execute_shell(
             Ok(DesktopShellOutcome::UpdateChecked { available })
         }
         DesktopShellCommand::Update {
-            action: UpdateAction::Install,
+            action: UpdateAction::Install | UpdateAction::InstallPrevious,
             ..
         } => {
             let update = state
@@ -1066,6 +1083,10 @@ mod tests {
         assert!(UPDATE_ENDPOINT.contains("{{arch}}"));
         assert!(UPDATE_ENDPOINT.contains("{{current_version}}"));
         assert!(!UPDATE_ENDPOINT.contains('@'));
+        assert!(PREVIOUS_UPDATE_ENDPOINT.starts_with("https://frame.engmanager.xyz/"));
+        assert!(PREVIOUS_UPDATE_ENDPOINT.contains("/updates/previous/"));
+        assert!(PREVIOUS_UPDATE_ENDPOINT.contains("{{current_version}}"));
+        assert!(!PREVIOUS_UPDATE_ENDPOINT.contains('@'));
     }
 
     #[test]

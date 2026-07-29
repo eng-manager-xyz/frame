@@ -42,8 +42,9 @@ recording and edit-save boundaries reconcile through a new journal fence and
 reminted opaque handle. Only a proven-empty attempt can be archived; its
 journal is moved without deleting media, a graph, or a completed project. The
 native slices do not support microphone, camera, pause/resume, edit-aware
-Studio export, MP4, native tray/hotkey/overlay lifecycle, or updater
-installation.
+Studio export, MP4, or native tray/hotkey/overlay lifecycle. The Rust-owned
+shell does support signed forward and previous-desktop update
+check/install/relaunch; physical distribution evidence remains protected.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
 coherent adapter truth. The separate
@@ -155,10 +156,18 @@ cannot satisfy or substitute for that matrix.
 
 ## Rollback
 
-The following is normative full-release behavior once signed channel
-selection, updater, native journal, upload, and protected matrix integrations
-exist.
-The current `macos-native` target-capture slice cannot execute this rollback procedure.
+The current signed updater retains the prior promoted manifest at
+`previous.json`. Promotion writes that pointer before advancing `latest.json`,
+rejects older candidates, and accepts an equal candidate only when the pointer
+is byte-for-byte equivalent. The desktop exposes an explicit previous-channel
+check; the control plane returns no manifest unless the retained version is
+strictly older than the running version, and Tauri verifies its signature
+before installation. Install and relaunch remain separate Rust-owned actions,
+and browser code receives neither signed URLs nor signatures.
+
+The following is the attended full-release rollback procedure. Native journal,
+upload, and protected hardware evidence still determine whether the affected
+matrix cell may be promoted again.
 
 1. Stop rollout for the affected OS/mode without changing the other matrix cells.
 2. Select the previous signed desktop channel and keep all new projects,
