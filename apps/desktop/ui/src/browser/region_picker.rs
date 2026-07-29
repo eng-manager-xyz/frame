@@ -15,6 +15,7 @@ pub(super) fn RegionPicker(
     status: RwSignal<String>,
     error: RwSignal<Option<String>>,
     busy: RwSignal<bool>,
+    role: WindowRole,
 ) -> impl IntoView {
     let display_token = RwSignal::new(None::<String>);
     let x = RwSignal::new(0_u32);
@@ -132,7 +133,7 @@ pub(super) fn RegionPicker(
                             status,
                             error,
                             busy,
-                            WindowRole::Recorder,
+                            role,
                             IpcCommand::CaptureRegionDefine {
                                 display_token,
                                 x: x.get_untracked(),

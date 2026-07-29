@@ -133,6 +133,7 @@ pub enum WindowRole {
     Export,
     Settings,
     Overlay,
+    TargetPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1162,6 +1163,13 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
                 | CommandKind::RecorderCancel
                 | CommandKind::Lifecycle
         ),
+        WindowRole::TargetPicker => matches!(
+            command,
+            CommandKind::DeviceEnumerate
+                | CommandKind::CaptureTargetSelect
+                | CommandKind::CaptureRegionDefine
+                | CommandKind::Lifecycle
+        ),
     }
 }
 
@@ -1444,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_region_is_bounded_redacted_and_recorder_scoped() {
+    fn capture_region_is_bounded_redacted_and_picker_scoped() {
         let command = IpcCommand::CaptureRegionDefine {
             display_token: "display-private-token".into(),
             x: 10,
@@ -1458,6 +1466,10 @@ mod tests {
         assert!(!rendered.contains("640"));
         assert!(command_allowed(
             WindowRole::Recorder,
+            CommandKind::CaptureRegionDefine
+        ));
+        assert!(command_allowed(
+            WindowRole::TargetPicker,
             CommandKind::CaptureRegionDefine
         ));
         for role in [
@@ -1488,6 +1500,27 @@ mod tests {
             },
         ] {
             assert_eq!(invalid.validate_payload(), Err(IpcError::InvalidPayload));
+        }
+    }
+
+    #[test]
+    fn target_picker_has_only_capture_selection_and_lifecycle_authority() {
+        for command in [
+            CommandKind::DeviceEnumerate,
+            CommandKind::CaptureTargetSelect,
+            CommandKind::CaptureRegionDefine,
+            CommandKind::Lifecycle,
+        ] {
+            assert!(command_allowed(WindowRole::TargetPicker, command));
+        }
+        for command in [
+            CommandKind::RecorderStart,
+            CommandKind::RecorderStop,
+            CommandKind::EditorOpen,
+            CommandKind::ExportStart,
+            CommandKind::Update,
+        ] {
+            assert!(!command_allowed(WindowRole::TargetPicker, command));
         }
     }
 

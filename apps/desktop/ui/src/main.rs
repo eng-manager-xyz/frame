@@ -669,7 +669,7 @@ mod browser {
     }
 
     #[component]
-    fn App() -> impl IntoView {
+    fn MainApp() -> impl IntoView {
         let client = RwSignal::new(None::<DesktopClient>);
         let bootstrap = RwSignal::new(None::<DesktopBootstrap>);
         let snapshot = RwSignal::new(None::<DesktopRuntimeSnapshot>);
@@ -1057,7 +1057,7 @@ mod browser {
                                     }
                                 />
                             </ToggleGroup>
-                            <RegionPicker client snapshot status error busy />
+                            <RegionPicker client snapshot status error busy role=WindowRole::Recorder />
                         </Show>
                     </FieldGroup>
 
@@ -1775,22 +1775,24 @@ mod browser {
                             <p>{move || snapshot.get().map_or("Lifecycle unavailable.", |state| {
                                 if state.lifecycle.hotkeys_registered { "Global hotkeys registered by backend." } else { "Global hotkeys are not registered." }
                             })}</p>
-                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || busy.get() on:click=move |_| submit(
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || busy.get() || snapshot.get().is_some_and(|state| state.lifecycle.hotkeys_registered) on:click=move |_| submit(
                                 client, snapshot, status, error, busy, WindowRole::Main,
                                 IpcCommand::Lifecycle { action: LifecycleAction::RegisterHotkeys }
-                            )>"Register fake hotkeys"</Button>
+                            )>"Register global hotkeys"</Button>
                         </Card>
                         <Card attr:aria-labelledby="update-heading">
                             <h3 id="update-heading">"Updates"</h3>
                             <p>{move || match snapshot.get().map(|state| state.update) {
+                                Some(UpdateState::Unavailable { .. }) => "Signed updates are unavailable in this build.",
                                 Some(UpdateState::Current { .. }) => "Frame is current.",
                                 Some(UpdateState::Available { .. }) => "An update is available.",
                                 Some(UpdateState::ReadyToRelaunch { .. }) => "Update installed; relaunch is ready.",
                                 None => "Update status unavailable.",
                             }}</p>
-                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || !is_fake() || snapshot.get().is_none() || busy.get() on:click=move |_| {
+                            <Button variant=ButtonVariant::Outline attr:r#type="button" attr:disabled=move || snapshot.get().is_none_or(|state| matches!(state.update, UpdateState::Unavailable { .. })) || busy.get() on:click=move |_| {
                                 if let Some(state) = snapshot.get_untracked() {
                                     let (action, expected_revision) = match state.update {
+                                        UpdateState::Unavailable { .. } => return,
                                         UpdateState::Current { revision } => (UpdateAction::Check, revision),
                                         UpdateState::Available { revision } => (UpdateAction::Install, revision),
                                         UpdateState::ReadyToRelaunch { revision } => (UpdateAction::Relaunch, revision),
@@ -1823,6 +1825,289 @@ mod browser {
                 </DialogOverlay>
             })}
             </div>
+        }
+    }
+
+    #[component]
+    fn OverlayApp() -> impl IntoView {
+        let client = RwSignal::new(None::<DesktopClient>);
+        let snapshot = RwSignal::new(None::<DesktopRuntimeSnapshot>);
+        let status = RwSignal::new("Connecting to recording controls…".to_owned());
+        let error = RwSignal::new(None::<String>);
+        let busy = RwSignal::new(false);
+
+        Effect::new(move |_| {
+            spawn_local(async move {
+                match bootstrap_native().await {
+                    Ok((_shell, desktop)) => {
+                        status.set(desktop.snapshot.announcement.clone());
+                        snapshot.set(Some(desktop.snapshot.clone()));
+                        client.set(Some(DesktopClient::new(
+                            desktop.contexts,
+                            desktop.snapshot.instant_finalize_next_sequence,
+                        )));
+                    }
+                    Err(()) => {
+                        status.set("Native recording controls are unavailable.".into());
+                        error.set(Some(
+                            "The overlay could not establish its scoped Rust command boundary."
+                                .into(),
+                        ));
+                    }
+                }
+            });
+        });
+
+        view! {
+            <UiStyles/>
+            <main data-frame-surface="overlay" class="p-4" aria-labelledby="overlay-heading">
+                <Card>
+                    <h1 id="overlay-heading">"Recording controls"</h1>
+                    <p aria-live="polite">{move || recorder_status(snapshot.get())}</p>
+                    <ButtonGroup class="button-row" attr:aria-label="Recording controls">
+                        <Button
+                            variant=ButtonVariant::Outline
+                            attr:r#type="button"
+                            attr:disabled=move || busy.get() || !snapshot.get().is_some_and(|state| state.recorder == RecorderState::Recording)
+                            on:click=move |_| {
+                                let Some(client_value) = client.get_untracked() else { return; };
+                                submit(
+                                    client,
+                                    snapshot,
+                                    status,
+                                    error,
+                                    busy,
+                                    WindowRole::Overlay,
+                                    IpcCommand::RecorderPause {
+                                        intent_id: client_value.next_intent_id(),
+                                    },
+                                );
+                            }
+                        >"Pause"</Button>
+                        <Button
+                            variant=ButtonVariant::Outline
+                            attr:r#type="button"
+                            attr:disabled=move || busy.get() || !snapshot.get().is_some_and(|state| state.recorder == RecorderState::Paused)
+                            on:click=move |_| {
+                                let Some(client_value) = client.get_untracked() else { return; };
+                                submit(
+                                    client,
+                                    snapshot,
+                                    status,
+                                    error,
+                                    busy,
+                                    WindowRole::Overlay,
+                                    IpcCommand::RecorderResume {
+                                        intent_id: client_value.next_intent_id(),
+                                    },
+                                );
+                            }
+                        >"Resume"</Button>
+                        <Button
+                            variant=ButtonVariant::Primary
+                            attr:r#type="button"
+                            attr:disabled=move || busy.get() || !snapshot.get().is_some_and(|state| matches!(state.recorder, RecorderState::Recording | RecorderState::Paused))
+                            on:click=move |_| {
+                                let Some(client_value) = client.get_untracked() else { return; };
+                                submit(
+                                    client,
+                                    snapshot,
+                                    status,
+                                    error,
+                                    busy,
+                                    WindowRole::Overlay,
+                                    IpcCommand::RecorderStop {
+                                        intent_id: client_value.next_intent_id(),
+                                    },
+                                );
+                            }
+                        >"Stop"</Button>
+                        <Button
+                            variant=ButtonVariant::Ghost
+                            attr:r#type="button"
+                            attr:disabled=move || busy.get()
+                            on:click=move |_| submit(
+                                client,
+                                snapshot,
+                                status,
+                                error,
+                                busy,
+                                WindowRole::Overlay,
+                                IpcCommand::Lifecycle { action: LifecycleAction::HideOverlay },
+                            )
+                        >"Hide controls"</Button>
+                    </ButtonGroup>
+                    <Alert attr:role="status" attr:aria-live="polite">{move || status.get()}</Alert>
+                    {move || error.get().map(|message| view! {
+                        <Alert attr:role="alert">{message}</Alert>
+                    })}
+                </Card>
+            </main>
+        }
+    }
+
+    #[component]
+    fn TargetPickerApp() -> impl IntoView {
+        let client = RwSignal::new(None::<DesktopClient>);
+        let snapshot = RwSignal::new(None::<DesktopRuntimeSnapshot>);
+        let status = RwSignal::new("Connecting to capture targets…".to_owned());
+        let error = RwSignal::new(None::<String>);
+        let busy = RwSignal::new(false);
+
+        Effect::new(move |_| {
+            spawn_local(async move {
+                match bootstrap_native().await {
+                    Ok((_shell, desktop)) => {
+                        let surface_client = DesktopClient::new(
+                            desktop.contexts,
+                            desktop.snapshot.instant_finalize_next_sequence,
+                        );
+                        status.set(desktop.snapshot.announcement.clone());
+                        snapshot.set(Some(desktop.snapshot));
+                        client.set(Some(surface_client));
+                        submit(
+                            client,
+                            snapshot,
+                            status,
+                            error,
+                            busy,
+                            WindowRole::TargetPicker,
+                            IpcCommand::DeviceEnumerate {
+                                class: DeviceClass::Display,
+                            },
+                        );
+                    }
+                    Err(()) => {
+                        status.set("Capture targets are unavailable.".into());
+                        error.set(Some(
+                            "The target picker could not establish its scoped Rust command boundary."
+                                .into(),
+                        ));
+                    }
+                }
+            });
+        });
+
+        view! {
+            <UiStyles/>
+            <main data-frame-surface="target-picker" class="p-4" aria-labelledby="target-picker-heading">
+                <Card>
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">"Capture source"</p>
+                            <h1 id="target-picker-heading">"Choose what Frame records"</h1>
+                        </div>
+                        <Button
+                            variant=ButtonVariant::Ghost
+                            attr:r#type="button"
+                            attr:disabled=move || busy.get()
+                            on:click=move |_| submit(
+                                client,
+                                snapshot,
+                                status,
+                                error,
+                                busy,
+                                WindowRole::TargetPicker,
+                                IpcCommand::Lifecycle { action: LifecycleAction::HideTargetPicker },
+                            )
+                        >"Close picker"</Button>
+                    </div>
+                    <p id="target-privacy">
+                        "Targets are deliberately identified only by type, ordinal, dimensions, and an opaque session token."
+                    </p>
+                    <ToggleGroup class="button-row" attr:aria-describedby="target-privacy">
+                        <For
+                            each=move || snapshot
+                                .get()
+                                .filter(|state| state.capture_targets.schema_version == CAPTURE_TARGET_CATALOG_VERSION)
+                                .map(|state| state.capture_targets.targets)
+                                .unwrap_or_default()
+                            key=|target| target.token.clone()
+                            children=move |target| {
+                                let token = target.token.clone();
+                                let kind = target.kind;
+                                let label = format!(
+                                    "{} {} — {} by {} pixels",
+                                    capture_target_kind_label(kind),
+                                    target.ordinal,
+                                    target.width_pixels,
+                                    target.height_pixels,
+                                );
+                                view! {
+                                    <Button
+                                        variant=ButtonVariant::Outline
+                                        attr:r#type="button"
+                                        attr:aria-pressed=move || snapshot
+                                            .get()
+                                            .as_ref()
+                                            .and_then(|state| native_target_pressed(state, kind))
+                                        attr:disabled=move || busy.get()
+                                        on:click=move |_| submit(
+                                            client,
+                                            snapshot,
+                                            status,
+                                            error,
+                                            busy,
+                                            WindowRole::TargetPicker,
+                                            IpcCommand::CaptureTargetSelect {
+                                                kind,
+                                                target_token: token.clone(),
+                                            },
+                                        )
+                                    >{label}</Button>
+                                }
+                            }
+                        />
+                    </ToggleGroup>
+                    <RegionPicker client snapshot status error busy role=WindowRole::TargetPicker />
+                    <Button
+                        variant=ButtonVariant::Outline
+                        attr:r#type="button"
+                        attr:disabled=move || busy.get()
+                        on:click=move |_| submit(
+                            client,
+                            snapshot,
+                            status,
+                            error,
+                            busy,
+                            WindowRole::TargetPicker,
+                            IpcCommand::DeviceEnumerate { class: DeviceClass::Display },
+                        )
+                    >"Refresh targets"</Button>
+                    <Alert attr:role="status" attr:aria-live="polite">{move || status.get()}</Alert>
+                    {move || error.get().map(|message| view! {
+                        <Alert attr:role="alert">{message}</Alert>
+                    })}
+                </Card>
+            </main>
+        }
+    }
+
+    fn active_surface() -> &'static str {
+        let search = web_sys::window()
+            .and_then(|window| window.location().search().ok())
+            .unwrap_or_default();
+        if search
+            .split('&')
+            .any(|part| part.trim_start_matches('?') == "frame_surface=overlay")
+        {
+            "overlay"
+        } else if search
+            .split('&')
+            .any(|part| part.trim_start_matches('?') == "frame_surface=target-picker")
+        {
+            "target-picker"
+        } else {
+            "main"
+        }
+    }
+
+    #[component]
+    fn App() -> impl IntoView {
+        match active_surface() {
+            "overlay" => view! { <OverlayApp/> }.into_any(),
+            "target-picker" => view! { <TargetPickerApp/> }.into_any(),
+            _ => view! { <MainApp/> }.into_any(),
         }
     }
 

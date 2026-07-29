@@ -7,6 +7,7 @@
 pub mod accessibility;
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 pub mod av_settings;
+pub mod desktop_shell;
 #[cfg(any(
     all(target_os = "macos", feature = "macos-native"),
     all(target_os = "windows", feature = "windows-native")
@@ -37,6 +38,7 @@ pub mod workflow;
 pub use accessibility::*;
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 pub use av_settings::*;
+pub use desktop_shell::*;
 #[cfg(any(
     all(target_os = "macos", feature = "macos-native"),
     all(target_os = "windows", feature = "windows-native")

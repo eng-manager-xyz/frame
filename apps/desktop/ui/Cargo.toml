@@ -35,6 +35,7 @@ web-sys = { workspace = true, optional = true, features = [
     "Element",
     "HtmlCanvasElement",
     "ImageData",
+    "Location",
     "Window",
 ] }
 

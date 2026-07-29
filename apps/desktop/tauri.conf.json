@@ -21,7 +21,40 @@
         "minHeight": 520,
         "resizable": true,
         "fullscreen": false,
-        "visible": true
+        "visible": true,
+        "contentProtected": true
+      },
+      {
+        "label": "overlay",
+        "title": "Frame recording controls",
+        "url": "index.html?frame_surface=overlay",
+        "width": 420,
+        "height": 132,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "fullscreen": false,
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "contentProtected": true,
+        "skipTaskbar": true
+      },
+      {
+        "label": "target-picker",
+        "title": "Choose a Frame capture target",
+        "url": "index.html?frame_surface=target-picker",
+        "width": 720,
+        "height": 560,
+        "minWidth": 560,
+        "minHeight": 420,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "alwaysOnTop": true,
+        "contentProtected": true,
+        "skipTaskbar": true
       }
     ],
     "security": {
