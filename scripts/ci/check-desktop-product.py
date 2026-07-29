@@ -271,6 +271,11 @@ def main() -> int:
         fail("Tauri physical window ownership or content protection drifted")
     if updater_config.get("bundle") != {"createUpdaterArtifacts": True}:
         fail("protected updater bundle overlay drifted")
+    if tauri_config.get("plugins", {}).get("updater") != {"pubkey": ""}:
+        fail(
+            "base updater plugin config must deserialize while retaining "
+            "fail-closed runtime authority"
+        )
     require(
         desktop_update_runtime,
         (

@@ -64,6 +64,11 @@
       "dangerousDisableAssetCspModification": false
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": ""
+    }
+  },
   "bundle": {
     "active": true,
     "icon": ["icons/icon.png", "icons/icon.ico"],
