@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 366,
+    "local_satisfied": 367,
     "protected_pending": 180,
-    "local_gap": 8
+    "local_gap": 7
   },
   "issues": {
     "01": {
@@ -205,12 +205,12 @@
     "27": {
       "count": 11,
       "digest": "32b64219ff174c9d9fdedcda4573e7136c2e18beeeaeb345d2f5a6893d5c1800",
-      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "apps/desktop/src/ipc.rs", "apps/desktop/src/native_backend.rs", "apps/desktop/src/macos_native_backend/studio_editor.rs", "apps/desktop/src/macos_native_backend/studio_export.rs", "apps/desktop/src/macos_native_backend/studio_recovery.rs", "apps/desktop/src/macos_native_backend/studio_render.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "crates/media/gstreamer-runtime.json", "crates/media/src/runtime.rs", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
+      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "apps/desktop/src/ipc.rs", "apps/desktop/src/native_backend.rs", "apps/desktop/src/macos_native_backend.rs", "apps/desktop/src/macos_native_backend/av_worker.rs", "apps/desktop/src/macos_native_backend/studio_editor.rs", "apps/desktop/src/macos_native_backend/studio_export.rs", "apps/desktop/src/macos_native_backend/studio_recorder.rs", "apps/desktop/src/macos_native_backend/studio_recovery.rs", "apps/desktop/src/macos_native_backend/studio_render.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "crates/macos-screen-capture/src/cursor.rs", "crates/macos-screen-capture/src/lib.rs", "crates/media/gstreamer-runtime.json", "crates/media/src/runtime.rs", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
       "protected": [
         {"ordinals": [7], "classes": ["human_approval"], "reason": "The legacy import implementation exists, but acceptance still needs a reviewed corpus of representative Cap projects."},
         {"ordinals": [11], "classes": ["hardware_execution"], "reason": "The production hardware-first adapter, exact cleanup, cancellation, and identical-plan software retry are repository-backed; representative hardware encoder failures and output comparison still require the supported physical machine matrix."}
       ],
-      "local_gaps": [{"ordinals": [10], "reason": "The release editor now renders a revision-fenced decoded preview through the same canonical plan as export and has hardware-first H.264 with exact software fallback. Camera/cursor/background composition and complete long-project visual/audio goldens remain unconnected."}]
+      "local_gaps": []
     },
     "28": {
       "count": 15,

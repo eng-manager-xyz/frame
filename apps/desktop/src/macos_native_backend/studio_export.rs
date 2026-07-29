@@ -7,10 +7,10 @@
 use std::{fs::File, path::Path};
 
 use frame_media::{
-    AssetChecksum, CancellationToken, EncoderBackend, FilesystemStudioOriginalStore,
+    AssetChecksum, CancellationToken, EncoderBackend, ExactDuration, FilesystemStudioOriginalStore,
     NativeExecutionError, NativeStudioAlignedFileSources, NativeStudioEditedExportArtifact,
-    NativeStudioExportProfile, NativeStudioRenderProgress, StudioProjectManifest,
-    StudioTimelineCompiler, TimelineSource, TrackKind,
+    NativeStudioExportProfile, NativeStudioFileSource, NativeStudioRenderProgress,
+    StudioProjectManifest, StudioTimelineCompiler, TimelineSource, TrackKind,
     render_studio_export_with_edits_preopened_for_backend_and_progress,
 };
 
@@ -69,9 +69,6 @@ impl PreparedStudioExport {
         let mut system_audio = None;
         let mut originals = Vec::with_capacity(manifest.assets.len());
         for asset in &manifest.assets {
-            if asset.start.ticks() != 0 {
-                return Err(NativeDesktopBackendError::InvalidEdit);
-            }
             store
                 .verified_original_path(manifest.id, asset)
                 .map_err(map_studio_error)?;
@@ -89,10 +86,14 @@ impl PreparedStudioExport {
             {
                 return Err(NativeDesktopBackendError::Filesystem);
             }
-            let source = rooted
-                .file()
-                .try_clone()
-                .map_err(|_| NativeDesktopBackendError::Filesystem)?;
+            let source = NativeStudioFileSource {
+                file: rooted
+                    .file()
+                    .try_clone()
+                    .map_err(|_| NativeDesktopBackendError::Filesystem)?,
+                timeline_start: rational_time_to_exact(asset.start)?,
+                timeline_duration: rational_time_to_exact(asset.duration)?,
+            };
             let slot = match asset.track {
                 TrackKind::Screen => &mut screen,
                 TrackKind::Camera => &mut camera,
@@ -174,6 +175,16 @@ impl PreparedStudioExport {
     }
 }
 
+fn rational_time_to_exact(
+    value: frame_media::RationalTime,
+) -> Result<ExactDuration, NativeDesktopBackendError> {
+    ExactDuration::new(
+        u128::from(value.ticks()),
+        u128::from(value.time_base().ticks_per_second()),
+    )
+    .map_err(|_| NativeDesktopBackendError::InvalidEdit)
+}
+
 fn native_profile(profile: ExportProfile) -> NativeStudioExportProfile {
     match profile {
         ExportProfile::DistributionMp4 => NativeStudioExportProfile::DistributionMasterMp4,
@@ -248,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_export_reverifies_originals_and_renders_canonical_plan() {
+    fn prepared_export_reverifies_originals_and_renders_nonzero_timeline_range() {
         let directory = tempfile::tempdir().expect("fixture");
         let encoded = record_synthetic_studio_tracks(
             &directory.path().join("encoded"),
@@ -274,6 +285,8 @@ mod tests {
             &track(NativeStudioTrackRole::Screen),
             2,
             TrackKind::Screen,
+            0,
+            2,
         );
         let system_audio = commit_asset(
             &mut store,
@@ -281,6 +294,8 @@ mod tests {
             &track(NativeStudioTrackRole::SystemAudio),
             3,
             TrackKind::SystemAudio,
+            1,
+            1,
         );
         let manifest = StudioProjectManifest {
             version: STUDIO_PROJECT_VERSION,
@@ -324,6 +339,8 @@ mod tests {
         source: &Path,
         marker: u8,
         track: TrackKind,
+        start_ticks: u64,
+        duration_ticks: u64,
     ) -> StudioAsset {
         let bytes = fs::read(source).expect("encoded source");
         let time_base = TimeBase::new(1).expect("time base");
@@ -363,8 +380,8 @@ mod tests {
             source_name: StudioSourceName::new(format!("{track:?}.webm").to_ascii_lowercase())
                 .expect("source name"),
             byte_len: u64::try_from(bytes.len()).expect("asset length"),
-            start: frame_media::RationalTime::new(0, time_base),
-            duration: frame_media::RationalTime::new(2, time_base),
+            start: frame_media::RationalTime::new(start_ticks, time_base),
+            duration: frame_media::RationalTime::new(duration_ticks, time_base),
             checksum: AssetChecksum::from_content(&bytes),
             commit_state: AssetCommitState::Temporary,
             encoding,

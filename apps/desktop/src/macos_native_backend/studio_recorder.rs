@@ -19,10 +19,11 @@ use frame_media::{
     NativeStudioInputBuffer, NativeStudioRecording, NativeStudioRecordingArtifact,
     NativeStudioRecordingError, PendingAssetCommit, PixelFormat, ReceiptKind,
     STUDIO_JOURNAL_VERSION, STUDIO_PROJECT_VERSION, StudioAsset, StudioAssetEncoding,
-    StudioAssetId, StudioAudioRawCaps, StudioDocumentCodec, StudioJournalSnapshot,
-    StudioOperationId, StudioProjectId, StudioProjectManifest, StudioRecordingGraphSpec,
-    StudioSourceName, StudioState, StudioVideoRawCaps, StudioWorkerId, TempAssetCommitTicket,
-    TrackKind, VideoFrameSpec, commit_verified_temporary, strong_sha256,
+    StudioAssetId, StudioAudioRawCaps, StudioCursorObservation, StudioDocumentCodec,
+    StudioJournalSnapshot, StudioOperationId, StudioProjectId, StudioProjectManifest,
+    StudioRecordingGraphSpec, StudioSourceName, StudioState, StudioVideoRawCaps, StudioWorkerId,
+    TempAssetCommitTicket, TrackKind, VideoFrameSpec, commit_verified_temporary,
+    encode_studio_cursor_record, strong_sha256,
 };
 use ring::rand::{SecureRandom, SystemRandom};
 
@@ -43,6 +44,7 @@ pub(super) struct StudioRecordingIdentity {
     pub(super) microphone_asset: [u8; 16],
     pub(super) system_audio_asset: [u8; 16],
     pub(super) camera_asset: [u8; 16],
+    pub(super) cursor_asset: [u8; 16],
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,6 +52,7 @@ pub(super) struct StudioOptionalTracks {
     pub(super) microphone: bool,
     pub(super) system_audio: bool,
     pub(super) camera: bool,
+    pub(super) cursor: bool,
 }
 
 #[derive(Debug)]
@@ -193,6 +196,17 @@ impl DesktopStudioRecording {
         pixels: Vec<u8>,
     ) -> Result<(), NativeDesktopBackendError> {
         self.push(TrackKind::Camera, sequence, timestamp, pixels)
+    }
+
+    pub(super) fn push_cursor(
+        &mut self,
+        observation: StudioCursorObservation,
+    ) -> Result<(), NativeDesktopBackendError> {
+        let sequence = observation.sequence();
+        let timestamp = observation.timestamp();
+        let bytes = encode_studio_cursor_record(&observation)
+            .map_err(|_| NativeDesktopBackendError::Internal)?;
+        self.push(TrackKind::Cursor, sequence, timestamp, bytes)
     }
 
     fn push(
@@ -488,6 +502,13 @@ pub(super) fn recording_graph(
             30,
         )?);
     }
+    if optional.cursor {
+        branches.push(cursor_branch(
+            identity.cursor_asset,
+            screen.width,
+            screen.height,
+        )?);
+    }
     StudioRecordingGraphSpec::new(project, clock, branches).map_err(map_studio_error)
 }
 
@@ -524,6 +545,30 @@ fn audio_branch(
     })
     .map_err(map_studio_error)?;
     branch(track, id, name, CaptureElementFamily::OpusEncoder, encoding)
+}
+
+fn cursor_branch(
+    id: [u8; 16],
+    frame_width: u32,
+    frame_height: u32,
+) -> Result<IsolatedTrackBranch, NativeDesktopBackendError> {
+    Ok(IsolatedTrackBranch {
+        track: TrackKind::Cursor,
+        asset_id: StudioAssetId::from_csprng(id).map_err(map_studio_error)?,
+        temporary_name: StudioSourceName::new("cursor.frame-cursor").map_err(map_studio_error)?,
+        source: CaptureElementFamily::NativeCursorMetadataBridge,
+        encoder: CaptureElementFamily::CursorTimelineEncoder,
+        muxer: CaptureElementFamily::CursorTimelineMux,
+        encoding: StudioAssetEncoding::CursorTimelineV1 {
+            frame_width,
+            frame_height,
+        },
+        queue: BoundedMediaQueue {
+            max_buffers: STUDIO_QUEUE_BUFFERS,
+            max_bytes: STUDIO_QUEUE_BYTES,
+            max_time_ns: STUDIO_QUEUE_TIME_NS,
+        },
+    })
 }
 
 fn branch(
@@ -596,6 +641,7 @@ mod tests {
             microphone_asset: [4; 16],
             system_audio_asset: [5; 16],
             camera_asset: [6; 16],
+            cursor_asset: [7; 16],
         }
     }
 
@@ -634,6 +680,7 @@ mod tests {
             30,
             StudioOptionalTracks {
                 system_audio: true,
+                cursor: true,
                 ..StudioOptionalTracks::default()
             },
         )
@@ -642,13 +689,19 @@ mod tests {
             .capture_started()
             .expect("durable capture-start boundary");
         for sequence in 1..=30 {
+            let timestamp =
+                FrameTimestamp::new((sequence - 1) * VIDEO_DURATION_NS, VIDEO_DURATION_NS)
+                    .expect("video timestamp");
             recording
-                .push_screen(
-                    sequence,
-                    FrameTimestamp::new((sequence - 1) * VIDEO_DURATION_NS, VIDEO_DURATION_NS)
-                        .expect("video timestamp"),
-                    vec![42; 160 * 90 * 4],
+                .push_cursor(
+                    StudioCursorObservation::new(
+                        sequence, timestamp, false, 0, 0, None, false, false, None,
+                    )
+                    .expect("cursor observation"),
                 )
+                .expect("cursor original");
+            recording
+                .push_screen(sequence, timestamp, vec![42; 160 * 90 * 4])
                 .expect("screen original");
         }
         for sequence in 1..=47 {
@@ -677,7 +730,13 @@ mod tests {
         let project =
             StudioDocumentCodec::decode_project(&project_bytes).expect("valid Studio project");
         assert_eq!(project.state, StudioState::Editing);
-        assert_eq!(project.assets.len(), 2);
+        assert_eq!(project.assets.len(), 3);
+        assert!(
+            project
+                .assets
+                .iter()
+                .any(|asset| asset.track == TrackKind::Cursor)
+        );
         assert!(
             project
                 .assets

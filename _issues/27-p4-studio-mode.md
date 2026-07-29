@@ -74,6 +74,12 @@ Complete product UI is issue 33; server media derivatives are issue 28.
   quarantine when cleanup is unconfirmed. Representative physical-hardware
   evidence and native post-restart staging-identity reconstruction remain
   tracked in the local evidence ledger.
+- Studio capture now records macOS cursor observations and revisioned images as
+  a fifth isolated sidecar track. The authenticated native export translates
+  project-clock windows to each retained original's local decoder clock,
+  including nonzero optional-track and cursor ranges. The shared decoded
+  camera/cursor/VFR/speed/audio golden and day-scale cursor lookup close the
+  remaining repository-local composition requirement.
 
 ## Risks and open questions
 

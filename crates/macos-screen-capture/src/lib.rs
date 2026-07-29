@@ -25,6 +25,11 @@ mod normalized;
 mod platform;
 
 #[cfg(target_os = "macos")]
+pub use cursor::{
+    CursorMetadataSession as MacOsCursorMetadataSession, MacOsCursorImageUpdate,
+    MacOsCursorMetadataObservation,
+};
+#[cfg(target_os = "macos")]
 pub use normalized::MacOsNormalizedScreenCaptureSource;
 #[cfg(target_os = "macos")]
 pub use platform::MacOsScreenCaptureSource;
