@@ -160,6 +160,8 @@ def main() -> int:
             for marker in (
                 "http://archive.ubuntu.com/ubuntu/",
                 r"azure\.archive\.ubuntu\.com",
+                "/etc/apt/apt-mirrors.txt",
+                "/etc/apt/sources.list.d/*.sources",
                 "Acquire::Retries=5",
                 "Acquire::http::Timeout=30",
                 "Acquire::https::Timeout=30",
@@ -167,7 +169,7 @@ def main() -> int:
                 "unknown option:",
             )
         ),
-        "Ubuntu GStreamer installer must replace the slow hosted mirror and retain bounded apt retry/timeout policy",
+        "Ubuntu GStreamer installer must replace direct and mirrorlist-indirected slow hosted mirrors and retain bounded apt retry/timeout policy",
         errors,
     )
     require(

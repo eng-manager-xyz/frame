@@ -137,6 +137,12 @@ def main() -> int:
                 "Ubuntu package download retries removed",
             ),
             (
+                gstreamer_installer,
+                "/etc/apt/apt-mirrors.txt",
+                "/etc/apt/ignored-mirrors.txt",
+                "GitHub apt mirrorlist indirection is no longer hardened",
+            ),
+            (
                 quality,
                 "scripts/ci/install-gstreamer-ubuntu.sh --libav --tools --base-apps",
                 "sudo apt-get update",
