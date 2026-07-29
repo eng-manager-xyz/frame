@@ -139,20 +139,42 @@ pub enum Route {
     LegacyMobileSessionRequest,
     LegacyMobileSessionRevoke,
     LegacyMobileUploadCreate,
-    LegacyMobileUploadComplete { video_id: String },
-    LegacyMobileUploadProgress { video_id: String },
+    LegacyMobileUploadComplete {
+        video_id: String,
+    },
+    LegacyMobileUploadProgress {
+        video_id: String,
+    },
     LegacyMobileBootstrap,
     LegacyMobileCaps,
-    LegacyMobileCap { video_id: String },
-    LegacyMobileCapDownload { video_id: String },
-    LegacyMobileCapPlayback { video_id: String },
+    LegacyMobileCap {
+        video_id: String,
+    },
+    LegacyMobileCapDownload {
+        video_id: String,
+    },
+    LegacyMobileCapPlayback {
+        video_id: String,
+    },
     LegacyMobileFolders,
-    LegacyMobileCapPassword { video_id: String },
-    LegacyMobileCapSharing { video_id: String },
-    LegacyMobileCapTitle { video_id: String },
-    LegacyMobileCapComments { video_id: String },
-    LegacyMobileCapReactions { video_id: String },
-    LegacyMobileComment { comment_id: String },
+    LegacyMobileCapPassword {
+        video_id: String,
+    },
+    LegacyMobileCapSharing {
+        video_id: String,
+    },
+    LegacyMobileCapTitle {
+        video_id: String,
+    },
+    LegacyMobileCapComments {
+        video_id: String,
+    },
+    LegacyMobileCapReactions {
+        video_id: String,
+    },
+    LegacyMobileComment {
+        comment_id: String,
+    },
     LegacyWebCommentDelete,
     LegacyAnalytics,
     LegacyAnalyticsTrack,
@@ -162,9 +184,13 @@ pub enum Route {
     LegacyVideoDomainInfo,
     LegacyVideoDelete,
     LegacyVideoOg,
-    LegacyRetryTranscription { video_id: String },
+    LegacyRetryTranscription {
+        video_id: String,
+    },
     LegacyProtectedMedia,
-    LegacyProtectedIntegration { operation_id: &'static str },
+    LegacyProtectedIntegration {
+        operation_id: &'static str,
+    },
     LegacyProtectedBillingAuth,
     LegacyEffectRpc,
     LegacyUserName,
@@ -176,13 +202,17 @@ pub enum Route {
     LegacyExtensionBootstrap,
     LegacyExtensionInstantCreate,
     LegacyExtensionInstantProgress,
-    LegacyExtensionInstantDelete { video_id: String },
+    LegacyExtensionInstantDelete {
+        video_id: String,
+    },
     LegacyNotifications,
     LegacyNotificationPreferences,
     LegacyDesktopSessionRequest,
     LegacyDesktopOrgCustomDomain,
     LegacyDesktopOrganizations,
-    LegacyDesktopOrganizationBranding { organization_id: String },
+    LegacyDesktopOrganizationBranding {
+        organization_id: String,
+    },
     LegacyDesktopStorageSetActive,
     LegacyDesktopUserProfile,
     LegacyDesktopVideoDelete,
@@ -195,59 +225,158 @@ pub enum Route {
     LegacyDeveloperVideoCreate,
     LegacyDeveloperUsage,
     LegacyDeveloperVideos,
-    LegacyDeveloperVideo { video_id: String },
-    LegacyDeveloperVideoStatus { video_id: String },
+    LegacyDeveloperVideo {
+        video_id: String,
+    },
+    LegacyDeveloperVideoStatus {
+        video_id: String,
+    },
     Discovery,
     Capabilities,
     ApiHealth,
-    PublicShare { share_id: String },
-    PublicMedia { share_id: String },
-    PublicCollaborationGrant { share_id: String },
-    PublicComments { share_id: String },
-    PublicTranscript { share_id: String },
-    PublicAnalyticsConsent { share_id: String },
-    PublicAnalyticsEvents { share_id: String },
+    DesktopUpdateManifest {
+        target: String,
+        arch: String,
+        current_version: String,
+    },
+    DesktopUpdateArtifact {
+        target: String,
+        arch: String,
+        bundle: String,
+        version: String,
+    },
+    PublicShare {
+        share_id: String,
+    },
+    PublicMedia {
+        share_id: String,
+    },
+    PublicCollaborationGrant {
+        share_id: String,
+    },
+    PublicComments {
+        share_id: String,
+    },
+    PublicTranscript {
+        share_id: String,
+    },
+    PublicAnalyticsConsent {
+        share_id: String,
+    },
+    PublicAnalyticsEvents {
+        share_id: String,
+    },
     BrowserAuthLogin,
     BrowserAuthSignup,
     BrowserAuthRecovery,
     BrowserAuthVerify,
     BrowserAuthLogout,
-    AuthenticatedWebWorkspace { surface: String },
-    AuthenticatedWebAction { action: String },
-    AuthenticatedWebCompatibilityAction { operation_id: String },
+    AuthenticatedWebWorkspace {
+        surface: String,
+    },
+    AuthenticatedWebAction {
+        action: String,
+    },
+    AuthenticatedWebCompatibilityAction {
+        operation_id: String,
+    },
     StorageGrantCreate,
-    StorageGrantRevoke { grant_id: String },
-    StorageGrantRead { tenant_id: String, grant_id: String },
+    StorageGrantRevoke {
+        grant_id: String,
+    },
+    StorageGrantRead {
+        tenant_id: String,
+        grant_id: String,
+    },
     VideoCreate,
-    VideoPrivacy { video_id: String },
-    VideoTranscript { video_id: String },
+    VideoPrivacy {
+        video_id: String,
+    },
+    VideoTranscript {
+        video_id: String,
+    },
     UploadIntent,
-    UploadStatus { upload_id: String },
-    UploadContent { upload_id: String },
-    UploadFinalize { upload_id: String },
-    UploadMultipart { upload_id: String },
-    UploadMultipartPart { upload_id: String, part_number: u16 },
-    UploadMultipartComplete { upload_id: String },
-    InstantFinalize { session_id: String },
+    UploadStatus {
+        upload_id: String,
+    },
+    UploadContent {
+        upload_id: String,
+    },
+    UploadFinalize {
+        upload_id: String,
+    },
+    UploadMultipart {
+        upload_id: String,
+    },
+    UploadMultipartPart {
+        upload_id: String,
+        part_number: u16,
+    },
+    UploadMultipartComplete {
+        upload_id: String,
+    },
+    InstantFinalize {
+        session_id: String,
+    },
     MediaJobCreate,
-    MediaJobStatus { job_id: String },
-    MediaJobCancel { job_id: String },
+    MediaJobStatus {
+        job_id: String,
+    },
+    MediaJobCancel {
+        job_id: String,
+    },
     WorkerMediaJobClaim,
-    WorkerMediaJobSource { job_id: String },
-    WorkerMediaJobOutput { job_id: String },
-    WorkerMediaJobSourceOrdinal { job_id: String, ordinal: u16 },
-    WorkerMediaJobOutputOrdinal { job_id: String, ordinal: u16 },
-    WorkerMediaJobHeartbeat { job_id: String },
-    WorkerMediaJobProgress { job_id: String },
-    WorkerMediaJobComplete { job_id: String },
-    WorkerMediaJobFail { job_id: String },
+    WorkerMediaJobSource {
+        job_id: String,
+    },
+    WorkerMediaJobOutput {
+        job_id: String,
+    },
+    WorkerMediaJobSourceOrdinal {
+        job_id: String,
+        ordinal: u16,
+    },
+    WorkerMediaJobOutputOrdinal {
+        job_id: String,
+        ordinal: u16,
+    },
+    WorkerMediaJobHeartbeat {
+        job_id: String,
+    },
+    WorkerMediaJobProgress {
+        job_id: String,
+    },
+    WorkerMediaJobComplete {
+        job_id: String,
+    },
+    WorkerMediaJobFail {
+        job_id: String,
+    },
     AuthorityStatus,
-    CutoverStatus { tenant_id: String, domain: String },
-    CutoverTransition { tenant_id: String, domain: String },
-    CutoverReplayPause { tenant_id: String, domain: String },
-    CutoverReplayResume { tenant_id: String, domain: String },
-    CutoverSignal { tenant_id: String, domain: String },
-    CutoverShadowObservation { tenant_id: String, domain: String },
+    CutoverStatus {
+        tenant_id: String,
+        domain: String,
+    },
+    CutoverTransition {
+        tenant_id: String,
+        domain: String,
+    },
+    CutoverReplayPause {
+        tenant_id: String,
+        domain: String,
+    },
+    CutoverReplayResume {
+        tenant_id: String,
+        domain: String,
+    },
+    CutoverSignal {
+        tenant_id: String,
+        domain: String,
+    },
+    CutoverShadowObservation {
+        tenant_id: String,
+        domain: String,
+    },
     LocalRepositoryConformance,
     LocalAuthRepositoryConformance,
     LocalOrganizationRepositoryConformance,
@@ -517,6 +646,48 @@ pub fn valid_repository_conformance_target(target: &RawRequestTarget) -> bool {
 fn dynamic_route(path: &str) -> Route {
     let segments = path.split('/').collect::<Vec<_>>();
     match segments.as_slice() {
+        [
+            "",
+            "api",
+            "v1",
+            "desktop",
+            "updates",
+            "stable",
+            target,
+            arch,
+            current_version,
+        ] if [target, arch, current_version]
+            .iter()
+            .all(|segment| !segment.is_empty() && segment.len() <= 64) =>
+        {
+            Route::DesktopUpdateManifest {
+                target: (*target).to_owned(),
+                arch: (*arch).to_owned(),
+                current_version: (*current_version).to_owned(),
+            }
+        }
+        [
+            "",
+            "api",
+            "v1",
+            "desktop",
+            "updates",
+            "artifacts",
+            target,
+            arch,
+            bundle,
+            version,
+        ] if [target, arch, bundle, version]
+            .iter()
+            .all(|segment| !segment.is_empty() && segment.len() <= 64) =>
+        {
+            Route::DesktopUpdateArtifact {
+                target: (*target).to_owned(),
+                arch: (*arch).to_owned(),
+                bundle: (*bundle).to_owned(),
+                version: (*version).to_owned(),
+            }
+        }
         ["", "api", "developer", "v1", "videos", video_id, "status"] if !video_id.is_empty() => {
             Route::LegacyDeveloperVideoStatus {
                 video_id: (*video_id).to_owned(),
@@ -1936,6 +2107,43 @@ mod tests {
                 classify_raw_path(path),
                 Route::LegacyProtectedBillingAuth,
                 "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_update_routes_are_exact_and_lookalikes_fail_closed() {
+        assert_eq!(
+            classify_raw_path("/api/v1/desktop/updates/stable/darwin/aarch64/1.2.3"),
+            Route::DesktopUpdateManifest {
+                target: "darwin".into(),
+                arch: "aarch64".into(),
+                current_version: "1.2.3".into(),
+            }
+        );
+        assert_eq!(
+            classify_raw_path("/api/v1/desktop/updates/artifacts/windows/x86_64/nsis/1.2.3"),
+            Route::DesktopUpdateArtifact {
+                target: "windows".into(),
+                arch: "x86_64".into(),
+                bundle: "nsis".into(),
+                version: "1.2.3".into(),
+            }
+        );
+        for path in [
+            "/api/v1/desktop/updates/stable/darwin/aarch64/1.2.3/",
+            "/api/v1/desktop/updates/stable//aarch64/1.2.3",
+            "/api/v1/desktop/updates/stable/darwin/%61arch64/1.2.3",
+            "/api/v1/desktop/updates/artifacts/windows/x86_64/nsis/1.2.3/",
+            "/api/v1/desktop/updates/artifacts/windows/x86_64/nsis",
+            "/api/v1/desktop/updates/artifacts/windows/x86_64/nsis/1.2.3/private",
+        ] {
+            assert!(
+                matches!(
+                    classify_raw_path(path),
+                    Route::UnknownApi | Route::InvalidApiPath
+                ),
+                "desktop updater lookalike must fail closed: {path}"
             );
         }
     }

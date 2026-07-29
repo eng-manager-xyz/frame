@@ -1,8 +1,8 @@
 {
   "identifier": "frame-desktop-windows",
-  "description": "Allow only versioned Frame bootstrap, dispatch, and fail-closed Instant finalize commands in the main window.",
+  "description": "Allow only Frame's versioned bootstrap and dispatcher in its three content-protected product windows; Instant finalize remains main-window only inside the Rust boundary.",
   "local": true,
-  "windows": ["main"],
+  "windows": ["main", "overlay", "target-picker"],
   "permissions": [
     "allow-bootstrap-main",
     "allow-bootstrap-desktop",

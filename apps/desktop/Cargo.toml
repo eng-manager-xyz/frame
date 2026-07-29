@@ -10,7 +10,11 @@ default-run = "frame-desktop"
 [features]
 default = []
 instant-finalize = ["dep:frame-media"]
-tauri-app = ["dep:tauri"]
+tauri-app = [
+    "dep:tauri",
+    "dep:tauri-plugin-global-shortcut",
+    "dep:tauri-plugin-updater",
+]
 macos-native = [
     "tauri-app",
     "dep:frame-media",
@@ -49,7 +53,9 @@ zeroize.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 frame-platform-lifecycle = { path = "../../crates/platform-lifecycle", optional = true }
-tauri = { version = "=2.11.5", optional = true , features = [] }
+tauri = { version = "=2.11.5", optional = true, features = ["tray-icon"] }
+tauri-plugin-global-shortcut = { version = "=2.3.2", optional = true }
+tauri-plugin-updater = { version = "=2.10.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 frame-macos-av-capture = { path = "../../crates/macos-av-capture", optional = true }

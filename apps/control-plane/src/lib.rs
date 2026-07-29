@@ -12,6 +12,7 @@ mod contracts;
 mod control_plane_ui;
 pub mod cutover_authority;
 pub mod cutover_authority_runtime;
+mod desktop_update_runtime;
 mod instant_finalize_contract;
 mod instant_finalize_runtime;
 pub mod legacy_analytics_runtime;
@@ -2921,6 +2922,32 @@ async fn dispatch(
             } else {
                 public_health_response(env, config).await?
             }
+        }
+        Route::DesktopUpdateManifest {
+            target,
+            arch,
+            current_version,
+        } => {
+            desktop_update_runtime::manifest_response(
+                &request,
+                env,
+                &canonical_origin,
+                &target,
+                &arch,
+                &current_version,
+            )
+            .await?
+        }
+        Route::DesktopUpdateArtifact {
+            target,
+            arch,
+            bundle,
+            version,
+        } => {
+            desktop_update_runtime::artifact_response(
+                &request, env, &target, &arch, &bundle, &version,
+            )
+            .await?
         }
         Route::Discovery => {
             if let Some(failure) = method_guard(&request, &[Method::Get], "GET")? {

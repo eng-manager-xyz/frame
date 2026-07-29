@@ -1,5 +1,11 @@
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use std::sync::Mutex;
+use std::{
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 use frame_desktop_core::MacOsNativeDesktopBackend;
@@ -8,14 +14,28 @@ use frame_desktop_core::WindowsNativeDesktopBackend;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use frame_desktop_core::{
     DesktopAdapterKind, DesktopBootstrap, DesktopDispatch, DesktopRoots, DesktopRuntime,
+    DesktopShellCommand, DesktopShellFailure, DesktopShellOutcome, DesktopShellStart,
     InstantFinalizeCommandV1, InstantFinalizeService, InstantFinalizeServiceError,
-    InstantFinalizeUiUpdate, PublicErrorCode, ShellCapabilities,
+    InstantFinalizeUiUpdate, LifecycleAction, LifecycleSnapshot, PublicErrorCode,
+    ShellCapabilities, UpdateAction, decode_request,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::{Emitter, Manager};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const MAX_INSTANT_FINALIZE_COMMAND_BYTES: usize = 512;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const UPDATE_ENDPOINT: &str = "https://frame.engmanager.xyz/api/v1/desktop/updates/stable/{{target}}/{{arch}}/{{current_version}}?bundle={{bundle_type}}";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const MAIN_WINDOW_LABEL: &str = "main";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const OVERLAY_WINDOW_LABEL: &str = "overlay";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const TARGET_PICKER_WINDOW_LABEL: &str = "target-picker";
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct NativeDesktopState {
@@ -25,6 +45,30 @@ struct NativeDesktopState {
     #[cfg(all(target_os = "windows", feature = "windows-native"))]
     native_backend: Option<Mutex<WindowsNativeDesktopBackend>>,
     instant_finalize: InstantFinalizeService,
+    pending_update: Mutex<Option<Update>>,
+    shell_busy: AtomicBool,
+    frame_windows_excluded: bool,
+    quitting: AtomicBool,
+    tray: Mutex<Option<tauri::tray::TrayIcon>>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+struct ShellBusyGuard<'a>(&'a AtomicBool);
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Drop for ShellBusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn acquire_shell(state: &NativeDesktopState) -> Result<ShellBusyGuard<'_>, DesktopShellFailure> {
+    state
+        .shell_busy
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ShellBusyGuard(&state.shell_busy))
+        .map_err(|_| DesktopShellFailure::busy())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -35,10 +79,357 @@ struct DesktopBoundaryError {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn main_window(label: &str) -> Result<(), &'static str> {
-    if label == "main" {
+    if label == MAIN_WINDOW_LABEL {
         Ok(())
     } else {
         Err("window_not_authorized")
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn frame_window(label: &str) -> Result<(), &'static str> {
+    if known_frame_window(label) {
+        Ok(())
+    } else {
+        Err("window_not_authorized")
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn physical_window_allows(label: &str, role: frame_desktop_core::WindowRole) -> bool {
+    use frame_desktop_core::WindowRole;
+
+    match label {
+        MAIN_WINDOW_LABEL => !matches!(role, WindowRole::Overlay | WindowRole::TargetPicker),
+        OVERLAY_WINDOW_LABEL => role == WindowRole::Overlay,
+        TARGET_PICKER_WINDOW_LABEL => role == WindowRole::TargetPicker,
+        _ => false,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn known_frame_window(label: &str) -> bool {
+    matches!(
+        label,
+        MAIN_WINDOW_LABEL | OVERLAY_WINDOW_LABEL | TARGET_PICKER_WINDOW_LABEL
+    )
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn updater_public_key() -> Option<&'static str> {
+    option_env!("FRAME_TAURI_UPDATER_PUBLIC_KEY").filter(|value| !value.trim().is_empty())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn shell_shortcuts() -> [Shortcut; 3] {
+    #[cfg(target_os = "macos")]
+    let modifiers = Modifiers::SUPER | Modifiers::SHIFT;
+    #[cfg(target_os = "windows")]
+    let modifiers = Modifiers::CONTROL | Modifiers::SHIFT;
+    [
+        Shortcut::new(Some(modifiers), Code::Digit1),
+        Shortcut::new(Some(modifiers), Code::Digit2),
+        Shortcut::new(Some(modifiers), Code::Digit3),
+    ]
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn all_shortcuts_registered(app: &tauri::AppHandle) -> bool {
+    shell_shortcuts()
+        .into_iter()
+        .all(|shortcut| app.global_shortcut().is_registered(shortcut))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn window_is_visible(app: &tauri::AppHandle, label: &str) -> bool {
+    app.get_webview_window(label)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn lifecycle_snapshot(app: &tauri::AppHandle, state: &NativeDesktopState) -> LifecycleSnapshot {
+    LifecycleSnapshot {
+        main_visible: window_is_visible(app, MAIN_WINDOW_LABEL),
+        overlay_visible: window_is_visible(app, OVERLAY_WINDOW_LABEL),
+        target_picker_visible: window_is_visible(app, TARGET_PICKER_WINDOW_LABEL),
+        hotkeys_registered: all_shortcuts_registered(app),
+        frame_windows_excluded: state.frame_windows_excluded,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn require_window(
+    app: &tauri::AppHandle,
+    label: &str,
+) -> Result<tauri::WebviewWindow, DesktopShellFailure> {
+    app.get_webview_window(label)
+        .ok_or_else(DesktopShellFailure::unavailable)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn show_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    focus: bool,
+) -> Result<(), DesktopShellFailure> {
+    let window = require_window(app, label)?;
+    position_auxiliary_window(app, &window);
+    window.show().map_err(|_| DesktopShellFailure::internal())?;
+    if focus {
+        window
+            .set_focus()
+            .map_err(|_| DesktopShellFailure::internal())?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn position_auxiliary_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    if window.label() == MAIN_WINDOW_LABEL {
+        return;
+    }
+    let monitor = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|main| main.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let Ok(window_size) = window.outer_size() else {
+        return;
+    };
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let x = monitor_position.x
+        + i32::try_from(monitor_size.width.saturating_sub(window_size.width) / 2).unwrap_or(0);
+    let vertical_offset = if window.label() == OVERLAY_WINDOW_LABEL {
+        48
+    } else {
+        i32::try_from(monitor_size.height.saturating_sub(window_size.height) / 2).unwrap_or(0)
+    };
+    let y = monitor_position.y + vertical_offset;
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn hide_window(app: &tauri::AppHandle, label: &str) -> Result<(), DesktopShellFailure> {
+    require_window(app, label)?
+        .hide()
+        .map_err(|_| DesktopShellFailure::internal())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn apply_lifecycle(
+    app: &tauri::AppHandle,
+    state: &NativeDesktopState,
+    action: LifecycleAction,
+    invoking_window: &str,
+) -> Result<LifecycleSnapshot, DesktopShellFailure> {
+    match action {
+        LifecycleAction::RegisterHotkeys => {
+            let missing = shell_shortcuts()
+                .into_iter()
+                .filter(|shortcut| !app.global_shortcut().is_registered(*shortcut))
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                app.global_shortcut()
+                    .register_multiple(missing)
+                    .map_err(|_| DesktopShellFailure::unavailable())?;
+            }
+        }
+        LifecycleAction::ShowMainWindow | LifecycleAction::ReopenWindow => {
+            show_window(app, MAIN_WINDOW_LABEL, true)?;
+        }
+        LifecycleAction::HideMainWindow => hide_window(app, MAIN_WINDOW_LABEL)?,
+        LifecycleAction::ShowOverlay => show_window(app, OVERLAY_WINDOW_LABEL, true)?,
+        LifecycleAction::HideOverlay => hide_window(app, OVERLAY_WINDOW_LABEL)?,
+        LifecycleAction::ShowTargetPicker => {
+            show_window(app, TARGET_PICKER_WINDOW_LABEL, true)?;
+        }
+        LifecycleAction::HideTargetPicker => hide_window(app, TARGET_PICKER_WINDOW_LABEL)?,
+        LifecycleAction::CloseWindow => {
+            if !known_frame_window(invoking_window) {
+                return Err(DesktopShellFailure::unavailable());
+            }
+            hide_window(app, invoking_window)?;
+        }
+    }
+    Ok(lifecycle_snapshot(app, state))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn emit_desktop_events(app: &tauri::AppHandle, dispatch: &DesktopDispatch) {
+    for event in &dispatch.events {
+        let _ = app.emit("frame-desktop://event-v1", event);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn observe_lifecycle(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<NativeDesktopState>() else {
+        return;
+    };
+    let snapshot = lifecycle_snapshot(app, &state);
+    let Ok(mut runtime) = state.runtime.lock() else {
+        return;
+    };
+    let Ok(events) = runtime.observe_shell_lifecycle(snapshot) else {
+        return;
+    };
+    drop(runtime);
+    for event in events {
+        let _ = app.emit("frame-desktop://event-v1", event);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn apply_os_lifecycle(app: &tauri::AppHandle, action: LifecycleAction, invoking_window: &str) {
+    let Some(state) = app.try_state::<NativeDesktopState>() else {
+        return;
+    };
+    if apply_lifecycle(app, &state, action, invoking_window).is_ok() {
+        observe_lifecycle(app);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn handle_shortcut(app: &tauri::AppHandle, shortcut: &Shortcut) {
+    let shortcuts = shell_shortcuts();
+    let action = if shortcut.id() == shortcuts[0].id() {
+        if window_is_visible(app, MAIN_WINDOW_LABEL) {
+            LifecycleAction::HideMainWindow
+        } else {
+            LifecycleAction::ShowMainWindow
+        }
+    } else if shortcut.id() == shortcuts[1].id() {
+        if window_is_visible(app, TARGET_PICKER_WINDOW_LABEL) {
+            LifecycleAction::HideTargetPicker
+        } else {
+            LifecycleAction::ShowTargetPicker
+        }
+    } else if shortcut.id() == shortcuts[2].id() {
+        if window_is_visible(app, OVERLAY_WINDOW_LABEL) {
+            LifecycleAction::HideOverlay
+        } else {
+            LifecycleAction::ShowOverlay
+        }
+    } else {
+        return;
+    };
+    apply_os_lifecycle(app, action, MAIN_WINDOW_LABEL);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn install_tray(app: &tauri::AppHandle) -> Result<tauri::tray::TrayIcon, tauri::Error> {
+    use tauri::{
+        menu::{Menu, MenuItem},
+        tray::TrayIconBuilder,
+    };
+
+    let show = MenuItem::with_id(app, "frame-show-main", "Show Frame", true, None::<&str>)?;
+    let target = MenuItem::with_id(
+        app,
+        "frame-show-target-picker",
+        "Choose capture target",
+        true,
+        None::<&str>,
+    )?;
+    let overlay = MenuItem::with_id(
+        app,
+        "frame-show-overlay",
+        "Show recording controls",
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "frame-quit", "Quit Frame", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &target, &overlay, &quit])?;
+    let mut builder = TrayIconBuilder::with_id("frame")
+        .menu(&menu)
+        .tooltip("Frame screen recorder")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "frame-show-main" => {
+                apply_os_lifecycle(app, LifecycleAction::ShowMainWindow, MAIN_WINDOW_LABEL);
+            }
+            "frame-show-target-picker" => {
+                apply_os_lifecycle(app, LifecycleAction::ShowTargetPicker, MAIN_WINDOW_LABEL);
+            }
+            "frame-show-overlay" => {
+                apply_os_lifecycle(app, LifecycleAction::ShowOverlay, MAIN_WINDOW_LABEL);
+            }
+            "frame-quit" => {
+                if let Some(state) = app.try_state::<NativeDesktopState>() {
+                    state.quitting.store(true, Ordering::Release);
+                }
+                app.exit(0);
+            }
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+async fn execute_shell(
+    app: &tauri::AppHandle,
+    state: &NativeDesktopState,
+    command: DesktopShellCommand,
+    invoking_window: &str,
+) -> Result<DesktopShellOutcome, DesktopShellFailure> {
+    match command {
+        DesktopShellCommand::Lifecycle { action } => {
+            let snapshot = apply_lifecycle(app, state, action, invoking_window)?;
+            Ok(DesktopShellOutcome::LifecycleApplied { snapshot })
+        }
+        DesktopShellCommand::Update {
+            action: UpdateAction::Check,
+            ..
+        } => {
+            let public_key = updater_public_key().ok_or_else(DesktopShellFailure::unavailable)?;
+            let endpoint = UPDATE_ENDPOINT
+                .parse()
+                .map_err(|_| DesktopShellFailure::internal())?;
+            let updater = app
+                .updater_builder()
+                .pubkey(public_key)
+                .endpoints(vec![endpoint])
+                .map_err(|_| DesktopShellFailure::internal())?
+                .timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|_| DesktopShellFailure::internal())?;
+            let update = updater
+                .check()
+                .await
+                .map_err(|_| DesktopShellFailure::unavailable())?;
+            let available = update.is_some();
+            *state
+                .pending_update
+                .lock()
+                .map_err(|_| DesktopShellFailure::internal())? = update;
+            Ok(DesktopShellOutcome::UpdateChecked { available })
+        }
+        DesktopShellCommand::Update {
+            action: UpdateAction::Install,
+            ..
+        } => {
+            let update = state
+                .pending_update
+                .lock()
+                .map_err(|_| DesktopShellFailure::internal())?
+                .clone()
+                .ok_or_else(DesktopShellFailure::conflict)?;
+            update
+                .download_and_install(|_, _| {}, || {})
+                .await
+                .map_err(|_| DesktopShellFailure::unavailable())?;
+            Ok(DesktopShellOutcome::UpdateInstalled)
+        }
+        DesktopShellCommand::Update {
+            action: UpdateAction::Relaunch,
+            ..
+        } => Ok(DesktopShellOutcome::RelaunchRequested),
     }
 }
 
@@ -49,7 +440,7 @@ fn bootstrap_main(
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeDesktopState>,
 ) -> Result<ShellCapabilities, &'static str> {
-    main_window(window.label())?;
+    frame_window(window.label())?;
     let adapter = state
         .runtime
         .lock()
@@ -93,29 +484,102 @@ fn bootstrap_desktop(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, NativeDesktopState>,
 ) -> Result<DesktopBootstrap, DesktopBoundaryError> {
-    main_window(window.label()).map_err(|_| DesktopBoundaryError {
+    frame_window(window.label()).map_err(|_| DesktopBoundaryError {
         code: PublicErrorCode::Forbidden,
     })?;
-    state
+    let mut bootstrap = state
         .runtime
         .lock()
         .map_err(|_| DesktopBoundaryError {
             code: PublicErrorCode::Internal,
         })
-        .map(|runtime| runtime.bootstrap())
+        .map(|runtime| runtime.bootstrap())?;
+    bootstrap
+        .contexts
+        .retain(|context| physical_window_allows(window.label(), context.role));
+    Ok(bootstrap)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
-fn dispatch_main(
+async fn dispatch_main(
     request_json: String,
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeDesktopState>,
 ) -> Result<DesktopDispatch, DesktopBoundaryError> {
-    main_window(window.label()).map_err(|_| DesktopBoundaryError {
+    frame_window(window.label()).map_err(|_| DesktopBoundaryError {
         code: PublicErrorCode::Forbidden,
     })?;
+    let request = decode_request(&request_json).map_err(|_| DesktopBoundaryError {
+        code: PublicErrorCode::InvalidRequest,
+    })?;
+    let adapter = {
+        let runtime = state.runtime.lock().map_err(|_| DesktopBoundaryError {
+            code: PublicErrorCode::Internal,
+        })?;
+        let bootstrap = runtime.bootstrap();
+        let request_role = bootstrap
+            .contexts
+            .iter()
+            .find(|context| context.window_id == request.window_id)
+            .map(|context| context.role)
+            .ok_or(DesktopBoundaryError {
+                code: PublicErrorCode::Forbidden,
+            })?;
+        if !physical_window_allows(window.label(), request_role) {
+            return Err(DesktopBoundaryError {
+                code: PublicErrorCode::Forbidden,
+            });
+        }
+        runtime.snapshot().adapter
+    };
+
+    if adapter != DesktopAdapterKind::DeterministicFake
+        && matches!(
+            &request.command,
+            frame_desktop_core::IpcCommand::Lifecycle { .. }
+                | frame_desktop_core::IpcCommand::Update { .. }
+        )
+    {
+        let start = state
+            .runtime
+            .lock()
+            .map_err(|_| DesktopBoundaryError {
+                code: PublicErrorCode::Internal,
+            })?
+            .begin_shell(request)
+            .map_err(|error| DesktopBoundaryError {
+                code: error.public_code(),
+            })?;
+        let pending = match start {
+            DesktopShellStart::Complete(dispatch) => {
+                emit_desktop_events(&app, &dispatch);
+                return Ok(*dispatch);
+            }
+            DesktopShellStart::Pending(pending) => pending,
+        };
+        let outcome = match acquire_shell(&state) {
+            Ok(_guard) => execute_shell(&app, &state, pending.command(), window.label()).await,
+            Err(error) => Err(error),
+        };
+        let completion = state
+            .runtime
+            .lock()
+            .map_err(|_| DesktopBoundaryError {
+                code: PublicErrorCode::Internal,
+            })?
+            .finish_shell(pending, outcome)
+            .map_err(|error| DesktopBoundaryError {
+                code: error.public_code(),
+            })?;
+        emit_desktop_events(&app, &completion.dispatch);
+        if completion.restart_requested {
+            app.request_restart();
+        }
+        return Ok(completion.dispatch);
+    }
+
     let mut runtime = state.runtime.lock().map_err(|_| DesktopBoundaryError {
         code: PublicErrorCode::Internal,
     })?;
@@ -151,9 +615,7 @@ fn dispatch_main(
         .map_err(|error| DesktopBoundaryError {
             code: error.public_code(),
         })?;
-    for event in &dispatch.events {
-        let _ = app.emit("frame-desktop://event-v1", event);
-    }
+    emit_desktop_events(&app, &dispatch);
     Ok(dispatch)
 }
 
@@ -363,7 +825,25 @@ fn main() {
         std::process::exit(78);
     }
 
+    let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_handler(|app, shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                handle_shortcut(app, shortcut);
+            }
+        })
+        .build();
+    let updater_plugin = updater_public_key().map_or_else(
+        || tauri_plugin_updater::Builder::new().build(),
+        |public_key| {
+            tauri_plugin_updater::Builder::new()
+                .pubkey(public_key)
+                .build()
+        },
+    );
+
     tauri::Builder::default()
+        .plugin(shortcut_plugin)
+        .plugin(updater_plugin)
         .setup(|app| {
             let data = app.path().app_data_dir()?;
             // Do not touch a TCC-protected user folder while Tauri is still
@@ -376,6 +856,20 @@ fn main() {
                 exports.to_string_lossy(),
             );
             let requested_adapter = configured_adapter();
+            let frame_windows_excluded = [
+                MAIN_WINDOW_LABEL,
+                OVERLAY_WINDOW_LABEL,
+                TARGET_PICKER_WINDOW_LABEL,
+            ]
+            .into_iter()
+            .all(|label| {
+                app.get_webview_window(label)
+                    .is_some_and(|window| window.set_content_protected(true).is_ok())
+            });
+            let hotkeys_registered = app
+                .global_shortcut()
+                .register_multiple(shell_shortcuts())
+                .is_ok();
             #[cfg(all(target_os = "macos", feature = "macos-native"))]
             let (adapter, native_backend) = if requested_adapter == DesktopAdapterKind::NativeMacOs
             {
@@ -397,9 +891,6 @@ fn main() {
             let (adapter, native_backend) = if requested_adapter
                 == DesktopAdapterKind::NativeWindows
             {
-                let frame_windows_excluded = app
-                    .get_webview_window("main")
-                    .is_some_and(|window| window.set_content_protected(true).is_ok());
                 match WindowsNativeDesktopBackend::new(
                     data.join("media"),
                     exports,
@@ -419,8 +910,26 @@ fn main() {
                 all(target_os = "macos", not(feature = "macos-native"))
             ))]
             let adapter = requested_adapter;
-            let runtime = DesktopRuntime::new(adapter, roots, &session_nonce())
+            let mut runtime = DesktopRuntime::new(adapter, roots, &session_nonce())
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+            runtime
+                .initialize_shell_capabilities(
+                    frame_windows_excluded,
+                    updater_public_key().is_some(),
+                )
+                .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+            if hotkeys_registered {
+                let startup_lifecycle = LifecycleSnapshot {
+                    main_visible: true,
+                    overlay_visible: false,
+                    target_picker_visible: false,
+                    hotkeys_registered: true,
+                    frame_windows_excluded,
+                };
+                runtime
+                    .observe_shell_lifecycle(startup_lifecycle)
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+            }
             app.manage(NativeDesktopState {
                 runtime: Mutex::new(runtime),
                 #[cfg(all(target_os = "macos", feature = "macos-native"))]
@@ -428,8 +937,34 @@ fn main() {
                 #[cfg(all(target_os = "windows", feature = "windows-native"))]
                 native_backend,
                 instant_finalize: InstantFinalizeService::not_configured(),
+                pending_update: Mutex::new(None),
+                shell_busy: AtomicBool::new(false),
+                frame_windows_excluded,
+                quitting: AtomicBool::new(false),
+                tray: Mutex::new(None),
             });
+            match install_tray(app.handle()) {
+                Ok(tray) => {
+                    if let Ok(mut slot) = app.state::<NativeDesktopState>().tray.lock() {
+                        *slot = Some(tray);
+                    }
+                }
+                Err(error) => eprintln!("Frame tray integration is unavailable: {error}"),
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let should_hide = app
+                    .try_state::<NativeDesktopState>()
+                    .is_none_or(|state| !state.quitting.load(Ordering::Acquire));
+                if should_hide && known_frame_window(window.label()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    observe_lifecycle(app);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap_main,
@@ -451,12 +986,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn commands_are_restricted_to_the_main_window() {
+    fn privileged_finalize_is_main_only_and_product_windows_are_explicit() {
         assert_eq!(main_window("main"), Ok(()));
+        assert_eq!(main_window("overlay"), Err("window_not_authorized"));
         assert_eq!(
             main_window("recorder-attacker"),
             Err("window_not_authorized")
         );
+        for label in ["main", "overlay", "target-picker"] {
+            assert_eq!(frame_window(label), Ok(()));
+        }
+        assert_eq!(
+            frame_window("recorder-attacker"),
+            Err("window_not_authorized")
+        );
+    }
+
+    #[test]
+    fn physical_windows_cannot_borrow_another_surfaces_logical_authority() {
+        use frame_desktop_core::WindowRole;
+
+        assert!(physical_window_allows("main", WindowRole::Recorder));
+        assert!(!physical_window_allows("main", WindowRole::Overlay));
+        assert!(!physical_window_allows("main", WindowRole::TargetPicker));
+        assert!(physical_window_allows("overlay", WindowRole::Overlay));
+        assert!(!physical_window_allows("overlay", WindowRole::Recorder));
+        assert!(physical_window_allows(
+            "target-picker",
+            WindowRole::TargetPicker
+        ));
+        assert!(!physical_window_allows("target-picker", WindowRole::Main));
+        assert!(!physical_window_allows("unknown", WindowRole::Main));
     }
 
     #[test]
@@ -473,7 +1033,27 @@ mod tests {
                 "allow-finalize-instant"
             ])
         );
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "overlay", "target-picker"])
+        );
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("permissions are an array");
+        assert!(permissions.iter().all(|permission| {
+            !permission.as_str().is_some_and(|value| {
+                value.starts_with("updater:") || value.starts_with("global-shortcut:")
+            })
+        }));
+    }
+
+    #[test]
+    fn updater_endpoint_is_same_origin_tls_and_has_no_embedded_authority() {
+        assert!(UPDATE_ENDPOINT.starts_with("https://frame.engmanager.xyz/"));
+        assert!(UPDATE_ENDPOINT.contains("{{target}}"));
+        assert!(UPDATE_ENDPOINT.contains("{{arch}}"));
+        assert!(UPDATE_ENDPOINT.contains("{{current_version}}"));
+        assert!(!UPDATE_ENDPOINT.contains('@'));
     }
 
     #[test]

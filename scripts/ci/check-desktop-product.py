@@ -50,6 +50,16 @@ def main() -> int:
     native = text("apps/desktop/src/main.rs")
     desktop_lib = text("apps/desktop/src/lib.rs")
     desktop_manifest = text("apps/desktop/Cargo.toml")
+    tauri_config = json.loads(text("apps/desktop/tauri.conf.json"))
+    updater_config = json.loads(text("apps/desktop/tauri.updater.conf.json"))
+    desktop_shell = text("apps/desktop/src/desktop_shell.rs")
+    desktop_update_runtime = text(
+        "apps/control-plane/src/desktop_update_runtime.rs"
+    )
+    signed_release_workflow = text(
+        ".github/workflows/desktop-signed-release.yml"
+    )
+    update_packager = text("scripts/ci/package-desktop-update.py")
     native_contract = text("apps/desktop/src/native_backend.rs")
     macos_backend = text("apps/desktop/src/macos_native_backend.rs")
     macos_av_worker = text("apps/desktop/src/macos_native_backend/av_worker.rs")
@@ -183,9 +193,56 @@ def main() -> int:
         "Tauri boundary",
     )
     require(
+        native,
+        (
+            "tauri_plugin_global_shortcut::Builder",
+            "ShortcutState",
+            "TrayIconBuilder",
+            "MenuItem::with_id",
+            "WindowEvent::CloseRequested",
+            "begin_shell",
+            "finish_shell",
+            "FRAME_TAURI_UPDATER_PUBLIC_KEY",
+            "tauri_plugin_updater::Builder",
+            "/api/v1/desktop/updates/stable/",
+            "content_protected(true)",
+            "OVERLAY_WINDOW_LABEL",
+            "TARGET_PICKER_WINDOW_LABEL",
+        ),
+        "production desktop shell",
+    )
+    require(
+        desktop_shell,
+        (
+            "pub enum DesktopShellCommand",
+            "pub enum DesktopShellOutcome",
+            "pub struct DesktopShellFailure",
+            "UpdateChecked",
+            "UpdateInstalled",
+            "RelaunchRequested",
+        ),
+        "desktop shell transaction boundary",
+    )
+    require(
+        runtime,
+        (
+            "pub struct PendingDesktopShellRequest",
+            "pub enum DesktopShellStart",
+            "pub struct DesktopShellCompletion",
+            "pub fn begin_shell",
+            "pub fn finish_shell",
+            "candidate.apply_shell_outcome",
+            "candidate.preflight_shell(command)",
+        ),
+        "desktop runtime shell transaction",
+    )
+    require(
         desktop_manifest,
         (
-            'tauri-app = ["dep:tauri"]',
+            "tauri-app = [",
+            '"dep:tauri"',
+            '"dep:tauri-plugin-global-shortcut"',
+            '"dep:tauri-plugin-updater"',
             'macos-native = [',
             'windows-native = [',
             '"dep:frame-media"',
@@ -193,6 +250,76 @@ def main() -> int:
             '"dep:frame-macos-screen-capture"',
         ),
         "desktop feature boundary",
+    )
+    windows = tauri_config.get("app", {}).get("windows", [])
+    window_by_label = {window.get("label"): window for window in windows}
+    if set(window_by_label) != {"main", "overlay", "target-picker"}:
+        fail("Tauri physical window set drifted")
+    if not all(window.get("contentProtected") is True for window in windows):
+        fail("a Frame window is not capture-protected")
+    if (
+        window_by_label["main"].get("visible") is not True
+        or window_by_label["overlay"].get("visible") is not False
+        or window_by_label["target-picker"].get("visible") is not False
+        or window_by_label["overlay"].get("url")
+        != "index.html?frame_surface=overlay"
+        or window_by_label["target-picker"].get("url")
+        != "index.html?frame_surface=target-picker"
+        or window_by_label["overlay"].get("alwaysOnTop") is not True
+        or window_by_label["target-picker"].get("alwaysOnTop") is not True
+    ):
+        fail("Tauri physical window ownership or content protection drifted")
+    if updater_config.get("bundle") != {"createUpdaterArtifacts": True}:
+        fail("protected updater bundle overlay drifted")
+    if tauri_config.get("plugins", {}).get("updater") != {"pubkey": ""}:
+        fail(
+            "base updater plugin config must deserialize while retaining "
+            "fail-closed runtime authority"
+        )
+    require(
+        desktop_update_runtime,
+        (
+            'const RELEASE_PREFIX: &str = "system/desktop-updates/v1/stable"',
+            "#[serde(deny_unknown_fields)]",
+            "MAX_POINTER_BYTES",
+            "MAX_ARTIFACT_BYTES",
+            "exact_bundle_query",
+            "valid_coordinates",
+            "artifact.size() != pointer.bytes",
+            "public, max-age=31536000, immutable, no-transform",
+        ),
+        "same-origin private-R2 updater",
+    )
+    require(
+        signed_release_workflow,
+        (
+            "Authorize immutable desktop release",
+            "git merge-base --is-ancestor",
+            "environment: desktop-release",
+            "Build signed and notarized macOS updater",
+            "Build signed Windows updater",
+            "FRAME_TAURI_UPDATER_PUBLIC_KEY",
+            "TAURI_SIGNING_PRIVATE_KEY",
+            "FRAME_EXPECTED_APPLE_TEAM_ID",
+            "FRAME_WINDOWS_CERTIFICATE_THUMBPRINT",
+            "Publish immutable updater objects to R2",
+            "--if-none-match '*'",
+            "desktop-update-published-",
+        ),
+        "protected signed desktop release",
+    )
+    require(
+        update_packager,
+        (
+            "MAX_ARTIFACT_BYTES",
+            "VERSION.fullmatch",
+            "def coordinates(",
+            "sha256",
+            "latest.json",
+            "schema_version",
+            "--self-test",
+        ),
+        "desktop updater packager",
     )
     require(
         desktop_lib,
@@ -474,10 +601,15 @@ def main() -> int:
         "allow-dispatch-main",
         "allow-finalize-instant",
     ]
-    if capability.get("windows") != ["main"]:
-        fail("capability is not restricted to the main WebView")
+    if capability.get("windows") != ["main", "overlay", "target-picker"]:
+        fail("capability is not restricted to the three Frame WebViews")
     if capability.get("permissions") != expected_permissions:
         fail("capability command allowlist drifted")
+    if any(
+        permission.startswith(("updater:", "global-shortcut:"))
+        for permission in capability["permissions"]
+    ):
+        fail("WebViews acquired direct updater or shortcut authority")
     for command in ("bootstrap_desktop", "dispatch_main"):
         require(
             permissions,

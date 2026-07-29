@@ -488,6 +488,7 @@ jobs:
         run: |
           python scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-${{ runner.os }}.json
           python scripts/ci/check-desktop-advisory-exception.py
+          python -I scripts/ci/package-desktop-update.py --self-test
       - name: Check the native Windows production desktop composition
         if: runner.os == 'Windows'
         env:

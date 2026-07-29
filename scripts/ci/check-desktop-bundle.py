@@ -180,6 +180,36 @@ def validate_macos_capture_contract(tauri: dict[str, object]) -> None:
         fail("desktop setup no longer keeps automatic exports outside protected user folders")
 
 
+def validate_window_surface_contract(tauri: dict[str, object]) -> None:
+    app = tauri.get("app")
+    if not isinstance(app, dict):
+        fail("Tauri app configuration is absent")
+    windows = app.get("windows")
+    if not isinstance(windows, list):
+        fail("Tauri window configuration is absent")
+    by_label = {
+        window.get("label"): window
+        for window in windows
+        if isinstance(window, dict) and isinstance(window.get("label"), str)
+    }
+    if set(by_label) != {"main", "overlay", "target-picker"}:
+        fail("desktop physical window set drifted")
+    if any(window.get("contentProtected") is not True for window in by_label.values()):
+        fail("every Frame physical window must be content protected")
+    for label in ("overlay", "target-picker"):
+        window = by_label[label]
+        if (
+            window.get("visible") is not False
+            or window.get("alwaysOnTop") is not True
+            or window.get("skipTaskbar") is not True
+            or window.get("url") != f"index.html?frame_surface={label}"
+        ):
+            fail(f"{label} is not a hidden, protected auxiliary surface")
+    overlay = by_label["overlay"]
+    if overlay.get("decorations") is not False or overlay.get("resizable") is not False:
+        fail("recording overlay must remain a bounded native control surface")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dist", type=Path, default=DEFAULT_DIST)
@@ -192,6 +222,7 @@ def main() -> int:
     )
     validate_icon_contract(tauri)
     validate_macos_capture_contract(tauri)
+    validate_window_surface_contract(tauri)
     if args.icons_only:
         print(f"desktop icon contract is deterministic ({len(ICON_SIZES)} Windows sizes)")
         return 0
@@ -251,8 +282,8 @@ def main() -> int:
             encoding="utf-8"
         )
     )
-    if capability.get("windows") != ["main"]:
-        fail("bootstrap capability is not restricted to the main window")
+    if capability.get("windows") != ["main", "overlay", "target-picker"]:
+        fail("bootstrap capability is not restricted to the three Frame windows")
     expected_permissions = [
         "allow-bootstrap-main",
         "allow-bootstrap-desktop",
@@ -261,6 +292,11 @@ def main() -> int:
     ]
     if capability.get("permissions") != expected_permissions:
         fail("desktop capability drifted from the four-command boundary")
+    if any(
+        permission.startswith(("updater:", "global-shortcut:"))
+        for permission in capability["permissions"]
+    ):
+        fail("WebViews may not receive direct updater or global-shortcut authority")
     explicit_permissions = (
         ROOT / "apps" / "desktop" / "permissions" / "desktop.toml"
     ).read_text(encoding="utf-8")

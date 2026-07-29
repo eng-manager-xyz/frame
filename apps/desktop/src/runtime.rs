@@ -18,6 +18,7 @@ use thiserror::Error;
 use frame_client::{InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1};
 
 use crate::{
+    desktop_shell::{DesktopShellCommand, DesktopShellFailure, DesktopShellOutcome},
     instant_finalize_service::{
         INSTANT_FINALIZE_COMMAND_PROTOCOL_VERSION, InstantFinalizeCapabilityState,
         InstantFinalizeHandle, InstantFinalizeRegistrationV1,
@@ -49,7 +50,7 @@ use crate::{
     },
 };
 
-pub const DESKTOP_RUNTIME_VERSION: u16 = 6;
+pub const DESKTOP_RUNTIME_VERSION: u16 = 7;
 pub const DESKTOP_INPUT_TELEMETRY_VERSION: u16 = 1;
 pub const DESKTOP_INPUT_TELEMETRY_INTERVAL_MS: u64 = 100;
 const DESKTOP_INPUT_TELEMETRY_INTERVAL: Duration =
@@ -160,6 +161,7 @@ pub struct LifecycleSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum UpdateState {
+    Unavailable { revision: u64 },
     Current { revision: u64 },
     Available { revision: u64 },
     ReadyToRelaunch { revision: u64 },
@@ -284,6 +286,43 @@ pub struct DesktopDispatch {
     pub response: ResponseEnvelope,
     pub events: Vec<DesktopEventEnvelope>,
     pub snapshot: DesktopRuntimeSnapshot,
+}
+
+#[derive(Clone)]
+pub struct PendingDesktopShellRequest {
+    request: RequestEnvelope,
+    owner: WindowRole,
+    command: DesktopShellCommand,
+}
+
+impl fmt::Debug for PendingDesktopShellRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PendingDesktopShellRequest")
+            .field("request_id", &"<redacted>")
+            .field("owner", &self.owner)
+            .field("command", &self.command)
+            .finish()
+    }
+}
+
+impl PendingDesktopShellRequest {
+    #[must_use]
+    pub const fn command(&self) -> DesktopShellCommand {
+        self.command
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum DesktopShellStart {
+    Pending(PendingDesktopShellRequest),
+    Complete(Box<DesktopDispatch>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopShellCompletion {
+    pub dispatch: DesktopDispatch,
+    pub restart_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,6 +502,7 @@ impl DesktopRuntime {
             WindowRole::Export,
             WindowRole::Settings,
             WindowRole::Overlay,
+            WindowRole::TargetPicker,
         ] {
             let label = role_label(role);
             let context = DesktopWindowContext {
@@ -820,6 +860,199 @@ impl DesktopRuntime {
             Err(ExecutionFailure::unavailable())
         };
         self.finish_dispatch(&accepted.request, owner, candidate, result)
+    }
+
+    /// Reserves a lifecycle or updater request after the complete IPC scope
+    /// check, but before platform work begins.
+    ///
+    /// The Tauri composition must drop its runtime lock after this method
+    /// returns [`DesktopShellStart::Pending`]. Completion revalidates updater
+    /// revisions against the then-current runtime state, so a slow update
+    /// check cannot overwrite a newer command result.
+    pub fn begin_shell(
+        &mut self,
+        request: RequestEnvelope,
+    ) -> Result<DesktopShellStart, DesktopRuntimeError> {
+        let command =
+            shell_command(&request.command).ok_or(DesktopRuntimeError::NotShellCommand)?;
+        let accepted = self.registry.accept(request)?;
+        debug_assert!(accepted.validated_path.is_none());
+        let owner = self.owner_for(&accepted.request)?;
+        let candidate = self.clone();
+        if let Err(failure) = candidate.preflight_shell(command) {
+            return self
+                .finish_dispatch(&accepted.request, owner, candidate, Err(failure))
+                .map(Box::new)
+                .map(DesktopShellStart::Complete);
+        }
+        Ok(DesktopShellStart::Pending(PendingDesktopShellRequest {
+            request: accepted.request,
+            owner,
+            command,
+        }))
+    }
+
+    /// Commits a platform-confirmed shell result against its still-pending
+    /// request. A result for the wrong operation shape fails closed.
+    pub fn finish_shell(
+        &mut self,
+        pending: PendingDesktopShellRequest,
+        outcome: Result<DesktopShellOutcome, DesktopShellFailure>,
+    ) -> Result<DesktopShellCompletion, DesktopRuntimeError> {
+        let mut candidate = self.clone();
+        let mut restart_requested = false;
+        let result = match outcome {
+            Ok(outcome) => {
+                candidate.apply_shell_outcome(pending.command, outcome, &mut restart_requested)
+            }
+            Err(failure) => Err(ExecutionFailure::shell(failure)),
+        };
+        self.finish_dispatch(&pending.request, pending.owner, candidate, result)
+            .map(|dispatch| DesktopShellCompletion {
+                dispatch,
+                restart_requested,
+            })
+    }
+
+    /// Applies an OS-originated tray, shortcut, or close/reopen observation.
+    ///
+    /// These events do not invent an IPC response. They advance backend truth
+    /// and emit only a monotonic state-confirmation event; the next command or
+    /// bootstrap returns the complete snapshot.
+    pub fn observe_shell_lifecycle(
+        &mut self,
+        lifecycle: LifecycleSnapshot,
+    ) -> Result<Vec<DesktopEventEnvelope>, DesktopRuntimeError> {
+        self.lifecycle = lifecycle;
+        self.operation_revision = self
+            .operation_revision
+            .checked_add(1)
+            .ok_or(DesktopRuntimeError::RevisionOverflow)?;
+        self.announcement = "Desktop lifecycle changed through an operating-system control.".into();
+        Ok(vec![self.wrap_event(
+            WindowRole::Main,
+            DesktopRuntimeEvent::StateConfirmed {
+                operation_revision: self.operation_revision,
+            },
+        )?])
+    }
+
+    /// Sets startup-only shell capability truth before the runtime is exposed
+    /// to any WebView.
+    pub fn initialize_shell_capabilities(
+        &mut self,
+        frame_windows_excluded: bool,
+        updater_available: bool,
+    ) -> Result<(), DesktopRuntimeError> {
+        if self.operation_revision != 1
+            || self.lifecycle.hotkeys_registered
+            || self.event_sequence != 0
+        {
+            return Err(DesktopRuntimeError::ShellAlreadyInitialized);
+        }
+        self.lifecycle.frame_windows_excluded = frame_windows_excluded;
+        self.update = if updater_available {
+            UpdateState::Current { revision: 1 }
+        } else {
+            UpdateState::Unavailable { revision: 1 }
+        };
+        Ok(())
+    }
+
+    fn preflight_shell(&self, command: DesktopShellCommand) -> Result<(), ExecutionFailure> {
+        match command {
+            DesktopShellCommand::Lifecycle { .. } => Ok(()),
+            DesktopShellCommand::Update {
+                action,
+                expected_revision,
+            } => {
+                let current_revision = update_revision(self.update);
+                if current_revision != expected_revision {
+                    return Err(ExecutionFailure::conflict(
+                        "Update state changed. Refresh and retry.",
+                    ));
+                }
+                match (action, self.update) {
+                    (_, UpdateState::Unavailable { .. }) => Err(ExecutionFailure::unavailable()),
+                    (UpdateAction::Check, UpdateState::Current { .. })
+                    | (UpdateAction::Install, UpdateState::Available { .. })
+                    | (UpdateAction::Relaunch, UpdateState::ReadyToRelaunch { .. }) => Ok(()),
+                    _ => Err(ExecutionFailure::conflict(
+                        "Update action is not valid in the current state.",
+                    )),
+                }
+            }
+        }
+    }
+
+    fn apply_shell_outcome(
+        &mut self,
+        command: DesktopShellCommand,
+        outcome: DesktopShellOutcome,
+        restart_requested: &mut bool,
+    ) -> Result<Vec<BackendEvent>, ExecutionFailure> {
+        self.preflight_shell(command)?;
+        match (command, outcome) {
+            (
+                DesktopShellCommand::Lifecycle { .. },
+                DesktopShellOutcome::LifecycleApplied { snapshot },
+            ) => {
+                self.lifecycle = snapshot;
+                self.announcement =
+                    "Desktop lifecycle transition confirmed by the operating system.".into();
+            }
+            (
+                DesktopShellCommand::Update {
+                    action: UpdateAction::Check,
+                    expected_revision,
+                },
+                DesktopShellOutcome::UpdateChecked { available },
+            ) => {
+                self.update = if available {
+                    UpdateState::Available {
+                        revision: expected_revision,
+                    }
+                } else {
+                    UpdateState::Current {
+                        revision: expected_revision,
+                    }
+                };
+                self.announcement = if available {
+                    "A signed desktop update is available.".into()
+                } else {
+                    "Frame is current.".into()
+                };
+            }
+            (
+                DesktopShellCommand::Update {
+                    action: UpdateAction::Install,
+                    expected_revision,
+                },
+                DesktopShellOutcome::UpdateInstalled,
+            ) => {
+                self.update = UpdateState::ReadyToRelaunch {
+                    revision: expected_revision,
+                };
+                self.announcement = "The signed desktop update is ready to relaunch.".into();
+            }
+            (
+                DesktopShellCommand::Update {
+                    action: UpdateAction::Relaunch,
+                    expected_revision,
+                },
+                DesktopShellOutcome::RelaunchRequested,
+            ) => {
+                self.update = UpdateState::Current {
+                    revision: expected_revision
+                        .checked_add(1)
+                        .ok_or_else(ExecutionFailure::internal)?,
+                };
+                self.announcement = "The signed desktop update is relaunching.".into();
+                *restart_requested = true;
+            }
+            _ => return Err(ExecutionFailure::internal()),
+        }
+        Ok(Vec::new())
     }
 
     fn finish_dispatch(
@@ -2832,17 +3065,16 @@ impl DesktopRuntime {
                 expected_revision,
             } => {
                 self.require_fake_execution()?;
-                let current_revision = match self.update {
-                    UpdateState::Current { revision }
-                    | UpdateState::Available { revision }
-                    | UpdateState::ReadyToRelaunch { revision } => revision,
-                };
+                let current_revision = update_revision(self.update);
                 if current_revision != *expected_revision {
                     return Err(ExecutionFailure::conflict(
                         "Update state changed. Refresh and retry.",
                     ));
                 }
                 self.update = match (*action, self.update) {
+                    (_, UpdateState::Unavailable { .. }) => {
+                        return Err(ExecutionFailure::unavailable());
+                    }
                     (UpdateAction::Check, UpdateState::Current { revision }) => {
                         UpdateState::Available { revision }
                     }
@@ -3176,6 +3408,31 @@ pub const fn instant_error_message(error: InstantUiErrorCodeV1) -> &'static str 
     }
 }
 
+fn shell_command(command: &IpcCommand) -> Option<DesktopShellCommand> {
+    match command {
+        IpcCommand::Lifecycle { action } => {
+            Some(DesktopShellCommand::Lifecycle { action: *action })
+        }
+        IpcCommand::Update {
+            action,
+            expected_revision,
+        } => Some(DesktopShellCommand::Update {
+            action: *action,
+            expected_revision: *expected_revision,
+        }),
+        _ => None,
+    }
+}
+
+const fn update_revision(update: UpdateState) -> u64 {
+    match update {
+        UpdateState::Unavailable { revision }
+        | UpdateState::Current { revision }
+        | UpdateState::Available { revision }
+        | UpdateState::ReadyToRelaunch { revision } => revision,
+    }
+}
+
 fn paths_for(role: WindowRole, roots: &DesktopRoots) -> Result<PathPolicy, IpcError> {
     let read = RootAccess {
         read: true,
@@ -3194,7 +3451,10 @@ fn paths_for(role: WindowRole, roots: &DesktopRoots) -> Result<PathPolicy, IpcEr
             .allow_root(&roots.exports, write)?
             .allow_root(&roots.media, read),
         WindowRole::Export => PathPolicy::empty().allow_root(&roots.exports, write),
-        WindowRole::Main | WindowRole::Settings | WindowRole::Overlay => Ok(PathPolicy::empty()),
+        WindowRole::Main
+        | WindowRole::Settings
+        | WindowRole::Overlay
+        | WindowRole::TargetPicker => Ok(PathPolicy::empty()),
     }
 }
 
@@ -3207,6 +3467,7 @@ fn role_label(role: WindowRole) -> &'static str {
         WindowRole::Export => "export",
         WindowRole::Settings => "settings",
         WindowRole::Overlay => "overlay",
+        WindowRole::TargetPicker => "target-picker",
     }
 }
 
@@ -3390,6 +3651,14 @@ impl ExecutionFailure {
         }
     }
 
+    const fn shell(failure: DesktopShellFailure) -> Self {
+        Self {
+            code: failure.code,
+            retryable: failure.retryable,
+            announcement: failure.announcement,
+        }
+    }
+
     fn workflow(error: WorkflowError) -> Self {
         match error {
             WorkflowError::Busy(_)
@@ -3487,6 +3756,10 @@ pub enum DesktopRuntimeError {
     InvalidInstantProgress,
     #[error("the Instant finalize handle does not match native authority")]
     InstantFinalizeAuthorityMismatch,
+    #[error("the request is not a desktop shell command")]
+    NotShellCommand,
+    #[error("desktop shell capabilities were initialized after startup")]
+    ShellAlreadyInitialized,
 }
 
 impl DesktopRuntimeError {
@@ -3496,11 +3769,13 @@ impl DesktopRuntimeError {
             Self::Ipc(error) => error.public_code(),
             Self::FakeAdapterRequired => PublicErrorCode::Unavailable,
             Self::InstantFinalizeAuthorityMismatch => PublicErrorCode::Conflict,
+            Self::NotShellCommand => PublicErrorCode::InvalidRequest,
             Self::Workflow(_)
             | Self::RevisionOverflow
             | Self::SequenceOverflow
             | Self::ScopeInvariant
-            | Self::InvalidInstantProgress => PublicErrorCode::Internal,
+            | Self::InvalidInstantProgress
+            | Self::ShellAlreadyInitialized => PublicErrorCode::Internal,
         }
     }
 }
@@ -4446,6 +4721,204 @@ mod tests {
         );
         assert_ne!(dispatch.snapshot.recorder, RecorderState::Recording);
         assert!(!dispatch.snapshot.lifecycle.hotkeys_registered);
+    }
+
+    #[test]
+    fn production_shell_commits_only_platform_confirmed_lifecycle_truth() {
+        let mut runtime = native_runtime();
+        runtime
+            .initialize_shell_capabilities(true, true)
+            .expect("initialize shell");
+        let start = runtime
+            .begin_shell(request(
+                &runtime,
+                WindowRole::Main,
+                1,
+                "register-native-hotkeys",
+                IpcCommand::Lifecycle {
+                    action: LifecycleAction::RegisterHotkeys,
+                },
+            ))
+            .expect("begin shell");
+        let DesktopShellStart::Pending(pending) = start else {
+            panic!("native lifecycle must wait for platform confirmation");
+        };
+        assert_eq!(
+            pending.command(),
+            DesktopShellCommand::Lifecycle {
+                action: LifecycleAction::RegisterHotkeys,
+            }
+        );
+        assert!(!runtime.snapshot().lifecycle.hotkeys_registered);
+
+        let lifecycle = LifecycleSnapshot {
+            hotkeys_registered: true,
+            ..runtime.snapshot().lifecycle
+        };
+        let completion = runtime
+            .finish_shell(
+                pending,
+                Ok(DesktopShellOutcome::LifecycleApplied {
+                    snapshot: lifecycle,
+                }),
+            )
+            .expect("finish shell");
+        ok(&completion.dispatch);
+        assert!(!completion.restart_requested);
+        assert_eq!(completion.dispatch.snapshot.lifecycle, lifecycle);
+    }
+
+    #[test]
+    fn updater_completion_revalidates_out_of_order_requests() {
+        let mut runtime = native_runtime();
+        runtime
+            .initialize_shell_capabilities(true, true)
+            .expect("initialize shell");
+        let first = runtime
+            .begin_shell(request(
+                &runtime,
+                WindowRole::Main,
+                1,
+                "update-check-first",
+                IpcCommand::Update {
+                    action: UpdateAction::Check,
+                    expected_revision: 1,
+                },
+            ))
+            .expect("first check");
+        let second = runtime
+            .begin_shell(request(
+                &runtime,
+                WindowRole::Main,
+                2,
+                "update-check-second",
+                IpcCommand::Update {
+                    action: UpdateAction::Check,
+                    expected_revision: 1,
+                },
+            ))
+            .expect("second check");
+        let (DesktopShellStart::Pending(first), DesktopShellStart::Pending(second)) =
+            (first, second)
+        else {
+            panic!("both checks must reserve pending responses");
+        };
+
+        let second = runtime
+            .finish_shell(
+                second,
+                Ok(DesktopShellOutcome::UpdateChecked { available: true }),
+            )
+            .expect("finish second");
+        ok(&second.dispatch);
+        assert_eq!(
+            second.dispatch.snapshot.update,
+            UpdateState::Available { revision: 1 }
+        );
+
+        let stale = runtime
+            .finish_shell(
+                first,
+                Ok(DesktopShellOutcome::UpdateChecked { available: true }),
+            )
+            .expect("finish stale first");
+        assert_eq!(
+            stale.dispatch.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Conflict,
+                retryable: true,
+            }
+        );
+        assert_eq!(
+            stale.dispatch.snapshot.update,
+            UpdateState::Available { revision: 1 }
+        );
+    }
+
+    #[test]
+    fn updater_unavailable_is_a_completed_fail_closed_response() {
+        let mut runtime = native_runtime();
+        runtime
+            .initialize_shell_capabilities(true, false)
+            .expect("initialize shell");
+        let start = runtime
+            .begin_shell(request(
+                &runtime,
+                WindowRole::Main,
+                1,
+                "update-unconfigured",
+                IpcCommand::Update {
+                    action: UpdateAction::Check,
+                    expected_revision: 1,
+                },
+            ))
+            .expect("bounded response");
+        let DesktopShellStart::Complete(dispatch) = start else {
+            panic!("unconfigured updater must not reach platform code");
+        };
+        assert_eq!(
+            dispatch.response.outcome,
+            CommandOutcome::Error {
+                code: PublicErrorCode::Unavailable,
+                retryable: true,
+            }
+        );
+        assert_eq!(
+            dispatch.snapshot.update,
+            UpdateState::Unavailable { revision: 1 }
+        );
+    }
+
+    #[test]
+    fn signed_update_install_and_relaunch_are_revision_fenced() {
+        let mut runtime = native_runtime();
+        runtime
+            .initialize_shell_capabilities(true, true)
+            .expect("initialize shell");
+        let cases = [
+            (
+                UpdateAction::Check,
+                DesktopShellOutcome::UpdateChecked { available: true },
+                false,
+            ),
+            (
+                UpdateAction::Install,
+                DesktopShellOutcome::UpdateInstalled,
+                false,
+            ),
+            (
+                UpdateAction::Relaunch,
+                DesktopShellOutcome::RelaunchRequested,
+                true,
+            ),
+        ];
+        for (index, (action, outcome, expected_restart)) in cases.into_iter().enumerate() {
+            let sequence = u64::try_from(index + 1).expect("small sequence");
+            let start = runtime
+                .begin_shell(request(
+                    &runtime,
+                    WindowRole::Main,
+                    sequence,
+                    &format!("signed-update-{sequence}"),
+                    IpcCommand::Update {
+                        action,
+                        expected_revision: 1,
+                    },
+                ))
+                .expect("begin update");
+            let DesktopShellStart::Pending(pending) = start else {
+                panic!("configured update must reach the platform adapter");
+            };
+            let completion = runtime
+                .finish_shell(pending, Ok(outcome))
+                .expect("finish update");
+            ok(&completion.dispatch);
+            assert_eq!(completion.restart_requested, expected_restart);
+        }
+        assert_eq!(
+            runtime.snapshot().update,
+            UpdateState::Current { revision: 2 }
+        );
     }
 
     #[test]
