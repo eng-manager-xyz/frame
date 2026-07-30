@@ -36,7 +36,9 @@ mod browser {
     use serde::Serialize;
     use wasm_bindgen::{Clamped, JsCast, prelude::*};
     use wasm_bindgen_futures::spawn_local;
-    use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
+    use web_sys::{
+        CanvasRenderingContext2d, HtmlCanvasElement, HtmlElement, ImageData, KeyboardEvent,
+    };
 
     use self::region_picker::RegionPicker;
 
@@ -667,6 +669,34 @@ mod browser {
                     | InstantUiPhaseV1::ShareReady
             )
         })
+    }
+
+    fn focus_element(id: &str) -> bool {
+        web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id(id))
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+            .is_some_and(|element| element.focus().is_ok())
+    }
+
+    fn dismiss_error(error: RwSignal<Option<String>>) {
+        error.set(None);
+        let _ = focus_element("main-content");
+    }
+
+    fn handle_error_dialog_key(event: KeyboardEvent, error: RwSignal<Option<String>>) {
+        match event.key().as_str() {
+            "Escape" => {
+                event.prevent_default();
+                event.stop_propagation();
+                dismiss_error(error);
+            }
+            "Tab" => {
+                event.prevent_default();
+                let _ = focus_element("dismiss-error");
+            }
+            _ => {}
+        }
     }
 
     #[component]
@@ -1922,13 +1952,27 @@ mod browser {
             </footer>
 
             {move || error.get().map(|message| view! {
-                <DialogOverlay>
-                    <DialogContent attr:role="alertdialog" attr:aria-modal="true" attr:aria-labelledby="error-title" attr:aria-describedby="error-message">
-                        <h2 id="error-title">"Desktop operation needs attention"</h2>
-                        <p id="error-message">{message}</p>
-                        <Button variant=ButtonVariant::Outline attr:r#type="button" attr:autofocus=true on:click=move |_| error.set(None)>"Dismiss error"</Button>
-                    </DialogContent>
-                </DialogOverlay>
+                <div on:keydown=move |event: KeyboardEvent| handle_error_dialog_key(event, error)>
+                    <DialogOverlay>
+                        <DialogContent
+                            attr:id="error-dialog"
+                            attr:role="alertdialog"
+                            attr:aria-modal="true"
+                            attr:aria-labelledby="error-title"
+                            attr:aria-describedby="error-message"
+                        >
+                            <h2 id="error-title">"Desktop operation needs attention"</h2>
+                            <p id="error-message">{message}</p>
+                            <Button
+                                variant=ButtonVariant::Outline
+                                attr:id="dismiss-error"
+                                attr:r#type="button"
+                                attr:autofocus=true
+                                on:click=move |_| dismiss_error(error)
+                            >"Dismiss error"</Button>
+                        </DialogContent>
+                    </DialogOverlay>
+                </div>
             })}
             </div>
         }

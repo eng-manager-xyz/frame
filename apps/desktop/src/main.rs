@@ -156,6 +156,11 @@ fn known_frame_window(label: &str) -> bool {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+fn should_intercept_close(label: &str, quitting: bool) -> bool {
+    known_frame_window(label) && !quitting
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn updater_public_key() -> Option<&'static str> {
     option_env!("FRAME_TAURI_UPDATER_PUBLIC_KEY").filter(|value| !value.trim().is_empty())
 }
@@ -225,10 +230,31 @@ fn show_window(
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+fn centered_coordinate(origin: i32, available: u32, requested: u32) -> i32 {
+    let offset = available.saturating_sub(requested) / 2;
+    origin.saturating_add(i32::try_from(offset).unwrap_or(i32::MAX))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn auxiliary_window_position(
+    label: &str,
+    monitor_position: (i32, i32),
+    monitor_size: (u32, u32),
+    window_size: (u32, u32),
+) -> Option<(i32, i32)> {
+    let x = centered_coordinate(monitor_position.0, monitor_size.0, window_size.0);
+    let y = match label {
+        OVERLAY_WINDOW_LABEL => monitor_position.1.saturating_add(48),
+        TARGET_PICKER_WINDOW_LABEL => {
+            centered_coordinate(monitor_position.1, monitor_size.1, window_size.1)
+        }
+        _ => return None,
+    };
+    Some((x, y))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn position_auxiliary_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
-    if window.label() == MAIN_WINDOW_LABEL {
-        return;
-    }
     let monitor = app
         .get_webview_window(MAIN_WINDOW_LABEL)
         .and_then(|main| main.current_monitor().ok().flatten())
@@ -241,14 +267,14 @@ fn position_auxiliary_window(app: &tauri::AppHandle, window: &tauri::WebviewWind
     };
     let monitor_position = monitor.position();
     let monitor_size = monitor.size();
-    let x = monitor_position.x
-        + i32::try_from(monitor_size.width.saturating_sub(window_size.width) / 2).unwrap_or(0);
-    let vertical_offset = if window.label() == OVERLAY_WINDOW_LABEL {
-        48
-    } else {
-        i32::try_from(monitor_size.height.saturating_sub(window_size.height) / 2).unwrap_or(0)
+    let Some((x, y)) = auxiliary_window_position(
+        window.label(),
+        (monitor_position.x, monitor_position.y),
+        (monitor_size.width, monitor_size.height),
+        (window_size.width, window_size.height),
+    ) else {
+        return;
     };
-    let y = monitor_position.y + vertical_offset;
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
@@ -334,30 +360,54 @@ fn apply_os_lifecycle(app: &tauri::AppHandle, action: LifecycleAction, invoking_
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+fn shortcut_toggle_action(index: usize, visible: bool) -> Option<LifecycleAction> {
+    match (index, visible) {
+        (0, true) => Some(LifecycleAction::HideMainWindow),
+        (0, false) => Some(LifecycleAction::ShowMainWindow),
+        (1, true) => Some(LifecycleAction::HideTargetPicker),
+        (1, false) => Some(LifecycleAction::ShowTargetPicker),
+        (2, true) => Some(LifecycleAction::HideOverlay),
+        (2, false) => Some(LifecycleAction::ShowOverlay),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn handle_shortcut(app: &tauri::AppHandle, shortcut: &Shortcut) {
     let shortcuts = shell_shortcuts();
-    let action = if shortcut.id() == shortcuts[0].id() {
-        if window_is_visible(app, MAIN_WINDOW_LABEL) {
-            LifecycleAction::HideMainWindow
-        } else {
-            LifecycleAction::ShowMainWindow
-        }
+    let (index, label) = if shortcut.id() == shortcuts[0].id() {
+        (0, MAIN_WINDOW_LABEL)
     } else if shortcut.id() == shortcuts[1].id() {
-        if window_is_visible(app, TARGET_PICKER_WINDOW_LABEL) {
-            LifecycleAction::HideTargetPicker
-        } else {
-            LifecycleAction::ShowTargetPicker
-        }
+        (1, TARGET_PICKER_WINDOW_LABEL)
     } else if shortcut.id() == shortcuts[2].id() {
-        if window_is_visible(app, OVERLAY_WINDOW_LABEL) {
-            LifecycleAction::HideOverlay
-        } else {
-            LifecycleAction::ShowOverlay
-        }
+        (2, OVERLAY_WINDOW_LABEL)
     } else {
         return;
     };
+    let Some(action) = shortcut_toggle_action(index, window_is_visible(app, label)) else {
+        return;
+    };
     apply_os_lifecycle(app, action, MAIN_WINDOW_LABEL);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraySelection {
+    Lifecycle(LifecycleAction),
+    Quit,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn tray_selection(id: &str) -> Option<TraySelection> {
+    match id {
+        "frame-show-main" => Some(TraySelection::Lifecycle(LifecycleAction::ShowMainWindow)),
+        "frame-show-target-picker" => {
+            Some(TraySelection::Lifecycle(LifecycleAction::ShowTargetPicker))
+        }
+        "frame-show-overlay" => Some(TraySelection::Lifecycle(LifecycleAction::ShowOverlay)),
+        "frame-quit" => Some(TraySelection::Quit),
+        _ => None,
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -387,23 +437,17 @@ fn install_tray(app: &tauri::AppHandle) -> Result<tauri::tray::TrayIcon, tauri::
     let mut builder = TrayIconBuilder::with_id("frame")
         .menu(&menu)
         .tooltip("Frame screen recorder")
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "frame-show-main" => {
-                apply_os_lifecycle(app, LifecycleAction::ShowMainWindow, MAIN_WINDOW_LABEL);
+        .on_menu_event(|app, event| match tray_selection(event.id().as_ref()) {
+            Some(TraySelection::Lifecycle(action)) => {
+                apply_os_lifecycle(app, action, MAIN_WINDOW_LABEL);
             }
-            "frame-show-target-picker" => {
-                apply_os_lifecycle(app, LifecycleAction::ShowTargetPicker, MAIN_WINDOW_LABEL);
-            }
-            "frame-show-overlay" => {
-                apply_os_lifecycle(app, LifecycleAction::ShowOverlay, MAIN_WINDOW_LABEL);
-            }
-            "frame-quit" => {
+            Some(TraySelection::Quit) => {
                 if let Some(state) = app.try_state::<NativeDesktopState>() {
                     state.quitting.store(true, Ordering::Release);
                 }
                 app.exit(0);
             }
-            _ => {}
+            None => {}
         });
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -1111,10 +1155,10 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
-                let should_hide = app
+                let quitting = app
                     .try_state::<NativeDesktopState>()
-                    .is_none_or(|state| !state.quitting.load(Ordering::Acquire));
-                if should_hide && known_frame_window(window.label()) {
+                    .is_some_and(|state| state.quitting.load(Ordering::Acquire));
+                if should_intercept_close(window.label(), quitting) {
                     api.prevent_close();
                     let _ = window.hide();
                     observe_lifecycle(app);
@@ -1172,6 +1216,94 @@ mod tests {
         ));
         assert!(!physical_window_allows("target-picker", WindowRole::Main));
         assert!(!physical_window_allows("unknown", WindowRole::Main));
+    }
+
+    #[test]
+    fn native_shortcut_tray_and_close_policies_cover_every_product_window() {
+        assert_eq!(
+            shortcut_toggle_action(0, false),
+            Some(LifecycleAction::ShowMainWindow)
+        );
+        assert_eq!(
+            shortcut_toggle_action(0, true),
+            Some(LifecycleAction::HideMainWindow)
+        );
+        assert_eq!(
+            shortcut_toggle_action(1, false),
+            Some(LifecycleAction::ShowTargetPicker)
+        );
+        assert_eq!(
+            shortcut_toggle_action(1, true),
+            Some(LifecycleAction::HideTargetPicker)
+        );
+        assert_eq!(
+            shortcut_toggle_action(2, false),
+            Some(LifecycleAction::ShowOverlay)
+        );
+        assert_eq!(
+            shortcut_toggle_action(2, true),
+            Some(LifecycleAction::HideOverlay)
+        );
+        assert_eq!(shortcut_toggle_action(3, false), None);
+
+        assert_eq!(
+            tray_selection("frame-show-main"),
+            Some(TraySelection::Lifecycle(LifecycleAction::ShowMainWindow))
+        );
+        assert_eq!(
+            tray_selection("frame-show-target-picker"),
+            Some(TraySelection::Lifecycle(LifecycleAction::ShowTargetPicker))
+        );
+        assert_eq!(
+            tray_selection("frame-show-overlay"),
+            Some(TraySelection::Lifecycle(LifecycleAction::ShowOverlay))
+        );
+        assert_eq!(tray_selection("frame-quit"), Some(TraySelection::Quit));
+        assert_eq!(tray_selection("untrusted"), None);
+
+        for label in [
+            MAIN_WINDOW_LABEL,
+            OVERLAY_WINDOW_LABEL,
+            TARGET_PICKER_WINDOW_LABEL,
+        ] {
+            assert!(should_intercept_close(label, false));
+            assert!(!should_intercept_close(label, true));
+        }
+        assert!(!should_intercept_close("untrusted", false));
+    }
+
+    #[test]
+    fn auxiliary_placement_is_monitor_relative_bounded_and_overflow_safe() {
+        assert_eq!(
+            auxiliary_window_position("overlay", (-1920, -100), (1920, 1080), (320, 80)),
+            Some((-1120, -52))
+        );
+        assert_eq!(
+            auxiliary_window_position("target-picker", (0, 0), (2560, 1440), (720, 600)),
+            Some((920, 420))
+        );
+        assert_eq!(
+            auxiliary_window_position("target-picker", (10, 20), (100, 100), (500, 500)),
+            Some((10, 20)),
+            "an oversized auxiliary window stays anchored to its selected monitor"
+        );
+        assert_eq!(
+            auxiliary_window_position(
+                "overlay",
+                (i32::MAX - 4, i32::MAX - 4),
+                (u32::MAX, u32::MAX),
+                (0, 0)
+            ),
+            Some((i32::MAX, i32::MAX))
+        );
+        assert_eq!(
+            auxiliary_window_position("main", (0, 0), (100, 100), (10, 10)),
+            None
+        );
+        assert_eq!(
+            auxiliary_window_position("untrusted", (0, 0), (100, 100), (10, 10)),
+            None
+        );
     }
 
     #[test]

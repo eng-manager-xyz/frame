@@ -2,12 +2,15 @@
 
 ## Closure ledger boundary
 
-Issue 33 checkboxes 3, 4, 5, 6, 8, and 9 remain broader product-integration
-gaps. Checkboxes 1, 2, 7, and 10 are locally satisfied by the typed Tauri
-surface, backend-owned state model, IPC security boundary, and production
-non-destructive Cap scan/import path. Real hardware and assistive-technology
-runs remain protected evidence and cannot be replaced by repository-local
-tests.
+Issue 33 checkboxes 1–5, 7, and 10 are locally satisfied by the typed Tauri
+surface, backend-owned state model, accessible Leptos product, production
+window lifecycle, deterministic browser/fake harnesses, IPC security boundary,
+and non-destructive Cap scan/import path. Checkboxes 6 and 8 are
+`protected_pending`: the rapid-command/error/device-loss/restart and complete
+keyboard paths execute locally, while representative signed native hardware
+and named VoiceOver/Narrator results remain uncollected. Checkbox 9 is the one
+remaining repository-local gap because the signed macOS display lane is not a
+full-product macOS/Windows lifecycle, exclusion, and multi-monitor driver.
 
 The portable release shell selects `DesktopAdapterKind::Unavailable`. A macOS
 release built with `macos-native` instead requests `NativeMacOs`, reports
@@ -16,18 +19,17 @@ release built with `macos-native` instead requests `NativeMacOs`, reports
 fails. The deterministic
 adapter remains debug-only and fake-gated. This native slice covers permission
 preparation, opaque display/window selection, bounded single-display region
-definition, target-video record/stop/cancel, and artifact-backed Editable WebM
-export. Its Studio composition additionally exposes a descriptor-rooted,
-bounded catalog of canonical project/journal pairs. Completed projects can
-enter the editor through a fresh opaque token after native reauthentication,
-and interrupted entries are reported as recovery-required. Recording and
-edit-save boundaries can be inspected and reconciled through a new ownership
-fence; only a proven-empty attempt can be archived, and that archive deletes no
-media. The editor now applies and durably saves bounded canonical mutations,
-and a clean aligned project can invoke the verified native distribution export
-adapter. Lifecycle, updater, combined microphone/camera Studio, asynchronous
-export cancellation, and named assistive-technology journeys remain
-non-production behavior.
+definition, target-video record/pause/resume/stop/cancel, and artifact-backed
+Editable WebM export. Its Studio composition additionally records selected
+microphone, system-audio, camera, cursor, and screen tracks, exposes a
+descriptor-rooted bounded catalog of canonical project/journal pairs, and
+connects authenticated preview/edit/save to coordinator-owned asynchronous
+export with progress, cancellation, and hardware/software fallback. Completed
+projects enter the editor through a fresh opaque token after native
+reauthentication, and interrupted entries are reported as recovery-required.
+Only a proven-empty attempt can be archived, and that archive deletes no media.
+Named assistive-technology journeys and representative physical hardware
+execution remain protected.
 
 The media crate now has a production bounded isolated-track Studio encoder and
 durable partial-recovery boundary. The macOS desktop adapter now composes its
@@ -38,11 +40,10 @@ tokens and coarse status; completed projects open with their real revision and
 duration after descriptor-rooted reauthentication. Incomplete recording and
 edit-save journals recover through exact graph/original/project identities,
 while the “archive” control is restricted to a proven-empty attempt and
-preserves every graph/media file. It does not yet compose the normalized
-combined microphone/camera source or provide coordinator-owned asynchronous
-preview/export. The implemented editor mutation/save and synchronous
-screen/audio distribution-export subset therefore does not close an issue-33
-product journey.
+preserves every graph/media file. The combined optional-input bridge,
+source-set-bound preview, camera/cursor/background compositor, and durable
+render coordinator now close the repository-local Studio integration portion
+without claiming physical device, codec, or provider evidence.
 
 The checked-in hardware workflow now invokes the exact certificate-signed
 `Frame.app` executable with a protected, token-gated in-process driver. The
@@ -61,15 +62,19 @@ assistive-technology parity.
 The executable release-UI journey builds the Leptos production assets and a
 bounded Rust host, opens them in headless Chrome with the production CSP, and
 uses only DevTools keyboard events to activate controls. It traverses Studio,
-device and target configuration, permission preparation, recording,
+device and target configuration, permission preparation, two recordings,
 pause/resume/stop, recovery, edit/save, export/upload, reduced motion, hotkeys,
-and update/relaunch. Every accepted action crosses the newline-delimited JSON
-bridge into the real `DesktopRuntime`; the browser cannot synthesize success
-locally. The journey also checks duplicate IDs, accessible names, label
-references, landmarks, live regions, progress, numeric timeline controls,
-backend status, and modal semantics. This closes a deterministic browser
-keyboard/semantic gap, but it deliberately sets both protected hardware and
-assistive-technology claims to false.
+and update/relaunch. Between the two recordings, a gated host-only control
+injects backend device loss and process restart. The stale UI action is
+consumed as a backend-confirmed error, never success; the resulting modal is
+checked for labelling, description, autofocus, forward/reverse focus trap,
+Escape dismissal, and safe main-landmark restoration. Every accepted action
+crosses the newline-delimited JSON bridge into the real `DesktopRuntime`; the
+browser cannot synthesize success locally. The journey also checks duplicate
+IDs, accessible names, label references, landmarks, live regions, progress,
+numeric timeline controls, and backend status. This closes the deterministic
+browser keyboard/semantic and state-consistency gaps, but deliberately sets
+both protected hardware and assistive-technology claims to false.
 
 Validated contract, state-model, and fake implementation:
 
@@ -162,24 +167,17 @@ project paths, session tokens, or user data.
 
 ## Local result boundary
 
-Local code still satisfies the typed surface, backend-owned state model, and IPC
-security classifications without closing broader product-integration
-checkboxes. In addition, the macOS composition now has a real but narrow
-target-video and optional-system-audio WebM path plus a native Studio catalog
-with authenticated edit/save/export authority. It can open a completed
-Studio project and truthfully report
-interrupted entries. It reconciles recording and edit-save boundaries and can
-archive a proven-empty attempt without deleting media. It now accepts
-revision-fenced editor mutations/save and a clean aligned Studio distribution
-MP4, but continues to refuse microphone/camera Studio composition, pause,
-asynchronous export cancellation, upload, updater, Instant publication, and
-complete preview/export parity.
-Optional macOS system audio is the only native audio source currently supported;
-microphone capture remains unavailable. The registered Instant command
-therefore proves a fail-closed boundary and state model, not a working
-publication journey. The native Studio recovery path proves journal-fenced
-recording/edit-save reconciliation, not a complete editor, accessibility, or
-full-device recovery journey.
+Local code now satisfies the typed surface, backend-owned state model,
+accessible product surface, deterministic fake/browser harness, native
+hotkey/tray/window lifecycle, and IPC security classifications. The macOS
+composition records the selected target and optional normalized microphone,
+system-audio, camera, and cursor tracks into authenticated Studio projects;
+preview/edit/save and the durable render coordinator use the canonical plan.
+The production Instant finalize service and hosted upload remain explicitly
+unconfigured until protected provider authority exists, so the accessible
+Instant/upload UI and state machine do not claim a live publication. Windows
+continues to expose the narrower target-video adapter and rejects unsupported
+audio/Studio operations truthfully.
 
 The legacy migration acceptance criterion is locally complete. A main-window
 scan reads Cap's bounded settings and known recording roots without mutation,
@@ -194,9 +192,9 @@ evidence.
 
 ## Protected evidence still required
 
-The following evidence will still be required after the repository-local gaps
-close. It cannot currently convert checkboxes 3–6, 8, or 9 to
-`protected_pending`:
+The following evidence is still required for checkboxes 6 and 8 and for the
+broader desktop release. Checkbox 9 cannot become `protected_pending` until the
+full-product macOS/Windows driver and validator are implemented:
 
 - macOS and Windows permission prompts using real screen, microphone, system-audio, and camera APIs;
 - real Instant/Studio pipelines from issues 24–27 and API/provider journeys from issue 30;
@@ -212,9 +210,9 @@ close. It cannot currently convert checkboxes 3–6, 8, or 9 to
 - product, accessibility, privacy, security, desktop, media, and release-owner approvals, followed by
   parity gate 29 before removing the legacy selector.
 
-The protected workflow, in-process signed-app driver, runner, and evidence
-validator are checked in. The runner executes only the verified executable
-named by the signed bundle's `Info.plist`, and evidence is bound to its
-certificate-backed designated requirement and executable digest. No hardware
-result is fabricated or marked passed, and source inspection or a
-validator-only artifact is not valid completion evidence.
+The checked-in partial macOS workflow, in-process signed-app driver, runner,
+and validator execute only the verified executable named by the signed
+bundle's `Info.plist`; evidence is bound to its certificate-backed designated
+requirement and executable digest. They prove the narrow display capability
+only. No hardware result is fabricated or marked passed, and source inspection
+or a validator-only artifact is not valid completion evidence.

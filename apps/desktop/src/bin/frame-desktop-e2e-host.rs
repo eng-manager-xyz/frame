@@ -27,6 +27,8 @@ enum HostRequest {
     BootstrapMain,
     BootstrapDesktop,
     DispatchMain { request_json: String },
+    SimulateFakeDeviceLoss,
+    SimulateFakeRestart,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +183,18 @@ fn handle_request(runtime: &mut DesktopRuntime, encoded: &str) -> HostResponse {
                 dispatch.snapshot = runtime.snapshot();
             }
             HostResponse::success(dispatch)
+        }
+        HostRequest::SimulateFakeDeviceLoss => {
+            if runtime.simulate_fake_device_loss().is_err() {
+                return HostResponse::failure("device_loss_injection_failed");
+            }
+            HostResponse::success(serde_json::json!({"snapshot": runtime.snapshot()}))
+        }
+        HostRequest::SimulateFakeRestart => {
+            if runtime.simulate_fake_restart().is_err() {
+                return HostResponse::failure("restart_injection_failed");
+            }
+            HostResponse::success(serde_json::json!({"snapshot": runtime.snapshot()}))
         }
     };
     response.unwrap_or_else(|_| HostResponse::failure("serialization_failed"))

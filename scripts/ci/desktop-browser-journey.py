@@ -126,10 +126,28 @@ class RustHost:
                     if isinstance(snapshot, dict):
                         self.last_snapshot = snapshot
                     self.dispatch_count += 1
+                elif request.get("command") in {
+                    "simulate_fake_device_loss",
+                    "simulate_fake_restart",
+                }:
+                    snapshot = value.get("snapshot")
+                    if isinstance(snapshot, dict):
+                        self.last_snapshot = snapshot
             else:
                 error = response.get("error")
                 self.last_error = error if isinstance(error, str) else "invalid_host_response"
             return response
+
+    def apply_control(self, command: str) -> None:
+        require(
+            command in {"simulate_fake_device_loss", "simulate_fake_restart"},
+            "unsupported deterministic host control",
+        )
+        response = self.request({"command": command})
+        require(
+            response.get("ok") is True,
+            f"deterministic host control failed: {command}",
+        )
 
     def snapshot(self) -> dict[str, object] | None:
         with self.lock:
@@ -407,12 +425,38 @@ def semantic_snapshot(devtools: object) -> dict[str, object]:
     return value
 
 
+def error_dialog_snapshot(devtools: object) -> dict[str, object]:
+    value = devtools.evaluate(
+        r"""(() => {
+          const dialog = document.querySelector('[role="alertdialog"]');
+          const active = document.activeElement;
+          const ids = (dialog?.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+          const descriptions = (dialog?.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+          return {
+            present: Boolean(dialog),
+            modal: dialog?.getAttribute('aria-modal') === 'true',
+            labelled: ids.length > 0 && ids.every(id => document.getElementById(id)),
+            described: descriptions.length > 0 && descriptions.every(id => document.getElementById(id)),
+            activeId: active?.id || '',
+            activeLabel: (active?.innerText || active?.textContent || '').trim().replace(/\s+/g, ' '),
+          };
+        })()"""
+    )
+    require(isinstance(value, dict), "browser returned invalid error-dialog semantics")
+    return value
+
+
 def run_journey(
     browser: str,
     origin: str,
     bridge_token: str,
     bridge: RustHost,
-) -> tuple[list[dict[str, object]], dict[str, object], bool]:
+) -> tuple[
+    list[dict[str, object]],
+    dict[str, object],
+    bool,
+    dict[str, object],
+]:
     with tempfile.TemporaryDirectory(
         prefix="frame-desktop-chrome-", ignore_cleanup_errors=True
     ) as profile:
@@ -511,11 +555,60 @@ def run_journey(
                 lambda state: state_is(state, "recorder", "ready"),
                 "recording did not stop",
             )
+            activate_by_keyboard(devtools, "Confirm permissions", focus_trace)
+            activate_by_keyboard(devtools, "Start recording", focus_trace)
+            wait_snapshot(
+                bridge,
+                lambda state: state_is(state, "recorder", "recording"),
+                "second recording did not start",
+            )
+            bridge.apply_control("simulate_fake_device_loss")
+            activate_by_keyboard(devtools, "Pause", focus_trace)
+            dialog = HELPER.wait_for_value(
+                devtools,
+                r"""(() => {
+                  const node = document.querySelector('[role="alertdialog"]');
+                  return {
+                    present: Boolean(node),
+                    activeId: document.activeElement?.id || '',
+                  };
+                })()""",
+                lambda value: isinstance(value, dict)
+                and value.get("present") is True
+                and value.get("activeId") == "dismiss-error",
+                "backend device-loss error did not move focus into the modal",
+            )
+            require(isinstance(dialog, dict), "browser returned invalid modal focus state")
+            dispatch_key(devtools, "Tab", "Tab", 9)
+            trapped_forward = active_descriptor(devtools).get("id") == "dismiss-error"
+            dispatch_key(devtools, "Tab", "Tab", 9, shift=True)
+            trapped_reverse = active_descriptor(devtools).get("id") == "dismiss-error"
+            error_dialog = error_dialog_snapshot(devtools)
+            error_dialog["tab_trapped_forward"] = trapped_forward
+            error_dialog["tab_trapped_reverse"] = trapped_reverse
+            dispatch_key(devtools, "Escape", "Escape", 27)
+            restored = HELPER.wait_for_value(
+                devtools,
+                r"""(() => ({
+                  dialogPresent: Boolean(document.querySelector('[role="alertdialog"]')),
+                  activeId: document.activeElement?.id || '',
+                }))()""",
+                lambda value: isinstance(value, dict)
+                and value.get("dialogPresent") is False
+                and value.get("activeId") == "main-content",
+                "Escape did not dismiss the error and restore focus to main content",
+            )
+            require(isinstance(restored, dict), "browser returned invalid restored focus state")
+            error_dialog["escape_dismissed"] = True
+            error_dialog["restored_focus_id"] = restored["activeId"]
+            bridge.apply_control("simulate_fake_restart")
             activate_by_keyboard(devtools, "Scan for recovery", focus_trace)
             wait_snapshot(
                 bridge,
-                lambda state: state_is(state, "recovery", "available"),
-                "recovery scan did not complete",
+                lambda state: state_is(state, "recovery", "available")
+                and state.get("crash_recovery_reported") is True
+                and not state_is(state, "recorder", "recording"),
+                "restart recovery scan did not preserve backend truth",
             )
             activate_by_keyboard(devtools, "Open sample recovery", focus_trace)
             wait_snapshot(
@@ -598,7 +691,7 @@ def run_journey(
                     if isinstance(entry, dict) and entry.get("level") == "error":
                         diagnostics.append(event)
             require(not diagnostics, f"browser diagnostics were emitted: {diagnostics[:3]}")
-            return focus_trace, semantics, bool(reverse_focus)
+            return focus_trace, semantics, bool(reverse_focus), error_dialog
         finally:
             try:
                 if devtools is not None:
@@ -617,8 +710,9 @@ def validate_semantics(
     focus_trace: list[dict[str, object]],
     semantics: dict[str, object],
     reverse_focus: bool,
+    error_dialog: dict[str, object],
 ) -> None:
-    require(len(focus_trace) == 20, "not every essential action received keyboard focus")
+    require(len(focus_trace) == 23, "not every essential action received keyboard focus")
     require(
         all(item.get("visible") is True and item.get("disabled") is False for item in focus_trace),
         "an essential keyboard action was hidden or disabled",
@@ -652,6 +746,18 @@ def validate_semantics(
         "backend status is not announced politely",
     )
     require(semantics.get("dialogCount") == 0, "an unexpected error dialog remained open")
+    require(
+        error_dialog.get("present") is True
+        and error_dialog.get("modal") is True
+        and error_dialog.get("labelled") is True
+        and error_dialog.get("described") is True
+        and error_dialog.get("activeId") == "dismiss-error"
+        and error_dialog.get("tab_trapped_forward") is True
+        and error_dialog.get("tab_trapped_reverse") is True
+        and error_dialog.get("escape_dismissed") is True
+        and error_dialog.get("restored_focus_id") == "main-content",
+        "backend-error modal focus, trap, dismissal, or restoration is incomplete",
+    )
 
 
 def main() -> int:
@@ -692,13 +798,13 @@ def main() -> int:
         thread.start()
         try:
             port = int(server.server_address[1])
-            focus_trace, semantics, reverse_focus = run_journey(
+            focus_trace, semantics, reverse_focus, error_dialog = run_journey(
                 browser,
                 f"http://127.0.0.1:{port}/",
                 bridge_token,
                 bridge,
             )
-            validate_semantics(focus_trace, semantics, reverse_focus)
+            validate_semantics(focus_trace, semantics, reverse_focus, error_dialog)
             final = wait_snapshot(
                 bridge,
                 lambda state: state_is(state, "export", "completed")
@@ -715,6 +821,7 @@ def main() -> int:
                 "essential_actions": [item["label"] for item in focus_trace],
                 "dispatch_count": bridge.dispatch_count,
                 "accessibility": semantics,
+                "backend_error_dialog": error_dialog,
                 "final_state": redacted_snapshot(final),
                 "host_sha256": hashlib.sha256(host_executable.read_bytes()).hexdigest(),
                 "ui_index_sha256": hashlib.sha256(

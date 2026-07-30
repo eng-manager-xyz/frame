@@ -72,6 +72,9 @@ def main() -> int:
     macos_studio_recovery = text(
         "apps/desktop/src/macos_native_backend/studio_recovery.rs"
     )
+    macos_studio_render = text(
+        "apps/desktop/src/macos_native_backend/studio_render.rs"
+    )
     macos_normalized_worker = text(
         "apps/desktop/src/macos_native_backend/normalized_worker.rs"
     )
@@ -258,6 +261,10 @@ def main() -> int:
             "content_protected(true)",
             "OVERLAY_WINDOW_LABEL",
             "TARGET_PICKER_WINDOW_LABEL",
+            "fn should_intercept_close",
+            "fn auxiliary_window_position",
+            "fn shortcut_toggle_action",
+            "fn tray_selection",
         ),
         "production desktop shell",
     )
@@ -270,6 +277,8 @@ def main() -> int:
             "DesktopAdapterKind::DeterministicFake",
             "runtime.dispatch_json",
             "runtime.advance_fake",
+            "SimulateFakeDeviceLoss",
+            "SimulateFakeRestart",
         ),
         "bounded Rust browser-journey host",
     )
@@ -282,6 +291,10 @@ def main() -> int:
             "Input.dispatchKeyEvent",
             "protected_assistive_technology_claimed",
             "protected_hardware_claimed",
+            "simulate_fake_device_loss",
+            "simulate_fake_restart",
+            '"backend_error_dialog"',
+            '"dismiss-error"',
         ),
         "executable desktop browser journey",
     )
@@ -541,6 +554,20 @@ def main() -> int:
         "macOS Studio recovery",
     )
     require(
+        macos_studio_render,
+        (
+            "NativeStudioRenderController",
+            "StudioRenderCoordinator",
+            "StudioRenderGraphSpec::compile",
+            "ExportProfile::DistributionMp4",
+            "ExportProfile::EditableWebm",
+            "ExportProfile::Archive",
+            "pub(super) fn poll(",
+            "pub(super) fn cancel(",
+        ),
+        "macOS Studio render coordinator",
+    )
+    require(
         macos_normalized_worker,
         (
             "platform-neutral screen-only production worker",
@@ -763,7 +790,14 @@ def main() -> int:
             'aria-label="Live input meters"',
             'legend>"Numeric timeline alternative"',
             'attr:role="status" attr:aria-live="polite"',
-            'attr:role="alertdialog" attr:aria-modal="true"',
+            'attr:role="alertdialog"',
+            'attr:aria-modal="true"',
+            'attr:id="error-dialog"',
+            'attr:aria-labelledby="error-title"',
+            'attr:aria-describedby="error-message"',
+            'attr:id="dismiss-error"',
+            "handle_error_dialog_key",
+            'focus_element("main-content")',
             'aria-describedby="timeline-help"',
             'class="instant-sharing"',
             'class="instant-progress"',
@@ -839,7 +873,9 @@ def main() -> int:
             "sign-macos-local-app.sh verify-trusted",
             "--app-bundle target/release/bundle/macos/Frame.app",
             "FRAME_EXPECTED_APPLE_TEAM_ID",
-            "Windows stays on the portable/unavailable shell",
+            "A Windows native adapter exists",
+            "no Windows",
+            "full-product runner lane",
         ),
         "protected hardware workflow",
     )
@@ -984,11 +1020,11 @@ def main() -> int:
             "Local deterministic evidence",
             "Native macOS target source evidence",
             "screen-only recording uses the normalized",
-            "Optional macOS system audio is the only native audio source currently supported",
-            "descriptor-rooted,",
-            "Recording and\nedit-save boundaries can be inspected and reconciled",
+            "combined optional-input bridge",
+            "descriptor-rooted bounded catalog",
+            "Incomplete recording and\nedit-save journals recover",
             "Protected evidence still required",
-            "native Studio recovery path proves journal-fenced",
+            "durable render coordinator",
             "--expected-adapter native_macos_display",
         ),
         "evidence report",
@@ -1008,7 +1044,9 @@ def main() -> int:
         operations,
         (
             "Build modes and current boundary",
-            "direct A/V worker can optionally mux exact 48 kHz stereo system audio",
+            "macOS A/V worker can mux exact 48 kHz stereo system audio",
+            "durable render coordinator",
+            "three content-protected physical windows",
             "Crash and recovery",
             "A recovery worker takes a new ownership",
             "Offer archive only for a backend-proven empty attempt",
@@ -1073,6 +1111,7 @@ def main() -> int:
         "apps/desktop/src/macos_native_backend/studio_recorder.rs",
         "apps/desktop/src/macos_native_backend/studio_projects.rs",
         "apps/desktop/src/macos_native_backend/studio_recovery.rs",
+        "apps/desktop/src/macos_native_backend/studio_render.rs",
         "apps/desktop/src/windows_native_backend.rs",
         "apps/desktop/src/rooted_io.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
@@ -1142,11 +1181,16 @@ def main() -> int:
             "executable_browser_keyboard_journey_present": True,
             "partial_macos_hardware_validator_present": True,
             "signed_app_hardware_driver_present": True,
+            "dedicated_partial_hardware_suite_present": True,
             "semantic_accessibility_surface": True,
+            "production_window_lifecycle_integration": True,
+            "backend_error_browser_journey": True,
             "real_hardware_evidence": False,
             "native_target_physical_evidence": False,
-            "studio_edit_aware_integration": False,
+            "studio_edit_aware_integration": True,
+            "native_recovery_contract": True,
             "native_recovery_evidence": False,
+            "full_product_hardware_matrix_harness": False,
             "assistive_technology_evidence": False,
             "signed_distribution_runtime_evidence": False,
         },

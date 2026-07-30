@@ -31,20 +31,29 @@ single-display region as VP8/WebM and embeds the cursor. Display/region capture
 excludes Frame's whole application on macOS; Windows construction requires
 Tauri's main-window content protection, and both catalogs omit Frame windows.
 Screen-only recording uses the shared normalized capture ingress/pump. The
-direct A/V worker can optionally mux exact 48 kHz stereo system audio as Opus
-on macOS while excluding Frame's own process audio. Windows rejects all
-audio. Both slices support stop, cancel, and artifact-bound Editable WebM
-publication. The macOS Studio composition also persists isolated screen and
-optional system-audio originals, a journal, and a canonical project. Its
-descriptor-rooted bounded catalog can open only a reauthenticated completed
-project and reports interrupted entries as recovery-required. On macOS,
-recording and edit-save boundaries reconcile through a new journal fence and
-reminted opaque handle. Only a proven-empty attempt can be archived; its
-journal is moved without deleting media, a graph, or a completed project. The
-native slices do not support microphone, camera, pause/resume, edit-aware
-Studio export, MP4, or native tray/hotkey/overlay lifecycle. The Rust-owned
-shell does support signed forward and previous-desktop update
-check/install/relaunch; physical distribution evidence remains protected.
+macOS A/V worker can mux exact 48 kHz stereo system audio as Opus while
+excluding Frame's own process audio, and its Studio composition can add
+normalized microphone and camera inputs. Windows rejects all audio and Studio
+input operations. Both target-video slices support stop, cancel, and
+artifact-bound Editable WebM publication; macOS additionally supports
+pause/resume. The macOS Studio composition persists isolated originals, a
+journal, and a canonical project. Its descriptor-rooted bounded catalog opens
+only reauthenticated completed projects and reports interrupted entries as
+recovery-required. Recording and edit-save boundaries reconcile through a new
+journal fence and reminted opaque handle. Only a proven-empty attempt can be
+archived; its journal is moved without deleting media, a graph, or a completed
+project. Authenticated preview/edit/save feeds the durable render coordinator,
+which supports progress, confirmed cancellation, edit-aware WebM/MP4/archive
+profiles, compositor state, and hardware-to-software encoder fallback.
+
+The Rust-owned shell registers platform global shortcuts, tray actions, and
+three content-protected physical windows; it hides/reopens known windows and
+positions the overlay and target picker relative to the current monitor. It
+also supports signed forward and previous-desktop update
+check/install/relaunch. Representative physical hotkey/tray interaction,
+Frame-window exclusion, multi-monitor placement, updater relaunch, and
+distribution evidence remain protected or part of the pending full-product
+hardware matrix.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
 coherent adapter truth. The separate
