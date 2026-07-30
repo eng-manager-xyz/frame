@@ -6,9 +6,12 @@
 //! they never expose a plugin command, native window handle, updater URL, or
 //! update signature to browser code.
 
-use crate::{LifecycleAction, LifecycleSnapshot, PublicErrorCode, UpdateAction};
+use crate::{
+    LegacyImportReceipt, LegacyProjectCatalog, LifecycleAction, LifecycleSnapshot,
+    NativeStudioProjectCatalog, PublicErrorCode, UpdateAction,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopShellCommand {
     Lifecycle {
         action: LifecycleAction,
@@ -17,14 +20,31 @@ pub enum DesktopShellCommand {
         action: UpdateAction,
         expected_revision: u64,
     },
+    LegacyProjectScan,
+    LegacyProjectImport {
+        catalog_generation: u64,
+        project_token: String,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopShellOutcome {
-    LifecycleApplied { snapshot: LifecycleSnapshot },
-    UpdateChecked { available: bool },
+    LifecycleApplied {
+        snapshot: LifecycleSnapshot,
+    },
+    UpdateChecked {
+        available: bool,
+    },
     UpdateInstalled,
     RelaunchRequested,
+    LegacyProjectsScanned {
+        catalog: LegacyProjectCatalog,
+    },
+    LegacyProjectImported {
+        catalog: LegacyProjectCatalog,
+        receipt: LegacyImportReceipt,
+        studio_projects: NativeStudioProjectCatalog,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

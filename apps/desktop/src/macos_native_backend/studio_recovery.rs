@@ -11,8 +11,9 @@ use frame_media::{
     FilesystemStudioJournalStore, FilesystemStudioOriginalStore, FilesystemStudioProjectStore,
     FilesystemStudioRecordingSession, JournalAdvanceRequest, JournalBoundary, PendingEditSave,
     RationalTime, ReceiptKind, STUDIO_PROJECT_VERSION, StudioAsset, StudioDocumentCodec,
-    StudioError, StudioProjectManifest, StudioProjectStorePort, StudioState, TempAssetCommitTicket,
-    TrackKind, commit_edit_save, commit_verified_temporary, probe_studio_media_duration,
+    StudioError, StudioOriginalStorePort, StudioProjectManifest, StudioProjectStorePort,
+    StudioState, TempAssetCommitTicket, TrackKind, commit_edit_save,
+    commit_prepared_legacy_import_journal, commit_verified_temporary, probe_studio_media_duration,
     strong_sha256,
 };
 
@@ -62,6 +63,9 @@ fn recover_project_with_probe(
             &mut journal,
             probe_duration,
         ),
+        NativeStudioRecoveryAction::RecoverLegacyImport => {
+            recover_legacy_import(originals_root, discovered, &mut journal)
+        }
         NativeStudioRecoveryAction::ReconcileEditSave => {
             recover_edit_save(projects_root, discovered.project_identity(), &mut journal)
         }
@@ -192,6 +196,36 @@ fn recover_recording(
         ReceiptKind::RecordingStopped,
         None,
     )?;
+    Ok(manifest)
+}
+
+fn recover_legacy_import(
+    originals_root: &Path,
+    discovered: &DiscoveredStudioProject,
+    journal: &mut DurableStudioJournal<FilesystemStudioJournalStore>,
+) -> Result<StudioProjectManifest, NativeDesktopBackendError> {
+    if journal.snapshot().boundary != JournalBoundary::Created {
+        return Err(NativeDesktopBackendError::Unavailable);
+    }
+    let manifest = discovered
+        .manifest()
+        .cloned()
+        .ok_or(NativeDesktopBackendError::Filesystem)?;
+    let mut originals =
+        FilesystemStudioOriginalStore::new(originals_root).map_err(map_studio_error)?;
+    for expected in &manifest.assets {
+        let observed = originals
+            .probe_original(manifest.id, expected.id)
+            .map_err(map_studio_error)?
+            .ok_or(NativeDesktopBackendError::Filesystem)?;
+        if &observed != expected {
+            return Err(NativeDesktopBackendError::Filesystem);
+        }
+    }
+    let manifest_digest =
+        strong_sha256(&StudioDocumentCodec::encode_project(&manifest).map_err(map_studio_error)?);
+    commit_prepared_legacy_import_journal(journal, random_operation_id()?, manifest_digest)
+        .map_err(map_studio_error)?;
     Ok(manifest)
 }
 
@@ -412,9 +446,11 @@ mod tests {
     use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use frame_media::{
-        AssetCommitState, ColorSpace, EditOperation, EditSpec, FilesystemStudioRecordingSession,
-        FrameMemory, PixelFormat, STUDIO_EDIT_VERSION, STUDIO_JOURNAL_VERSION, StudioOperationId,
-        StudioProjectId, StudioWorkerId, TimeBase, VideoFrameSpec,
+        AssetCommitState, ColorSpace, EditOperation, EditSpec, FilesystemLegacyCapProjectPort,
+        FilesystemStudioRecordingSession, FrameMemory, LegacyIdAssignment, LegacyImportOutcome,
+        PixelFormat, STUDIO_EDIT_VERSION, STUDIO_JOURNAL_VERSION, StudioAssetId, StudioOperationId,
+        StudioOperationReceipt, StudioProjectId, StudioWorkerId, TimeBase, VideoFrameSpec,
+        import_legacy_cap, legacy_import_command_digest, legacy_import_outcome_digest,
     };
     use tempfile::TempDir;
 
@@ -433,6 +469,19 @@ mod tests {
         projects: PathBuf,
         originals: PathBuf,
         project_id: StudioProjectId,
+    }
+
+    fn copy_fixture_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("create fixture directory");
+        for entry in fs::read_dir(source).expect("read fixture directory") {
+            let entry = entry.expect("fixture entry");
+            let target = destination.join(entry.file_name());
+            if entry.file_type().expect("fixture type").is_dir() {
+                copy_fixture_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).expect("copy fixture file");
+            }
+        }
     }
 
     fn seconds(value: u64) -> RationalTime {
@@ -762,6 +811,127 @@ mod tests {
                 "archive must not delete a prepared graph or its sinks"
             );
         }
+    }
+
+    #[test]
+    fn interrupted_cap_import_reauthenticates_originals_and_finishes_without_source_access() {
+        let directory = tempfile::Builder::new()
+            .prefix("frame-cap-recovery-")
+            .tempdir_in("/private/tmp")
+            .expect("recovery fixture");
+        let source = directory.path().join("reference.cap");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/studio/cap-schema-supported");
+        copy_fixture_tree(&fixture, &source);
+        let projects = directory.path().join("projects");
+        let originals = directory.path().join("originals");
+        fs::create_dir_all(&projects).expect("projects root");
+        fs::create_dir_all(&originals).expect("originals root");
+        let projects = fs::canonicalize(projects).expect("canonical projects");
+        let originals = fs::canonicalize(originals).expect("canonical originals");
+        let assignment = LegacyIdAssignment {
+            project_id: StudioProjectId::from_csprng([130; 16]).expect("project id"),
+            asset_ids: (131_u8..=135)
+                .map(|marker| StudioAssetId::from_csprng([marker; 16]).expect("asset id"))
+                .collect(),
+        };
+        let mut cap =
+            FilesystemLegacyCapProjectPort::open(&source).expect("legacy Cap project port");
+        let LegacyImportOutcome::Imported(import) =
+            import_legacy_cap(&mut cap, &assignment).expect("import plan")
+        else {
+            panic!("fixture must be importable");
+        };
+        let prepared_operation =
+            StudioOperationId::from_csprng([136; 16]).expect("prepared operation");
+        let prepared_receipt = StudioOperationReceipt {
+            operation_id: prepared_operation,
+            kind: ReceiptKind::LegacyImportPrepared,
+            command_digest: legacy_import_command_digest(import.source_digest_after),
+            outcome_digest: legacy_import_outcome_digest(strong_sha256(
+                &StudioDocumentCodec::encode_project(&import.manifest)
+                    .expect("encode imported manifest"),
+            )),
+        };
+        let journal = DurableStudioJournal::create(
+            FilesystemStudioJournalStore::new(&projects).expect("journal store"),
+            frame_media::StudioJournalSnapshot {
+                version: STUDIO_JOURNAL_VERSION,
+                project_id: assignment.project_id,
+                revision: 1,
+                fence: 1,
+                owner: StudioWorkerId::from_csprng([137; 16]).expect("owner"),
+                boundary: JournalBoundary::Created,
+                last_operation_id: None,
+                pending_asset: None,
+                pending_edit: None,
+                pending_render: None,
+                receipts: BTreeMap::from([(prepared_operation, prepared_receipt)]),
+            },
+        )
+        .expect("prepared import journal");
+        let mut original_store =
+            FilesystemStudioOriginalStore::new(&originals).expect("original store");
+        for (index, (entry, durable)) in import
+            .copy_plan
+            .entries
+            .iter()
+            .zip(&import.manifest.assets)
+            .enumerate()
+        {
+            let mut temporary = durable.clone();
+            temporary.commit_state = AssetCommitState::Temporary;
+            original_store
+                .stage_legacy_copy(&source, assignment.project_id, entry, &temporary)
+                .expect("copy source without mutation");
+            commit_verified_temporary(
+                &mut original_store,
+                TempAssetCommitTicket::new(
+                    assignment.project_id,
+                    StudioOperationId::from_csprng([140_u8.saturating_add(index as u8); 16])
+                        .expect("asset operation"),
+                    journal.snapshot().fence,
+                    temporary,
+                )
+                .expect("asset ticket"),
+            )
+            .expect("commit original");
+        }
+        let mut project_store =
+            FilesystemStudioProjectStore::new(&projects, journal.snapshot().fence)
+                .expect("project store");
+        project_store
+            .create_project(&import.manifest)
+            .expect("project persisted before acknowledgement");
+        drop(journal);
+        fs::remove_dir_all(&source).expect("prove recovery does not reopen Cap source");
+
+        let recovery_fixture = RecoveryFixture {
+            _directory: directory,
+            projects,
+            originals,
+            project_id: assignment.project_id,
+        };
+        let discovered = discover_one(&recovery_fixture);
+        assert_eq!(
+            discovered.recovery_action(),
+            NativeStudioRecoveryAction::RecoverLegacyImport
+        );
+        let recovered = recover_project(
+            &recovery_fixture.projects,
+            &recovery_fixture.originals,
+            &discovered,
+        )
+        .expect("finish interrupted import from Frame originals");
+        assert_eq!(recovered, import.manifest);
+        assert_eq!(
+            current_journal(&recovery_fixture).snapshot().boundary,
+            JournalBoundary::RecordingStopped
+        );
+        assert_eq!(
+            discover_one(&recovery_fixture).status(),
+            crate::NativeStudioProjectStatus::Ready
+        );
     }
 
     fn prepare_edit_save(

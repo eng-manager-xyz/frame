@@ -1359,6 +1359,7 @@ dependencies = [
  "async-trait",
  "frame-authenticated-client",
  "frame-client",
+ "frame-legacy-import",
  "frame-macos-av-capture",
  "frame-macos-screen-capture",
  "frame-media",
@@ -1407,6 +1408,18 @@ dependencies = [
  "thiserror 2.0.18",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "frame-legacy-import"
+version = "0.1.0"
+dependencies = [
+ "frame-media",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -14,9 +14,10 @@ use std::{
 };
 
 use frame_media::{
-    EditSpec, ExactDuration, JournalBoundary, MAX_STUDIO_DOCUMENT_BYTES, StudioDocumentCodec,
-    StudioJournalSnapshot, StudioProjectId, StudioProjectManifest, StudioRecoveryDirective,
-    StudioState, TrackKind, recovery_directive,
+    EditSpec, ExactDuration, JournalBoundary, MAX_STUDIO_DOCUMENT_BYTES, ReceiptKind,
+    StudioDocumentCodec, StudioJournalSnapshot, StudioProjectId, StudioProjectManifest,
+    StudioRecoveryDirective, StudioState, TrackKind, legacy_import_outcome_digest,
+    recovery_directive, strong_sha256,
 };
 
 use crate::{
@@ -102,6 +103,9 @@ impl DiscoveredStudioProject {
     }
 
     pub(super) fn recovery_action(&self) -> NativeStudioRecoveryAction {
+        if self.journal.boundary == JournalBoundary::Created && self.manifest.is_some() {
+            return NativeStudioRecoveryAction::RecoverLegacyImport;
+        }
         if self.status() == NativeStudioProjectStatus::AttentionRequired {
             return NativeStudioRecoveryAction::RequiresOperatorDecision;
         }
@@ -317,7 +321,21 @@ fn manifest_matches_open_boundary(
     }
     match journal.boundary {
         JournalBoundary::RecordingStopped => {
-            manifest.revision == 1 && manifest.edits == EditSpec::default()
+            let receipt = journal
+                .last_operation_id
+                .and_then(|operation| journal.receipts.get(&operation));
+            manifest.revision == 1
+                && match receipt {
+                    Some(receipt) if receipt.kind == ReceiptKind::LegacyImported => {
+                        StudioDocumentCodec::encode_project(manifest)
+                            .map(|encoded| {
+                                receipt.outcome_digest
+                                    == legacy_import_outcome_digest(strong_sha256(&encoded))
+                            })
+                            .unwrap_or(false)
+                    }
+                    _ => manifest.edits == EditSpec::default(),
+                }
         }
         JournalBoundary::EditSaveCommitted => {
             journal.pending_edit.as_ref().is_some_and(|pending| {
@@ -446,6 +464,19 @@ const fn decode_hex(byte: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
+    fn copy_fixture_tree(source: &Path, destination: &Path) {
+        std::fs::create_dir_all(destination).expect("create fixture directory");
+        for entry in std::fs::read_dir(source).expect("read fixture directory") {
+            let entry = entry.expect("fixture entry");
+            let target = destination.join(entry.file_name());
+            if entry.file_type().expect("fixture type").is_dir() {
+                copy_fixture_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).expect("copy fixture file");
+            }
+        }
+    }
+
     #[test]
     fn candidate_names_require_exact_lowercase_storage_identity() {
         assert!(
@@ -480,5 +511,37 @@ mod tests {
                 .expect("milliseconds"),
             1_000
         );
+    }
+
+    #[test]
+    fn committed_cap_import_is_a_ready_authenticated_studio_project() {
+        let workspace = tempfile::Builder::new()
+            .prefix("frame-cap-import-")
+            .tempdir_in("/private/tmp")
+            .expect("workspace");
+        let cap_data = workspace.path().join("so.cap.desktop");
+        let cap_project = cap_data.join("recordings/reference.cap");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/studio/cap-schema-supported");
+        copy_fixture_tree(&fixture, &cap_project);
+        let projects = workspace.path().join("projects");
+        let originals = workspace.path().join("media/studio");
+        let mut migration = frame_legacy_import::LegacyProjectMigrationService::new(
+            &cap_data, &projects, &originals,
+        )
+        .expect("migration service");
+        let catalog = migration.scan().expect("scan");
+        migration
+            .import(catalog.generation, &catalog.projects[0].project_token)
+            .expect("import");
+
+        let projects_directory = RootedDir::bind(&projects).expect("bind projects");
+        let discovered = discover(&projects_directory).expect("discover imported project");
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].status(), NativeStudioProjectStatus::Ready);
+        let (revision, duration_ms) =
+            authenticate_ready(&projects_directory, &discovered[0]).expect("authenticate ready");
+        assert_eq!(revision, 1);
+        assert!(duration_ms > 0);
     }
 }

@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::instant_finalize_service::InstantFinalizeCapabilityState;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 4;
+pub const IPC_PROTOCOL_VERSION: u16 = 5;
 const MAX_PATH_BYTES: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +171,8 @@ pub enum CommandKind {
     PresetApply,
     Lifecycle,
     Update,
+    LegacyProjectScan,
+    LegacyProjectImport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,6 +420,11 @@ pub enum IpcCommand {
         action: UpdateAction,
         expected_revision: u64,
     },
+    LegacyProjectScan,
+    LegacyProjectImport {
+        catalog_generation: u64,
+        project_token: String,
+    },
 }
 
 impl fmt::Debug for IpcCommand {
@@ -466,6 +473,8 @@ impl IpcCommand {
             Self::PresetApply { .. } => CommandKind::PresetApply,
             Self::Lifecycle { .. } => CommandKind::Lifecycle,
             Self::Update { .. } => CommandKind::Update,
+            Self::LegacyProjectScan => CommandKind::LegacyProjectScan,
+            Self::LegacyProjectImport { .. } => CommandKind::LegacyProjectImport,
         }
     }
 
@@ -541,6 +550,10 @@ impl IpcCommand {
                 project_token,
             }
             | Self::EditorOpen {
+                catalog_generation,
+                project_token,
+            }
+            | Self::LegacyProjectImport {
                 catalog_generation,
                 project_token,
             } => {
@@ -1103,6 +1116,8 @@ fn command_allowed(role: WindowRole, command: CommandKind) -> bool {
                 | CommandKind::RecoveryScan
                 | CommandKind::Lifecycle
                 | CommandKind::Update
+                | CommandKind::LegacyProjectScan
+                | CommandKind::LegacyProjectImport
         ),
         WindowRole::Recorder => matches!(
             command,
@@ -1524,6 +1539,40 @@ mod tests {
         ] {
             assert!(!command_allowed(WindowRole::TargetPicker, command));
         }
+    }
+
+    #[test]
+    fn legacy_project_import_is_main_scoped_generation_fenced_and_redacted() {
+        let command = IpcCommand::LegacyProjectImport {
+            catalog_generation: 7,
+            project_token: "legacy-project:0011223344556677".into(),
+        };
+        assert_eq!(command.kind(), CommandKind::LegacyProjectImport);
+        assert!(command.validate_payload().is_ok());
+        assert!(command_allowed(
+            WindowRole::Main,
+            CommandKind::LegacyProjectImport
+        ));
+        for role in [
+            WindowRole::Recorder,
+            WindowRole::Recovery,
+            WindowRole::Editor,
+            WindowRole::Export,
+            WindowRole::Settings,
+            WindowRole::Overlay,
+            WindowRole::TargetPicker,
+        ] {
+            assert!(!command_allowed(role, CommandKind::LegacyProjectImport));
+        }
+        assert!(!format!("{command:?}").contains("0011223344556677"));
+        assert!(
+            IpcCommand::LegacyProjectImport {
+                catalog_generation: 0,
+                project_token: "legacy-project:0011223344556677".into(),
+            }
+            .validate_payload()
+            .is_err()
+        );
     }
 
     #[test]

@@ -39,6 +39,11 @@ pub use accessibility::*;
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 pub use av_settings::*;
 pub use desktop_shell::*;
+pub use frame_legacy_import::{
+    LEGACY_PROJECT_CATALOG_VERSION, LegacyImportReceipt, LegacyProjectCatalog,
+    LegacyProjectCatalogAvailability, LegacyProjectStatus, LegacyProjectSummary,
+    LegacySettingsInspection, MAX_LEGACY_PROJECT_CATALOG_ENTRIES,
+};
 #[cfg(any(
     all(target_os = "macos", feature = "macos-native"),
     all(target_os = "windows", feature = "windows-native")

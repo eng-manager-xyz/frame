@@ -1102,6 +1102,8 @@ pub enum ReceiptKind {
     RenderCommitted,
     PartialDeleted,
     RecoveryApplied,
+    LegacyImported,
+    LegacyImportPrepared,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1221,7 +1223,14 @@ impl StudioJournalSnapshot {
             }
         }
         match (self.boundary, self.last_operation_id) {
-            (JournalBoundary::Created, None) => {}
+            (JournalBoundary::Created, None)
+                if self.receipts.is_empty()
+                    || (self.receipts.len() == 1
+                        && self
+                            .receipts
+                            .values()
+                            .all(|receipt| receipt.kind == ReceiptKind::LegacyImportPrepared)) => {}
+            (JournalBoundary::Created, None) => return Err(StudioError::JournalCorrupt),
             (JournalBoundary::Created, Some(_)) | (_, None) => {
                 return Err(StudioError::JournalCorrupt);
             }
@@ -2625,6 +2634,8 @@ const fn receipt_kind_tag(kind: ReceiptKind) -> u8 {
         ReceiptKind::RenderCommitted => 13,
         ReceiptKind::PartialDeleted => 14,
         ReceiptKind::RecoveryApplied => 15,
+        ReceiptKind::LegacyImported => 16,
+        ReceiptKind::LegacyImportPrepared => 17,
     }
 }
 
@@ -2645,6 +2656,8 @@ fn receipt_kind_from_tag(tag: u8) -> Result<ReceiptKind, StudioError> {
         13 => Ok(ReceiptKind::RenderCommitted),
         14 => Ok(ReceiptKind::PartialDeleted),
         15 => Ok(ReceiptKind::RecoveryApplied),
+        16 => Ok(ReceiptKind::LegacyImported),
+        17 => Ok(ReceiptKind::LegacyImportPrepared),
         _ => Err(StudioError::MalformedDocument),
     }
 }
@@ -3939,6 +3952,94 @@ pub fn import_legacy_cap<P: LegacyCapProjectPort>(
     })))
 }
 
+/// Seals a source-preserving legacy import after every immutable original and
+/// the canonical project manifest have been committed. The prepared receipt
+/// binds the Cap source and imported Frame manifest before any acknowledgement
+/// can be published. The dedicated terminal receipt distinguishes this direct
+/// `Created -> RecordingStopped` transition from a native capture.
+pub fn commit_legacy_import_journal<P: StudioJournalPort>(
+    journal: &mut DurableStudioJournal<P>,
+    operation_id: StudioOperationId,
+    source_digest: Sha256Digest,
+    manifest_digest: Sha256Digest,
+) -> Result<JournalCommitOutcome, StudioError> {
+    let prepared = prepared_legacy_import_receipt(journal)?;
+    if prepared.command_digest != legacy_import_command_digest(source_digest)
+        || prepared.outcome_digest != legacy_import_outcome_digest(manifest_digest)
+    {
+        return Err(StudioError::JournalCorrupt);
+    }
+    commit_prepared_legacy_import_journal(journal, operation_id, manifest_digest)
+}
+
+/// Completes an interrupted legacy import using only its authenticated prepared
+/// receipt and the reauthenticated Frame manifest. Recovery never needs to
+/// reopen the Cap source after all copied originals are durable.
+pub fn commit_prepared_legacy_import_journal<P: StudioJournalPort>(
+    journal: &mut DurableStudioJournal<P>,
+    operation_id: StudioOperationId,
+    manifest_digest: Sha256Digest,
+) -> Result<JournalCommitOutcome, StudioError> {
+    let prepared = prepared_legacy_import_receipt(journal)?;
+    if prepared.outcome_digest != legacy_import_outcome_digest(manifest_digest) {
+        return Err(StudioError::JournalCorrupt);
+    }
+    journal.advance(JournalAdvanceRequest {
+        expected_revision: journal.snapshot().revision,
+        expected_fence: journal.snapshot().fence,
+        operation_id,
+        command_digest: prepared.command_digest,
+        boundary: JournalBoundary::RecordingStopped,
+        pending_asset: None,
+        pending_edit: None,
+        pending_render: None,
+        receipt_kind: ReceiptKind::LegacyImported,
+        outcome_digest: prepared.outcome_digest,
+    })
+}
+
+fn prepared_legacy_import_receipt<P: StudioJournalPort>(
+    journal: &DurableStudioJournal<P>,
+) -> Result<StudioOperationReceipt, StudioError> {
+    if journal.snapshot().boundary != JournalBoundary::Created {
+        return Err(StudioError::InvalidJournalTransition {
+            from: journal.snapshot().boundary,
+            to: JournalBoundary::RecordingStopped,
+        });
+    }
+    let mut prepared = journal
+        .snapshot()
+        .receipts
+        .values()
+        .filter(|receipt| receipt.kind == ReceiptKind::LegacyImportPrepared);
+    let receipt = prepared
+        .next()
+        .cloned()
+        .ok_or(StudioError::JournalCorrupt)?;
+    if prepared.next().is_some() {
+        return Err(StudioError::JournalCorrupt);
+    }
+    Ok(receipt)
+}
+
+#[must_use]
+pub fn legacy_import_command_digest(source_digest: Sha256Digest) -> Sha256Digest {
+    legacy_import_receipt_digest(b"frame-studio-legacy-import-command-v1:", source_digest)
+}
+
+#[must_use]
+pub fn legacy_import_outcome_digest(manifest_digest: Sha256Digest) -> Sha256Digest {
+    legacy_import_receipt_digest(b"frame-studio-legacy-import-outcome-v1:", manifest_digest)
+}
+
+fn legacy_import_receipt_digest(domain: &[u8], source_digest: Sha256Digest) -> Sha256Digest {
+    let source_hex = source_digest.to_hex();
+    let mut material = Vec::with_capacity(domain.len() + source_hex.len());
+    material.extend_from_slice(domain);
+    material.extend_from_slice(source_hex.as_bytes());
+    strong_sha256(&material)
+}
+
 fn legacy_assets(snapshot: &LegacyCapProjectSnapshot) -> Vec<LegacyDecoded> {
     let mut assets = Vec::new();
     for segment in &snapshot.segments {
@@ -4595,7 +4696,9 @@ impl<P: StudioJournalPort> DurableStudioJournal<P> {
         if self.snapshot.revision != expected_revision || self.snapshot.fence != expected_fence {
             return Err(StudioError::StaleJournal);
         }
-        if !valid_journal_transition(self.snapshot.boundary, boundary) {
+        if !valid_journal_transition(self.snapshot.boundary, boundary)
+            || !receipt_matches_transition(self.snapshot.boundary, boundary, receipt_kind)
+        {
             return Err(StudioError::InvalidJournalTransition {
                 from: self.snapshot.boundary,
                 to: boundary,
@@ -4978,64 +5081,84 @@ const fn valid_journal_transition(from: JournalBoundary, to: JournalBoundary) ->
         (
             JournalBoundary::Created,
             JournalBoundary::RecordingGraphPrepared
-        ) | (
-            JournalBoundary::RecordingGraphPrepared,
-            JournalBoundary::CaptureStarted
-        ) | (
-            JournalBoundary::CaptureStarted,
-            JournalBoundary::TempAssetReserved
-        ) | (
-            JournalBoundary::TempAssetReserved,
-            JournalBoundary::TempAssetDurable
-        ) | (
-            JournalBoundary::TempAssetDurable,
-            JournalBoundary::AssetCommitRequested
-        ) | (
-            JournalBoundary::AssetCommitRequested,
-            JournalBoundary::AssetCommitted
-        ) | (
-            JournalBoundary::AssetCommitted,
-            JournalBoundary::CaptureStarted
-        ) | (
-            JournalBoundary::CaptureStarted,
-            JournalBoundary::RecordingStopped
-        ) | (
-            JournalBoundary::RecordingStopped,
-            JournalBoundary::EditSavePrepared
-        ) | (
-            JournalBoundary::EditSaveCommitted,
-            JournalBoundary::EditSavePrepared
-        ) | (
-            JournalBoundary::EditSavePrepared,
-            JournalBoundary::EditSaveCommitted
-        ) | (
-            JournalBoundary::RecordingStopped,
-            JournalBoundary::RenderPrepared
-        ) | (
-            JournalBoundary::EditSaveCommitted,
-            JournalBoundary::RenderPrepared
-        ) | (
-            JournalBoundary::RenderPrepared,
-            JournalBoundary::RenderRunning
-        ) | (
-            JournalBoundary::RenderRunning,
-            JournalBoundary::RenderFinalizing
-        ) | (
-            JournalBoundary::RenderFinalizing,
-            JournalBoundary::RenderCommitted
-        ) | (
-            JournalBoundary::RenderCommitted | JournalBoundary::RenderCancelled,
-            JournalBoundary::EditSavePrepared | JournalBoundary::RenderPrepared
-        ) | (
-            JournalBoundary::RenderPrepared,
-            JournalBoundary::RenderCancelled
-        ) | (
-            JournalBoundary::RenderRunning,
-            JournalBoundary::RenderCancelled
-        ) | (
-            JournalBoundary::RenderFinalizing,
-            JournalBoundary::RenderCancelled
-        ) | (_, JournalBoundary::FailedRecoverably)
+        ) | (JournalBoundary::Created, JournalBoundary::RecordingStopped)
+            | (
+                JournalBoundary::RecordingGraphPrepared,
+                JournalBoundary::CaptureStarted
+            )
+            | (
+                JournalBoundary::CaptureStarted,
+                JournalBoundary::TempAssetReserved
+            )
+            | (
+                JournalBoundary::TempAssetReserved,
+                JournalBoundary::TempAssetDurable
+            )
+            | (
+                JournalBoundary::TempAssetDurable,
+                JournalBoundary::AssetCommitRequested
+            )
+            | (
+                JournalBoundary::AssetCommitRequested,
+                JournalBoundary::AssetCommitted
+            )
+            | (
+                JournalBoundary::AssetCommitted,
+                JournalBoundary::CaptureStarted
+            )
+            | (
+                JournalBoundary::CaptureStarted,
+                JournalBoundary::RecordingStopped
+            )
+            | (
+                JournalBoundary::RecordingStopped,
+                JournalBoundary::EditSavePrepared
+            )
+            | (
+                JournalBoundary::EditSaveCommitted,
+                JournalBoundary::EditSavePrepared
+            )
+            | (
+                JournalBoundary::EditSavePrepared,
+                JournalBoundary::EditSaveCommitted
+            )
+            | (
+                JournalBoundary::RecordingStopped,
+                JournalBoundary::RenderPrepared
+            )
+            | (
+                JournalBoundary::EditSaveCommitted,
+                JournalBoundary::RenderPrepared
+            )
+            | (
+                JournalBoundary::RenderPrepared,
+                JournalBoundary::RenderRunning
+            )
+            | (
+                JournalBoundary::RenderRunning,
+                JournalBoundary::RenderFinalizing
+            )
+            | (
+                JournalBoundary::RenderFinalizing,
+                JournalBoundary::RenderCommitted
+            )
+            | (
+                JournalBoundary::RenderCommitted | JournalBoundary::RenderCancelled,
+                JournalBoundary::EditSavePrepared | JournalBoundary::RenderPrepared
+            )
+            | (
+                JournalBoundary::RenderPrepared,
+                JournalBoundary::RenderCancelled
+            )
+            | (
+                JournalBoundary::RenderRunning,
+                JournalBoundary::RenderCancelled
+            )
+            | (
+                JournalBoundary::RenderFinalizing,
+                JournalBoundary::RenderCancelled
+            )
+            | (_, JournalBoundary::FailedRecoverably)
             | (
                 JournalBoundary::FailedRecoverably,
                 JournalBoundary::CaptureStarted
@@ -5053,6 +5176,22 @@ const fn valid_journal_transition(from: JournalBoundary, to: JournalBoundary) ->
                 JournalBoundary::RenderCommitted | JournalBoundary::RenderCancelled
             )
     )
+}
+
+const fn receipt_matches_transition(
+    from: JournalBoundary,
+    to: JournalBoundary,
+    kind: ReceiptKind,
+) -> bool {
+    match (from, to) {
+        (JournalBoundary::Created, JournalBoundary::RecordingStopped) => {
+            matches!(kind, ReceiptKind::LegacyImported)
+        }
+        (JournalBoundary::CaptureStarted, JournalBoundary::RecordingStopped) => {
+            matches!(kind, ReceiptKind::RecordingStopped)
+        }
+        _ => true,
+    }
 }
 
 const fn receipt_matches_boundary(kind: ReceiptKind, boundary: JournalBoundary) -> bool {
@@ -5074,6 +5213,10 @@ const fn receipt_matches_boundary(kind: ReceiptKind, boundary: JournalBoundary) 
             | (ReceiptKind::AssetCommitted, JournalBoundary::AssetCommitted)
             | (
                 ReceiptKind::RecordingStopped,
+                JournalBoundary::RecordingStopped
+            )
+            | (
+                ReceiptKind::LegacyImported,
                 JournalBoundary::RecordingStopped
             )
             | (ReceiptKind::EditPrepared, JournalBoundary::EditSavePrepared)

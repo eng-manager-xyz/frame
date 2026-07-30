@@ -20,10 +20,11 @@ mod browser {
         DesktopWindowContext, DeviceClass, DeviceState, EditorMutation, EditorState, ExportProfile,
         ExportState, IPC_PROTOCOL_VERSION, InstantFinalizeCapabilityState,
         InstantFinalizeCommandV1, InstantFinalizeHandle, InstantFinalizeUiUpdate, IpcCommand,
-        LifecycleAction, NativeStudioPreviewOutcome, NativeStudioPreviewRequest,
-        NativeStudioProjectStatus, PublicErrorCode, RecorderAdapterState, RecorderMode,
-        RecorderState, RequestEnvelope, RequestId, ShellCapabilities, UpdateAction, UpdateState,
-        UploadState, WindowRole, instant_error_message, instant_progress_announcement,
+        LegacyProjectCatalogAvailability, LegacyProjectStatus, LifecycleAction,
+        NativeStudioPreviewOutcome, NativeStudioPreviewRequest, NativeStudioProjectStatus,
+        PublicErrorCode, RecorderAdapterState, RecorderMode, RecorderState, RequestEnvelope,
+        RequestId, ShellCapabilities, UpdateAction, UpdateState, UploadState, WindowRole,
+        instant_error_message, instant_progress_announcement,
     };
     use frame_ui::{
         Alert, Badge, BadgeVariant, Button, ButtonGroup, ButtonVariant, Card, CardFrame,
@@ -1766,7 +1767,96 @@ mod browser {
                     <aside aria-labelledby="legacy-heading">
                         <Alert class="legacy-note">
                             <h3 id="legacy-heading">"Legacy desktop safety"</h3>
-                            <p>"Legacy settings and projects are inspected read-only. The previous signed desktop remains selectable until parity gate 29 is approved."</p>
+                            <p>"Frame scans Cap's default and remembered recording folders without changing them. Import copies verified media into immutable Frame originals; projects with unsupported effects stay in Cap for review. The previous signed desktop remains selectable until parity gate 29 is approved."</p>
+                            <Button variant=ButtonVariant::Outline
+                                attr:r#type="button"
+                                attr:disabled=move || !is_native() || busy.get()
+                                on:click=move |_| submit(
+                                    client,
+                                    snapshot,
+                                    status,
+                                    error,
+                                    busy,
+                                    WindowRole::Main,
+                                    IpcCommand::LegacyProjectScan,
+                                )
+                            >"Scan Cap projects read-only"</Button>
+                            <p aria-live="polite">{move || snapshot.get().map_or_else(
+                                || "Cap project migration status is loading.".into(),
+                                |state| match state.legacy_projects.availability {
+                                    LegacyProjectCatalogAvailability::Unavailable => {
+                                        "Cap project scanning is available in native macOS and Windows builds; importing is currently macOS-only.".into()
+                                    }
+                                    LegacyProjectCatalogAvailability::Ready if state.legacy_projects.projects.is_empty() => {
+                                        "No Cap projects were found in the known recording folders.".into()
+                                    }
+                                    LegacyProjectCatalogAvailability::Ready => format!(
+                                        "{} Cap projects were inspected. Filesystem paths and project names remain in Rust.",
+                                        state.legacy_projects.projects.len()
+                                    ),
+                                },
+                            )}</p>
+                            <div class="project-list" aria-label="Cap project compatibility results">
+                                <For
+                                    each=move || snapshot
+                                        .get()
+                                        .map(|state| state.legacy_projects.projects)
+                                        .unwrap_or_default()
+                                    key=|project| project.project_token.clone()
+                                    children=move |project| {
+                                        let token = project.project_token.clone();
+                                        let ordinal = project.ordinal;
+                                        let project_status = project.status;
+                                        let label = match project_status {
+                                            LegacyProjectStatus::Importable => format!(
+                                                "Cap project {ordinal}: importable, {} media assets and {} supported edits.",
+                                                project.source_asset_count,
+                                                project.supported_effect_count,
+                                            ),
+                                            LegacyProjectStatus::Imported => format!(
+                                                "Cap project {ordinal}: already copied into Frame; the Cap source remains unchanged."
+                                            ),
+                                            LegacyProjectStatus::NeedsReview => format!(
+                                                "Cap project {ordinal}: keep in Cap for review; {} unsupported effects were found.",
+                                                project.unsupported_effect_count,
+                                            ),
+                                            LegacyProjectStatus::Unsupported => format!(
+                                                "Cap project {ordinal}: created by a newer unsupported Cap format."
+                                            ),
+                                            LegacyProjectStatus::Invalid => format!(
+                                                "Cap project {ordinal}: incomplete or invalid; no files were copied."
+                                            ),
+                                        };
+                                        view! {
+                                            <Card>
+                                                <p>{label}</p>
+                                                <Button variant=ButtonVariant::Outline
+                                                    attr:r#type="button"
+                                                    attr:disabled=move || !is_macos_native() || project_status != LegacyProjectStatus::Importable || busy.get()
+                                                    on:click=move |_| {
+                                                        if let Some(state) = snapshot.get_untracked()
+                                                            && state.legacy_projects.generation > 0
+                                                        {
+                                                            submit(
+                                                                client,
+                                                                snapshot,
+                                                                status,
+                                                                error,
+                                                                busy,
+                                                                WindowRole::Main,
+                                                                IpcCommand::LegacyProjectImport {
+                                                                    catalog_generation: state.legacy_projects.generation,
+                                                                    project_token: token.clone(),
+                                                                },
+                                                            );
+                                                        }
+                                                    }
+                                                >"Copy into Frame"</Button>
+                                            </Card>
+                                        }
+                                    }
+                                />
+                            </div>
                         </Alert>
                     </aside>
                     <div class="split-grid">

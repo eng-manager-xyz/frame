@@ -409,6 +409,7 @@ impl fmt::Debug for NativeStudioRecoveryRequest {
 pub enum NativeStudioRecoveryAction {
     ArchiveUnstartedAttempt,
     RecoverRecording,
+    RecoverLegacyImport,
     ReconcileEditSave,
     OpenEditor,
     RequiresOperatorDecision,
@@ -433,6 +434,7 @@ impl NativeStudioRecoveryInspection {
                 NativeStudioProjectStatus::RecoveryRequired,
                 NativeStudioRecoveryAction::ArchiveUnstartedAttempt
                     | NativeStudioRecoveryAction::RecoverRecording
+                    | NativeStudioRecoveryAction::RecoverLegacyImport
                     | NativeStudioRecoveryAction::ReconcileEditSave
             ) | (
                 NativeStudioProjectStatus::Ready,

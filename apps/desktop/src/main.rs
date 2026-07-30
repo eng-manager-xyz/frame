@@ -9,6 +9,11 @@ use std::{
 
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 use frame_desktop_core::MacOsNativeDesktopBackend;
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
+use frame_desktop_core::NativeDesktopBackend;
 #[cfg(all(target_os = "windows", feature = "windows-native"))]
 use frame_desktop_core::WindowsNativeDesktopBackend;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -19,6 +24,11 @@ use frame_desktop_core::{
     InstantFinalizeUiUpdate, LifecycleAction, LifecycleSnapshot, PublicErrorCode,
     ShellCapabilities, UpdateAction, decode_request,
 };
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
+use frame_legacy_import::{LegacyImportError, LegacyProjectMigrationService};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::{Emitter, Manager};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -49,6 +59,11 @@ struct NativeDesktopState {
     native_backend: Option<Mutex<MacOsNativeDesktopBackend>>,
     #[cfg(all(target_os = "windows", feature = "windows-native"))]
     native_backend: Option<Mutex<WindowsNativeDesktopBackend>>,
+    #[cfg(any(
+        all(target_os = "macos", feature = "macos-native"),
+        all(target_os = "windows", feature = "windows-native")
+    ))]
+    legacy_migration: Option<Mutex<LegacyProjectMigrationService>>,
     instant_finalize: InstantFinalizeService,
     pending_update: Mutex<Option<Update>>,
     shell_busy: AtomicBool,
@@ -74,6 +89,26 @@ fn acquire_shell(state: &NativeDesktopState) -> Result<ShellBusyGuard<'_>, Deskt
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map(|_| ShellBusyGuard(&state.shell_busy))
         .map_err(|_| DesktopShellFailure::busy())
+}
+
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
+fn map_legacy_import_error(error: LegacyImportError) -> DesktopShellFailure {
+    match error {
+        LegacyImportError::StaleCatalog
+        | LegacyImportError::NeedsReview
+        | LegacyImportError::Unsupported
+        | LegacyImportError::SourceChanged => DesktopShellFailure::conflict(),
+        LegacyImportError::Unavailable | LegacyImportError::InvalidProject => {
+            DesktopShellFailure::unavailable()
+        }
+        LegacyImportError::Bound
+        | LegacyImportError::InvalidCatalog
+        | LegacyImportError::Storage
+        | LegacyImportError::RandomUnavailable => DesktopShellFailure::internal(),
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -450,6 +485,75 @@ async fn execute_shell(
             action: UpdateAction::Relaunch,
             ..
         } => Ok(DesktopShellOutcome::RelaunchRequested),
+        DesktopShellCommand::LegacyProjectScan => {
+            #[cfg(any(
+                all(target_os = "macos", feature = "macos-native"),
+                all(target_os = "windows", feature = "windows-native")
+            ))]
+            {
+                let catalog = state
+                    .legacy_migration
+                    .as_ref()
+                    .ok_or_else(DesktopShellFailure::unavailable)?
+                    .lock()
+                    .map_err(|_| DesktopShellFailure::internal())?
+                    .scan()
+                    .map_err(map_legacy_import_error)?;
+                Ok(DesktopShellOutcome::LegacyProjectsScanned { catalog })
+            }
+            #[cfg(not(any(
+                all(target_os = "macos", feature = "macos-native"),
+                all(target_os = "windows", feature = "windows-native")
+            )))]
+            {
+                Err(DesktopShellFailure::unavailable())
+            }
+        }
+        DesktopShellCommand::LegacyProjectImport {
+            catalog_generation,
+            project_token,
+        } => {
+            #[cfg(any(
+                all(target_os = "macos", feature = "macos-native"),
+                all(target_os = "windows", feature = "windows-native")
+            ))]
+            {
+                let (receipt, catalog) = {
+                    let mut migration = state
+                        .legacy_migration
+                        .as_ref()
+                        .ok_or_else(DesktopShellFailure::unavailable)?
+                        .lock()
+                        .map_err(|_| DesktopShellFailure::internal())?;
+                    let receipt = migration
+                        .import(catalog_generation, &project_token)
+                        .map_err(map_legacy_import_error)?;
+                    let catalog = migration.scan().map_err(map_legacy_import_error)?;
+                    (receipt, catalog)
+                };
+                let studio_projects = state
+                    .native_backend
+                    .as_ref()
+                    .ok_or_else(DesktopShellFailure::unavailable)?
+                    .lock()
+                    .map_err(|_| DesktopShellFailure::internal())?
+                    .scan_studio_projects()
+                    .map_err(|_| DesktopShellFailure::internal())?;
+                Ok(DesktopShellOutcome::LegacyProjectImported {
+                    catalog,
+                    receipt,
+                    studio_projects,
+                })
+            }
+            #[cfg(not(any(
+                all(target_os = "macos", feature = "macos-native"),
+                all(target_os = "windows", feature = "windows-native")
+            )))]
+            {
+                let _ = (catalog_generation, project_token);
+                Err(DesktopShellFailure::unavailable())
+            }
+        }
     }
 }
 
@@ -560,6 +664,8 @@ async fn dispatch_main(
             &request.command,
             frame_desktop_core::IpcCommand::Lifecycle { .. }
                 | frame_desktop_core::IpcCommand::Update { .. }
+                | frame_desktop_core::IpcCommand::LegacyProjectScan
+                | frame_desktop_core::IpcCommand::LegacyProjectImport { .. }
         )
     {
         let start = state
@@ -935,6 +1041,21 @@ fn main() {
                 (requested_adapter, None)
             };
             #[cfg(any(
+                all(target_os = "macos", feature = "macos-native"),
+                all(target_os = "windows", feature = "windows-native")
+            ))]
+            let legacy_migration = data
+                .parent()
+                .map(|base| {
+                    LegacyProjectMigrationService::new(
+                        base.join("so.cap.desktop"),
+                        data.join("projects"),
+                        data.join("media").join("studio"),
+                    )
+                })
+                .and_then(Result::ok)
+                .map(Mutex::new);
+            #[cfg(any(
                 all(target_os = "windows", not(feature = "windows-native")),
                 all(target_os = "macos", not(feature = "macos-native"))
             ))]
@@ -965,6 +1086,11 @@ fn main() {
                 native_backend,
                 #[cfg(all(target_os = "windows", feature = "windows-native"))]
                 native_backend,
+                #[cfg(any(
+                    all(target_os = "macos", feature = "macos-native"),
+                    all(target_os = "windows", feature = "windows-native")
+                ))]
+                legacy_migration,
                 instant_finalize: InstantFinalizeService::not_configured(),
                 pending_update: Mutex::new(None),
                 shell_busy: AtomicBool::new(false),
