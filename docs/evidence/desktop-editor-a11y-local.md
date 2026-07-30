@@ -5,12 +5,12 @@
 Issue 33 checkboxes 1–5, 7, and 10 are locally satisfied by the typed Tauri
 surface, backend-owned state model, accessible Leptos product, production
 window lifecycle, deterministic browser/fake harnesses, IPC security boundary,
-and non-destructive Cap scan/import path. Checkboxes 6 and 8 are
+and non-destructive Cap scan/import path. Checkboxes 6, 8, and 9 are
 `protected_pending`: the rapid-command/error/device-loss/restart and complete
-keyboard paths execute locally, while representative signed native hardware
-and named VoiceOver/Narrator results remain uncollected. Checkbox 9 is the one
-remaining repository-local gap because the signed macOS display lane is not a
-full-product macOS/Windows lifecycle, exclusion, and multi-monitor driver.
+keyboard paths execute locally, and the supported-OS lifecycle matrix driver
+and validator are implemented, while representative signed native hardware
+cells and named VoiceOver/Narrator results remain uncollected. Issue 33 has no
+remaining repository-local gap.
 
 The portable release shell selects `DesktopAdapterKind::Unavailable`. A macOS
 release built with `macos-native` instead requests `NativeMacOs`, reports
@@ -45,12 +45,21 @@ source-set-bound preview, camera/cursor/background compositor, and durable
 render coordinator now close the repository-local Studio integration portion
 without claiming physical device, codec, or provider evidence.
 
-The checked-in hardware workflow now invokes the exact certificate-signed
-`Frame.app` executable with a protected, token-gated in-process driver. The
-driver refuses to request ScreenCapture permission, records and discovers a
-short display-only WebM, exports it through the native adapter, and proves
-cancel cleanup. Its source, validator, and workflow shape are not a physical
-real-hardware result; only a successful protected run can supply that evidence.
+The checked-in hardware workflow retains the exact certificate-signed
+`Frame.app` display-only lane: its protected, token-gated in-process driver
+refuses to request ScreenCapture permission, records and discovers a short
+WebM, exports through the native adapter, and proves cancel cleanup. The same
+workflow now also offers signed macOS and Authenticode Windows product lanes.
+Their second in-process driver launches the real Tauri shell, validates all
+three content-protected windows and OS registrations, routes the exact
+hotkey/tray handlers, closes and reopens physical windows, moves the windows
+through the requested monitor topology, and records a randomized solid-color
+sentinel on every monitor. A real GStreamer decode fails the run if those
+Frame colors survive public-capture exclusion. The validator accepts only the
+exact single-standard, dual-mixed-scale, or rotated cell, binds results to the
+source, run, signed binary, and certificate identity, and rejects device names
+or extra fields. Source, tests, workflow shape, and a validator-only artifact
+are not physical hardware results; successful protected runs remain required.
 
 ## Local deterministic evidence
 
@@ -147,6 +156,8 @@ GST_PLUGIN_SYSTEM_PATH_1_0="$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
 python3 scripts/ci/build-desktop-ui.py
 python3 scripts/ci/check-desktop-bundle.py --evidence target/evidence/desktop-bundle-local.json
 python3 scripts/ci/check-desktop-product.py --evidence target/evidence/desktop-product-local.json
+python3 -I scripts/ci/test-desktop-real-hardware.py
+python3 -I scripts/ci/test-desktop-product-hardware.py
 
 # Execute the production Leptos UI against the real Rust dispatch boundary.
 cargo build --locked --release -p frame-desktop-core \
@@ -192,9 +203,10 @@ evidence.
 
 ## Protected evidence still required
 
-The following evidence is still required for checkboxes 6 and 8 and for the
-broader desktop release. Checkbox 9 cannot become `protected_pending` until the
-full-product macOS/Windows driver and validator are implemented:
+The following evidence is still required for checkboxes 6, 8, and 9 and for
+the broader desktop release. The full-product macOS/Windows lifecycle driver
+and validator are implemented, so checkbox 9 is protected pending rather than
+a repository-local gap:
 
 - macOS and Windows permission prompts using real screen, microphone, system-audio, and camera APIs;
 - real Instant/Studio pipelines from issues 24–27 and API/provider journeys from issue 30;
@@ -210,9 +222,11 @@ full-product macOS/Windows driver and validator are implemented:
 - product, accessibility, privacy, security, desktop, media, and release-owner approvals, followed by
   parity gate 29 before removing the legacy selector.
 
-The checked-in partial macOS workflow, in-process signed-app driver, runner,
-and validator execute only the verified executable named by the signed
-bundle's `Info.plist`; evidence is bound to its certificate-backed designated
-requirement and executable digest. They prove the narrow display capability
-only. No hardware result is fabricated or marked passed, and source inspection
-or a validator-only artifact is not valid completion evidence.
+The partial macOS lane executes only the verified executable named by the
+signed bundle's `Info.plist`; its evidence is bound to the certificate-backed
+designated requirement and executable digest and proves only the narrow
+display capability. The product lifecycle lanes independently bind the macOS
+bundle or Windows executable to the exact Apple team/designated requirement or
+Authenticode certificate, source SHA, workflow run, platform, and topology.
+No hardware result is fabricated or marked passed, and source inspection or a
+validator-only artifact is not valid completion evidence.

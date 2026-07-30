@@ -507,6 +507,8 @@ def main() -> int:
             "quality-gates.yml: cross-repository ownership/policy mutations must be required", errors)
     require("test-desktop-real-hardware.py" in quality,
             "quality-gates.yml: signed desktop hardware evidence regressions must be tested", errors)
+    require("test-desktop-product-hardware.py" in quality,
+            "quality-gates.yml: signed desktop lifecycle matrix regressions must be tested", errors)
     require(
         "python3 -I scripts/ci/desktop-browser-journey.py" in quality
         and "frame-desktop-e2e-host" in quality
@@ -642,42 +644,110 @@ def main() -> int:
     )
 
     hardware = texts.get("desktop-real-hardware.yml", "")
+    partial_hardware = (
+        hardware.split("\n  macos_display:\n", maxsplit=1)[-1]
+        .split("\n  macos_product:\n", maxsplit=1)[0]
+    )
+    macos_product_hardware = (
+        hardware.split("\n  macos_product:\n", maxsplit=1)[-1]
+        .split("\n  windows_product:\n", maxsplit=1)[0]
+    )
+    windows_product_hardware = hardware.split(
+        "\n  windows_product:\n", maxsplit=1
+    )[-1]
     require(
-        "macos_display:" in hardware
-        and "runs-on: frame-macos-hardware" in hardware
-        and "environment: desktop-macos-hardware" in hardware
+        "evidence_lane:" in hardware
+        and "macos-display-partial" in hardware
+        and "macos-product" in hardware
+        and "windows-product" in hardware
+        and all(topology in hardware for topology in (
+            "single-standard",
+            "dual-mixed-scale",
+            "rotated",
+        ))
         and re.search(
-            r"^concurrency:\n  group: desktop-macos-hardware\n"
+            r"^concurrency:\n  group: desktop-signed-hardware\n"
             r"  cancel-in-progress: false\n  queue: max$",
             hardware,
             re.MULTILINE,
         ) is not None
-        and "fetch-depth: 0" in hardware
-        and 'git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main' in hardware
-        and "secrets.FRAME_CODESIGN_IDENTITY" in hardware
-        and "scripts/frame desktop-macos-bundle" in hardware
-        and "sign-macos-local-app.sh verify-trusted" in hardware
+        and hardware.count("fetch-depth: 0") == 3
         and hardware.count(
+            'git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main'
+        ) == 3,
+        "desktop-real-hardware.yml: protected hardware inputs, serialization, and exact checkout authority are required",
+        errors,
+    )
+    require(
+        "inputs.evidence_lane == 'macos-display-partial'" in partial_hardware
+        and "runs-on: frame-macos-hardware" in partial_hardware
+        and "environment: desktop-macos-hardware" in partial_hardware
+        and "secrets.FRAME_CODESIGN_IDENTITY" in partial_hardware
+        and "scripts/frame desktop-macos-bundle" in partial_hardware
+        and "sign-macos-local-app.sh verify-trusted" in partial_hardware
+        and partial_hardware.count(
             "--app-bundle target/release/bundle/macos/Frame.app"
         )
         == 2
-        and "vars.FRAME_EXPECTED_APPLE_TEAM_ID" in hardware
-        and hardware.count("--expected-source-sha") == 2
-        and hardware.count("--expected-run-id") == 2
-        and hardware.count("--expected-signing-team") == 2
-        and "run-desktop-real-hardware.py" in hardware
-        and "FRAME_REAL_HARDWARE" in hardware
-        and "--expected-capability macos_display_webm_v1" in hardware
-        and "desktop-macos-display-hardware.json" in hardware,
+        and "vars.FRAME_EXPECTED_APPLE_TEAM_ID" in partial_hardware
+        and partial_hardware.count("--expected-source-sha") == 2
+        and partial_hardware.count("--expected-run-id") == 2
+        and partial_hardware.count("--expected-signing-team") == 2
+        and "run-desktop-real-hardware.py" in partial_hardware
+        and "FRAME_REAL_HARDWARE" in partial_hardware
+        and "--expected-capability macos_display_webm_v1" in partial_hardware
+        and "desktop-macos-display-hardware.json" in partial_hardware,
         "desktop-real-hardware.yml: the protected signed-app macOS display gate is required",
         errors,
     )
     require(
-        "frame-windows-hardware" not in hardware
-        and "frame-desktop.exe" not in hardware
-        and "--binary target/release/frame-desktop" not in hardware
+        "inputs.evidence_lane == 'macos-product'" in macos_product_hardware
+        and "runs-on: frame-macos-hardware" in macos_product_hardware
+        and "environment: desktop-macos-hardware" in macos_product_hardware
+        and "secrets.FRAME_CODESIGN_IDENTITY" in macos_product_hardware
+        and "scripts/frame desktop-macos-bundle" in macos_product_hardware
+        and "sign-macos-local-app.sh verify-trusted" in macos_product_hardware
+        and "run-desktop-product-hardware.py" in macos_product_hardware
+        and "desktop-product-hardware.py" in macos_product_hardware
+        and macos_product_hardware.count(
+            "--app-bundle target/release/bundle/macos/Frame.app"
+        )
+        == 2
+        and macos_product_hardware.count("--platform macos") == 2
+        and macos_product_hardware.count("--expected-source-sha") == 2
+        and macos_product_hardware.count("--expected-run-id") == 2
+        and macos_product_hardware.count("--expected-signing-identity") == 2
+        and "desktop-macos-product-hardware.json" in macos_product_hardware,
+        "desktop-real-hardware.yml: the signed macOS product lifecycle matrix lane is required",
+        errors,
+    )
+    require(
+        "inputs.evidence_lane == 'windows-product'" in windows_product_hardware
+        and "runs-on: frame-windows-hardware" in windows_product_hardware
+        and "environment: desktop-windows-hardware" in windows_product_hardware
+        and "FRAME_WINDOWS_CERTIFICATE_THUMBPRINT" in windows_product_hardware
+        and "FRAME_WINDOWS_TIMESTAMP_URL" in windows_product_hardware
+        and "Get-AuthenticodeSignature" in windows_product_hardware
+        and "cargo tauri build --ci --bundles nsis" in windows_product_hardware
+        and "--features windows-native,custom-protocol" in windows_product_hardware
+        and "run-desktop-product-hardware.py" in windows_product_hardware
+        and "desktop-product-hardware.py" in windows_product_hardware
+        and windows_product_hardware.count(
+            "--binary target/release/frame-desktop.exe"
+        )
+        == 2
+        and windows_product_hardware.count("--platform windows") == 2
+        and windows_product_hardware.count("--expected-source-sha") == 2
+        and windows_product_hardware.count("--expected-run-id") == 2
+        and windows_product_hardware.count("--expected-signing-identity") == 2
+        and "desktop-windows-product-hardware.json" in windows_product_hardware,
+        "desktop-real-hardware.yml: the Authenticode-bound Windows product lifecycle matrix lane is required",
+        errors,
+    )
+    require(
+        "--binary target/release/frame-desktop" not in partial_hardware
         and 'FRAME_CODESIGN_IDENTITY: "-"' not in hardware,
-        "desktop-real-hardware.yml: raw, ad-hoc, or unavailable capture builds must not be accepted as native evidence",
+        "desktop-real-hardware.yml: raw or ad-hoc macOS builds must not be accepted as signed hardware evidence",
         errors,
     )
     exception_expiry = dt.date(2026, 10, 15)

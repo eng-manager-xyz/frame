@@ -224,6 +224,8 @@ case "$command" in
     python3 -I scripts/ci/check-ui-migration.py
     python3 -I scripts/ci/check-issue-closure.py
     python3 -I scripts/ci/check-desktop-product.py
+    python3 -I scripts/ci/test-desktop-real-hardware.py
+    python3 -I scripts/ci/test-desktop-product-hardware.py
     python3 -I scripts/ci/check-media-service.py
     python3 -I scripts/ci/run-legacy-api-parity.py \
       --evidence-dir target/evidence

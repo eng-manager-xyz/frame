@@ -17,13 +17,14 @@ Ordinals are one-based in checkbox order within each issue. Every issue pins a
 digest of its checkbox text, so editing or reordering a requirement forces a
 fresh classification. Evidence paths must be real, non-symlink repository
 files. All ordinals not explicitly protected or open are locally satisfied.
-The current exact partition is 371 locally satisfied, 182 protected pending,
-and 1 repository-local gap. Issue 33 checkbox 9 remains open because the
-checked-in signed macOS display driver is deliberately narrower than the full
-macOS/Windows hotkey, tray, overlay, target-picker, physical window-exclusion,
-and multi-monitor matrix. Issue 33 checkboxes 6 and 8 now have complete local
-state/browser implementations and are protected pending representative native
-hardware and named VoiceOver/Narrator execution. Issues 24, 25, and 27 have no
+The current exact partition is 371 locally satisfied, 183 protected pending,
+and 0 repository-local gaps. Issue 33 checkbox 9 now has a signed macOS and
+Authenticode Windows product driver, fail-closed validator, and explicit
+single-display, dual mixed-scale, and rotated cells. It remains open as
+protected pending until every supported-OS cell executes on representative
+hardware. Issue 33 checkboxes 6 and 8 likewise have complete local
+state/browser implementations and await representative native hardware and
+named VoiceOver/Narrator execution. Issues 24, 25, and 27 have no
 repository-local gap; their representative physical matrices remain protected
 pending. Issue 27's reviewed legacy-project corpus is protected pending as
 well.
@@ -35,7 +36,8 @@ python3 -I scripts/ci/check-issue-closure.py
 ```
 
 The checker requires an exact 554-item partition and prints every true local
-gap with its issue, ordinal, and source text. Protected classes are deliberately
+gap with its issue, ordinal, and source text. The current inventory prints
+none. Protected classes are deliberately
 allowed to overlap because one checkbox can require, for example, both a real
 provider and a supported browser. The inventory does not check boxes, authorize
 promotion, or convert `not_collected` protected records into evidence. Its
