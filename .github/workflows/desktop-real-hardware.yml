@@ -19,9 +19,9 @@ concurrency:
 jobs:
   macos_display:
     # This is deliberately narrower than the protected full desktop product
-    # matrix. Windows stays on the portable/unavailable shell until it has a
-    # reviewed native adapter; audio, camera, Studio, updater, and accessibility
-    # hardware gates remain pending separately.
+    # matrix. A Windows native adapter exists, but this workflow has no Windows
+    # full-product runner lane; audio, camera, Studio, updater, lifecycle, and
+    # accessibility hardware gates remain pending separately.
     name: macOS display recording protected evidence
     runs-on: frame-macos-hardware
     environment: desktop-macos-hardware

@@ -1,11 +1,12 @@
 # Desktop product contract v1
 
 Issue 33 owns the Leptos/Tauri recorder and editor boundary, while issues 24–27
-own capture and media behavior. The portable contract now composes bounded
-macOS and Windows display/window/region video adapters without allowing the WebView to
+own capture and media behavior. The portable contract composes bounded macOS
+and Windows display/window/region video adapters without allowing a WebView to
 acquire filesystem, shell, device, tray, updater, or arbitrary Tauri authority.
-That slice is not the complete recorder or editor required to close any of
-those issues.
+macOS also connects optional normalized A/V inputs, Studio recovery,
+preview/edit, and coordinated export. Physical device/provider/release evidence
+remains separate from these repository-local implementations.
 
 ## Backend truth
 
@@ -121,9 +122,11 @@ audio, microphone, camera, pause/resume, MP4, recovery, and Studio operations.
 
 ## Window ownership
 
-The single physical WebView is deliberately narrow. Bootstrap creates independent logical scopes;
-each has a different opaque window and session token, monotonic request sequence, command allowlist,
-and path policy.
+Tauri creates three physical WebViews: `main`, `overlay`, and
+`target-picker`. The main WebView multiplexes the product's logical scopes;
+the two auxiliary WebViews can use only their matching logical role. Bootstrap
+creates independent logical scopes, each with a different opaque window and
+session token, monotonic request sequence, command allowlist, and path policy.
 
 | Logical owner | Allowed authority |
 | --- | --- |
@@ -134,6 +137,7 @@ and path policy.
 | Export | export start/cancel only |
 | Settings | revision-fenced settings and approved presets |
 | Overlay | pause/resume/stop/cancel and overlay lifecycle only |
+| Target picker | enumerate/select bounded capture targets and picker lifecycle only |
 
 A command copied to another logical scope is rejected before state mutation. Backend events carry an
 explicit owner. Closing or hiding UI surfaces never rewrites recorder/editor truth.
@@ -174,12 +178,14 @@ and project are re-read and authenticated. Interrupted recording/edit-save
 entries can be inspected and reconciled through a new journal fence; only a
 proven-empty attempt can be archived, without deleting graph or media files.
 The native editor persists compiled trim/delete/split/speed/audio-gain drafts.
-A clean aligned project can publish a verified edit-aware distribution MP4
-from the Leptos editor. The operation is currently synchronous and reports its
-bounded internal progress only at terminal completion to the desktop state
-machine; it is not yet a cancellable coordinator-owned render. Combined
-microphone/camera capture and camera/cursor/background composition are not
-wired.
+A clean aligned project can publish verified edit-aware distribution,
+editable, native-master, and archive profiles from the Leptos editor. The
+durable render coordinator exposes bounded progress through `ExportPoll`,
+confirms cancellation only after worker termination and exact partial cleanup,
+and records the terminal inode/hash/length receipt before releasing authority.
+The combined optional-input bridge and canonical compositor connect
+microphone, system audio, camera, cursor, background, and layout state to
+recording, preview, and export.
 
 The Leptos product uses native buttons, fieldsets, labels, meters, progress elements, headings,
 landmarks, a polite atomic status region, an assertive modal error surface, visible focus, a skip
@@ -202,10 +208,16 @@ reconstruction without pretending to call OS APIs. The portable release shell
 selects `Unavailable`; the `macos-native` and `windows-native` release
 compositions select their narrow target adapters when backend construction
 succeeds; and only a debug build with
-`FRAME_DESKTOP_FAKE_PIPELINE=1` can select the deterministic fake. Native global
-hotkey registration, tray actions, overlay placement, target-picker placement, physical updater install/relaunch,
-and cross-platform window-exclusion integration remain blocked until the
-platform adapters and the protected hardware matrix pass.
+`FRAME_DESKTOP_FAKE_PIPELINE=1` can select the deterministic fake. Production
+shell code registers OS-specific global shortcuts, installs the tray menu,
+binds three physical windows to their logical owners, hides known windows on
+close, reopens/focuses them through typed actions, content-protects all Frame
+windows, and positions overlay/target-picker surfaces relative to the main
+window's current monitor. Pure tests cover every shortcut/tray/close mapping,
+unknown labels, negative monitor origins, oversized windows, and coordinate
+overflow. Physical hotkey/tray interaction, exclusion recording, and
+scale/rotation/topology behavior remain the one repository-local full-matrix
+harness gap plus protected execution.
 
 The entire current Frame application is excluded inside the ScreenCaptureKit
 display filter, including windows created after capture starts, but that

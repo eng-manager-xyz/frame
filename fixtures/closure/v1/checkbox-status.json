@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 368,
-    "protected_pending": 180,
-    "local_gap": 6
+    "local_satisfied": 371,
+    "protected_pending": 182,
+    "local_gap": 1
   },
   "issues": {
     "01": {
@@ -265,10 +265,13 @@
     },
     "33": {
       "count": 10,
-      "digest": "a2897ca3c24cd5f21d20434572f703358e1b1e8df162512fc3e68e73712eec1e",
-      "evidence": ["docs/evidence/desktop-editor-a11y-local.md", "docs/architecture/desktop-product-v1.md", "docs/operations/legacy-cap-import.md", "apps/desktop/src/ipc.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "crates/legacy-import/src/lib.rs", "crates/legacy-import/src/service.rs", "scripts/ci/check-desktop-product.py"],
-      "protected": [],
-      "local_gaps": [{"ordinals": [3, 4, 5, 6, 8, 9], "reason": "Recorder, editor, export, lifecycle, hardware-suite, accessibility, and OS-integration behavior remains incomplete in the production desktop adapter."}]
+      "digest": "c526a6f6a5780acefa641deb9778601967481a14fdce52a7c0d26632302861f6",
+      "evidence": ["docs/evidence/desktop-editor-a11y-local.md", "docs/architecture/desktop-product-v1.md", "docs/operations/legacy-cap-import.md", "apps/desktop/src/bin/frame-desktop-e2e-host.rs", "apps/desktop/src/ipc.rs", "apps/desktop/src/main.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "apps/desktop/tests/fake_desktop_journey.rs", "crates/legacy-import/src/lib.rs", "crates/legacy-import/src/service.rs", "scripts/ci/check-desktop-product.py", "scripts/ci/desktop-browser-journey.py", "scripts/ci/desktop-real-hardware.py"],
+      "protected": [
+        {"ordinals": [6], "classes": ["hardware_execution"], "reason": "The deterministic state machine and browser journey cover rapid commands, backend errors, injected device loss, restart reconstruction, close/reopen, and update/relaunch; representative signed native hardware/process execution remains uncollected."},
+        {"ordinals": [8], "classes": ["browser_accessibility_execution"], "reason": "The complete keyboard path, semantic model, and modal behavior are executable locally; named VoiceOver and Narrator journeys on distributed builds remain uncollected."}
+      ],
+      "local_gaps": [{"ordinals": [9], "reason": "The signed macOS display lane is deliberately partial; a full-product macOS and Windows driver/validator for hotkeys, tray, overlays, target picker, physical window exclusion, and multi-monitor placement is not yet implemented."}]
     },
     "34": {
       "count": 12,

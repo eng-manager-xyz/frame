@@ -39,7 +39,7 @@ AUDITED_LOCAL_GAPS = {
     "24": frozenset(),
     "25": frozenset(),
     "27": frozenset(),
-    "33": frozenset({3, 4, 5, 6, 8, 9}),
+    "33": frozenset({9}),
 }
 
 

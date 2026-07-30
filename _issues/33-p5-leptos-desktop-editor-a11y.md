@@ -37,22 +37,37 @@ Native pipeline implementations are issues 24–27; broad API behavior is issue 
 
 ## Deliverables
 
-- [ ] Versioned typed Tauri command/event surface and explicit capability/permission files.
-- [ ] Recorder and editor state models driven by backend truth rather than duplicated UI assumptions.
-- [ ] Accessible Leptos recorder, recovery, editor, export, upload, settings, and error flows.
-- [ ] Hotkey/tray/window/overlay lifecycle and multi-window ownership model.
-- [ ] Desktop E2E harness with fake devices/pipelines plus dedicated real-hardware suite.
+- [x] Versioned typed Tauri command/event surface and explicit capability/permission files.
+- [x] Recorder and editor state models driven by backend truth rather than duplicated UI assumptions.
+- [x] Accessible Leptos recorder, recovery, editor, export, upload, settings, and error flows.
+- [x] Hotkey/tray/window/overlay lifecycle and multi-window ownership model.
+- [x] Desktop E2E harness with fake devices/pipelines plus dedicated real-hardware suite.
 
 ## Acceptance criteria
 
 - [ ] UI state remains consistent through rapid commands, backend error, device loss, process restart, window close/reopen, and update/relaunch.
-- [ ] IPC rejects unapproved commands, malformed payloads, stale operation IDs, cross-window misuse, and filesystem paths outside allowed scopes.
+- [x] IPC rejects unapproved commands, malformed payloads, stale operation IDs, cross-window misuse, and filesystem paths outside allowed scopes.
 - [ ] Keyboard-only and screen-reader users can configure, start, pause, stop, recover, edit essential controls, export, and upload.
 - [ ] Hotkeys, tray, overlays, target picker, window exclusion, and multi-monitor placement pass each supported OS matrix.
 - [x] Legacy settings/projects are migrated or reported without destructive mutation, and the legacy desktop remains selectable until parity gate 29.
 
 ## Current implementation evidence
 
+- Three physical Tauri windows (`main`, `overlay`, and `target-picker`) are
+  content-protected, role-bound, tray/hotkey controlled, monitor-relative, and
+  hide-on-close. Pure policy tests cover every shortcut/tray/window mapping,
+  unknown inputs, negative monitor coordinates, oversized windows, and
+  coordinate overflow.
+- The release Leptos UI exposes semantic recorder, recovery, editor, export,
+  upload, settings, and modal-error surfaces. The deterministic browser journey
+  drives 23 keyboard actions through the real Rust dispatch boundary, injects
+  device loss and process restart in the gated native host, and proves modal
+  labelling, autofocus, Tab/Shift+Tab trapping, Escape dismissal, and safe
+  focus restoration.
+- A certificate-bound macOS display workflow and in-process signed-app driver
+  provide the dedicated non-fake hardware lane. The broader supported-OS
+  hotkey/tray/overlay/window-exclusion/multi-monitor matrix remains a true
+  repository gap until a full-product driver and validator exist.
 - The main-window-only `LegacyProjectScan` and `LegacyProjectImport` commands
   use the versioned typed IPC boundary, reject stale catalog generations, keep
   paths and project names in Rust, and publish state only after the native shell
