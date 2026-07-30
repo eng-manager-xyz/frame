@@ -1,4 +1,4 @@
-name: Desktop macOS display hardware
+name: Desktop signed hardware evidence
 
 on:
   workflow_dispatch:
@@ -7,21 +7,41 @@ on:
         description: Exact release candidate commit
         required: true
         type: string
+      evidence_lane:
+        description: Signed hardware evidence lane
+        required: true
+        default: macos-display-partial
+        type: choice
+        options:
+          - macos-display-partial
+          - macos-product
+          - windows-product
+      topology:
+        description: Physical topology for a product lifecycle matrix cell
+        required: true
+        default: single-standard
+        type: choice
+        options:
+          - single-standard
+          - dual-mixed-scale
+          - rotated
 
 permissions:
   contents: read
 
+# Certificate/TCC and Authenticode evidence is intentionally serialized across
+# platforms and topology cells. Protected runs must never cancel one another.
 concurrency:
-  group: desktop-macos-hardware
+  group: desktop-signed-hardware
   cancel-in-progress: false
   queue: max
 
 jobs:
   macos_display:
-    # This is deliberately narrower than the protected full desktop product
-    # matrix. A Windows native adapter exists, but this workflow has no Windows
-    # full-product runner lane; audio, camera, Studio, updater, lifecycle, and
-    # accessibility hardware gates remain pending separately.
+    # This lane remains deliberately narrower than the product lifecycle
+    # matrix. It preserves the certificate-bound display recording evidence
+    # while the product lanes collect their own exact case set.
+    if: ${{ inputs.evidence_lane == 'macos-display-partial' }}
     name: macOS display recording protected evidence
     runs-on: frame-macos-hardware
     environment: desktop-macos-hardware
@@ -104,5 +124,198 @@ jobs:
         with:
           name: desktop-macos-display-hardware-${{ inputs.release_sha }}
           path: target/evidence/desktop-macos-display-hardware.json
+          if-no-files-found: error
+          retention-days: 30
+
+  macos_product:
+    if: ${{ inputs.evidence_lane == 'macos-product' }}
+    name: macOS ${{ inputs.topology }} product lifecycle evidence
+    runs-on: frame-macos-hardware
+    environment: desktop-macos-hardware
+    timeout-minutes: 75
+    steps:
+      - name: Check out the exact release candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject a moving or unapproved checkout
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          if [[ ! $RELEASE_SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main
+      - name: Install pinned Rust and Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.14.5"
+      - name: Install the declared Rust toolchain and desktop bundle tools
+        shell: bash
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal
+          cargo install trunk --version 0.21.14 --locked
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build and certificate-sign the macOS product application
+        shell: bash
+        env:
+          FRAME_DESKTOP_FAKE_PIPELINE: "0"
+          FRAME_CODESIGN_IDENTITY: ${{ secrets.FRAME_CODESIGN_IDENTITY }}
+        run: |
+          if [[ -z $FRAME_CODESIGN_IDENTITY || $FRAME_CODESIGN_IDENTITY == - ]]; then
+            echo "FRAME_CODESIGN_IDENTITY must select a certificate-backed identity" >&2
+            exit 1
+          fi
+          scripts/frame desktop-macos-bundle
+          scripts/ci/sign-macos-local-app.sh verify-trusted
+      - name: Run the signed macOS product lifecycle cell
+        shell: bash
+        env:
+          FRAME_REAL_HARDWARE: "1"
+          FRAME_HARDWARE_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          FRAME_RELEASE_SHA: ${{ inputs.release_sha }}
+          FRAME_EXPECTED_SIGNING_TEAM: ${{ vars.FRAME_EXPECTED_APPLE_TEAM_ID }}
+          FRAME_HARDWARE_TOPOLOGY: ${{ inputs.topology }}
+        run: >-
+          python3 -I scripts/ci/run-desktop-product-hardware.py
+          --platform macos
+          --topology "$FRAME_HARDWARE_TOPOLOGY"
+          --app-bundle target/release/bundle/macos/Frame.app
+          --expected-signing-identity "$FRAME_EXPECTED_SIGNING_TEAM"
+          --expected-source-sha "$FRAME_RELEASE_SHA"
+          --expected-run-id "$FRAME_HARDWARE_RUN_ID"
+          --output target/evidence/desktop-macos-product-hardware.json
+      - name: Validate the exact macOS product lifecycle evidence
+        shell: bash
+        env:
+          FRAME_REAL_HARDWARE: "1"
+          FRAME_HARDWARE_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          FRAME_RELEASE_SHA: ${{ inputs.release_sha }}
+          FRAME_EXPECTED_SIGNING_TEAM: ${{ vars.FRAME_EXPECTED_APPLE_TEAM_ID }}
+          FRAME_HARDWARE_TOPOLOGY: ${{ inputs.topology }}
+        run: >-
+          python3 -I scripts/ci/desktop-product-hardware.py
+          --require-hardware
+          --platform macos
+          --topology "$FRAME_HARDWARE_TOPOLOGY"
+          --app-bundle target/release/bundle/macos/Frame.app
+          --expected-source-sha "$FRAME_RELEASE_SHA"
+          --expected-run-id "$FRAME_HARDWARE_RUN_ID"
+          --expected-signing-identity "$FRAME_EXPECTED_SIGNING_TEAM"
+          --evidence target/evidence/desktop-macos-product-hardware.json
+      - name: Retain the exact macOS product lifecycle trace
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-macos-${{ inputs.topology }}-product-${{ inputs.release_sha }}
+          path: target/evidence/desktop-macos-product-hardware.json
+          if-no-files-found: error
+          retention-days: 30
+
+  windows_product:
+    if: ${{ inputs.evidence_lane == 'windows-product' }}
+    name: Windows ${{ inputs.topology }} product lifecycle evidence
+    runs-on: frame-windows-hardware
+    environment: desktop-windows-hardware
+    timeout-minutes: 90
+    steps:
+      - name: Check out the exact release candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject a moving or unapproved checkout
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          if [[ ! $RELEASE_SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main
+      - name: Install pinned Python and desktop toolchain
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.14.5"
+      - name: Install the declared Rust toolchain and desktop bundle tools
+        shell: bash
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal --target wasm32-unknown-unknown
+          cargo install trunk --version 0.21.14 --locked
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Create the public Authenticode signing overlay
+        shell: bash
+        env:
+          THUMBPRINT: ${{ vars.FRAME_WINDOWS_CERTIFICATE_THUMBPRINT }}
+          TIMESTAMP_URL: ${{ vars.FRAME_WINDOWS_TIMESTAMP_URL }}
+        run: |
+          [[ $THUMBPRINT =~ ^[A-F0-9]{40}$ ]]
+          [[ $TIMESTAMP_URL =~ ^https:// ]]
+          mkdir -p target
+          python3 -c 'import json,os,pathlib; pathlib.Path("target/desktop-windows-hardware.json").write_text(json.dumps({"bundle":{"windows":{"certificateThumbprint":os.environ["THUMBPRINT"],"digestAlgorithm":"sha256","timestampUrl":os.environ["TIMESTAMP_URL"]}}}), encoding="utf-8")'
+      - name: Build the certificate-signed Windows product application
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          FRAME_DESKTOP_FAKE_PIPELINE: "0"
+        run: >-
+          cargo tauri build --ci --bundles nsis
+          --features windows-native,custom-protocol
+          --config ../../target/desktop-windows-hardware.json
+      - name: Require the exact signed Windows executable
+        shell: bash
+        env:
+          FRAME_EXPECTED_WINDOWS_THUMBPRINT: ${{ vars.FRAME_WINDOWS_CERTIFICATE_THUMBPRINT }}
+        run: |
+          powershell.exe -NoLogo -NoProfile -NonInteractive -Command '$s=Get-AuthenticodeSignature -LiteralPath $args[0]; if($s.Status -ne "Valid" -or $s.SignerCertificate.Thumbprint -ne $args[1]){exit 1}' target/release/frame-desktop.exe "$FRAME_EXPECTED_WINDOWS_THUMBPRINT"
+      - name: Run the signed Windows product lifecycle cell
+        shell: bash
+        env:
+          FRAME_REAL_HARDWARE: "1"
+          FRAME_HARDWARE_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          FRAME_RELEASE_SHA: ${{ inputs.release_sha }}
+          FRAME_EXPECTED_WINDOWS_THUMBPRINT: ${{ vars.FRAME_WINDOWS_CERTIFICATE_THUMBPRINT }}
+          FRAME_HARDWARE_TOPOLOGY: ${{ inputs.topology }}
+        run: >-
+          python3 -I scripts/ci/run-desktop-product-hardware.py
+          --platform windows
+          --topology "$FRAME_HARDWARE_TOPOLOGY"
+          --binary target/release/frame-desktop.exe
+          --expected-signing-identity "$FRAME_EXPECTED_WINDOWS_THUMBPRINT"
+          --expected-source-sha "$FRAME_RELEASE_SHA"
+          --expected-run-id "$FRAME_HARDWARE_RUN_ID"
+          --output target/evidence/desktop-windows-product-hardware.json
+      - name: Validate the exact Windows product lifecycle evidence
+        shell: bash
+        env:
+          FRAME_REAL_HARDWARE: "1"
+          FRAME_HARDWARE_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          FRAME_RELEASE_SHA: ${{ inputs.release_sha }}
+          FRAME_EXPECTED_WINDOWS_THUMBPRINT: ${{ vars.FRAME_WINDOWS_CERTIFICATE_THUMBPRINT }}
+          FRAME_HARDWARE_TOPOLOGY: ${{ inputs.topology }}
+        run: >-
+          python3 -I scripts/ci/desktop-product-hardware.py
+          --require-hardware
+          --platform windows
+          --topology "$FRAME_HARDWARE_TOPOLOGY"
+          --binary target/release/frame-desktop.exe
+          --expected-source-sha "$FRAME_RELEASE_SHA"
+          --expected-run-id "$FRAME_HARDWARE_RUN_ID"
+          --expected-signing-identity "$FRAME_EXPECTED_WINDOWS_THUMBPRINT"
+          --evidence target/evidence/desktop-windows-product-hardware.json
+      - name: Retain the exact Windows product lifecycle trace
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-windows-${{ inputs.topology }}-product-${{ inputs.release_sha }}
+          path: target/evidence/desktop-windows-product-hardware.json
           if-no-files-found: error
           retention-days: 30

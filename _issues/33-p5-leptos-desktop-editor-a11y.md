@@ -64,10 +64,15 @@ Native pipeline implementations are issues 24–27; broad API behavior is issue 
   device loss and process restart in the gated native host, and proves modal
   labelling, autofocus, Tab/Shift+Tab trapping, Escape dismissal, and safe
   focus restoration.
-- A certificate-bound macOS display workflow and in-process signed-app driver
-  provide the dedicated non-fake hardware lane. The broader supported-OS
-  hotkey/tray/overlay/window-exclusion/multi-monitor matrix remains a true
-  repository gap until a full-product driver and validator exist.
+- A certificate-bound macOS display workflow retains its dedicated narrow
+  capture lane. A second token-gated driver now runs inside the real signed
+  Tauri application on macOS and Windows, exercises the three physical
+  windows, registered hotkeys/tray handlers, close/reopen lifecycle, and
+  monitor-relative placement, then decodes a randomized sentinel recording to
+  fail if a Frame window leaks into capture. Its fail-closed validator defines
+  single-display, dual mixed-scale, and rotated cells. The harness is locally
+  complete; successful execution of every supported-OS cell remains protected
+  hardware evidence and this acceptance checkbox therefore stays open.
 - The main-window-only `LegacyProjectScan` and `LegacyProjectImport` commands
   use the versioned typed IPC boundary, reject stale catalog generations, keep
   paths and project names in Rust, and publish state only after the native shell

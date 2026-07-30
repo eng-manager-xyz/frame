@@ -51,6 +51,11 @@ const TARGET_PICKER_WINDOW_LABEL: &str = "target-picker";
 
 #[cfg(all(target_os = "macos", feature = "macos-native"))]
 mod hardware_driver;
+#[cfg(any(
+    all(target_os = "macos", feature = "macos-native"),
+    all(target_os = "windows", feature = "windows-native")
+))]
+mod product_hardware_driver;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct NativeDesktopState {
@@ -995,6 +1000,20 @@ fn main() {
         all(target_os = "macos", feature = "macos-native"),
         all(target_os = "windows", feature = "windows-native")
     ))]
+    let product_hardware_configuration = match product_hardware_driver::configuration_if_requested()
+    {
+        Some(Ok(configuration)) => Some(configuration),
+        Some(Err(error)) => {
+            eprintln!("Frame protected product hardware configuration failed: {error}");
+            std::process::exit(1);
+        }
+        None => None,
+    };
+
+    #[cfg(any(
+        all(target_os = "macos", feature = "macos-native"),
+        all(target_os = "windows", feature = "windows-native")
+    ))]
     if matches!(
         configured_adapter(),
         DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
@@ -1023,7 +1042,20 @@ fn main() {
     tauri::Builder::default()
         .plugin(shortcut_plugin)
         .plugin(updater_plugin)
-        .setup(|app| {
+        .setup(move |app| {
+            #[cfg(any(
+                all(target_os = "macos", feature = "macos-native"),
+                all(target_os = "windows", feature = "windows-native")
+            ))]
+            let data = if let Some(configuration) = product_hardware_configuration.as_ref() {
+                configuration.data_root().to_path_buf()
+            } else {
+                app.path().app_data_dir()?
+            };
+            #[cfg(any(
+                all(target_os = "windows", not(feature = "windows-native")),
+                all(target_os = "macos", not(feature = "macos-native"))
+            ))]
             let data = app.path().app_data_dir()?;
             // Do not touch a TCC-protected user folder while Tauri is still
             // launching. The current automatic export is an app-owned
@@ -1149,6 +1181,13 @@ fn main() {
                     }
                 }
                 Err(error) => eprintln!("Frame tray integration is unavailable: {error}"),
+            }
+            #[cfg(any(
+                all(target_os = "macos", feature = "macos-native"),
+                all(target_os = "windows", feature = "windows-native")
+            ))]
+            if let Some(configuration) = product_hardware_configuration {
+                product_hardware_driver::launch(app.handle().clone(), configuration);
             }
             Ok(())
         })

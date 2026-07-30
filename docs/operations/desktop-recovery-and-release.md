@@ -50,10 +50,11 @@ The Rust-owned shell registers platform global shortcuts, tray actions, and
 three content-protected physical windows; it hides/reopens known windows and
 positions the overlay and target picker relative to the current monitor. It
 also supports signed forward and previous-desktop update
-check/install/relaunch. Representative physical hotkey/tray interaction,
-Frame-window exclusion, multi-monitor placement, updater relaunch, and
-distribution evidence remain protected or part of the pending full-product
-hardware matrix.
+check/install/relaunch. The signed product driver and validator now cover
+physical hotkey/tray handler registration, Frame-window exclusion,
+close/reopen, and multi-monitor placement on both supported operating systems.
+Representative runs of those cells, updater relaunch, and distribution
+evidence remain protected.
 
 The smoke confirms only the production-CSP WebView-to-Rust bootstrap and
 coherent adapter truth. The separate
@@ -72,11 +73,13 @@ distributable app-relative runtime.
    bundle, CSP, and capability digests.
 2. Run the portable core tests, fake desktop journey, strict clippy, deterministic bundle checker,
    and desktop product/accessibility checker.
-3. Run `.github/workflows/desktop-real-hardware.yml` on the protected macOS
-   display runner and retain its complete non-fake JSON trace. This lane is
-   deliberately narrower than the full desktop matrix; Windows,
+3. Run `.github/workflows/desktop-real-hardware.yml` with
+   `macos-display-partial` and retain its complete non-fake display trace. Then
+   run `macos-product` and `windows-product` for each `single-standard`,
+   `dual-mixed-scale`, and `rotated` topology and retain the six exact
+   lifecycle traces. The product cells cover Issue 33 window-system behavior;
    microphone/camera, system-audio playback, Studio, updater, recovery, and
-   accessibility hardware gates remain pending.
+   accessibility hardware gates remain separate.
 4. Name the macOS VoiceOver and Windows Narrator versions used for the keyboard/screen-reader
    journeys. Record OS build, architecture, monitor topology/DPI/rotation, device models, permission
    reset procedure, and binary digest.
@@ -126,11 +129,12 @@ permissions return to not-determined, and the UI offers device refresh/recovery 
 - `internal`: preserve project/journal data, offer a bounded retry only where the backend marks it
   retryable, and collect native diagnostics outside the WebView.
 
-## Real-hardware gate
+## Real-hardware gates
 
-The checked-in protected workflow, `scripts/ci/run-desktop-real-hardware.py`,
-and `scripts/ci/desktop-real-hardware.py` produce and validate evidence only
-for the exact partial
+The checked-in protected workflow's `macos-display-partial` lane,
+`scripts/ci/run-desktop-real-hardware.py`, and
+`scripts/ci/desktop-real-hardware.py` produce and validate evidence only for
+the exact partial
 `macos_display_webm_v1` capability: a preauthorized ScreenCapture TCC state,
 display catalog/selection, display capture with Frame's application-exclusion
 filter configured, playable stopped/exported WebM, and cancel cleanup. The
@@ -139,9 +143,8 @@ driver as an external executable. Instead, a token-gated driver is compiled
 into the certificate-signed Frame binary and is unreachable unless both the
 protected argument and environment marker are exact.
 The workflow and validator are not evidence that a physical run occurred.
-Submitted evidence must state
-`full_product_gate: not_claimed`; the validator deliberately has no full-product
-mode.
+Submitted partial evidence must state `full_product_gate: not_claimed`; that
+validator deliberately has no product-lifecycle mode.
 
 The protected runner must be a persistent, logged-in macOS account with an
 unlocked Apple Development or Developer ID private key and an existing
@@ -156,12 +159,46 @@ requirement, and signed executable digest. Denial →
 approval → relaunch remains attended manual evidence because an unattended job
 cannot approve a macOS privacy prompt.
 
-The future full product gate must additionally prove physical window/region
-selection; multi-monitor scale/rotation placement; microphone, system audio, and camera;
-device loss/hotplug; sleep/wake; Instant and Studio; pause/resume; tray/hotkey/
-overlay ownership; crash/restart recovery; updater relaunch; keyboard-only
-operation; and a named screen-reader journey. A valid protected partial result
-cannot satisfy or substitute for that matrix.
+The `macos-product` and `windows-product` lanes use
+`scripts/ci/run-desktop-product-hardware.py` and
+`scripts/ci/desktop-product-hardware.py`. The runner independently verifies
+the certificate-signed application, creates a new canonical temporary data
+root and CSPRNG token, and launches the exact signed Frame executable with the
+token-gated product driver. macOS evidence binds the Apple team, designated
+requirement digest, and executable digest. Windows evidence requires a valid
+Authenticode status, exact protected certificate thumbprint, certificate
+digest, and executable digest.
+
+Inside the real Tauri process, the driver requires all three windows to be
+capture protected, the global shortcuts and tray to be registered, and the
+native adapter to be available. It invokes the same registered hotkey/tray
+handlers, sends OS close requests and proves the windows remain reopenable,
+and moves the main, overlay, and target picker through every attached monitor.
+It fills always-on-top Frame windows on every accepted monitor with
+per-run-random colors, records through the native excluded-window path, and
+decodes a bounded 320×180 frame. More than 128 pixels within eight channel
+levels of either randomized color fails the cell; a visible protected window
+occupies far more than that bounded allowance. The colors and device
+identifiers are never written to evidence.
+
+Each product invocation accepts exactly one physical cell:
+
+- `single-standard`: one monitor, one scale, and no rotated display;
+- `dual-mixed-scale`: two monitors, two distinct scales, and no rotated
+  display; or
+- `rotated`: one or two monitors with at least one native 90°/270° display.
+
+The window-system and native display counts must agree, and only coarse counts
+enter the evidence. Source code, deterministic tests, or a successful cell on
+one platform/topology cannot substitute for another cell. Until all six cells
+are collected, Issue 33 checkbox 9 remains protected pending.
+
+The broader release gate must additionally prove physical window/region
+selection; microphone, system audio, and camera; device loss/hotplug;
+sleep/wake; Instant and Studio; pause/resume; crash/restart recovery; updater
+relaunch; keyboard-only operation; and a named screen-reader journey. A valid
+protected partial or product-lifecycle result cannot substitute for those
+separate requirements.
 
 ## Rollback
 

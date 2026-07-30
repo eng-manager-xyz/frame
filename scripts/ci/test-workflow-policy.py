@@ -492,9 +492,9 @@ def main() -> int:
             ),
             (
                 desktop_hardware,
-                "group: desktop-macos-hardware",
-                "group: desktop-macos-hardware-${{ inputs.release_sha }}",
-                "macOS signing/TCC hardware jobs no longer serialized",
+                "group: desktop-signed-hardware",
+                "group: desktop-signed-hardware-${{ inputs.release_sha }}",
+                "signed hardware jobs no longer globally serialized",
             ),
             (
                 desktop_hardware,
@@ -507,6 +507,18 @@ def main() -> int:
                 "test-desktop-real-hardware.py",
                 "disabled-desktop-real-hardware.py",
                 "signed desktop hardware validator regressions no longer tested",
+            ),
+            (
+                quality,
+                "test-desktop-product-hardware.py",
+                "disabled-desktop-product-hardware.py",
+                "signed product hardware matrix regressions no longer tested",
+            ),
+            (
+                desktop_hardware,
+                "run-desktop-product-hardware.py",
+                "disabled-desktop-product-hardware.py",
+                "signed product application no longer owns lifecycle hardware execution",
             ),
             (
                 quality,

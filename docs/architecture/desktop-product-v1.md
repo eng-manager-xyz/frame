@@ -215,14 +215,30 @@ close, reopens/focuses them through typed actions, content-protects all Frame
 windows, and positions overlay/target-picker surfaces relative to the main
 window's current monitor. Pure tests cover every shortcut/tray/close mapping,
 unknown labels, negative monitor origins, oversized windows, and coordinate
-overflow. Physical hotkey/tray interaction, exclusion recording, and
-scale/rotation/topology behavior remain the one repository-local full-matrix
-harness gap plus protected execution.
+overflow.
 
 The entire current Frame application is excluded inside the ScreenCaptureKit
 display filter, including windows created after capture starts, but that
 source-level invariant is not physical exclusion-recording
-evidence and does not close the broader window/lifecycle acceptance gate.
+evidence by itself.
+
+The protected product hardware mode closes the repository-local harness gap
+without promoting physical results. It is compiled into both native signed
+applications and requires a protected-runner marker, a per-run CSPRNG token,
+and exact source/run/signature metadata. The normal Tauri setup still creates
+the backend, windows, hotkeys, and tray. A bounded driver then exercises the
+same handler functions, OS close requests, and physical monitor moves. It
+places per-run-random solid colors in always-on-top Frame windows on every
+accepted monitor, records through the native excluded-window path, and decodes
+one bounded RGB frame; matching sentinel pixels fail closed. The evidence
+contains only strict case booleans and monitor/scale/rotation counts.
+
+The independent validator binds macOS cells to the certificate-backed bundle,
+Apple team, designated requirement, and executable digest; Windows cells bind
+to a valid Authenticode certificate thumbprint/certificate digest and
+executable digest. It accepts only single-standard, dual mixed-scale, or
+rotated topology cells. Actual macOS and Windows execution of all cells
+remains protected evidence for the broader window/lifecycle acceptance gate.
 
 ## Fake adapter
 

@@ -8,13 +8,13 @@ all 554 issue deliverable/acceptance checkboxes to locally satisfied,
 protected-pending, or true local-gap status. Its checker pins the complete
 requirement text and fails on missing evidence or classification drift.
 
-The current exact partition is 371 locally satisfied, 182 protected pending,
-and 1 true repository-local gap. The remaining gap is issue 33 checkbox 9: the
-full supported-OS hotkey/tray/overlay/target-picker/window-exclusion/
-multi-monitor driver and validator. Issue 33's state-consistency and
-keyboard/screen-reader criteria now have complete local implementations and
-remain protected pending representative signed hardware plus named VoiceOver
-and Narrator execution. Issue 25's physical A/V matrix, issue 27's
+The current exact partition is 371 locally satisfied, 183 protected pending,
+and 0 true repository-local gaps. Issue 33's supported-OS
+hotkey/tray/overlay/target-picker/window-exclusion/multi-monitor driver and
+validator are now implemented, so checkbox 9 joins its state-consistency and
+keyboard/screen-reader criteria as protected pending representative signed
+hardware plus named VoiceOver and Narrator execution. Issue 25's physical A/V
+matrix, issue 27's
 representative legacy-project corpus, and its physical hardware-fallback
 matrix are also protected pending, not complete. Protected rows remain
 pending; this count does not authorize production promotion.
@@ -25,9 +25,9 @@ Run:
 python3 -I scripts/ci/check-issue-closure.py
 ```
 
-This audit is a ledger, not a waiver: protected records remain pending, and a
-local gap remains open even when a surrounding design document, component
-test, synthetic graph, or fake passes.
+This audit is a ledger, not a waiver: protected records remain pending. Any
+future local gap must remain open even when a surrounding design document,
+component test, synthetic graph, or fake passes.
 
 ## Local and CI evidence
 

@@ -127,6 +127,10 @@ def main() -> int:
     hardware_driver = text("apps/desktop/src/hardware_driver.rs")
     hardware_runner = text("scripts/ci/run-desktop-real-hardware.py")
     hardware_validator = text("scripts/ci/desktop-real-hardware.py")
+    product_hardware_driver = text("apps/desktop/src/product_hardware_driver.rs")
+    product_hardware_runner = text("scripts/ci/run-desktop-product-hardware.py")
+    product_hardware_validator = text("scripts/ci/desktop-product-hardware.py")
+    product_hardware_tests = text("scripts/ci/test-desktop-product-hardware.py")
     browser_journey = text("scripts/ci/desktop-browser-journey.py")
     browser_host = text("apps/desktop/src/bin/frame-desktop-e2e-host.rs")
     desktop_shell_smoke = text("scripts/ci/desktop-shell-smoke.py")
@@ -323,6 +327,46 @@ def main() -> int:
             "desktop-macos-display-hardware.json",
         ),
         "protected signed hardware execution",
+    )
+    require(
+        product_hardware_driver,
+        (
+            "--frame-product-hardware-driver",
+            "FRAME_REAL_HARDWARE",
+            "FRAME_HARDWARE_DRIVER_TOKEN",
+            "three_content_protected_windows",
+            "global_hotkey_registration_and_handler",
+            "tray_registration_and_handler",
+            "overlay_target_picker_close_reopen",
+            "monitor_relative_window_placement",
+            "randomized_physical_window_exclusion",
+            "decode_studio_preview_frame",
+            "single-standard",
+            "dual-mixed-scale",
+            "rotated",
+        ),
+        "signed product lifecycle hardware driver",
+    )
+    require(
+        product_hardware_runner
+        + product_hardware_validator
+        + product_hardware_tests
+        + hardware_workflow,
+        (
+            "run-desktop-product-hardware.py",
+            "desktop-product-hardware.py",
+            "desktop_product_hardware_matrix_cell",
+            "desktop_lifecycle_matrix_v1",
+            "verify_macos_artifact",
+            "verify_windows_artifact",
+            "Get-AuthenticodeSignature",
+            "signature_binding_sha256",
+            "randomized_physical_window_exclusion",
+            "test_driver_command_binds_every_independent_value",
+            "desktop-macos-product-hardware.json",
+            "desktop-windows-product-hardware.json",
+        ),
+        "fail-closed signed product lifecycle evidence",
     )
     require(
         desktop_shell,
@@ -867,15 +911,21 @@ def main() -> int:
         (
             "workflow_dispatch:",
             "desktop-real-hardware.py",
+            "desktop-product-hardware.py",
             "frame-macos-hardware",
+            "frame-windows-hardware",
             "macos_display_webm_v1",
             "scripts/frame desktop-macos-bundle",
             "sign-macos-local-app.sh verify-trusted",
             "--app-bundle target/release/bundle/macos/Frame.app",
+            "--binary target/release/frame-desktop.exe",
             "FRAME_EXPECTED_APPLE_TEAM_ID",
-            "A Windows native adapter exists",
-            "no Windows",
-            "full-product runner lane",
+            "FRAME_WINDOWS_CERTIFICATE_THUMBPRINT",
+            "desktop-signed-hardware",
+            "macos-display-partial",
+            "macos-product",
+            "windows-product",
+            "dual-mixed-scale",
         ),
         "protected hardware workflow",
     )
@@ -1115,6 +1165,7 @@ def main() -> int:
         "apps/desktop/src/windows_native_backend.rs",
         "apps/desktop/src/rooted_io.rs",
         "apps/desktop/src/gstreamer_bootstrap.rs",
+        "apps/desktop/src/product_hardware_driver.rs",
         "crates/macos-screen-capture/src/lib.rs",
         "crates/macos-screen-capture/src/cursor.rs",
         "crates/macos-screen-capture/src/platform.rs",
@@ -1131,6 +1182,9 @@ def main() -> int:
         "scripts/ci/desktop-real-hardware.py",
         "scripts/ci/run-desktop-real-hardware.py",
         "scripts/ci/test-desktop-real-hardware.py",
+        "scripts/ci/desktop-product-hardware.py",
+        "scripts/ci/run-desktop-product-hardware.py",
+        "scripts/ci/test-desktop-product-hardware.py",
         "scripts/ci/sign-macos-local-app.sh",
         "scripts/ci/check-desktop-bundle.py",
         "scripts/ci/desktop-shell-smoke.py",
@@ -1190,7 +1244,7 @@ def main() -> int:
             "studio_edit_aware_integration": True,
             "native_recovery_contract": True,
             "native_recovery_evidence": False,
-            "full_product_hardware_matrix_harness": False,
+            "full_product_hardware_matrix_harness": True,
             "assistive_technology_evidence": False,
             "signed_distribution_runtime_evidence": False,
         },
