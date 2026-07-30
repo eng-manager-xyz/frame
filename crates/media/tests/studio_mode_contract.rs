@@ -1293,6 +1293,85 @@ fn journal_cas_reconciles_lost_ack_and_fences_stale_writers() {
 }
 
 #[test]
+fn legacy_import_uses_a_distinct_direct_journal_receipt() {
+    let source_digest = strong_sha256(b"read-only Cap source");
+    let manifest_digest = strong_sha256(b"canonical imported Frame manifest");
+    let prepared_operation = operation_id(24);
+    let mut initial = initial_journal();
+    initial.receipts.insert(
+        prepared_operation,
+        StudioOperationReceipt {
+            operation_id: prepared_operation,
+            kind: ReceiptKind::LegacyImportPrepared,
+            command_digest: legacy_import_command_digest(source_digest),
+            outcome_digest: legacy_import_outcome_digest(manifest_digest),
+        },
+    );
+    let mut journal =
+        DurableStudioJournal::create(FakeJournal::default(), initial).expect("journal");
+    commit_legacy_import_journal(
+        &mut journal,
+        operation_id(25),
+        source_digest,
+        manifest_digest,
+    )
+    .expect("commit legacy import");
+    assert_eq!(
+        journal.snapshot().boundary,
+        JournalBoundary::RecordingStopped
+    );
+    assert_eq!(
+        journal
+            .snapshot()
+            .receipts
+            .get(&operation_id(25))
+            .expect("legacy receipt")
+            .kind,
+        ReceiptKind::LegacyImported
+    );
+
+    let mut mismatched = initial_journal();
+    mismatched.receipts.insert(
+        prepared_operation,
+        StudioOperationReceipt {
+            operation_id: prepared_operation,
+            kind: ReceiptKind::LegacyImportPrepared,
+            command_digest: legacy_import_command_digest(source_digest),
+            outcome_digest: legacy_import_outcome_digest(manifest_digest),
+        },
+    );
+    let mut mismatched =
+        DurableStudioJournal::create(FakeJournal::default(), mismatched).expect("journal");
+    assert_eq!(
+        commit_legacy_import_journal(
+            &mut mismatched,
+            operation_id(27),
+            source_digest,
+            strong_sha256(b"different imported manifest"),
+        ),
+        Err(StudioError::JournalCorrupt)
+    );
+
+    let mut ordinary =
+        DurableStudioJournal::create(FakeJournal::default(), initial_journal()).expect("journal");
+    assert!(matches!(
+        ordinary.advance(JournalAdvanceRequest {
+            expected_revision: ordinary.snapshot().revision,
+            expected_fence: ordinary.snapshot().fence,
+            operation_id: operation_id(26),
+            command_digest: strong_sha256(b"capture did not start"),
+            boundary: JournalBoundary::RecordingStopped,
+            pending_asset: None,
+            pending_edit: None,
+            pending_render: None,
+            receipt_kind: ReceiptKind::RecordingStopped,
+            outcome_digest: strong_sha256(b"must reject"),
+        }),
+        Err(StudioError::InvalidJournalTransition { .. })
+    ));
+}
+
+#[test]
 fn concurrent_edit_saves_serialize_by_revision_and_fence() {
     let port = FakeJournal::default();
     let mut first = DurableStudioJournal::create(port.clone(), initial_journal()).expect("first");

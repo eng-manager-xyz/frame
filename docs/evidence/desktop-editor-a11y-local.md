@@ -2,12 +2,12 @@
 
 ## Closure ledger boundary
 
-Issue 33 checkboxes 3, 4, 5, 6, 8, 9, and 10 are repository-local gaps.
-Checkboxes 1, 2, and 7 remain locally satisfied by the typed Tauri surface,
-backend-owned state model, and IPC security boundary. No issue-33 checkbox is
-currently `protected_pending`: real hardware and assistive-technology runs will
-eventually be required, but they cannot validate the still-incomplete recorder,
-editor, recovery, lifecycle, and updater journeys.
+Issue 33 checkboxes 3, 4, 5, 6, 8, and 9 remain broader product-integration
+gaps. Checkboxes 1, 2, 7, and 10 are locally satisfied by the typed Tauri
+surface, backend-owned state model, IPC security boundary, and production
+non-destructive Cap scan/import path. Real hardware and assistive-technology
+runs remain protected evidence and cannot be replaced by repository-local
+tests.
 
 The portable release shell selects `DesktopAdapterKind::Unavailable`. A macOS
 release built with `macos-native` instead requests `NativeMacOs`, reports
@@ -88,8 +88,9 @@ Validated contract, state-model, and fake implementation:
 - semantic Leptos recorder, recovery, numeric timeline, export, upload, settings, and bounded error
   surfaces; only the narrow native target controls described below are
   connected to a release backend; and
-- read-only legacy settings/project inspection models and a retained-selector flag, without a
-  production migration adapter or usable legacy-desktop selection action.
+- a production, path-redacted Cap settings/project scan; generation-fenced
+  macOS copy into immutable Frame originals; coarse Windows compatibility
+  reporting; and the retained previous-desktop rollback action.
 
 ## Native macOS target source evidence
 
@@ -180,10 +181,21 @@ publication journey. The native Studio recovery path proves journal-fenced
 recording/edit-save reconciliation, not a complete editor, accessibility, or
 full-device recovery journey.
 
+The legacy migration acceptance criterion is locally complete. A main-window
+scan reads Cap's bounded settings and known recording roots without mutation,
+publishes only ordinal compatibility results, and rejects stale tokens. On
+macOS, supported projects are copied into immutable Frame originals, committed
+under a source- and manifest-bound journal receipt, and surfaced through a
+fresh authenticated Studio catalog. Unsupported/newer projects remain
+report-only, Windows does not expose an import button, and the previous signed
+desktop remains selectable. The checked-in fixture is synthetic; approval
+against a privacy-reviewed historical corpus remains protected Studio
+evidence.
+
 ## Protected evidence still required
 
 The following evidence will still be required after the repository-local gaps
-close. It cannot currently convert checkboxes 3–6 or 8–10 to
+close. It cannot currently convert checkboxes 3–6, 8, or 9 to
 `protected_pending`:
 
 - macOS and Windows permission prompts using real screen, microphone, system-audio, and camera APIs;

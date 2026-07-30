@@ -18,6 +18,7 @@ use thiserror::Error;
 use frame_client::{InstantUiErrorCodeV1, InstantUiPhaseV1, InstantUiProgressV1};
 
 use crate::{
+    LegacyProjectCatalog, LegacyProjectCatalogAvailability, LegacyProjectStatus,
     desktop_shell::{DesktopShellCommand, DesktopShellFailure, DesktopShellOutcome},
     instant_finalize_service::{
         INSTANT_FINALIZE_COMMAND_PROTOCOL_VERSION, InstantFinalizeCapabilityState,
@@ -50,7 +51,7 @@ use crate::{
     },
 };
 
-pub const DESKTOP_RUNTIME_VERSION: u16 = 7;
+pub const DESKTOP_RUNTIME_VERSION: u16 = 8;
 pub const DESKTOP_INPUT_TELEMETRY_VERSION: u16 = 1;
 pub const DESKTOP_INPUT_TELEMETRY_INTERVAL_MS: u64 = 100;
 const DESKTOP_INPUT_TELEMETRY_INTERVAL: Duration =
@@ -210,6 +211,8 @@ pub struct DesktopRuntimeSnapshot {
     #[serde(default = "NativeStudioProjectCatalog::empty")]
     pub studio_projects: NativeStudioProjectCatalog,
     #[serde(default)]
+    pub legacy_projects: LegacyProjectCatalog,
+    #[serde(default)]
     pub capture_artifact: Option<CaptureArtifactSummary>,
     #[serde(default)]
     pub studio_export_destination: Option<StudioExportDestination>,
@@ -309,8 +312,8 @@ impl fmt::Debug for PendingDesktopShellRequest {
 
 impl PendingDesktopShellRequest {
     #[must_use]
-    pub const fn command(&self) -> DesktopShellCommand {
-        self.command
+    pub fn command(&self) -> DesktopShellCommand {
+        self.command.clone()
     }
 }
 
@@ -434,6 +437,7 @@ pub struct DesktopRuntime {
     selected_sources: SelectedSources,
     capture_targets: CaptureTargetCatalog,
     studio_projects: NativeStudioProjectCatalog,
+    legacy_projects: LegacyProjectCatalog,
     selected_capture_target: Option<CaptureTargetSummary>,
     native_recording: Option<NativeRecordingAuthority>,
     native_artifact: Option<NativeArtifactAuthority>,
@@ -588,6 +592,7 @@ impl DesktopRuntime {
             },
             capture_targets: CaptureTargetCatalog::empty(),
             studio_projects,
+            legacy_projects: LegacyProjectCatalog::unavailable(),
             selected_capture_target: None,
             native_recording: None,
             native_artifact: None,
@@ -676,6 +681,7 @@ impl DesktopRuntime {
             selected_sources: self.selected_sources,
             capture_targets: self.capture_targets.clone(),
             studio_projects: self.studio_projects.clone(),
+            legacy_projects: self.legacy_projects.clone(),
             capture_artifact: self
                 .native_artifact
                 .as_ref()
@@ -880,7 +886,7 @@ impl DesktopRuntime {
         debug_assert!(accepted.validated_path.is_none());
         let owner = self.owner_for(&accepted.request)?;
         let candidate = self.clone();
-        if let Err(failure) = candidate.preflight_shell(command) {
+        if let Err(failure) = candidate.preflight_shell(&command) {
             return self
                 .finish_dispatch(&accepted.request, owner, candidate, Err(failure))
                 .map(Box::new)
@@ -960,7 +966,7 @@ impl DesktopRuntime {
         Ok(())
     }
 
-    fn preflight_shell(&self, command: DesktopShellCommand) -> Result<(), ExecutionFailure> {
+    fn preflight_shell(&self, command: &DesktopShellCommand) -> Result<(), ExecutionFailure> {
         match command {
             DesktopShellCommand::Lifecycle { .. } => Ok(()),
             DesktopShellCommand::Update {
@@ -968,12 +974,12 @@ impl DesktopRuntime {
                 expected_revision,
             } => {
                 let current_revision = update_revision(self.update);
-                if current_revision != expected_revision {
+                if current_revision != *expected_revision {
                     return Err(ExecutionFailure::conflict(
                         "Update state changed. Refresh and retry.",
                     ));
                 }
-                match (action, self.update) {
+                match (*action, self.update) {
                     (_, UpdateState::Unavailable { .. }) => Err(ExecutionFailure::unavailable()),
                     (UpdateAction::Check, UpdateState::Current { .. })
                     | (
@@ -988,6 +994,49 @@ impl DesktopRuntime {
                     )),
                 }
             }
+            DesktopShellCommand::LegacyProjectScan
+                if matches!(
+                    self.adapter,
+                    DesktopAdapterKind::NativeMacOs | DesktopAdapterKind::NativeWindows
+                ) =>
+            {
+                Ok(())
+            }
+            DesktopShellCommand::LegacyProjectImport {
+                catalog_generation,
+                project_token,
+            } if self.adapter == DesktopAdapterKind::NativeMacOs => {
+                if self.legacy_projects.availability != LegacyProjectCatalogAvailability::Ready
+                    || self.legacy_projects.generation != *catalog_generation
+                {
+                    return Err(ExecutionFailure::conflict(
+                        "Legacy project inventory changed. Scan again before importing.",
+                    ));
+                }
+                match self
+                    .legacy_projects
+                    .projects
+                    .iter()
+                    .find(|project| project.project_token == *project_token)
+                    .map(|project| project.status)
+                {
+                    Some(LegacyProjectStatus::Importable) => Ok(()),
+                    Some(
+                        LegacyProjectStatus::Imported
+                        | LegacyProjectStatus::NeedsReview
+                        | LegacyProjectStatus::Unsupported,
+                    ) => Err(ExecutionFailure::conflict(
+                        "This Cap project needs the legacy editor before it can be imported.",
+                    )),
+                    Some(LegacyProjectStatus::Invalid) | None => {
+                        Err(ExecutionFailure::unavailable())
+                    }
+                }
+            }
+            DesktopShellCommand::LegacyProjectScan
+            | DesktopShellCommand::LegacyProjectImport { .. } => {
+                Err(ExecutionFailure::unavailable())
+            }
         }
     }
 
@@ -997,7 +1046,7 @@ impl DesktopRuntime {
         outcome: DesktopShellOutcome,
         restart_requested: &mut bool,
     ) -> Result<Vec<BackendEvent>, ExecutionFailure> {
-        self.preflight_shell(command)?;
+        self.preflight_shell(&command)?;
         match (command, outcome) {
             (
                 DesktopShellCommand::Lifecycle { .. },
@@ -1077,6 +1126,47 @@ impl DesktopRuntime {
                 };
                 self.announcement = "The signed desktop update is relaunching.".into();
                 *restart_requested = true;
+            }
+            (
+                DesktopShellCommand::LegacyProjectScan,
+                DesktopShellOutcome::LegacyProjectsScanned { catalog },
+            ) => {
+                catalog
+                    .validate()
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                if catalog.availability != LegacyProjectCatalogAvailability::Ready {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                self.legacy_projects = catalog;
+                self.announcement =
+                    "Cap projects were inspected read-only. Importable copies are ready.".into();
+            }
+            (
+                DesktopShellCommand::LegacyProjectImport { .. },
+                DesktopShellOutcome::LegacyProjectImported {
+                    catalog,
+                    receipt,
+                    studio_projects,
+                },
+            ) => {
+                catalog
+                    .validate()
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                studio_projects
+                    .validate_enumeration()
+                    .map_err(|_| ExecutionFailure::invalid_backend_response())?;
+                if catalog.availability != LegacyProjectCatalogAvailability::Ready
+                    || receipt.imported_assets == 0
+                    || receipt.project_revision == 0
+                {
+                    return Err(ExecutionFailure::invalid_backend_response());
+                }
+                self.legacy_projects = catalog;
+                self.studio_projects = studio_projects;
+                self.announcement = format!(
+                    "Cap project copied into Frame with {} immutable originals. The Cap source was preserved.",
+                    receipt.imported_assets
+                );
             }
             _ => return Err(ExecutionFailure::internal()),
         }
@@ -1891,6 +1981,9 @@ impl DesktopRuntime {
                     }
                     NativeStudioRecoveryAction::RecoverRecording => {
                         "Captured Studio tracks are available for journal-fenced recovery."
+                    }
+                    NativeStudioRecoveryAction::RecoverLegacyImport => {
+                        "Copied Cap originals are durable; Frame can finish the interrupted project registration without modifying Cap."
                     }
                     NativeStudioRecoveryAction::ReconcileEditSave => {
                         "The pending edit save can be reconciled against its exact durable revision."
@@ -3131,6 +3224,9 @@ impl DesktopRuntime {
                 self.announcement = "Update lifecycle confirmed by the backend.".into();
                 Ok(Vec::new())
             }
+            IpcCommand::LegacyProjectScan | IpcCommand::LegacyProjectImport { .. } => {
+                Err(ExecutionFailure::unavailable())
+            }
         }
     }
 
@@ -3455,6 +3551,14 @@ fn shell_command(command: &IpcCommand) -> Option<DesktopShellCommand> {
         } => Some(DesktopShellCommand::Update {
             action: *action,
             expected_revision: *expected_revision,
+        }),
+        IpcCommand::LegacyProjectScan => Some(DesktopShellCommand::LegacyProjectScan),
+        IpcCommand::LegacyProjectImport {
+            catalog_generation,
+            project_token,
+        } => Some(DesktopShellCommand::LegacyProjectImport {
+            catalog_generation: *catalog_generation,
+            project_token: project_token.clone(),
         }),
         _ => None,
     }
@@ -4803,6 +4907,106 @@ mod tests {
         ok(&completion.dispatch);
         assert!(!completion.restart_requested);
         assert_eq!(completion.dispatch.snapshot.lifecycle, lifecycle);
+    }
+
+    #[test]
+    fn legacy_import_shell_is_generation_fenced_and_commits_only_native_results() {
+        let mut runtime = native_runtime();
+        let start = runtime
+            .begin_shell(request(
+                &runtime,
+                WindowRole::Main,
+                1,
+                "scan-cap-projects",
+                IpcCommand::LegacyProjectScan,
+            ))
+            .expect("begin read-only scan");
+        let DesktopShellStart::Pending(pending) = start else {
+            panic!("native Cap scan must wait for filesystem confirmation");
+        };
+        let catalog = LegacyProjectCatalog {
+            schema_version: crate::LEGACY_PROJECT_CATALOG_VERSION,
+            generation: 1,
+            availability: LegacyProjectCatalogAvailability::Ready,
+            settings_inspection: crate::LegacySettingsInspection::Read,
+            projects: vec![crate::LegacyProjectSummary {
+                project_token: "legacy-project:0011223344556677".into(),
+                ordinal: 1,
+                status: LegacyProjectStatus::Importable,
+                source_asset_count: 3,
+                supported_effect_count: 1,
+                unsupported_effect_count: 0,
+            }],
+        };
+        let completion = runtime
+            .finish_shell(
+                pending,
+                Ok(DesktopShellOutcome::LegacyProjectsScanned {
+                    catalog: catalog.clone(),
+                }),
+            )
+            .expect("finish scan");
+        ok(&completion.dispatch);
+        assert_eq!(completion.dispatch.snapshot.legacy_projects, catalog);
+
+        let start = runtime
+            .begin_shell(request(
+                &runtime,
+                WindowRole::Main,
+                2,
+                "import-cap-project",
+                IpcCommand::LegacyProjectImport {
+                    catalog_generation: 1,
+                    project_token: "legacy-project:0011223344556677".into(),
+                },
+            ))
+            .expect("begin import");
+        let DesktopShellStart::Pending(pending) = start else {
+            panic!("native Cap import must wait for filesystem confirmation");
+        };
+        let refreshed = LegacyProjectCatalog {
+            schema_version: crate::LEGACY_PROJECT_CATALOG_VERSION,
+            generation: 2,
+            availability: LegacyProjectCatalogAvailability::Ready,
+            settings_inspection: crate::LegacySettingsInspection::Read,
+            projects: Vec::new(),
+        };
+        let studio_projects = NativeStudioProjectCatalog {
+            schema_version: STUDIO_PROJECT_CATALOG_VERSION,
+            generation: 2,
+            projects: vec![crate::NativeStudioProjectSummary {
+                project_token: "imported-project".into(),
+                project_revision: Some(1),
+                asset_count: 3,
+                status: NativeStudioProjectStatus::Ready,
+            }],
+        };
+        let completion = runtime
+            .finish_shell(
+                pending,
+                Ok(DesktopShellOutcome::LegacyProjectImported {
+                    catalog: refreshed.clone(),
+                    receipt: crate::LegacyImportReceipt {
+                        imported_assets: 3,
+                        project_revision: 1,
+                    },
+                    studio_projects: studio_projects.clone(),
+                }),
+            )
+            .expect("finish import");
+        ok(&completion.dispatch);
+        assert_eq!(completion.dispatch.snapshot.legacy_projects, refreshed);
+        assert_eq!(
+            completion.dispatch.snapshot.studio_projects,
+            studio_projects
+        );
+        assert!(
+            completion
+                .dispatch
+                .snapshot
+                .announcement
+                .contains("Cap source was preserved")
+        );
     }
 
     #[test]

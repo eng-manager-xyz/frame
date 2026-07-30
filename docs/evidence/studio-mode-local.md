@@ -21,6 +21,18 @@ non-mutating importer/reporting path exists but still needs a reviewed
 representative legacy-project corpus. Checkbox 11 is locally satisfied and its
 representative physical-hardware execution remains protected evidence.
 
+The production desktop composition now uses that importer rather than exposing
+only a directory adapter. Native macOS and Windows can scan Cap's default and
+remembered recording roots through a bounded read-only service. macOS can copy
+a supported project into immutable Frame originals and immediately refresh the
+authenticated Studio catalog; Windows reports compatibility without claiming
+import support. Catalog generations and CSPRNG tokens fence every request, and
+paths, titles, digests, and durable identities stay outside the WebView.
+Source/manifest-bound prepared and terminal receipts distinguish migration from
+capture. The recovery test removes the Cap source after every original and the
+manifest are durable, then proves that a lost final acknowledgement can be
+finished using only Frame data.
+
 The remaining tests exercise contracts, synthetic GStreamer sources,
 filesystem components, and a reference renderer, not a complete Studio
 service. The media crate now owns a production `NativeStudioRecording` graph:
@@ -399,7 +411,8 @@ the aggregate gate after concurrent issue lanes merge.
 
 `fixtures/studio/cap-schema-supported/` is a locally authored directory-schema
 fixture. Its JSON and descriptor payloads prove the production parser, copy
-plan, normalized path, segment, fingerprint, and read-only behavior, but it is
+plan, normalized path, segment, fingerprint, read-only discovery, immutable
+copy, restart detection, and final-acknowledgement recovery behavior, but it is
 not a historical Cap project and its media-named files are not encoded samples.
 The contract suite uses deterministic fake native ports alongside production
 filesystem durability components. Its reference renderer writes a canonical

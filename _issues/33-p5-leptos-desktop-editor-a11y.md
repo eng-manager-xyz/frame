@@ -49,7 +49,21 @@ Native pipeline implementations are issues 24–27; broad API behavior is issue 
 - [ ] IPC rejects unapproved commands, malformed payloads, stale operation IDs, cross-window misuse, and filesystem paths outside allowed scopes.
 - [ ] Keyboard-only and screen-reader users can configure, start, pause, stop, recover, edit essential controls, export, and upload.
 - [ ] Hotkeys, tray, overlays, target picker, window exclusion, and multi-monitor placement pass each supported OS matrix.
-- [ ] Legacy settings/projects are migrated or reported without destructive mutation, and the legacy desktop remains selectable until parity gate 29.
+- [x] Legacy settings/projects are migrated or reported without destructive mutation, and the legacy desktop remains selectable until parity gate 29.
+
+## Current implementation evidence
+
+- The main-window-only `LegacyProjectScan` and `LegacyProjectImport` commands
+  use the versioned typed IPC boundary, reject stale catalog generations, keep
+  paths and project names in Rust, and publish state only after the native shell
+  returns a validated result.
+- The Settings surface exposes a keyboard-operable read-only scan, ordinal
+  compatibility results, and macOS import controls. Windows reports
+  compatibility but does not claim Studio import support.
+- A successful import refreshes the authenticated native Studio catalog and
+  announces that the Cap source was preserved. Unsupported, newer, incomplete,
+  or interrupted projects remain non-destructive review states. The previous
+  signed desktop remains available through the already-fenced rollback action.
 
 ## Required test evidence
 

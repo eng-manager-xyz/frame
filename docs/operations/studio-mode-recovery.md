@@ -137,6 +137,31 @@ On a hardware encoder failure:
    the failed partial is confirmed absent. If software capability is
    unavailable, fail the export safely and leave the project/editor intact.
 
+## Interrupted Cap import
+
+A Cap import uses a `LegacyImportPrepared` receipt while the journal remains at
+`Created`. The prepared receipt binds the read-only Cap source digest and the
+canonical imported Frame manifest digest. The successful terminal receipt is
+`LegacyImported`; it is the only receipt allowed to move a journal directly
+from `Created` to `RecordingStopped`.
+
+If the native project catalog reports `RecoverLegacyImport`:
+
+1. Reauthenticate the exact journal and canonical project through the pinned
+   Frame projects root.
+2. Probe every manifest asset in the immutable Frame originals store and
+   require the complete descriptor, byte length, and checksum to match.
+3. Recompute the canonical manifest digest and compare it with the prepared
+   receipt. Do not reopen or mutate the Cap source.
+4. Take a new journal ownership fence and commit the prepared receipt as
+   `LegacyImported`.
+5. Rescan and require the project to be `Ready` before opening the editor.
+
+This recovery applies only after every copied original and the manifest are
+durable and the final acknowledgement was interrupted. Earlier failures remain
+`NeedsReview`; do not delete the Cap source or claim that Frame has a complete
+copy. See `legacy-cap-import.md` for the operator flow.
+
 ## Rollback
 
 Studio v1 rollout is read-only legacy inspection first, new recording opt-in

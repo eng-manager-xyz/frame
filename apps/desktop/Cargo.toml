@@ -17,6 +17,7 @@ tauri-app = [
 ]
 macos-native = [
     "tauri-app",
+    "frame-legacy-import/cap-media",
     "dep:frame-media",
     "dep:frame-macos-av-capture",
     "dep:frame-macos-screen-capture",
@@ -25,6 +26,7 @@ macos-native = [
 ]
 windows-native = [
     "tauri-app",
+    "frame-legacy-import/cap-media",
     "dep:frame-media",
     "dep:frame-platform-lifecycle",
     "dep:frame-windows-screen-capture",
@@ -43,6 +45,7 @@ path = "src/bin/frame-desktop-e2e-host.rs"
 
 [dependencies]
 frame-client = { path = "../../crates/frame-client" }
+frame-legacy-import = { path = "../../crates/legacy-import", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -80,6 +80,28 @@ schema-faithful fixture. Its media files are descriptor payloads, not encoded
 reference media. It is not a privacy-reviewed historical Cap corpus and does
 not establish product parity.
 
+`frame-legacy-import` is the desktop composition around that adapter. On native
+macOS and Windows it reads Cap's default `recordings` directory plus the current
+and previous absolute recording roots from Cap's bounded `store` document.
+Directory, settings, catalog, source-byte, and token sizes are bounded. Symlink
+projects and unsafe media paths fail closed. The WebView receives only an
+ordinal, coarse status/counts, a CSPRNG token, and a catalog generation; it
+never receives a Cap path, title, native identifier, source digest, or Frame
+storage identity.
+
+Import is currently enabled only by the native macOS runtime. It repeats the
+complete source inspection under the generation-fenced token, mints new
+project/asset/worker/operation identities, streams verified sources into the
+Frame temporary namespace, commits immutable originals, re-fingerprints the Cap
+tree, and persists the canonical project. A prepared receipt binds both the Cap
+source digest and canonical imported-manifest digest. The terminal
+`LegacyImported` receipt is the only legal direct
+`Created -> RecordingStopped` journal transition, so an import can never
+masquerade as native capture. After all originals and the manifest are durable,
+native recovery can reconcile a lost final acknowledgement without reopening
+Cap. Any earlier incomplete attempt remains a review state; it is never
+reported as imported and the Cap source remains untouched.
+
 ## Recording graph and original assets
 
 The recording graph is a structured adapter contract, not a string pipeline.

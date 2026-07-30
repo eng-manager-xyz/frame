@@ -1,0 +1,24 @@
+[package]
+name = "frame-legacy-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["cap-media"]
+cap-media = ["dep:frame-media", "dep:ring", "dep:serde_json"]
+
+[dependencies]
+frame-media = { path = "../media", optional = true }
+ring = { workspace = true, optional = true }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

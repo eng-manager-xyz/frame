@@ -37,19 +37,19 @@ Complete product UI is issue 33; server media derivatives are issue 28.
 
 ## Deliverables
 
-- [ ] Versioned project/asset/edit format with forward/backward compatibility and corruption detection.
-- [ ] Multi-track GStreamer/native recording pipeline and atomic journal/recovery design.
-- [ ] Playback/seek/preview engine with deterministic edit interpretation.
-- [ ] Render/export graph for approved containers/codecs/resolutions/frame rates with progress and cancellation.
-- [ ] A distribution-master export profile compatible with the approved Cloudflare Media input matrix, while preserving editable originals and higher-quality native exports.
-- [ ] Legacy Cap project import strategy and explicit unsupported-effect handling.
+- [x] Versioned project/asset/edit format with forward/backward compatibility and corruption detection.
+- [x] Multi-track GStreamer/native recording pipeline and atomic journal/recovery design.
+- [x] Playback/seek/preview engine with deterministic edit interpretation.
+- [x] Render/export graph for approved containers/codecs/resolutions/frame rates with progress and cancellation.
+- [x] A distribution-master export profile compatible with the approved Cloudflare Media input matrix, while preserving editable originals and higher-quality native exports.
+- [x] Legacy Cap project import strategy and explicit unsupported-effect handling.
 
 ## Acceptance criteria
 
 - [ ] Approved legacy projects open or produce an actionable compatibility report without modifying the source.
-- [ ] Crash/power-loss injection leaves a recoverable project at each recording and edit-save boundary.
-- [ ] Preview and export interpret the same edit spec within approved frame/audio tolerances.
-- [ ] Seek, trim boundaries, variable frame rate, speed, camera/cursor layout, audio gain, and long projects pass goldens.
+- [x] Crash/power-loss injection leaves a recoverable project at each recording and edit-save boundary.
+- [x] Preview and export interpret the same edit spec within approved frame/audio tolerances.
+- [x] Seek, trim boundaries, variable frame rate, speed, camera/cursor layout, audio gain, and long projects pass goldens.
 - [x] Hardware failure falls back or fails safely without losing the project; cancelled exports clean partial outputs.
 
 ## Required test evidence
@@ -80,6 +80,14 @@ Complete product UI is issue 33; server media derivatives are issue 28.
   including nonzero optional-track and cursor ranges. The shared decoded
   camera/cursor/VFR/speed/audio golden and day-scale cursor lookup close the
   remaining repository-local composition requirement.
+- `frame-legacy-import` now scans Cap's default and remembered recording roots
+  read-only, returns only generation-fenced opaque project tokens and coarse
+  compatibility counts, and copies supported projects into immutable Frame
+  originals without changing the Cap tree. Unsupported or newer effects remain
+  report-only. A source- and manifest-bound journal receipt makes completed
+  imports reopenable and lets the native recovery path reconcile a lost final
+  acknowledgement without reopening Cap after every copied original is
+  durable. See `docs/operations/legacy-cap-import.md`.
 
 ## Risks and open questions
 

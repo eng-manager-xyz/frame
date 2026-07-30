@@ -117,6 +117,9 @@ def main() -> int:
     studio_evidence = text("docs/evidence/studio-mode-local.md")
     evidence_doc = text("docs/evidence/desktop-editor-a11y-local.md")
     operations = text("docs/operations/desktop-recovery-and-release.md")
+    legacy_import_contract = text("crates/legacy-import/src/lib.rs")
+    legacy_import_service = text("crates/legacy-import/src/service.rs")
+    legacy_import_operations = text("docs/operations/legacy-cap-import.md")
     hardware_workflow = text(".github/workflows/desktop-real-hardware.yml")
     hardware_driver = text("apps/desktop/src/hardware_driver.rs")
     hardware_runner = text("scripts/ci/run-desktop-real-hardware.py")
@@ -143,6 +146,47 @@ def main() -> int:
         "typed IPC",
     )
     reject(ipc, ("project_path",), "pathless Studio IPC")
+    require(
+        ipc,
+        (
+            "LegacyProjectScan",
+            "LegacyProjectImport",
+            "catalog_generation",
+            "project_token",
+            "CommandKind::LegacyProjectImport",
+        ),
+        "legacy migration IPC",
+    )
+    require(
+        legacy_import_contract,
+        (
+            "LEGACY_PROJECT_CATALOG_VERSION",
+            "LegacyProjectCatalogAvailability",
+            "LegacyProjectStatus",
+            "Imported",
+            "NeedsReview",
+            "MAX_LEGACY_PROJECT_CATALOG_ENTRIES",
+            'field("project_token", &"<redacted>")',
+        ),
+        "legacy migration contract",
+    )
+    require(
+        legacy_import_service,
+        (
+            "MAX_RECORDING_ROOTS",
+            "MAX_ROOT_DIRECTORY_ENTRIES",
+            "FilesystemLegacyCapProjectPort",
+            "stage_legacy_copy",
+            "commit_verified_temporary",
+            "commit_legacy_import_journal",
+            "legacy_import_command_digest",
+            "legacy_import_outcome_digest",
+            "source_tree_digest",
+            "LegacyProjectStatus::Imported",
+            "LegacyProjectStatus::NeedsReview",
+        ),
+        "legacy migration service",
+    )
     require(
         runtime,
         (
@@ -288,7 +332,7 @@ def main() -> int:
             "pub fn begin_shell",
             "pub fn finish_shell",
             "candidate.apply_shell_outcome",
-            "candidate.preflight_shell(command)",
+            "candidate.preflight_shell(&command)",
         ),
         "desktop runtime shell transaction",
     )
@@ -950,6 +994,17 @@ def main() -> int:
         "evidence report",
     )
     require(
+        legacy_import_operations,
+        (
+            "Cap projects, settings, and source media are never written, renamed, or",
+            "Paths, project names, media names, digests, and durable Frame",
+            "Native Windows currently provides the compatibility report only.",
+            "RecoverLegacyImport",
+            "privacy-reviewed historical compatibility corpus",
+        ),
+        "legacy migration runbook",
+    )
+    require(
         operations,
         (
             "Build modes and current boundary",
@@ -1031,6 +1086,8 @@ def main() -> int:
         "crates/media/src/screen_capture.rs",
         "crates/media/src/screen_recording/pump.rs",
         "crates/media/src/screen_recording.rs",
+        "crates/legacy-import/src/lib.rs",
+        "crates/legacy-import/src/service.rs",
         ".github/workflows/desktop-real-hardware.yml",
         "scripts/ci/desktop-real-hardware.py",
         "scripts/ci/run-desktop-real-hardware.py",
@@ -1057,6 +1114,7 @@ def main() -> int:
         "docs/evidence/studio-mode-local.md",
         "docs/evidence/desktop-editor-a11y-local.md",
         "docs/operations/desktop-recovery-and-release.md",
+        "docs/operations/legacy-cap-import.md",
         "docs/operations/macos-display-recording-local.md",
         "scripts/ci/check-desktop-product.py",
     ]
@@ -1073,6 +1131,7 @@ def main() -> int:
             "macos_studio_isolated_originals_bridge": True,
             "macos_studio_project_catalog_contract": True,
             "macos_studio_recovery_contract": True,
+            "legacy_cap_import_contract": True,
             "windows_normalized_screen_only_worker": True,
             "windows_native_target_source_contract": True,
             "native_cursor_metadata_contract": True,

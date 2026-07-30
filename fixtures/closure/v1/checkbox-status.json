@@ -8,9 +8,9 @@
   },
   "expected_totals": {
     "checkboxes": 554,
-    "local_satisfied": 367,
+    "local_satisfied": 368,
     "protected_pending": 180,
-    "local_gap": 7
+    "local_gap": 6
   },
   "issues": {
     "01": {
@@ -204,8 +204,8 @@
     },
     "27": {
       "count": 11,
-      "digest": "32b64219ff174c9d9fdedcda4573e7136c2e18beeeaeb345d2f5a6893d5c1800",
-      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "apps/desktop/src/ipc.rs", "apps/desktop/src/native_backend.rs", "apps/desktop/src/macos_native_backend.rs", "apps/desktop/src/macos_native_backend/av_worker.rs", "apps/desktop/src/macos_native_backend/studio_editor.rs", "apps/desktop/src/macos_native_backend/studio_export.rs", "apps/desktop/src/macos_native_backend/studio_recorder.rs", "apps/desktop/src/macos_native_backend/studio_recovery.rs", "apps/desktop/src/macos_native_backend/studio_render.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "crates/macos-screen-capture/src/cursor.rs", "crates/macos-screen-capture/src/lib.rs", "crates/media/gstreamer-runtime.json", "crates/media/src/runtime.rs", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
+      "digest": "89cfdbae56cdc172ffccc80adec446cd2853f338f416589790d42ec57474ff0d",
+      "evidence": ["docs/evidence/studio-mode-local.md", "docs/architecture/studio-mode-contracts.md", "docs/operations/legacy-cap-import.md", "apps/desktop/src/ipc.rs", "apps/desktop/src/native_backend.rs", "apps/desktop/src/macos_native_backend.rs", "apps/desktop/src/macos_native_backend/av_worker.rs", "apps/desktop/src/macos_native_backend/studio_editor.rs", "apps/desktop/src/macos_native_backend/studio_export.rs", "apps/desktop/src/macos_native_backend/studio_recorder.rs", "apps/desktop/src/macos_native_backend/studio_recovery.rs", "apps/desktop/src/macos_native_backend/studio_render.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "crates/legacy-import/src/lib.rs", "crates/legacy-import/src/service.rs", "crates/macos-screen-capture/src/cursor.rs", "crates/macos-screen-capture/src/lib.rs", "crates/media/gstreamer-runtime.json", "crates/media/src/runtime.rs", "crates/media/src/studio_native_execution.rs", "crates/media/src/studio_recording_native.rs", "crates/media/tests/studio_mode_contract.rs", "crates/media/tests/studio_native_recording.rs"],
       "protected": [
         {"ordinals": [7], "classes": ["human_approval"], "reason": "The legacy import implementation exists, but acceptance still needs a reviewed corpus of representative Cap projects."},
         {"ordinals": [11], "classes": ["hardware_execution"], "reason": "The production hardware-first adapter, exact cleanup, cancellation, and identical-plan software retry are repository-backed; representative hardware encoder failures and output comparison still require the supported physical machine matrix."}
@@ -265,10 +265,10 @@
     },
     "33": {
       "count": 10,
-      "digest": "4c558f86d18ebee2673d202175fb62bd261a4f358b014e38bf15e1c1e17e2a1c",
-      "evidence": ["docs/evidence/desktop-editor-a11y-local.md", "docs/architecture/desktop-product-v1.md", "scripts/ci/check-desktop-product.py"],
+      "digest": "a2897ca3c24cd5f21d20434572f703358e1b1e8df162512fc3e68e73712eec1e",
+      "evidence": ["docs/evidence/desktop-editor-a11y-local.md", "docs/architecture/desktop-product-v1.md", "docs/operations/legacy-cap-import.md", "apps/desktop/src/ipc.rs", "apps/desktop/src/runtime.rs", "apps/desktop/ui/src/main.rs", "crates/legacy-import/src/lib.rs", "crates/legacy-import/src/service.rs", "scripts/ci/check-desktop-product.py"],
       "protected": [],
-      "local_gaps": [{"ordinals": [3, 4, 5, 6, 8, 9, 10], "reason": "Recorder, editor, export, lifecycle, hardware-suite, accessibility, OS-integration, and legacy-selection behavior remains fake-gated or absent in the production desktop adapter."}]
+      "local_gaps": [{"ordinals": [3, 4, 5, 6, 8, 9], "reason": "Recorder, editor, export, lifecycle, hardware-suite, accessibility, and OS-integration behavior remains incomplete in the production desktop adapter."}]
     },
     "34": {
       "count": 12,
