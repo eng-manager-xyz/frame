@@ -946,7 +946,7 @@ mod tests {
             blue: 180,
         };
         assert_eq!(
-            sentinel_pixel_count(&[90, 120, 180, 80, 110, 170], color),
+            sentinel_pixel_count(&[90, 120, 180, 82, 112, 172, 81, 111, 171], color),
             2
         );
         assert_eq!(sentinel_pixel_count(&[0, 0, 0, 255, 255, 255], color), 0);
